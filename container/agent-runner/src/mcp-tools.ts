@@ -3038,5 +3038,57 @@ Use the skills panel in the UI to find the skill ID (directory name, e.g. "memor
     );
   }
 
-  return tools;
+  return applyToolLoadingHints(tools);
+}
+
+/** Tools that only read state, so Claude Code may run them in parallel. */
+const READ_ONLY_TOOL_NAMES = new Set([
+  'get_channel_context',
+  'feishu_get_chat',
+  'feishu_list_members',
+  'feishu_get_user',
+  'feishu_get_history',
+  'list_tasks',
+  'list_task_runs',
+  'discord_get_history',
+  'discord_get_channel_info',
+  'discord_get_server_info',
+  'agent_profile_list',
+  'agent_profile_get',
+  'agent_profile_draft_get',
+  'agent_capability_catalog',
+  'workspace_memory_search',
+  'workspace_memory_get',
+]);
+
+/**
+ * Tools nearly every turn uses. With tool search on (the default against
+ * the Anthropic API) MCP tools are deferred, which costs a ToolSearch round
+ * trip before their first call; these are always sent with the prompt.
+ */
+const ALWAYS_LOADED_TOOL_NAMES = new Set([
+  'send_message',
+  'get_channel_context',
+  'workspace_memory_search',
+  'workspace_memory_get',
+]);
+
+/** The same hints `tool(name, ..., { annotations, alwaysLoad })` would set. */
+function applyToolLoadingHints(
+  tools: SdkMcpToolDefinition<any>[],
+): SdkMcpToolDefinition<any>[] {
+  return tools.map((definition) => {
+    const readOnly = READ_ONLY_TOOL_NAMES.has(definition.name);
+    const alwaysLoad = ALWAYS_LOADED_TOOL_NAMES.has(definition.name);
+    if (!readOnly && !alwaysLoad) return definition;
+    return {
+      ...definition,
+      ...(readOnly
+        ? { annotations: { ...definition.annotations, readOnlyHint: true } }
+        : {}),
+      ...(alwaysLoad
+        ? { _meta: { ...definition._meta, 'anthropic/alwaysLoad': true } }
+        : {}),
+    };
+  });
 }

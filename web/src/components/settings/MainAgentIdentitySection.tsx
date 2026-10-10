@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Loader2, RotateCcw, Upload } from 'lucide-react';
+import { Loader2, RotateCcw, Smile, Upload } from 'lucide-react';
 import { toast } from 'sonner';
 
 import { api, apiFetch } from '../../api/client';
@@ -8,7 +8,12 @@ import { EmojiAvatar } from '../common/EmojiAvatar';
 import { EmojiPicker } from '../common/EmojiPicker';
 import { ColorPicker } from '../common/ColorPicker';
 import { Button } from '@/components/ui/button';
-import { Label } from '@/components/ui/label';
+import {
+  SettingsField,
+  SettingsGroup,
+  SettingsSection,
+} from './SettingsLayout';
+import { SettingsFormFooter } from './SettingsFormControls';
 import { getErrorMessage } from './types';
 
 const MAX_AVATAR_BYTES = 3 * 1024 * 1024;
@@ -33,6 +38,18 @@ export function MainAgentIdentitySection() {
     setMode(appearance?.aiAvatarMode || 'brand');
     setStyleEditorOpen(appearance?.aiAvatarMode === 'emoji');
   }, [appearance]);
+
+  const savedEmoji = appearance?.aiAvatarEmoji || '🐱';
+  const savedColor = appearance?.aiAvatarColor || '#0d9488';
+  const emojiDirty = emoji !== savedEmoji || color !== savedColor;
+
+  // Drop the unsaved Emoji draft; the editor only stays open while Emoji is
+  // the active avatar style.
+  const cancelEmojiEdit = () => {
+    setEmoji(savedEmoji);
+    setColor(savedColor);
+    if (mode !== 'emoji') setStyleEditorOpen(false);
+  };
 
   const saveFallback = async () => {
     setSaving(true);
@@ -113,114 +130,111 @@ export function MainAgentIdentitySection() {
   };
 
   return (
-    <section className="space-y-4 border-b border-border pb-6">
-      <div>
-        <h3 className="text-sm font-semibold text-foreground">头像</h3>
-        <p className="mt-1 text-xs leading-5 text-muted-foreground">
-          这是全局主 HappyClaw 的头像。未单独设置头像的自定义智能体
-          会自动继承它。
-        </p>
-      </div>
-
-      <div className="flex items-center gap-4">
-        <EmojiAvatar
-          imageUrl={
-            avatarUrl ||
-            (mode === 'brand'
-              ? `${import.meta.env.BASE_URL}icons/icon-192.png`
-              : undefined)
-          }
-          emoji={mode === 'emoji' ? emoji : undefined}
-          color={mode === 'emoji' ? color : undefined}
-          fallbackChar="H"
-          size="lg"
-          className="!h-14 !w-14 !text-2xl"
-        />
-        <div className="flex flex-wrap gap-2">
-          <input
-            ref={inputRef}
-            type="file"
-            accept={ALLOWED_TYPES.join(',')}
-            className="hidden"
-            onChange={upload}
+    <SettingsSection
+      title="头像"
+      description="这是全局主 HappyClaw 的头像。未单独设置头像的自定义智能体会自动继承它。"
+    >
+      <SettingsGroup>
+        <div className="flex flex-col gap-3 px-4 py-4 sm:flex-row sm:items-center">
+          <EmojiAvatar
+            imageUrl={
+              avatarUrl ||
+              (mode === 'brand'
+                ? `${import.meta.env.BASE_URL}icons/icon-192.png`
+                : undefined)
+            }
+            emoji={mode === 'emoji' ? emoji : undefined}
+            color={mode === 'emoji' ? color : undefined}
+            fallbackChar="H"
+            size="lg"
           />
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            disabled={uploading}
-            onClick={() => inputRef.current?.click()}
-          >
-            {uploading ? (
-              <Loader2 className="size-3.5 animate-spin" />
-            ) : (
-              <Upload className="size-3.5" />
+          <div className="flex flex-wrap gap-2 sm:ml-auto sm:justify-end">
+            <input
+              ref={inputRef}
+              type="file"
+              accept={ALLOWED_TYPES.join(',')}
+              className="hidden"
+              onChange={upload}
+            />
+            {(avatarUrl || mode === 'emoji') && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={restoreBrandAvatar}
+              >
+                <RotateCcw className="size-3.5" />
+                恢复默认头像
+              </Button>
             )}
-            上传图片
-          </Button>
-          {!styleEditorOpen && (
+            {avatarUrl && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={removeImage}
+              >
+                <RotateCcw className="size-3.5" />
+                改用 Emoji
+              </Button>
+            )}
+            {!styleEditorOpen && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => setStyleEditorOpen(true)}
+              >
+                <Smile className="size-3.5" />
+                使用 Emoji
+              </Button>
+            )}
             <Button
               type="button"
               variant="outline"
               size="sm"
-              onClick={() => setStyleEditorOpen(true)}
+              disabled={uploading}
+              onClick={() => inputRef.current?.click()}
             >
-              使用 Emoji
+              {uploading ? (
+                <Loader2 className="size-3.5 animate-spin" />
+              ) : (
+                <Upload className="size-3.5" />
+              )}
+              上传图片
             </Button>
-          )}
-          {avatarUrl && (
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              onClick={removeImage}
-            >
-              <RotateCcw className="size-3.5" />
-              改用 Emoji
-            </Button>
-          )}
-          {(avatarUrl || mode === 'emoji') && (
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              onClick={restoreBrandAvatar}
-            >
-              <RotateCcw className="size-3.5" />
-              恢复默认头像
-            </Button>
-          )}
-        </div>
-      </div>
-
-      {styleEditorOpen && (
-        <div className="space-y-3 rounded-lg border bg-muted/20 p-3">
-          <div className="grid gap-3 sm:grid-cols-2">
-            <div>
-              <Label className="mb-1.5 text-xs text-muted-foreground">
-                Emoji
-              </Label>
-              <EmojiPicker value={emoji} onChange={setEmoji} />
-            </div>
-            <div>
-              <Label className="mb-1.5 text-xs text-muted-foreground">
-                背景色
-              </Label>
-              <ColorPicker value={color} onChange={setColor} />
-            </div>
           </div>
+        </div>
 
-          <Button
-            type="button"
-            size="sm"
-            onClick={saveFallback}
-            disabled={saving}
-          >
-            {saving && <Loader2 className="size-3.5 animate-spin" />}
+        {styleEditorOpen && (
+          <div className="grid gap-6 px-4 py-4 sm:grid-cols-2">
+            <SettingsField label="Emoji">
+              <EmojiPicker value={emoji} onChange={setEmoji} />
+            </SettingsField>
+            <SettingsField label="背景色">
+              <ColorPicker value={color} onChange={setColor} />
+            </SettingsField>
+          </div>
+        )}
+      </SettingsGroup>
+      {styleEditorOpen && (
+        <SettingsFormFooter>
+          {(mode !== 'emoji' || emojiDirty) && (
+            <Button
+              type="button"
+              variant="outline"
+              onClick={cancelEmojiEdit}
+              disabled={saving}
+            >
+              取消
+            </Button>
+          )}
+          <Button type="button" onClick={saveFallback} disabled={saving}>
+            {saving && <Loader2 className="size-4 animate-spin" />}
             保存 Emoji 头像
           </Button>
-        </div>
+        </SettingsFormFooter>
       )}
-    </section>
+    </SettingsSection>
   );
 }

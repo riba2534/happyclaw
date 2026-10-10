@@ -1,4 +1,5 @@
 import { Bot, InputFile, type Context } from 'grammy';
+import { createRejectCooldown } from './reject-cooldown.js';
 import crypto from 'crypto';
 import fsPromises from 'node:fs/promises';
 import { readMp4VideoDimensions } from './mp4-video-dimensions.js';
@@ -900,8 +901,8 @@ export function createTelegramConnection(
   }
 
   // Rate-limit rejection messages: one per chat per 5 minutes
-  const rejectTimestamps = new Map<string, number>();
   const REJECT_COOLDOWN_MS = 5 * 60 * 1000;
+  const rejectCooldown = createRejectCooldown(REJECT_COOLDOWN_MS);
   const nativeContextReported = new Set<string>();
 
   async function reportNativeContext(
@@ -989,10 +990,7 @@ export function createTelegramConnection(
       return false;
     }
 
-    const now = Date.now();
-    const lastReject = rejectTimestamps.get(input.jid) ?? 0;
-    if (now - lastReject >= REJECT_COOLDOWN_MS) {
-      rejectTimestamps.set(input.jid, now);
+    if (rejectCooldown.shouldNotify(input.jid)) {
       try {
         await input.reply(
           'This chat is not yet paired. Please send /pair <code> to connect.\n' +
@@ -1177,10 +1175,7 @@ export function createTelegramConnection(
 
             // ── Authorization check ──
             if (!opts.isChatAuthorized(jid)) {
-              const now = Date.now();
-              const lastReject = rejectTimestamps.get(jid) ?? 0;
-              if (now - lastReject >= REJECT_COOLDOWN_MS) {
-                rejectTimestamps.set(jid, now);
+              if (rejectCooldown.shouldNotify(jid)) {
                 await ctx.reply(
                   'This chat is not yet paired. Please send /pair <code> to connect.\n' +
                     'You can generate a pairing code from the web settings page.',

@@ -527,7 +527,7 @@ describe('exact Web run state sequences', () => {
       },
     });
     apiGetMock.mockImplementation(async (path: string) => {
-      if (path === '/api/status') {
+      if (path === '/api/status/groups') {
         return {
           groups: [
             {

@@ -1,3 +1,5 @@
+import { Badge } from '@/components/ui/badge';
+
 export const CHANNEL_LABEL: Record<string, string> = {
   feishu: '飞书',
   telegram: 'Telegram',
@@ -9,64 +11,89 @@ export const CHANNEL_LABEL: Record<string, string> = {
   whatsapp: 'WhatsApp',
 };
 
-export const CHANNEL_COLORS: Record<string, string> = {
-  feishu: 'bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300',
-  telegram: 'bg-sky-100 dark:bg-sky-900/40 text-sky-700 dark:text-sky-300',
-  qq: 'bg-purple-100 dark:bg-purple-900/40 text-purple-700 dark:text-purple-300',
-  wechat:
-    'bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-300',
-  wecom: 'bg-lime-100 dark:bg-lime-900/40 text-lime-700 dark:text-lime-300',
-  dingtalk: 'bg-cyan-100 dark:bg-cyan-900/40 text-cyan-700 dark:text-cyan-300',
-  discord:
-    'bg-indigo-100 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300',
-  whatsapp:
-    'bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300',
-};
+interface ChannelIconProps {
+  className?: string;
+}
 
-const FeishuIcon = () => (
-  <svg viewBox="0 0 24 24" className="w-3 h-3" fill="currentColor">
+const FeishuIcon = ({ className = 'size-3' }: ChannelIconProps) => (
+  <svg
+    viewBox="0 0 24 24"
+    className={className}
+    fill="currentColor"
+    aria-hidden="true"
+  >
     <path d="M3.75 2.813c1.57 1.968 2.457 4.406 2.504 6.906L12 4.5l-3.75 9.375s-.117 3.281 3.281 6.563c0 0-6.093 1.171-9.14-2.11C-.843 14.83.375 7.688 3.75 2.812z" />
     <path d="M20.86 8.72a6.745 6.745 0 0 0-4.235-1.47c-1.406 0-2.672.422-3.75 1.125l-1.406 6.188 1.406 1.124c1.313 1.032 3.282 1.969 5.86 1.969 0 0-.563-3.282.937-5.625.844-1.313 1.266-2.266 1.188-3.313z" />
   </svg>
 );
 
-const TelegramIcon = () => (
-  <svg viewBox="0 0 24 24" className="w-3 h-3" fill="currentColor">
+const TelegramIcon = ({ className = 'size-3' }: ChannelIconProps) => (
+  <svg
+    viewBox="0 0 24 24"
+    className={className}
+    fill="currentColor"
+    aria-hidden="true"
+  >
     <path d="M11.944 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0a12 12 0 0 0-.056 0zm4.962 7.224c.1-.002.321.023.465.14a.506.506 0 0 1 .171.325c.016.093.036.306.02.472-.18 1.898-.962 6.502-1.36 8.627-.168.9-.499 1.201-.82 1.23-.696.065-1.225-.46-1.9-.902-1.056-.693-1.653-1.124-2.678-1.8-1.185-.78-.417-1.21.258-1.91.177-.184 3.247-2.977 3.307-3.23.007-.032.014-.15-.056-.212s-.174-.041-.249-.024c-.106.024-1.793 1.14-5.061 3.345-.48.33-.913.49-1.302.48-.428-.008-1.252-.241-1.865-.44-.752-.245-1.349-.374-1.297-.789.027-.216.325-.437.893-.663 3.498-1.524 5.83-2.529 6.998-3.014 3.332-1.386 4.025-1.627 4.476-1.635z" />
   </svg>
 );
 
-const QQIcon = () => (
-  <svg viewBox="0 0 24 24" className="w-3 h-3" fill="currentColor">
+const QQIcon = ({ className = 'size-3' }: ChannelIconProps) => (
+  <svg
+    viewBox="0 0 24 24"
+    className={className}
+    fill="currentColor"
+    aria-hidden="true"
+  >
     <path d="M21.395 15.035a39.548 39.548 0 0 0-1.24-3.604c0-1.174.125-3.327-.497-5.456C18.73 2.907 15.6.4 12 .4 8.4.4 5.27 2.907 4.342 5.975c-.622 2.129-.497 4.282-.497 5.456a39.548 39.548 0 0 0-1.24 3.604c-.782 2.711-.265 4.173.09 4.333.477.216 1.562-1.39 1.562-1.39 0 1.694 1.44 3.35 3.862 3.982-.5.153-.838.456-.838.936 0 .583.622.745.622.745h8.194s.622-.162.622-.745c0-.48-.337-.783-.837-.936 2.422-.633 3.861-2.288 3.861-3.982 0 0 1.086 1.606 1.563 1.39.355-.16.872-1.622.089-4.333z" />
   </svg>
 );
 
-const WeChatIcon = () => (
-  <svg viewBox="0 0 24 24" className="w-3 h-3" fill="currentColor">
+const WeChatIcon = ({ className = 'size-3' }: ChannelIconProps) => (
+  <svg
+    viewBox="0 0 24 24"
+    className={className}
+    fill="currentColor"
+    aria-hidden="true"
+  >
     <path d="M8.691 2.188C3.891 2.188 0 5.476 0 9.53c0 2.212 1.17 4.203 3.002 5.55a.59.59 0 0 1 .213.665l-.39 1.48c-.019.07-.048.141-.048.213 0 .163.13.295.29.295a.326.326 0 0 0 .167-.054l1.903-1.114a.864.864 0 0 1 .717-.098 10.16 10.16 0 0 0 2.837.403c.276 0 .543-.027.811-.05-.857-2.578.157-4.972 1.932-6.446 1.703-1.415 3.882-1.98 5.853-1.838-.576-3.583-4.196-6.348-8.596-6.348zM5.785 5.991a.96.96 0 0 1 0 1.92.96.96 0 0 1 0-1.92zm5.812 0a.96.96 0 0 1 0 1.92.96.96 0 0 1 0-1.92zm3.2 4.218c-3.79 0-6.873 2.594-6.873 5.803 0 3.208 3.084 5.803 6.874 5.803a8.3 8.3 0 0 0 2.346-.339.722.722 0 0 1 .598.082l1.584.926a.272.272 0 0 0 .14.045c.133 0 .241-.108.241-.241 0-.06-.023-.12-.038-.177l-.327-1.233a.582.582 0 0 1-.023-.156.49.49 0 0 1 .201-.398C21.052 18.636 22 16.96 22 15.012c0-3.21-3.084-5.803-6.874-5.803h-.33zm-2.155 2.928a.8.8 0 1 1 0 1.6.8.8 0 0 1 0-1.6zm4.298 0a.8.8 0 1 1 0 1.6.8.8 0 0 1 0-1.6z" />
   </svg>
 );
 
-const DingTalkIcon = () => (
-  <svg viewBox="0 0 24 24" className="w-3 h-3" fill="currentColor">
+const DingTalkIcon = ({ className = 'size-3' }: ChannelIconProps) => (
+  <svg
+    viewBox="0 0 24 24"
+    className={className}
+    fill="currentColor"
+    aria-hidden="true"
+  >
     <path d="M12.005 0C5.376 0 0 5.376 0 12.005 0 18.633 5.376 24 12.005 24 18.633 24 24 18.633 24 12.005 24 5.376 18.633 0 12.005 0zm6.055 9.224c-.004.076-.053.166-.147.272h.001l-.043.045-.005.005-4.923 5.922h3.56l-2.74 4.56.687-3.917h-2.804l.97-3.97c-.532.123-1.16.315-1.907.572 0 0-1.002.584-2.886-1.143 0 0-1.27-1.116-.524-1.385.32-.116 1.555-.273 2.527-.403 1.314-.178 2.115-.27 2.115-.27s-4.025.068-4.972-.06c-.945-.13-2.15-1.726-2.41-3.17 0 0-.4-.77.854-.403 1.256.367 6.446 1.413 6.446 1.413s-6.72-2.038-7.112-2.38c-.391-.343-.77-2.48-.77-2.777 0-.294.1-.444.432-.326.33.118 4.784 1.872 7.75 3.007 2.967 1.133 5.447 1.95 5.802 2.135.366.18.479.255.585.44.105.184.099.327.087.48l-.003.04v.026c-.015.222-.032.383-.046.553l-.002.021z" />
   </svg>
 );
 
-const DiscordIcon = () => (
-  <svg viewBox="0 0 24 24" className="w-3 h-3" fill="currentColor">
+const DiscordIcon = ({ className = 'size-3' }: ChannelIconProps) => (
+  <svg
+    viewBox="0 0 24 24"
+    className={className}
+    fill="currentColor"
+    aria-hidden="true"
+  >
     <path d="M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.057 19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028c.462-.63.874-1.295 1.226-1.994a.076.076 0 0 0-.041-.106 13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127 12.299 12.299 0 0 1-1.873.892.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.03zM8.02 15.33c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.956 2.418-2.157 2.418zm7.975 0c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.955-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.946 2.418-2.157 2.418z" />
   </svg>
 );
 
-const WhatsAppIcon = () => (
-  <svg viewBox="0 0 24 24" className="w-3 h-3" fill="currentColor">
+const WhatsAppIcon = ({ className = 'size-3' }: ChannelIconProps) => (
+  <svg
+    viewBox="0 0 24 24"
+    className={className}
+    fill="currentColor"
+    aria-hidden="true"
+  >
     <path d="M12.04 2C6.58 2 2.14 6.34 2.14 11.69c0 1.83.52 3.6 1.51 5.13L2 22l5.34-1.39a10.16 10.16 0 0 0 4.7 1.17h.01c5.45 0 9.89-4.35 9.89-9.69C21.94 6.34 17.5 2 12.04 2zm5.83 13.84c-.25.68-1.45 1.3-2.04 1.38-.52.08-1.18.11-1.91-.12-.44-.14-1.01-.33-1.74-.64-3.05-1.29-5.04-4.27-5.19-4.47-.15-.2-1.24-1.63-1.24-3.11s.79-2.21 1.07-2.51c.28-.3.61-.38.81-.38h.59c.18.01.44-.07.69.52.25.59.84 2.03.91 2.18.07.15.12.33.02.53-.1.2-.15.32-.3.49-.15.17-.32.38-.46.51-.15.15-.31.31-.13.6.18.3.8 1.3 1.72 2.1 1.18 1.03 2.17 1.35 2.48 1.5.31.15.49.13.67-.08.18-.2.77-.89.98-1.2.2-.3.41-.25.69-.15.28.1 1.78.83 2.08.98.31.15.51.23.59.36.07.13.07.75-.18 1.43z" />
   </svg>
 );
 
-export const CHANNEL_ICON: Record<string, React.FC> = {
+export const CHANNEL_ICON: Record<string, React.FC<ChannelIconProps>> = {
   feishu: FeishuIcon,
   telegram: TelegramIcon,
   qq: QQIcon,
@@ -94,12 +121,10 @@ export function formatGroupLabel(jid: string, name: string): string {
 export function ChannelBadge({ channelType }: { channelType: string }) {
   const Icon = CHANNEL_ICON[channelType];
   return (
-    <span
-      className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium inline-flex items-center gap-0.5 ${CHANNEL_COLORS[channelType] || 'bg-muted text-muted-foreground'}`}
-    >
+    <Badge variant="neutral">
       {Icon && <Icon />}
       {CHANNEL_LABEL[channelType] || channelType}
-    </span>
+    </Badge>
   );
 }
 
@@ -111,14 +136,15 @@ export function ChannelAccountBadge({
   accountName?: string | null;
 }) {
   return (
-    <span
-      className="inline-flex max-w-40 items-center gap-1 rounded-full border border-border px-1.5 py-0.5 text-[10px] text-muted-foreground"
+    <Badge
+      variant="outline"
+      dot="muted"
+      className="max-w-40"
       title={accountId ? `机器人账号 ID：${accountId}` : '兼容旧版默认账号'}
     >
-      <span className="size-1.5 shrink-0 rounded-full bg-current opacity-60" />
-      <span className="truncate">
+      <span className="min-w-0 truncate">
         机器人：{accountName || '默认账号（旧版）'}
       </span>
-    </span>
+    </Badge>
   );
 }

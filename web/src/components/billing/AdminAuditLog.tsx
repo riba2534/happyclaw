@@ -1,14 +1,22 @@
 import { useEffect, useState, useCallback, useMemo } from 'react';
-import {
-  FileText,
-  ChevronDown,
-  ChevronRight,
-  ChevronLeft,
-  ChevronsLeft,
-} from 'lucide-react';
-import { useBillingStore } from '../../stores/billing';
+import { FileText } from 'lucide-react';
+import { useBillingStore, type BillingAuditLog } from '../../stores/billing';
 import { Input } from '@/components/ui/input';
-import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
+import {
+  NativeSelect,
+  NativeSelectOption,
+} from '@/components/ui/native-select';
+import {
+  DataTable,
+  EmptyState,
+  type DataTableColumn,
+} from '@/components/common';
+import {
+  AuditDetailsPopover,
+  AuditPagination,
+} from '@/components/shared/AuditLogParts';
+import { SettingsSection } from '@/components/settings/SettingsLayout';
 
 const EVENT_TYPE_LABELS: Record<string, string> = {
   plan_created: '创建套餐',
@@ -18,15 +26,23 @@ const EVENT_TYPE_LABELS: Record<string, string> = {
   subscription_cancelled: '取消订阅',
   subscription_expired: '订阅过期',
   balance_adjusted: '调整余额',
+  manual_recharge: '手动充值',
+  manual_deduct: '手动扣减',
+  balance_deducted: '余额扣减',
   code_created: '创建兑换码',
   code_redeemed: '使用兑换码',
   code_deleted: '删除兑换码',
+  wallet_blocked: '钱包阻断',
+  wallet_unblocked: '解除钱包阻断',
+  quota_exceeded: '超出配额',
+  billing_settings_updated: '更新计费设置',
 };
 
 const PAGE_SIZE = 20;
 
 export default function AdminAuditLog() {
-  const { auditLogs, auditLogsTotal, loadAuditLog, allUsers, loadAllUsers } = useBillingStore();
+  const { auditLogs, auditLogsTotal, loadAuditLog, allUsers, loadAllUsers } =
+    useBillingStore();
 
   const [eventType, setEventType] = useState('');
   const [userFilter, setUserFilter] = useState('');
@@ -68,8 +84,7 @@ export default function AdminAuditLog() {
 
   const filteredLogs = auditLogs;
 
-  const eventLabel = (type: string) =>
-    EVENT_TYPE_LABELS[type] ?? type;
+  const eventLabel = (type: string) => EVENT_TYPE_LABELS[type] ?? type;
 
   // Unique event types from known labels + actual data
   const allEventTypes = Array.from(
@@ -79,125 +94,124 @@ export default function AdminAuditLog() {
     ]),
   ).sort();
 
-  return (
-    <div className="space-y-4">
-      {/* Header */}
-      <h3 className="font-semibold flex items-center gap-2">
-        <FileText className="w-5 h-5 text-primary" />
-        审计日志
-      </h3>
+  const columns: DataTableColumn<BillingAuditLog>[] = [
+    {
+      key: 'event',
+      header: '事件',
+      cell: (log) => (
+        <div>
+          <Badge variant="neutral">{eventLabel(log.event_type)}</Badge>
+          <div className="mt-1 text-caption tabular-nums text-muted-foreground sm:hidden">
+            {new Date(log.created_at).toLocaleString()}
+          </div>
+        </div>
+      ),
+    },
+    {
+      key: 'user',
+      header: '用户',
+      className: 'max-w-48 truncate',
+      cell: (log) =>
+        log.user_id ? (
+          <span className="text-foreground">
+            {userNameMap.get(log.user_id) ?? log.user_id.slice(0, 8)}
+          </span>
+        ) : (
+          <span className="text-faint-foreground">—</span>
+        ),
+    },
+    {
+      key: 'actor',
+      header: '操作者',
+      className: 'hidden max-w-48 truncate sm:table-cell',
+      headerClassName: 'hidden sm:table-cell',
+      cell: (log) =>
+        log.actor_id && log.actor_id !== log.user_id ? (
+          <span className="text-muted-foreground">
+            {userNameMap.get(log.actor_id) ?? log.actor_id.slice(0, 8)}
+          </span>
+        ) : (
+          <span className="text-faint-foreground">—</span>
+        ),
+    },
+    {
+      key: 'time',
+      header: '时间',
+      className: 'hidden sm:table-cell',
+      headerClassName: 'hidden sm:table-cell',
+      cell: (log) => (
+        <span className="text-caption tabular-nums text-muted-foreground">
+          {new Date(log.created_at).toLocaleString()}
+        </span>
+      ),
+    },
+    {
+      key: 'details',
+      header: <span className="sr-only">详情</span>,
+      align: 'right',
+      cell: (log) =>
+        log.details ? (
+          <AuditDetailsPopover
+            details={log.details}
+            open={expandedId === log.id}
+            onOpenChange={(open) => setExpandedId(open ? log.id : null)}
+          />
+        ) : null,
+    },
+  ];
 
+  return (
+    <SettingsSection
+      title="审计日志"
+      actions={
+        <span className="text-caption tabular-nums text-muted-foreground">
+          共 {auditLogsTotal} 条
+        </span>
+      }
+    >
       {/* Filters */}
-      <div className="flex flex-col sm:flex-row gap-2">
-        <select
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+        <NativeSelect
           value={eventType}
           onChange={(e) => setEventType(e.target.value)}
-          className="h-9 px-3 text-sm border border-zinc-300 dark:border-zinc-600 rounded-md bg-transparent"
+          aria-label="事件类型"
+          className="w-full sm:w-44"
         >
-          <option value="">全部事件类型</option>
+          <NativeSelectOption value="">全部事件类型</NativeSelectOption>
           {allEventTypes.map((t) => (
-            <option key={t} value={t}>
+            <NativeSelectOption key={t} value={t}>
               {eventLabel(t)}
-            </option>
+            </NativeSelectOption>
           ))}
-        </select>
+        </NativeSelect>
         <Input
           value={userFilter}
           onChange={(e) => setUserFilter(e.target.value)}
           placeholder="用户 ID 筛选"
-          className="sm:max-w-[200px]"
+          aria-label="用户 ID 筛选"
+          className="sm:w-56"
         />
-        <div className="flex items-center gap-1 ml-auto text-sm text-zinc-500">
-          共 {auditLogsTotal} 条
-        </div>
       </div>
 
       {/* Log entries */}
-      <div className="space-y-1">
-        {filteredLogs.map((log) => (
-          <div
-            key={log.id}
-            className="bg-white dark:bg-zinc-800 rounded-lg border border-zinc-200 dark:border-zinc-700"
-          >
-            <button
-              onClick={() =>
-                setExpandedId(expandedId === log.id ? null : log.id)
-              }
-              className="w-full flex items-center gap-2 p-3 text-left"
-            >
-              {expandedId === log.id ? (
-                <ChevronDown className="w-4 h-4 text-zinc-400 shrink-0" />
-              ) : (
-                <ChevronRight className="w-4 h-4 text-zinc-400 shrink-0" />
-              )}
-              <span className="px-1.5 py-0.5 text-[10px] rounded bg-brand-100 text-brand-700 dark:bg-brand-700/30 dark:text-brand-300 shrink-0">
-                {eventLabel(log.event_type)}
-              </span>
-              <span className="text-sm text-zinc-600 dark:text-zinc-400 truncate flex-1">
-                {log.user_id && (
-                  <span className="text-zinc-400">
-                    用户 {userNameMap.get(log.user_id) ?? log.user_id.slice(0, 8)}
-                  </span>
-                )}
-                {log.actor_id && log.actor_id !== log.user_id && (
-                  <span className="text-zinc-400 ml-2">
-                    操作者 {userNameMap.get(log.actor_id) ?? log.actor_id.slice(0, 8)}
-                  </span>
-                )}
-              </span>
-              <span className="text-xs text-zinc-400 shrink-0">
-                {new Date(log.created_at).toLocaleString()}
-              </span>
-            </button>
-
-            {/* Expanded details */}
-            {expandedId === log.id && log.details && (
-              <div className="px-3 pb-3">
-                <pre className="text-xs text-zinc-500 bg-zinc-50 dark:bg-zinc-900 rounded-md p-3 overflow-x-auto max-h-48 overflow-y-auto">
-                  {JSON.stringify(log.details, null, 2)}
-                </pre>
-              </div>
-            )}
-          </div>
-        ))}
-      </div>
-
-      {filteredLogs.length === 0 && (
-        <p className="text-sm text-zinc-500 text-center py-8">暂无审计日志</p>
-      )}
+      <DataTable
+        columns={columns}
+        rows={filteredLogs}
+        rowKey={(log) => log.id}
+        empty={<EmptyState icon={FileText} title="暂无审计日志" />}
+      />
 
       {/* Pagination */}
       {totalPages > 1 && (
-        <div className="flex items-center justify-center gap-2 pt-2">
-          <Button
-            variant="outline"
-            size="icon-xs"
-            onClick={() => setPage(0)}
-            disabled={page === 0}
-          >
-            <ChevronsLeft className="w-4 h-4" />
-          </Button>
-          <Button
-            variant="outline"
-            size="icon-xs"
-            onClick={() => setPage((p) => Math.max(0, p - 1))}
-            disabled={page === 0}
-          >
-            <ChevronLeft className="w-4 h-4" />
-          </Button>
-          <span className="text-sm text-zinc-500">
-            {page + 1} / {totalPages}
-          </span>
-          <Button
-            variant="outline"
-            size="icon-xs"
-            onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
-            disabled={page >= totalPages - 1}
-          >
-            <ChevronRight className="w-4 h-4" />
-          </Button>
-        </div>
+        <AuditPagination
+          page={page}
+          totalPages={totalPages}
+          hasNext={page < totalPages - 1}
+          onPageChange={(next) =>
+            setPage(Math.min(totalPages - 1, Math.max(0, next)))
+          }
+        />
       )}
-    </div>
+    </SettingsSection>
   );
 }

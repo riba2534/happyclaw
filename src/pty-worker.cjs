@@ -33,8 +33,20 @@ const p = pty.spawn(args.file, args.args, {
   env: { ...process.env, TERM: termName },
 });
 
+// When the host stops reading (its WebSocket client is behind), pause the
+// pty until the pipe drains so output backs up into the shell instead of
+// this process's memory.
+let ptyPaused = false;
 function send(msg) {
-  process.stdout.write(JSON.stringify(msg) + '\n');
+  const flushed = process.stdout.write(JSON.stringify(msg) + '\n');
+  if (!flushed && !ptyPaused && msg.type === 'data') {
+    ptyPaused = true;
+    try { p.pause(); } catch {}
+    process.stdout.once('drain', () => {
+      ptyPaused = false;
+      try { p.resume(); } catch {}
+    });
+  }
 }
 
 p.onData((data) => {

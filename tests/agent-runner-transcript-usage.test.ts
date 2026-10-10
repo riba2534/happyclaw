@@ -114,20 +114,113 @@ describe('AssistantUsageCollector transcript backfill', () => {
     });
   });
 
-  test('does not call the loader for non-zero snapshots', () => {
+  // Non-zero live snapshots used to skip the transcript. Their output count
+  // is message_start's placeholder, so the transcript's final value must win.
+  test('merges the transcript final into a non-zero live snapshot', () => {
     const collector = new AssistantUsageCollector();
     collector.ingest(
       assistantLine('msg-3', {
         input_tokens: 100,
-        output_tokens: 20,
+        output_tokens: 1,
       }) as never,
     );
-    const loader = vi.fn(() => new Map());
+    const loader = vi.fn(() => {
+      const map = new Map();
+      map.set('msg-3', {
+        id: 'msg-3',
+        model: 'gpt-6-sol',
+        inputTokens: 100,
+        outputTokens: 20,
+        cacheReadInputTokens: 0,
+        cacheCreationInputTokens: 0,
+        reasoningTokens: 0,
+        total: 120,
+      });
+      return map;
+    });
     expect(collector.drain('session-1', loader)).toMatchObject({
       eventId: 'claude-code:msg-3',
       tokens: { inputTokens: 100, outputTokens: 20 },
     });
-    expect(loader).not.toHaveBeenCalled();
+    expect(loader).toHaveBeenCalledOnce();
+  });
+
+  // The reconciler drops only final calls at a baseline reset; a call that
+  // may not be in modelUsage yet stays pending.
+  test('only a message_delta with a stop_reason makes a flush final', () => {
+    const usage = { input_tokens: 100, output_tokens: 20 };
+    const file = writeTranscript([
+      // One line per content block: only the last carries the stop_reason,
+      // and an equal snapshot must not hide it.
+      assistantLine('msg-ended', usage),
+      {
+        ...assistantLine('msg-ended', usage),
+        message: {
+          ...assistantLine('msg-ended', usage).message,
+          stop_reason: 'tool_use',
+        },
+      },
+      assistantLine('msg-running', { input_tokens: 2_000, output_tokens: 1 }),
+    ]);
+    const loader = createTranscriptUsageLoader(() => file);
+    const collector = new AssistantUsageCollector();
+    // Main thread: message_delta with a stop_reason precedes the flush.
+    collector.observeStreamEvent({
+      type: 'stream_event',
+      parent_tool_use_id: null,
+      event: {
+        type: 'message_start',
+        message: { id: 'msg-streamed', usage: { input_tokens: 50 } },
+      },
+    });
+    collector.ingest(
+      assistantLine('msg-streamed', {
+        input_tokens: 50,
+        output_tokens: 1,
+      }) as never,
+    );
+    collector.observeStreamEvent({
+      type: 'stream_event',
+      parent_tool_use_id: null,
+      event: {
+        type: 'message_delta',
+        delta: { stop_reason: 'end_turn' },
+        usage: { output_tokens: 5 },
+      },
+    });
+    // Non-streaming fallback: the live message carries a stop_reason but is
+    // yielded before Claude Code counts the call.
+    collector.ingest({
+      ...assistantLine('msg-fallback', { input_tokens: 70, output_tokens: 7 }),
+      message: {
+        ...assistantLine('msg-fallback', {}).message,
+        usage: { input_tokens: 70, output_tokens: 7 },
+        stop_reason: 'end_turn',
+      },
+    } as never);
+    collector.ingest(
+      assistantLine('msg-ended', { ...usage, output_tokens: 1 }) as never,
+    );
+    collector.ingest(
+      assistantLine('msg-running', {
+        input_tokens: 2_000,
+        output_tokens: 1,
+      }) as never,
+    );
+    const batches = new Map<string, { final: boolean; completed: boolean }>();
+    for (let batch = collector.drain('s', loader); batch; ) {
+      batches.set(batch.eventId, {
+        final: batch.final,
+        completed: batch.completed,
+      });
+      batch = collector.drain('s', loader);
+    }
+    expect(Object.fromEntries(batches)).toEqual({
+      'claude-code:msg-streamed': { final: true, completed: true },
+      'claude-code:msg-fallback': { final: false, completed: false },
+      'claude-code:msg-ended': { final: false, completed: true },
+      'claude-code:msg-running': { final: false, completed: false },
+    });
   });
 });
 

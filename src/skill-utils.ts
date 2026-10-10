@@ -36,11 +36,148 @@ export function validateSkillPath(
   const normalizedRoot = path.resolve(skillsRoot);
   const normalizedDir = path.resolve(skillDir);
   const relative = path.relative(normalizedRoot, normalizedDir);
-  return relative !== '' && !relative.startsWith('..') && !path.isAbsolute(relative);
+  return (
+    relative !== '' && !relative.startsWith('..') && !path.isAbsolute(relative)
+  );
 }
 
+const FRONTMATTER_KEY = /^([\w\-]+):\s*(.*)$/;
+// `|` / `>` with optional chomping (+/-) and indentation (1-9) indicators in
+// either order, optionally followed by a comment.
+const BLOCK_SCALAR_HEADER =
+  /^([|>])(?:([+-])([1-9])?|([1-9])([+-])?)?\s*(?:#.*)?$/;
+
+const DOUBLE_QUOTED_ESCAPES: Record<string, string> = {
+  '0': '\0',
+  a: '\x07',
+  b: '\b',
+  t: '\t',
+  '\t': '\t',
+  n: '\n',
+  v: '\v',
+  f: '\f',
+  r: '\r',
+  e: '\x1b',
+  ' ': ' ',
+  '"': '"',
+  '/': '/',
+  '\\': '\\',
+  N: '\u0085',
+  _: '\u00a0',
+  L: '\u2028',
+  P: '\u2029',
+};
+
+/**
+ * Unquote a single-line YAML flow scalar. Returns null when the value is not
+ * a complete quoted scalar (e.g. `"a" b` or an unterminated quote), so the
+ * caller can keep the raw text like any other plain value.
+ */
+function unquoteScalar(value: string): string | null {
+  const quote = value[0];
+  if (quote !== '"' && quote !== "'") return null;
+
+  let result = '';
+  let index = 1;
+  let closed = false;
+  while (index < value.length) {
+    const char = value[index];
+    if (quote === "'") {
+      if (char === "'") {
+        if (value[index + 1] === "'") {
+          result += "'";
+          index += 2;
+          continue;
+        }
+        closed = true;
+        index += 1;
+        break;
+      }
+      result += char;
+      index += 1;
+      continue;
+    }
+
+    if (char === '"') {
+      closed = true;
+      index += 1;
+      break;
+    }
+    if (char === '\\') {
+      const next = value[index + 1];
+      const hexLength =
+        next === 'x' ? 2 : next === 'u' ? 4 : next === 'U' ? 8 : 0;
+      if (hexLength > 0) {
+        const hex = value.slice(index + 2, index + 2 + hexLength);
+        if (/^[0-9a-fA-F]+$/.test(hex) && hex.length === hexLength) {
+          result += String.fromCodePoint(parseInt(hex, 16));
+          index += 2 + hexLength;
+          continue;
+        }
+      } else if (next !== undefined && next in DOUBLE_QUOTED_ESCAPES) {
+        result += DOUBLE_QUOTED_ESCAPES[next];
+        index += 2;
+        continue;
+      }
+      // Unknown escape: keep it verbatim rather than failing the whole value.
+      result += char;
+      index += 1;
+      continue;
+    }
+    result += char;
+    index += 1;
+  }
+
+  if (!closed) return null;
+  const rest = value.slice(index);
+  if (rest && !/^\s+#/.test(rest) && rest.trim() !== '') return null;
+  return result;
+}
+
+/**
+ * Fold or keep the lines of a YAML block scalar. `lines` already have the
+ * block indentation removed; blank lines are empty strings.
+ */
+function joinBlockScalar(lines: string[], style: '|' | '>'): string {
+  if (style === '|') return lines.join('\n');
+
+  let output = '';
+  let previous: 'none' | 'text' | 'indented' = 'none';
+  let blankLines = 0;
+  for (const line of lines) {
+    if (line.trim() === '') {
+      blankLines += 1;
+      continue;
+    }
+    // More-indented lines keep their line breaks instead of being folded.
+    const indented = /^[ \t]/.test(line);
+    if (previous === 'none') {
+      output += '\n'.repeat(blankLines);
+    } else if (previous === 'text' && !indented) {
+      output += blankLines > 0 ? '\n'.repeat(blankLines) : ' ';
+    } else {
+      output += '\n'.repeat(blankLines + 1);
+    }
+    output += line;
+    previous = indented ? 'indented' : 'text';
+    blankLines = 0;
+  }
+  return output;
+}
+
+/**
+ * Parse the leading `---` frontmatter block of a SKILL.md into flat string
+ * values. This is intentionally a lenient subset of YAML: top-level
+ * `key: value` pairs, quoted scalars and `|` / `>` block scalars. Plain values
+ * are kept verbatim (including text after `#`), since skill descriptions in
+ * the wild often contain `: ` and `#` that strict YAML would reject.
+ *
+ * Block scalars accept chomping indicators, but leading blank lines and
+ * trailing line breaks are always dropped: these values are shown as single
+ * metadata strings, which matches the default (clip) and strip (`-`) display.
+ */
 export function parseFrontmatter(content: string): Record<string, string> {
-  const lines = content.split('\n');
+  const lines = content.split(/\r?\n/);
   if (lines[0]?.trim() !== '---') return {};
 
   const endIndex = lines.slice(1).findIndex((line) => line.trim() === '---');
@@ -48,48 +185,47 @@ export function parseFrontmatter(content: string): Record<string, string> {
 
   const frontmatterLines = lines.slice(1, endIndex + 1);
   const result: Record<string, string> = {};
-  let currentKey: string | null = null;
-  let currentValue: string[] = [];
-  let multilineMode: 'folded' | 'literal' | null = null;
 
-  for (const line of frontmatterLines) {
-    const keyMatch = line.match(/^([\w\-]+):\s*(.*)$/);
-    if (keyMatch) {
-      // Save previous key if exists
-      if (currentKey) {
-        result[currentKey] = currentValue.join(
-          multilineMode === 'literal' ? '\n' : ' ',
-        );
-      }
+  let index = 0;
+  while (index < frontmatterLines.length) {
+    const keyMatch = frontmatterLines[index].match(FRONTMATTER_KEY);
+    index += 1;
+    if (!keyMatch) continue;
 
-      currentKey = keyMatch[1];
-      const value = keyMatch[2].trim();
-
-      if (value === '>') {
-        multilineMode = 'folded';
-        currentValue = [];
-      } else if (value === '|') {
-        multilineMode = 'literal';
-        currentValue = [];
-      } else {
-        result[currentKey] = value;
-        currentKey = null;
-        currentValue = [];
-        multilineMode = null;
-      }
-    } else if (currentKey && multilineMode) {
-      const trimmedLine = line.trimStart();
-      if (trimmedLine) {
-        currentValue.push(trimmedLine);
-      }
+    const key = keyMatch[1];
+    const value = keyMatch[2].trim();
+    const header = value.match(BLOCK_SCALAR_HEADER);
+    if (!header) {
+      result[key] = unquoteScalar(value) ?? value;
+      continue;
     }
-  }
 
-  // Save last key
-  if (currentKey) {
-    result[currentKey] = currentValue.join(
-      multilineMode === 'literal' ? '\n' : ' ',
-    );
+    // The block runs until the next top-level key.
+    const blockLines: string[] = [];
+    while (
+      index < frontmatterLines.length &&
+      !FRONTMATTER_KEY.test(frontmatterLines[index])
+    ) {
+      blockLines.push(frontmatterLines[index]);
+      index += 1;
+    }
+
+    const explicitIndent = Number(header[3] ?? header[4] ?? 0);
+    const firstContentLine = blockLines.find((line) => line.trim() !== '');
+    const indent =
+      explicitIndent ||
+      (firstContentLine
+        ? firstContentLine.length - firstContentLine.trimStart().length
+        : 0);
+    const dedented = blockLines.map((line) => {
+      if (line.trim() === '') return '';
+      const leading = line.length - line.trimStart().length;
+      return leading >= indent ? line.slice(indent) : line.trimStart();
+    });
+
+    result[key] = joinBlockScalar(dedented, header[1] as '|' | '>')
+      .replace(/^\n+/, '')
+      .replace(/\s+$/, '');
   }
 
   return result;

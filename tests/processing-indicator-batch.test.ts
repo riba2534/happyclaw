@@ -1,17 +1,20 @@
 import { describe, expect, test } from 'vitest';
 
-import { selectBatchProcessingIndicatorOwners } from '../src/processing-indicator-batch.js';
+import {
+  isProviderAcknowledgeableInputId,
+  selectBatchProcessingIndicatorOwners,
+} from '../src/processing-indicator-batch.js';
 
 describe('batch processing indicator ownership', () => {
   test('selects only the latest Feishu input in one executing batch', () => {
     expect(
       selectBatchProcessingIndicatorOwners([
-        { id: 'first', sourceJid: 'feishu:chat#thread:one' },
-        { id: 'second', sourceJid: 'feishu:chat#thread:one' },
+        { id: 'om_first', sourceJid: 'feishu:chat#thread:one' },
+        { id: 'om_second', sourceJid: 'feishu:chat#thread:one' },
       ]),
     ).toEqual([
       {
-        inputTurnId: 'second',
+        inputTurnId: 'om_second',
         transportJid: 'feishu:chat#thread:one',
       },
     ]);
@@ -41,14 +44,52 @@ describe('batch processing indicator ownership', () => {
   test('uses the active Feishu route when a warm cursor omits its source', () => {
     expect(
       selectBatchProcessingIndicatorOwners(
-        [{ id: 'first' }, { id: 'second' }],
+        [{ id: 'om_first' }, { id: 'om_second' }],
         'feishu:chat#thread:one',
       ),
     ).toEqual([
       {
-        inputTurnId: 'second',
+        inputTurnId: 'om_second',
         transportJid: 'feishu:chat#thread:one',
       },
     ]);
+  });
+
+  test('never selects a synthetic input id as the Feishu reaction target', () => {
+    // A scheduled group prompt routed to a Feishu chat has no provider
+    // message; reacting to it is Feishu 99992354 "Invalid ids".
+    expect(
+      selectBatchProcessingIndicatorOwners(
+        [{ id: 'scheduled-task-prompt:run-1' }],
+        'feishu:oc_group',
+      ),
+    ).toEqual([]);
+    // The latest *real* Feishu input owns the batch, not a later synthetic id.
+    expect(
+      selectBatchProcessingIndicatorOwners(
+        [
+          { id: 'om_user', sourceJid: 'feishu:oc_group' },
+          { id: 'scheduled-task-prompt:run-2' },
+          { id: '6f1c2e9a-1d3b-4f4f-9d1e-2b3c4d5e6f70' },
+        ],
+        'feishu:oc_group',
+      ),
+    ).toEqual([{ inputTurnId: 'om_user', transportJid: 'feishu:oc_group' }]);
+  });
+
+  test('provider acknowledgement ids', () => {
+    expect(isProviderAcknowledgeableInputId('feishu:oc_x', 'om_abc_123')).toBe(
+      true,
+    );
+    expect(isProviderAcknowledgeableInputId('feishu:oc_x', 'web-uuid')).toBe(
+      false,
+    );
+    expect(
+      isProviderAcknowledgeableInputId(
+        'telegram:42',
+        'scheduled-task-prompt:run',
+      ),
+    ).toBe(false);
+    expect(isProviderAcknowledgeableInputId('telegram:42', '12345')).toBe(true);
   });
 });

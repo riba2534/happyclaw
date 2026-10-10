@@ -19,7 +19,7 @@ export function ProviderSwitcher({
 
   return (
     <span
-      className="block max-w-[160px] truncate text-foreground"
+      className="block max-w-40 truncate text-foreground"
       title="模型由所属智能体配置决定"
     >
       {currentProviderName || currentProviderId || '-'}

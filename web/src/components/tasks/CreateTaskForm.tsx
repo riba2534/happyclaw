@@ -1,7 +1,23 @@
 import { useEffect, useState } from 'react';
-import { Loader2, Sparkles, X, SlidersHorizontal } from 'lucide-react';
+import type { ReactNode } from 'react';
+import { Loader2, Sparkles, SlidersHorizontal } from 'lucide-react';
+import { SettingsField } from '@/components/settings/SettingsLayout';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
+import { Checkbox } from '@/components/ui/checkbox';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogTitle,
+} from '@/components/ui/dialog';
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetTitle,
+} from '@/components/ui/sheet';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Textarea } from '@/components/ui/textarea';
 import {
   Select,
@@ -10,7 +26,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { cn } from '@/lib/utils';
 import { api } from '../../api/client';
 import { showToast } from '../../utils/toast';
 import {
@@ -19,6 +34,7 @@ import {
   toggleNotifyChannel,
 } from '../../utils/task-utils';
 import { useConnectedChannels } from '../../hooks/useConnectedChannels';
+import { useMediaQuery } from '../../hooks/useMediaQuery';
 import { useTasksStore } from '../../stores/tasks';
 import { useGroupsStore } from '../../stores/groups';
 import { formatGroupLabel } from '../settings/channel-meta';
@@ -40,7 +56,10 @@ interface CreateTaskFormProps {
 }
 
 type CreateMode = 'ai' | 'manual';
-const MODAL_SELECT_CONTENT_CLASS = 'z-[11020]';
+
+function RequiredMark() {
+  return <span className="text-error">*</span>;
+}
 
 export function CreateTaskForm({
   onSubmit,
@@ -48,6 +67,7 @@ export function CreateTaskForm({
   isAdmin,
 }: CreateTaskFormProps) {
   const [mode, setMode] = useState<CreateMode>('ai');
+  const isDesktop = useMediaQuery('(min-width: 640px)');
 
   // --- AI mode state ---
   const [aiDescription, setAiDescription] = useState('');
@@ -150,20 +170,24 @@ export function CreateTaskForm({
   }, [isScript, chatJid, groups, groupNames, defaultWorkspaceMode]);
 
   const renderTargetWorkspace = () => (
-    <div>
-      <label className="block text-sm font-medium text-foreground mb-2">
-        所属工作区
-      </label>
+    <SettingsField
+      label="所属工作区"
+      description={
+        isScript
+          ? '脚本仅可选择管理员宿主机工作区，并直接在该宿主机目录中执行。'
+          : '任务会在这个工作区的目录和环境中执行，并继承该工作区的智能体。'
+      }
+    >
       <Select
         value={chatJid || '__default__'}
         onValueChange={(value) =>
           setChatJid(value === '__default__' ? '' : value)
         }
       >
-        <SelectTrigger className="w-full">
+        <SelectTrigger className="w-full" aria-label="所属工作区">
           <SelectValue />
         </SelectTrigger>
-        <SelectContent className={MODAL_SELECT_CONTENT_CLASS}>
+        <SelectContent>
           {(!isScript || defaultWorkspaceMode === 'host') && (
             <SelectItem value="__default__">默认工作区</SelectItem>
           )}
@@ -176,37 +200,31 @@ export function CreateTaskForm({
           )}
         </SelectContent>
       </Select>
-      <p className="mt-1 text-xs text-muted-foreground">
-        {isScript
-          ? '脚本仅可选择管理员宿主机工作区，并直接在该宿主机目录中执行。'
-          : '任务会在这个工作区的目录和环境中执行，并继承该工作区的智能体。'}
-      </p>
-    </div>
+    </SettingsField>
   );
 
   const renderContextMode = () => (
-    <div>
-      <label className="block text-sm font-medium text-foreground mb-2">
-        上下文模式
-      </label>
+    <SettingsField
+      label="上下文模式"
+      description={
+        contextMode === 'isolated'
+          ? '在所属工作区内使用任务专属会话执行，不影响主会话上下文。'
+          : '把任务作为消息注入主会话，适合需要主会话连续上下文的任务。'
+      }
+    >
       <Select
         value={contextMode}
         onValueChange={(value) => setContextMode(value as 'group' | 'isolated')}
       >
-        <SelectTrigger className="w-full">
+        <SelectTrigger className="w-full" aria-label="上下文模式">
           <SelectValue />
         </SelectTrigger>
-        <SelectContent className={MODAL_SELECT_CONTENT_CLASS}>
+        <SelectContent>
           <SelectItem value="isolated">独立任务会话（默认）</SelectItem>
           <SelectItem value="group">主会话执行</SelectItem>
         </SelectContent>
       </Select>
-      <p className="mt-1 text-xs text-muted-foreground">
-        {contextMode === 'isolated'
-          ? '在所属工作区内使用任务专属会话执行，不影响主会话上下文。'
-          : '把任务作为消息注入主会话，适合需要主会话连续上下文的任务。'}
-      </p>
-    </div>
+    </SettingsField>
   );
 
   const connectedKeys = CHANNEL_OPTIONS.filter(
@@ -345,147 +363,135 @@ export function CreateTaskForm({
   );
 
   const renderNotifyChannels = () => (
-    <div>
-      <label className="block text-sm font-medium text-foreground mb-2">
-        通知渠道
-      </label>
-      <div className="flex flex-wrap gap-3">
-        <label className="inline-flex items-center gap-1.5 text-sm text-muted-foreground">
-          <input type="checkbox" checked disabled className="rounded" />
+    <SettingsField
+      label="通知渠道"
+      description={
+        connectedOptions.length === 0
+          ? '未绑定任何 IM 渠道，任务结果仅在 Web 工作区展示'
+          : '选择任务结果推送的 IM 渠道，默认推送到所有已连接渠道'
+      }
+    >
+      <div className="flex flex-wrap gap-x-4 gap-y-2 py-1">
+        <label className="inline-flex items-center gap-1.5 text-body text-muted-foreground">
+          <Checkbox checked disabled />
           Web（始终）
         </label>
         {connectedOptions.map((ch) => (
           <label
             key={ch.key}
-            className="inline-flex items-center gap-1.5 text-sm cursor-pointer"
+            className="inline-flex cursor-pointer items-center gap-1.5 text-body text-foreground"
           >
-            <input
-              type="checkbox"
+            <Checkbox
               checked={isChannelSelected(ch.key)}
-              onChange={() => toggleChannel(ch.key)}
-              className="rounded"
+              onCheckedChange={() => toggleChannel(ch.key)}
             />
             {ch.label}
           </label>
         ))}
       </div>
-      {connectedOptions.length === 0 && (
-        <p className="mt-1 text-xs text-muted-foreground">
-          未绑定任何 IM 渠道，任务结果仅在 Web 工作区展示
-        </p>
-      )}
-      {connectedOptions.length > 0 && (
-        <p className="mt-1 text-xs text-muted-foreground">
-          选择任务结果推送的 IM 渠道，默认推送到所有已连接渠道
-        </p>
-      )}
+    </SettingsField>
+  );
+
+  const footer = (primary: ReactNode) => (
+    <div className="flex shrink-0 items-center justify-end gap-2 border-t border-surface-border bg-muted/40 px-4 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:px-5">
+      <Button type="button" variant="outline" onClick={onClose}>
+        取消
+      </Button>
+      {primary}
     </div>
   );
 
-  return (
-    <div className="fixed inset-0 z-[11000] flex items-end justify-center bg-black/50 p-0 sm:items-center sm:p-4">
-      <div className="flex max-h-[94vh] w-full max-w-2xl flex-col overflow-hidden rounded-t-xl bg-card shadow-xl sm:max-h-[90vh] sm:rounded-xl">
-        {/* Header */}
-        <div className="flex items-center justify-between p-6 border-b border-border">
-          <h2 className="text-xl font-bold text-foreground">创建定时任务</h2>
-          <button
-            onClick={onClose}
-            className="p-2 text-muted-foreground hover:text-foreground hover:bg-muted rounded-lg transition-colors"
-          >
-            <X className="w-5 h-5" />
-          </button>
-        </div>
+  const fieldError = (message?: string) =>
+    message ? <p className="text-caption text-error">{message}</p> : null;
 
-        {/* Mode Tabs */}
-        <div className="flex border-b border-border">
-          <button
-            onClick={() => setMode('ai')}
-            className={cn(
-              'flex-1 flex items-center justify-center gap-2 px-4 py-3 text-sm font-medium transition-colors cursor-pointer',
-              mode === 'ai'
-                ? 'text-primary border-b-2 border-primary bg-brand-50/50'
-                : 'text-muted-foreground hover:text-foreground hover:bg-muted/50',
-            )}
+  const content = (
+    <Tabs
+      value={mode}
+      onValueChange={(value) => setMode(value as CreateMode)}
+      className="min-h-0 flex-1 gap-0"
+    >
+      <div className="shrink-0 border-b border-surface-border px-4 sm:px-5">
+        <TabsList
+          variant="line"
+          aria-label="创建方式"
+          className="h-10 gap-5 p-0 group-data-horizontal/tabs:h-10"
+        >
+          <TabsTrigger
+            value="ai"
+            className="flex-none px-0.5 group-data-horizontal/tabs:after:-bottom-px"
           >
-            <Sparkles className="w-4 h-4" />
+            <Sparkles />
             AI 智能创建
-          </button>
-          <button
-            onClick={() => setMode('manual')}
-            className={cn(
-              'flex-1 flex items-center justify-center gap-2 px-4 py-3 text-sm font-medium transition-colors cursor-pointer',
-              mode === 'manual'
-                ? 'text-primary border-b-2 border-primary bg-brand-50/50'
-                : 'text-muted-foreground hover:text-foreground hover:bg-muted/50',
-            )}
+          </TabsTrigger>
+          <TabsTrigger
+            value="manual"
+            className="flex-none px-0.5 group-data-horizontal/tabs:after:-bottom-px"
           >
-            <SlidersHorizontal className="w-4 h-4" />
+            <SlidersHorizontal />
             手动配置
-          </button>
-        </div>
+          </TabsTrigger>
+        </TabsList>
+      </div>
 
-        {/* AI Mode */}
-        {mode === 'ai' && (
-          <div className="space-y-4 overflow-y-auto p-4 sm:p-6">
-            {/* Description */}
-            <div>
-              <label className="block text-sm font-medium text-foreground mb-2">
-                用自然语言描述你的任务
-              </label>
-              <Textarea
-                value={aiDescription}
-                onChange={(e) => setAiDescription(e.target.value)}
-                rows={4}
-                className="resize-none"
-                placeholder="例如：每天早上 9 点帮我总结最新的科技新闻&#10;每周一下午 2 点检查项目依赖是否有安全更新&#10;每隔 2 小时检查一次服务器状态"
-              />
-              <p className="mt-1.5 text-xs text-muted-foreground">
-                AI 会自动解析调度时间和任务内容，创建后在后台完成解析
-              </p>
-            </div>
-
-            {renderTargetWorkspace()}
-            {renderContextMode()}
-
-            {renderNotifyChannels()}
-
-            {/* Actions */}
-            <div className="sticky bottom-0 -mx-4 flex items-center justify-end gap-3 border-t border-border bg-card px-4 pt-4 pb-[max(1rem,env(safe-area-inset-bottom))] sm:-mx-6 sm:px-6 sm:pb-0">
-              <Button type="button" variant="outline" onClick={onClose}>
-                取消
-              </Button>
-              <Button
-                onClick={handleAiCreate}
-                disabled={aiSubmitting || !aiDescription.trim()}
-              >
-                {aiSubmitting ? (
-                  <>
-                    <Loader2 className="size-4 animate-spin" />
-                    创建中...
-                  </>
-                ) : (
-                  <>
-                    <Sparkles className="size-4" />
-                    创建任务
-                  </>
-                )}
-              </Button>
-            </div>
-          </div>
-        )}
-
-        {/* Manual Mode */}
-        {mode === 'manual' && (
-          <form
-            onSubmit={handleManualSubmit}
-            className="space-y-4 overflow-y-auto p-4 sm:p-6"
+      {/* AI Mode */}
+      <TabsContent value="ai" className="flex min-h-0 flex-col">
+        <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-4 py-4 sm:px-5">
+          <SettingsField
+            label="用自然语言描述你的任务"
+            description="AI 会自动解析调度时间和任务内容，创建后在后台完成解析"
+            htmlFor="task-ai-description"
           >
+            <Textarea
+              id="task-ai-description"
+              value={aiDescription}
+              onChange={(e) => setAiDescription(e.target.value)}
+              rows={4}
+              className="field-sizing-fixed resize-none"
+              placeholder="例如：每天早上 9 点帮我总结最新的科技新闻&#10;每周一下午 2 点检查项目依赖是否有安全更新&#10;每隔 2 小时检查一次服务器状态"
+            />
+          </SettingsField>
+
+          {renderTargetWorkspace()}
+          {renderContextMode()}
+          {renderNotifyChannels()}
+        </div>
+        {footer(
+          <Button
+            onClick={handleAiCreate}
+            disabled={aiSubmitting || !aiDescription.trim()}
+          >
+            {aiSubmitting ? (
+              <>
+                <Loader2 className="size-4 animate-spin" />
+                创建中...
+              </>
+            ) : (
+              <>
+                <Sparkles className="size-4" />
+                创建任务
+              </>
+            )}
+          </Button>,
+        )}
+      </TabsContent>
+
+      {/* Manual Mode */}
+      <TabsContent value="manual" className="flex min-h-0 flex-col">
+        <form
+          onSubmit={handleManualSubmit}
+          className="flex min-h-0 flex-1 flex-col"
+        >
+          <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-4 py-4 sm:px-5">
             {/* Execution Type */}
             {isAdmin && (
-              <div>
-                <label className="block text-sm font-medium text-foreground mb-2">
-                  执行方式
-                </label>
+              <SettingsField
+                label="执行方式"
+                description={
+                  isScript
+                    ? '直接执行 Shell 命令，零 API 消耗，适合确定性任务'
+                    : '启动完整 Claude Agent，消耗 API tokens'
+                }
+              >
                 <Select
                   value={formData.executionType}
                   onValueChange={(value) =>
@@ -495,28 +501,31 @@ export function CreateTaskForm({
                     })
                   }
                 >
-                  <SelectTrigger className="w-full">
+                  <SelectTrigger className="w-full" aria-label="执行方式">
                     <SelectValue />
                   </SelectTrigger>
-                  <SelectContent className={MODAL_SELECT_CONTENT_CLASS}>
+                  <SelectContent>
                     <SelectItem value="agent">智能体（AI 执行）</SelectItem>
                     <SelectItem value="script">脚本（Shell 命令）</SelectItem>
                   </SelectContent>
                 </Select>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  {isScript
-                    ? '直接执行 Shell 命令，零 API 消耗，适合确定性任务'
-                    : '启动完整 Claude Agent，消耗 API tokens'}
-                </p>
-              </div>
+              </SettingsField>
             )}
 
             {/* Execution Mode */}
             {isAdmin && (
-              <div>
-                <label className="block text-sm font-medium text-foreground mb-2">
-                  执行模式
-                </label>
+              <SettingsField
+                label="执行模式"
+                description={
+                  adminHostOnlyMode
+                    ? '管理员纯宿主机模式已开启，任务固定在宿主机执行。'
+                    : isScript
+                      ? '脚本固定使用宿主机模式；Docker 容器脚本不会被执行。'
+                      : executionModeExplicit
+                        ? '已手动指定执行模式，不再跟随源工作区'
+                        : '默认继承源工作区的执行模式，选择后将锁定不再自动同步'
+                }
+              >
                 <Select
                   value={formData.executionMode}
                   disabled={isScript || adminHostOnlyMode}
@@ -528,31 +537,22 @@ export function CreateTaskForm({
                     });
                   }}
                 >
-                  <SelectTrigger className="w-full">
+                  <SelectTrigger
+                    className="w-full"
+                    aria-label="执行模式"
+                    aria-invalid={!!errors.executionMode || undefined}
+                  >
                     <SelectValue />
                   </SelectTrigger>
-                  <SelectContent className={MODAL_SELECT_CONTENT_CLASS}>
+                  <SelectContent>
                     <SelectItem value="host">宿主机</SelectItem>
                     {!isScript && !adminHostOnlyMode && (
                       <SelectItem value="container">Docker 容器</SelectItem>
                     )}
                   </SelectContent>
                 </Select>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  {adminHostOnlyMode
-                    ? '管理员纯宿主机模式已开启，任务固定在宿主机执行。'
-                    : isScript
-                      ? '脚本固定使用宿主机模式；Docker 容器脚本不会被执行。'
-                      : executionModeExplicit
-                        ? '已手动指定执行模式，不再跟随源工作区'
-                        : '默认继承源工作区的执行模式，选择后将锁定不再自动同步'}
-                </p>
-                {errors.executionMode && (
-                  <p className="mt-1 text-sm text-red-600 dark:text-red-400">
-                    {errors.executionMode}
-                  </p>
-                )}
-              </div>
+                {fieldError(errors.executionMode)}
+              </SettingsField>
             )}
 
             {renderTargetWorkspace()}
@@ -560,94 +560,101 @@ export function CreateTaskForm({
 
             {/* Script Command */}
             {isScript && (
-              <div>
-                <label className="block text-sm font-medium text-foreground mb-2">
-                  脚本命令 <span className="text-red-500">*</span>
-                </label>
+              <SettingsField
+                label={
+                  <>
+                    脚本命令 <RequiredMark />
+                  </>
+                }
+                description="命令在所属工作区目录下执行，最大 4096 字符"
+                htmlFor="task-script-command"
+              >
                 <Textarea
+                  id="task-script-command"
                   value={formData.scriptCommand}
                   onChange={(e) =>
                     setFormData({ ...formData, scriptCommand: e.target.value })
                   }
                   rows={3}
                   maxLength={4096}
-                  className={cn(
-                    'resize-none font-mono text-sm',
-                    errors.scriptCommand && 'border-red-500',
-                  )}
+                  aria-invalid={!!errors.scriptCommand || undefined}
+                  className="field-sizing-fixed resize-none font-mono text-sm"
                   placeholder="例如: curl -s https://api.example.com/health | jq .status"
                 />
-                {errors.scriptCommand && (
-                  <p className="mt-1 text-sm text-red-600 dark:text-red-400">
-                    {errors.scriptCommand}
-                  </p>
-                )}
-                <p className="mt-1 text-xs text-muted-foreground">
-                  命令在所属工作区目录下执行，最大 4096 字符
-                </p>
-              </div>
+                {fieldError(errors.scriptCommand)}
+              </SettingsField>
             )}
 
             {/* Prompt */}
-            <div>
-              <label className="block text-sm font-medium text-foreground mb-2">
-                {isScript ? '任务描述' : '任务 Prompt'}{' '}
-                {!isScript && <span className="text-red-500">*</span>}
-              </label>
+            <SettingsField
+              label={
+                <>
+                  {isScript ? '任务描述' : '任务 Prompt'}{' '}
+                  {!isScript && <RequiredMark />}
+                </>
+              }
+              htmlFor="task-prompt"
+            >
               <Textarea
+                id="task-prompt"
                 value={formData.prompt}
                 onChange={(e) =>
                   setFormData({ ...formData, prompt: e.target.value })
                 }
                 rows={isScript ? 2 : 4}
-                className={cn('resize-none', errors.prompt && 'border-red-500')}
+                aria-invalid={!!errors.prompt || undefined}
+                className="field-sizing-fixed resize-none"
                 placeholder={
                   isScript ? '可选的任务描述...' : '输入任务的提示词...'
                 }
               />
-              {errors.prompt && (
-                <p className="mt-1 text-sm text-red-600 dark:text-red-400">
-                  {errors.prompt}
-                </p>
-              )}
-            </div>
+              {fieldError(errors.prompt)}
+            </SettingsField>
 
-            {/* Schedule Type */}
-            <div>
-              <label className="block text-sm font-medium text-foreground mb-2">
-                调度类型 <span className="text-red-500">*</span>
-              </label>
-              <Select
-                value={formData.scheduleType}
-                onValueChange={(value) => {
-                  setIntervalNumber('');
-                  setOnceDateTime('');
-                  setFormData({
-                    ...formData,
-                    scheduleType: value as 'cron' | 'interval' | 'once',
-                    scheduleValue: '',
-                  });
-                }}
+            <div className="grid gap-5 sm:grid-cols-[minmax(0,11rem)_minmax(0,1fr)] sm:gap-3">
+              {/* Schedule Type */}
+              <SettingsField
+                label={
+                  <>
+                    调度类型 <RequiredMark />
+                  </>
+                }
               >
-                <SelectTrigger className="w-full">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent className={MODAL_SELECT_CONTENT_CLASS}>
-                  <SelectItem value="cron">Cron 表达式</SelectItem>
-                  <SelectItem value="interval">间隔执行</SelectItem>
-                  <SelectItem value="once">单次执行</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
+                <Select
+                  value={formData.scheduleType}
+                  onValueChange={(value) => {
+                    setIntervalNumber('');
+                    setOnceDateTime('');
+                    setFormData({
+                      ...formData,
+                      scheduleType: value as 'cron' | 'interval' | 'once',
+                      scheduleValue: '',
+                    });
+                  }}
+                >
+                  <SelectTrigger className="w-full" aria-label="调度类型">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="cron">Cron 表达式</SelectItem>
+                    <SelectItem value="interval">间隔执行</SelectItem>
+                    <SelectItem value="once">单次执行</SelectItem>
+                  </SelectContent>
+                </Select>
+              </SettingsField>
 
-            {/* Schedule Value */}
-            <div>
-              <label className="block text-sm font-medium text-foreground mb-2">
-                调度值 <span className="text-red-500">*</span>
-              </label>
-              {formData.scheduleType === 'cron' && (
-                <>
+              {/* Schedule Value */}
+              <SettingsField
+                label={
+                  <>
+                    调度值 <RequiredMark />
+                  </>
+                }
+                htmlFor="task-schedule-value"
+              >
+                {formData.scheduleType === 'cron' && (
                   <Input
+                    id="task-schedule-value"
                     type="text"
                     value={formData.scheduleValue}
                     onChange={(e) =>
@@ -656,41 +663,31 @@ export function CreateTaskForm({
                         scheduleValue: e.target.value,
                       })
                     }
-                    className={cn(errors.scheduleValue && 'border-red-500')}
+                    aria-invalid={!!errors.scheduleValue || undefined}
+                    className="font-mono"
                     placeholder="例如: 0 9 * * * (每天 9 点)"
                   />
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    格式: 分 时 日 月 星期（北京时间 UTC+8）。常用:{' '}
-                    <code className="bg-muted px-1 rounded">*/5 * * * *</code>{' '}
-                    每5分钟,{' '}
-                    <code className="bg-muted px-1 rounded">0 9 * * 1-5</code>{' '}
-                    工作日9点,{' '}
-                    <code className="bg-muted px-1 rounded">@daily</code> 每天
-                  </p>
-                </>
-              )}
-              {formData.scheduleType === 'interval' && (
-                <>
+                )}
+                {formData.scheduleType === 'interval' && (
                   <div className="flex gap-2">
                     <Input
+                      id="task-schedule-value"
                       type="number"
                       min="1"
                       value={intervalNumber}
                       onChange={(e) => setIntervalNumber(e.target.value)}
-                      className={cn(
-                        'flex-1',
-                        errors.scheduleValue && 'border-red-500',
-                      )}
+                      aria-invalid={!!errors.scheduleValue || undefined}
+                      className="flex-1"
                       placeholder="数值"
                     />
                     <Select
                       value={intervalUnit}
                       onValueChange={setIntervalUnit}
                     >
-                      <SelectTrigger className="w-28">
+                      <SelectTrigger className="w-24" aria-label="间隔单位">
                         <SelectValue />
                       </SelectTrigger>
-                      <SelectContent className={MODAL_SELECT_CONTENT_CLASS}>
+                      <SelectContent>
                         {INTERVAL_UNITS.map((u) => (
                           <SelectItem key={u.ms} value={String(u.ms)}>
                             {u.label}
@@ -699,46 +696,89 @@ export function CreateTaskForm({
                       </SelectContent>
                     </Select>
                   </div>
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    设置任务执行间隔
-                  </p>
-                </>
-              )}
-              {formData.scheduleType === 'once' && (
-                <>
+                )}
+                {formData.scheduleType === 'once' && (
                   <Input
+                    id="task-schedule-value"
                     type="datetime-local"
                     value={onceDateTime}
                     onChange={(e) => setOnceDateTime(e.target.value)}
-                    className={cn(errors.scheduleValue && 'border-red-500')}
+                    aria-invalid={!!errors.scheduleValue || undefined}
                   />
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    选择任务的执行时间
-                  </p>
+                )}
+                {fieldError(errors.scheduleValue)}
+              </SettingsField>
+            </div>
+            <p className="-mt-3 text-caption text-muted-foreground">
+              {formData.scheduleType === 'cron' && (
+                <>
+                  格式: 分 时 日 月 星期（北京时间 UTC+8）。常用:{' '}
+                  <code className="rounded bg-surface-selected px-1 font-mono">
+                    */5 * * * *
+                  </code>{' '}
+                  每5分钟,{' '}
+                  <code className="rounded bg-surface-selected px-1 font-mono">
+                    0 9 * * 1-5
+                  </code>{' '}
+                  工作日9点,{' '}
+                  <code className="rounded bg-surface-selected px-1 font-mono">
+                    @daily
+                  </code>{' '}
+                  每天
                 </>
               )}
-              {errors.scheduleValue && (
-                <p className="mt-1 text-sm text-red-600 dark:text-red-400">
-                  {errors.scheduleValue}
-                </p>
-              )}
-            </div>
+              {formData.scheduleType === 'interval' && '设置任务执行间隔'}
+              {formData.scheduleType === 'once' && '选择任务的执行时间'}
+            </p>
 
             {renderNotifyChannels()}
+          </div>
+          {footer(
+            <Button type="submit" disabled={submitting}>
+              {submitting && <Loader2 className="size-4 animate-spin" />}
+              {submitting ? '创建中...' : '创建任务'}
+            </Button>,
+          )}
+        </form>
+      </TabsContent>
+    </Tabs>
+  );
 
-            {/* Actions */}
-            <div className="sticky bottom-0 -mx-4 flex items-center justify-end gap-3 border-t border-border bg-card px-4 pt-4 pb-[max(1rem,env(safe-area-inset-bottom))] sm:-mx-6 sm:px-6 sm:pb-0">
-              <Button type="button" variant="outline" onClick={onClose}>
-                取消
-              </Button>
-              <Button type="submit" disabled={submitting}>
-                {submitting && <Loader2 className="size-4 animate-spin" />}
-                {submitting ? '创建中...' : '创建任务'}
-              </Button>
-            </div>
-          </form>
-        )}
-      </div>
-    </div>
+  const handleOpenChange = (open: boolean) => {
+    if (!open) onClose();
+  };
+
+  if (!isDesktop) {
+    return (
+      <Sheet open onOpenChange={handleOpenChange}>
+        <SheetContent
+          side="bottom"
+          className="flex max-h-[94dvh] flex-col gap-0 rounded-t-xl"
+        >
+          <div className="shrink-0 px-4 pt-4 pb-3 pr-12">
+            <SheetTitle className="text-title">创建定时任务</SheetTitle>
+            <SheetDescription className="sr-only">
+              用自然语言或手动配置创建定时任务
+            </SheetDescription>
+          </div>
+          {content}
+        </SheetContent>
+      </Sheet>
+    );
+  }
+
+  return (
+    <Dialog open onOpenChange={handleOpenChange}>
+      {/* A fixed height keeps the dialog still when switching tabs. */}
+      <DialogContent className="flex h-[min(42rem,90vh)] flex-col gap-0 overflow-hidden p-0 sm:max-w-2xl">
+        <div className="shrink-0 px-5 pt-5 pb-3 pr-12">
+          <DialogTitle>创建定时任务</DialogTitle>
+          <DialogDescription className="sr-only">
+            用自然语言或手动配置创建定时任务
+          </DialogDescription>
+        </div>
+        {content}
+      </DialogContent>
+    </Dialog>
   );
 }

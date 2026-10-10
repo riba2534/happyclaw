@@ -48,6 +48,11 @@ describe('Web logical-run refresh contract', () => {
 
   test('stream projections carry runId and reconnect publishes runs first', () => {
     const web = read('src/web.ts');
+    // Stream deltas and snapshots are applied for every workspace (AppLayout),
+    // not only the mounted ChatView, so leaving a workspace mid-reply keeps
+    // its stream current.
+    const subscriptions = read('web/src/hooks/useStreamSubscriptions.ts');
+    const layout = read('web/src/components/layout/AppLayout.tsx');
     const view = read('web/src/components/chat/ChatView.tsx');
     const activeSnapshot = web.indexOf("type: 'active_run_snapshot'");
     const streamSnapshot = web.indexOf("type: 'stream_snapshot'");
@@ -55,10 +60,12 @@ describe('Web logical-run refresh contract', () => {
     expect(activeSnapshot).toBeGreaterThan(0);
     expect(streamSnapshot).toBeGreaterThan(activeSnapshot);
     expect(web).toMatch(/runId: decision\.runId/);
-    expect(view).toMatch(
-      /handleStreamEvent\(groupJid, data\.event, data\.agentId, data\.runId\)/,
+    expect(subscriptions).toMatch(
+      /handleStreamEvent\(data\.chatJid, data\.event, data\.agentId, data\.runId\)/,
     );
-    expect(view).toMatch(/data\.snapshot,\s+snapshotAgentId,\s+data\.runId/);
+    expect(subscriptions).toMatch(/data\.snapshot,\s+[\s\S]{0,80}data\.runId/);
+    expect(layout).toMatch(/useGlobalStreamSubscriptions\(\)/);
+    expect(view).not.toMatch(/wsManager\.on\('stream_event'/);
   });
 
   test('A-late interrupted is fenced before main or agent terminal branches', () => {

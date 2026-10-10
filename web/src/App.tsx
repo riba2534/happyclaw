@@ -5,21 +5,35 @@ import {
   createBrowserRouter,
   createHashRouter,
   createRoutesFromElements,
+  useRouteError,
 } from 'react-router-dom';
-import { lazy, Suspense, type ReactNode } from 'react';
+import { lazy, Suspense, useEffect, type ReactNode } from 'react';
 import { AuthGuard } from './components/auth/AuthGuard';
 import { APP_BASE, shouldUseHashRouter } from './utils/url';
-import { shouldPreloadChatRoute } from './utils/chat-route-preload';
+import {
+  shouldPreloadAppShell,
+  shouldPreloadChatRoute,
+} from './utils/chat-route-preload';
+import { preloadedComponent } from './lib/preloaded-component';
+import { LoadErrorNotice } from './components/common/LoadErrorNotice';
+import {
+  isStaleChunkError,
+  reloadForStaleChunk,
+} from './utils/staleChunkReload';
 import { Toaster } from '@/components/ui/sonner';
+import { ConfirmHost } from '@/components/common/ConfirmHost';
 
-let chatPagePromise:
-  | Promise<{ default: typeof import('./pages/ChatPage').ChatPage }>
-  | undefined;
-const loadChatPage = () =>
-  (chatPagePromise ??= import('./pages/ChatPage').then((m) => ({
-    default: m.ChatPage,
-  })));
-const ChatPage = lazy(loadChatPage);
+// The shell and chat page are preloaded at entry and render without
+// suspending once loaded (see preloadedComponent): with lazy() each load
+// waited out React's 300ms Suspense reveal throttle before AppLayout could
+// mount and start the first data requests.
+const chatPageRoute = preloadedComponent(
+  () => import('./pages/ChatPage').then((m) => ({ default: m.ChatPage })),
+  ChatRouteFallback,
+  { rethrow: true },
+);
+const loadChatPage = chatPageRoute.preload;
+const ChatPage = chatPageRoute.Component;
 const LoginPage = lazy(() =>
   import('./pages/LoginPage').then((m) => ({ default: m.LoginPage })),
 );
@@ -39,11 +53,16 @@ const SetupChannelsPage = lazy(() =>
     default: m.SetupChannelsPage,
   })),
 );
-const AppLayout = lazy(() =>
-  import('./components/layout/AppLayout').then((m) => ({
-    default: m.AppLayout,
-  })),
+const appLayoutRoute = preloadedComponent(
+  () =>
+    import('./components/layout/AppLayout').then((m) => ({
+      default: m.AppLayout,
+    })),
+  ShellFallback,
+  { rethrow: true },
 );
+const loadAppLayout = appLayoutRoute.preload;
+const AppLayout = appLayoutRoute.Component;
 
 // Start the expensive chat split as soon as the entry executes, but only for
 // the default/chat routes. Static HTML modulepreloads made login, setup, tasks,
@@ -57,6 +76,16 @@ if (
   )
 ) {
   void loadChatPage();
+}
+if (
+  typeof window !== 'undefined' &&
+  shouldPreloadAppShell(
+    window.location.pathname,
+    window.location.hash,
+    APP_BASE,
+  )
+) {
+  void loadAppLayout();
 }
 const TasksPage = lazy(() =>
   import('./pages/TasksPage').then((m) => ({ default: m.TasksPage })),
@@ -132,6 +161,41 @@ function ShellFallback() {
   );
 }
 
+function ChatRouteFallback() {
+  return (
+    <div
+      className="flex h-full items-center justify-center text-sm text-muted-foreground motion-safe:animate-pulse"
+      role="status"
+      aria-live="polite"
+    >
+      正在加载会话…
+    </div>
+  );
+}
+
+/**
+ * The shell and everything it renders outside its own error boundary (the
+ * sidebar) end up here when they throw, instead of the router's bare default.
+ */
+function ShellError() {
+  const error = useRouteError();
+  useEffect(() => {
+    if (isStaleChunkError(error)) reloadForStaleChunk();
+  }, [error]);
+  return (
+    <div className="flex min-h-screen items-center justify-center px-4">
+      <LoadErrorNotice
+        title="页面暂时无法显示"
+        message={
+          error instanceof Error && error.message
+            ? error.message
+            : '发生了未知的页面渲染错误。'
+        }
+      />
+    </div>
+  );
+}
+
 function lazyShell(element: ReactNode) {
   return <Suspense fallback={<ShellFallback />}>{element}</Suspense>;
 }
@@ -152,25 +216,15 @@ const appRoutes = createRoutesFromElements(
     />
 
     {/* Protected Routes with Layout */}
-    <Route element={<AuthGuard>{lazyShell(<AppLayout />)}</AuthGuard>}>
-      <Route
-        path="/chat/:groupFolder?"
-        element={
-          <Suspense
-            fallback={
-              <div
-                className="flex h-full items-center justify-center text-sm text-muted-foreground motion-safe:animate-pulse"
-                role="status"
-                aria-live="polite"
-              >
-                正在加载会话…
-              </div>
-            }
-          >
-            <ChatPage />
-          </Suspense>
-        }
-      />
+    <Route
+      element={
+        <AuthGuard>
+          <AppLayout />
+        </AuthGuard>
+      }
+      errorElement={<ShellError />}
+    >
+      <Route path="/chat/:groupFolder?" element={<ChatPage />} />
       <Route path="/groups" element={<Navigate to="/chat" replace />} />
       <Route
         path="/agent-profiles"
@@ -293,7 +347,9 @@ function getAppRouter() {
 export function App() {
   return (
     <>
-      <Toaster position="top-right" richColors />
+      {/* Top center stays clear of page header actions on both sides. */}
+      <Toaster position="top-center" />
+      <ConfirmHost />
       <RouterProvider router={getAppRouter()} />
     </>
   );

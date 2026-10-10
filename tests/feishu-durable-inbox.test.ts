@@ -97,6 +97,7 @@ const { createFeishuConnection } = await import('../src/feishu.js');
 const { ChannelRouteRejectedError } =
   await import('../src/channel-admission.js');
 const {
+  advanceChannelCursor,
   createChannelTurnRun,
   getChannelCursor,
   getUncertainChannelOutboxForTurn,
@@ -541,6 +542,7 @@ describe('Feishu durable Inbox and cursor integration', () => {
       sourceJid: 'feishu:oc_break_group',
       targetJid: 'web:durable-feishu-test#agent:break-thread-agent',
       senderImId: 'ou_durable_user',
+      chatType: 'group',
     });
     expect(executed).not.toHaveBeenCalledWith('om_real_break');
     expect(controls.messageReply).toHaveBeenCalledTimes(1);
@@ -604,6 +606,7 @@ describe('Feishu durable Inbox and cursor integration', () => {
       sourceJid: 'feishu:oc_clear_group',
       targetJid: 'web:durable-feishu-test#agent:thread-agent',
       senderImId: 'ou_durable_user',
+      chatType: 'group',
     });
     expect(executed).not.toHaveBeenCalledWith('om_real_clear');
     expect(controls.messageReply).toHaveBeenCalledTimes(1);
@@ -668,6 +671,7 @@ describe('Feishu durable Inbox and cursor integration', () => {
       targetJid: 'web:durable-feishu-test#agent:thread-agent',
       senderImId: 'ou_durable_user',
       notes: '已修好登录',
+      chatType: 'group',
     });
     expect(executed).not.toHaveBeenCalledWith('om_real_fresh');
     expect(controls.messageReply).toHaveBeenCalledTimes(1);
@@ -880,14 +884,23 @@ describe('Feishu durable Inbox and cursor integration', () => {
 
   test('does not register an owner merely because a user opens the P2P chat', async () => {
     const accountId = `account-no-enter-claim-${Date.now()}`;
+    const onNewChat = vi.fn();
+    const onP2pSender = vi.fn();
     const connected = await connect(accountId, vi.fn(), {
-      onNewChat: vi.fn(),
-      onP2pSender: vi.fn(),
+      onNewChat,
+      onP2pSender,
     });
 
-    expect(
-      connected.handlers['im.chat.access_event.bot_p2p_chat_entered_v1'],
-    ).toBeUndefined();
+    // The event is acknowledged (no SDK "no handle" warning) but ignored.
+    const entered =
+      connected.handlers['im.chat.access_event.bot_p2p_chat_entered_v1'];
+    expect(entered).toBeTypeOf('function');
+    await entered!({
+      chat_id: 'oc_entered_p2p',
+      operator_id: { open_id: 'ou_opener' },
+    });
+    expect(onNewChat).not.toHaveBeenCalled();
+    expect(onP2pSender).not.toHaveBeenCalled();
   });
 
   test('recovery gate queues a live event and executes it only after the gate opens', async () => {
@@ -1091,14 +1104,37 @@ describe('Feishu durable Inbox and cursor integration', () => {
     ).toBe('ignored');
   });
 
-  test('coalesces an immediate image-root caption into one vision turn', async () => {
+  test('runs an image topic root at once and lets its caption coalesce into that run', async () => {
     const accountId = `account-image-caption-${Date.now()}`;
-    const executed = vi.fn();
     const rootId = `om_image_caption_root_${Date.now()}`;
     const noteId = `${rootId}_note`;
     const threadId = `omt_image_caption_${Date.now()}`;
     const createTime = Date.now();
-    const connected = await connect(accountId, executed);
+    const followUps = vi.fn((input: { messageId: string }) =>
+      input.messageId === rootId
+        ? { disposition: 'started' as const }
+        : { disposition: 'steered' as const, runId: 'run_image_root' },
+    );
+    controls.messageGet.mockResolvedValue({
+      data: {
+        items: [
+          {
+            message_id: rootId,
+            msg_type: 'image',
+            create_time: String(createTime),
+            thread_id: threadId,
+            chat_type: 'group',
+            sender: { id: 'ou_durable_user', name: 'Durable User' },
+            body: {
+              content: JSON.stringify({ image_key: 'img_caption_root' }),
+            },
+          },
+        ],
+      },
+    });
+    const connected = await connect(accountId, vi.fn(), {
+      onFollowUpMessage: followUps as TestConnectOptions['onFollowUpMessage'],
+    });
     const groupEvent = (messageId: string, time: number) => ({
       ...event(messageId, time, ''),
       message: {
@@ -1117,24 +1153,19 @@ describe('Feishu durable Inbox and cursor integration', () => {
         content: JSON.stringify({ image_key: 'img_caption_root' }),
       },
     });
-    expect(executed).not.toHaveBeenCalled();
-    expect(
-      db
-        .getMessagesPage('web:durable-feishu-test')
-        .find((message) => message.id === rootId),
-    ).toMatchObject({
-      delivery_status: 'awaiting_companion',
-      attachments: expect.any(String),
-      channel_context: {
-        message: {
-          contentLink: {
-            kind: 'forward_bundle',
-            role: 'forwarded_content',
-            materialResolved: true,
-          },
-        },
-      },
-    });
+    // No 3s hold: the image root is an ordinary request that starts now.
+    expect(followUps).toHaveBeenCalledTimes(1);
+    expect(followUps).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        messageId: rootId,
+        coalesceBundleId: undefined,
+      }),
+    );
+    const root = db
+      .getMessagesPage('web:durable-feishu-test')
+      .find((message) => message.id === rootId);
+    expect(root?.delivery_status).toBeNull();
+    expect(root?.channel_context?.message.contentLink).toBeUndefined();
 
     await connected.handler({
       ...groupEvent(noteId, createTime + 1_500),
@@ -1147,33 +1178,29 @@ describe('Feishu durable Inbox and cursor integration', () => {
       },
     });
 
-    expect(executed).toHaveBeenCalledTimes(1);
-    expect(executed).toHaveBeenCalledWith(noteId);
+    expect(followUps).toHaveBeenCalledTimes(2);
+    expect(followUps).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        messageId: noteId,
+        requestedMode: undefined,
+        coalesceBundleId: rootId,
+      }),
+    );
     const note = db
       .getMessagesPage('web:durable-feishu-test')
       .find((message) => message.id === noteId);
     expect(note).toMatchObject({
       content: '理解一下这张图的含义。',
-      attachments: expect.any(String),
       channel_context: {
         message: {
           contentLink: {
-            kind: 'forward_bundle',
+            kind: 'rapid_topic_bundle',
             bundleId: rootId,
             role: 'forwarder_comment',
           },
-          referencedMessages: [
-            expect.objectContaining({
-              id: rootId,
-              text: '[图片]',
-              materialResolved: true,
-            }),
-          ],
         },
       },
     });
-    expect(controls.messageResourceGet).toHaveBeenCalledTimes(1);
-    expect(controls.messageGet).not.toHaveBeenCalled();
     expect(
       recordChannelInbox({
         provider: 'feishu',
@@ -1183,7 +1210,39 @@ describe('Feishu durable Inbox and cursor integration', () => {
         chatId: 'oc_image_caption_group',
         status: 'queued',
       }).item.status,
-    ).toBe('ignored');
+    ).toBe('processed');
+  });
+
+  test('an image topic root whose download fails still runs with a failure marker', async () => {
+    const accountId = `account-image-root-fail-${Date.now()}`;
+    const executed = vi.fn();
+    const rootId = `om_image_root_fail_${Date.now()}`;
+    controls.messageResourceGet.mockRejectedValue(
+      Object.assign(new Error('Request failed with status code 400'), {
+        response: { status: 400, data: { code: 234003, msg: 'bad file' } },
+      }),
+    );
+    const connected = await connect(accountId, executed);
+
+    await connected.handler({
+      ...event(rootId, Date.now(), ''),
+      message: {
+        ...event(rootId, Date.now(), '').message,
+        chat_id: 'oc_image_root_fail_group',
+        chat_type: 'group',
+        thread_id: `omt_${rootId}`,
+        message_type: 'image',
+        content: JSON.stringify({ image_key: 'img_unreadable' }),
+      },
+    });
+
+    expect(executed).toHaveBeenCalledWith(rootId);
+    expect(
+      db
+        .getMessagesPage('web:durable-feishu-test')
+        .find((message) => message.id === rootId)?.content,
+    ).toContain('图片下载失败');
+    expect(controls.messageReply).not.toHaveBeenCalled();
   });
 
   test('keeps a held root and its note in one queued follow-up batch', async () => {
@@ -1794,10 +1853,13 @@ describe('Feishu durable Inbox and cursor integration', () => {
     ];
     await connect(accountId, executed);
 
-    expect(executed.mock.calls.map(([id]) => id)).toEqual([
-      'om_before_restart',
-      'om_during_downtime',
-    ]);
+    // Backfill runs in the background after onReady.
+    await vi.waitFor(() =>
+      expect(executed.mock.calls.map(([id]) => id)).toEqual([
+        'om_before_restart',
+        'om_during_downtime',
+      ]),
+    );
     const cursor = getChannelCursor({
       provider: 'feishu',
       accountId,
@@ -1836,10 +1898,12 @@ describe('Feishu durable Inbox and cursor integration', () => {
     ];
     await connect(accountId, executed);
 
-    expect(executed.mock.calls.map(([id]) => id)).toEqual([
-      'om_newest_cursor',
-      'om_late_older',
-    ]);
+    await vi.waitFor(() =>
+      expect(executed.mock.calls.map(([id]) => id)).toEqual([
+        'om_newest_cursor',
+        'om_late_older',
+      ]),
+    );
     expect(
       getChannelCursor({
         provider: 'feishu',
@@ -1850,7 +1914,7 @@ describe('Feishu durable Inbox and cursor integration', () => {
     ).toBe('om_newest_cursor');
   });
 
-  test('startup inventory makes a known group eligible for backfill before onReady', async () => {
+  test('startup inventory makes a known group eligible for backfill', async () => {
     const accountId = `account-inventory-${Date.now()}`;
     const executed = vi.fn();
     const createTime = Date.now() - 10_000;
@@ -1875,7 +1939,7 @@ describe('Feishu durable Inbox and cursor integration', () => {
 
     await connect(accountId, executed);
 
-    expect(executed).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(executed).toHaveBeenCalledTimes(1));
     expect(executed).toHaveBeenCalledWith('om_group_downtime');
     expect(
       getChannelCursor({
@@ -1885,6 +1949,123 @@ describe('Feishu durable Inbox and cursor integration', () => {
         chatId: 'oc_known_group',
       })?.cursor,
     ).toBe('om_group_downtime');
+  });
+
+  test('reports ready before the startup backfill finishes and bounds its concurrency', async () => {
+    const accountId = `account-background-${Date.now()}`;
+    const executed = vi.fn();
+    controls.chatList.mockResolvedValue({
+      data: {
+        items: Array.from({ length: 10 }, (_, index) => ({
+          chat_id: `oc_bg_${index}`,
+          name: `Group ${index}`,
+          chat_type: 'group',
+        })),
+        has_more: false,
+      },
+    });
+    let inFlight = 0;
+    let maxInFlight = 0;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    controls.messageList.mockImplementation(async () => {
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await gate;
+      inFlight -= 1;
+      return { data: { items: [], has_more: false } };
+    });
+    const onReady = vi.fn();
+
+    await connect(accountId, executed, { onReady });
+
+    // connect() resolved and the account is ready while every list call is
+    // still blocked.
+    expect(onReady).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(inFlight).toBeGreaterThan(0));
+    expect(maxInFlight).toBeLessThanOrEqual(4);
+    release();
+    await vi.waitFor(() =>
+      expect(controls.messageList).toHaveBeenCalledTimes(10),
+    );
+    expect(maxInFlight).toBeLessThanOrEqual(4);
+    expect(maxInFlight).toBeGreaterThan(1);
+  });
+
+  test('long-silent chats are still backfilled after a restart', async () => {
+    const accountId = `account-dormant-${Date.now()}`;
+    const executed = vi.fn();
+    const recentTime = Date.now() - 60_000;
+    const first = await connect(accountId, executed);
+    await first.handler(event('om_recent', recentTime, 'recent'));
+    await first.connection.stop();
+    openConnections.splice(openConnections.indexOf(first.connection), 1);
+    // A second chat (e.g. a DM) whose last traffic was a month ago.
+    advanceChannelCursor({
+      provider: 'feishu',
+      accountId,
+      scope: 'chat_messages',
+      chatId: 'ou_dormant_user',
+      cursor: 'om_ancient',
+      position: Date.now() - 30 * 24 * 60 * 60 * 1000,
+      tieBreaker: 'om_ancient',
+      now: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000),
+    });
+
+    controls.messageList.mockClear();
+    await connect(accountId, executed);
+    await vi.waitFor(() => expect(controls.messageList).toHaveBeenCalled());
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const listedChats = controls.messageList.mock.calls.map(
+      ([request]: any[]) => request.params.container_id,
+    );
+    expect(listedChats).toContain('ou_durable_user');
+    expect(listedChats).toContain('ou_dormant_user');
+  });
+
+  test('a backfill pass stops at stop() and never admits without connect options', async () => {
+    const accountId = `account-stop-${Date.now()}`;
+    const createTime = Date.now() - 10_000;
+    let stopConnection: (() => Promise<void>) | null = null;
+    const executed = vi.fn(async (messageId: string) => {
+      // The first backfilled message stops the connection mid-pass.
+      if (messageId === 'om_stop_1') await stopConnection?.();
+    });
+    controls.chatList.mockResolvedValue({
+      data: {
+        items: [{ chat_id: 'oc_stop_group', name: 'G', chat_type: 'group' }],
+        has_more: false,
+      },
+    });
+    controls.backfillItems = ['om_stop_1', 'om_stop_2', 'om_stop_3'].map(
+      (id, index) => ({
+        ...backfillItem(id, createTime + index, id),
+        chat_type: 'group',
+      }),
+    );
+    const connected = await connect(accountId, executed);
+    stopConnection = () => connected.connection.stop();
+    await vi.waitFor(() => expect(executed).toHaveBeenCalledWith('om_stop_1'));
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(executed).toHaveBeenCalledTimes(1);
+    openConnections.splice(openConnections.indexOf(connected.connection), 1);
+
+    // A late event delivered after stop() is recorded but stays queued: the
+    // owner/activation checks are gone, so it must not be processed.
+    await connected.handler(event('om_after_stop', Date.now(), 'late'));
+    expect(executed).toHaveBeenCalledTimes(1);
+    expect(
+      recordChannelInbox({
+        provider: 'feishu',
+        accountId,
+        externalMessageId: 'om_after_stop',
+        sourceJid: 'feishu:ou_durable_user',
+        chatId: 'ou_durable_user',
+        status: 'queued',
+      }).item.status,
+    ).toBe('queued');
   });
 
   test('an intake exception stays queued and is automatically retried', async () => {

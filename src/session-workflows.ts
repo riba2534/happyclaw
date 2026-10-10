@@ -267,8 +267,9 @@ function usageTotal(usage: SessionAssistantUsage): number {
  * the whole-file signature cache missed on every request of an active session
  * (measured 2.4MB reparsed per message-list request, on a 2s poll). The parse
  * state is therefore kept per session and only bytes appended since the last
- * pass are read; a shrunk file (rotation) or a replaced file (session-trim and
- * history-image-prune rewrite via tmp+rename, so dev/ino change) resets the
+ * pass are read; a shrunk file (rotation or the CLI's local transcript GC) or
+ * a replaced file (history-image-prune rewrites via tmp+rename, so dev/ino
+ * change) resets the
  * state. A partial trailing line is buffered as raw bytes so mid-write reads
  * and multi-byte UTF-8 at the chunk boundary stay intact.
  */
@@ -593,12 +594,19 @@ export function attachSessionWorkflowRuns<T extends MessageLike>(
       changed = true;
       return next;
     };
-    const usageBySdkUuid = loadSessionAssistantUsage({ ...input, sessionId });
-    for (const message of assistantMessages) {
-      if (!message.sdk_message_uuid || hasRecordedTokens(message.token_usage)) {
-        continue;
-      }
-      const recovered = usageBySdkUuid.get(message.sdk_message_uuid);
+    const needsRecovery = assistantMessages.filter(
+      (message) =>
+        !!message.sdk_message_uuid && !hasRecordedTokens(message.token_usage),
+    );
+    // Reading the transcript is only needed to recover missing usage; on a
+    // cold cache it is a synchronous read+parse of up to 64MB (a 40MB
+    // transcript took ~165ms) for pages whose rows already carry tokens.
+    const usageBySdkUuid =
+      needsRecovery.length > 0
+        ? loadSessionAssistantUsage({ ...input, sessionId })
+        : new Map<string, SessionAssistantUsage>();
+    for (const message of needsRecovery) {
+      const recovered = usageBySdkUuid.get(message.sdk_message_uuid!);
       if (!recovered) continue;
       ensureClone(message).token_usage = mergeRecoveredUsage(
         message.token_usage,

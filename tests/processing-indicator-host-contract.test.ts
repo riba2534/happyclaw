@@ -94,10 +94,36 @@ describe('exact processing indicator host contract', () => {
     );
   });
 
-  test('queued batch hand-off waits for old provider cleanup before adding the next reaction', () => {
+  test('queued batch hand-off orders old provider cleanup before the next reaction without blocking', () => {
+    // delete(A) is enqueued before add(B) on the Session's acknowledgement
+    // chain; neither provider call delays the hand-off itself.
     expect(main).toMatch(
-      /await clearTrackedProcessingIndicators\(chatJid\);\s+await beginBatchAckReactions\(chatJid, prePublishedIndicatorOwners\)/,
+      /void clearTrackedProcessingIndicators\(chatJid\);\s+void beginBatchAckReactions\(chatJid, prePublishedIndicatorOwners\)/,
     );
+    const chain = sourceBetween(
+      main,
+      'function runAckIndicatorOp<T>(',
+      'async function clearStandaloneProcessingIndicator(',
+    );
+    expect(chain).toMatch(/previous\.then\(op, op\)/);
+    const clearTracked = sourceBetween(
+      main,
+      'async function clearTrackedProcessingIndicators(',
+      'interface SendMessageOptions',
+    );
+    // The snapshot and the enqueue happen before the first await.
+    expect(clearTracked.indexOf('runAckIndicatorOp(logicalJid')).toBeLessThan(
+      clearTracked.indexOf('await '),
+    );
+    const activate = sourceBetween(
+      main,
+      'async function activateBatchProcessingIndicators(',
+      'function beginBatchAckReactions(',
+    );
+    expect(activate).toContain(
+      'void beginBatchAckReactions(logicalJid, owners)',
+    );
+    expect(activate).not.toMatch(/await beginBatchAckReactions/);
   });
 
   test('native message delivery itself does not clear a turn indicator', () => {

@@ -52,6 +52,44 @@ import { getSystemSettings } from '../runtime-config.js';
 
 const tasksRoutes = new Hono<{ Variables: Variables }>();
 
+// GET /api/tasks is polled every 3s while runs are active; it used to make a
+// live Feishu chat.get per referenced chat on every poll. Names change
+// rarely, so a short-lived per-user cache is enough.
+const FEISHU_CHAT_NAME_TTL_MS = 10 * 60 * 1000;
+// A failed or empty lookup (transient API error, bot not yet in the chat) is
+// retried soon rather than hiding the name for the full TTL.
+const FEISHU_CHAT_NAME_MISS_TTL_MS = 30 * 1000;
+const FEISHU_CHAT_NAME_CACHE_MAX = 1_000;
+const feishuChatNameCache = new Map<
+  string,
+  { name: string | null; expiresAt: number }
+>();
+
+function rememberFeishuChatName(
+  key: string,
+  name: string | null,
+  now: number,
+): void {
+  feishuChatNameCache.delete(key);
+  feishuChatNameCache.set(key, {
+    name,
+    expiresAt:
+      now + (name ? FEISHU_CHAT_NAME_TTL_MS : FEISHU_CHAT_NAME_MISS_TTL_MS),
+  });
+  while (feishuChatNameCache.size > FEISHU_CHAT_NAME_CACHE_MAX) {
+    const oldest = feishuChatNameCache.keys().next().value as
+      | string
+      | undefined;
+    if (oldest === undefined) break;
+    feishuChatNameCache.delete(oldest);
+  }
+}
+
+/** Test hook. */
+export function clearFeishuChatNameCache(): void {
+  feishuChatNameCache.clear();
+}
+
 function canViewTask(task: ScheduledTask, authUser: AuthUser): boolean {
   if (task.execution_mode === 'host' && authUser.role !== 'admin') return false;
   const group = getRegisteredGroup(task.chat_jid);
@@ -65,16 +103,27 @@ function canViewTask(task: ScheduledTask, authUser: AuthUser): boolean {
   );
 }
 
-function taskPermissions(task: ScheduledTask, authUser: AuthUser) {
+function taskPermissions(
+  task: ScheduledTask,
+  authUser: AuthUser,
+  // List callers resolve these once per request instead of per task.
+  context: {
+    allGroups?: ReturnType<typeof getAllRegisteredGroups>;
+    activeRun?: ReturnType<typeof getActiveTaskRunForTask> | null;
+  } = {},
+) {
   const isAdmin = authUser.role === 'admin';
   const canManage = canViewTask(task, authUser);
   const canOperateExecution =
     canManage && (task.execution_type !== 'script' || isAdmin);
   const executionBlockedReason = getScriptTaskHostExecutionError(
     task,
-    getAllRegisteredGroups(),
+    context.allGroups ?? getAllRegisteredGroups(),
   );
-  const activeRun = getActiveTaskRunForTask(task.id);
+  const activeRun =
+    context.activeRun === undefined
+      ? getActiveTaskRunForTask(task.id)
+      : (context.activeRun ?? undefined);
   return {
     can_edit: canManage && !task.deleted_at && task.status !== 'parsing',
     can_run:
@@ -126,11 +175,15 @@ tasksRoutes.get('/', authMiddleware, async (c) => {
   );
   const tasks = visibleDefinitions.map((task) => {
     const recentRuns = getMergedTaskRunHistory(task.id, 1);
+    const currentRun = getActiveTaskRunForTask(task.id) ?? null;
     return {
       ...task,
-      current_run: getActiveTaskRunForTask(task.id) ?? null,
+      current_run: currentRun,
       last_run_summary: recentRuns[0] ?? null,
-      permissions: taskPermissions(task, authUser),
+      permissions: taskPermissions(task, authUser, {
+        allGroups,
+        activeRun: currentRun,
+      }),
     };
   });
   const visibleTaskIds = new Set(tasks.map((t) => t.id));
@@ -167,10 +220,18 @@ tasksRoutes.get('/', authMiddleware, async (c) => {
     const feishuJids = Object.keys(groupNames).filter(
       (jid) => referencedJids.has(jid) && getChannelType(jid) === 'feishu',
     );
+    const now = Date.now();
     const enrichPromises = feishuJids.map(async (jid) => {
+      const cacheKey = `${authUser.id}\0${jid}`;
+      const cached = feishuChatNameCache.get(cacheKey);
+      if (cached && cached.expiresAt > now) {
+        if (cached.name) groupNames[jid] = cached.name;
+        return;
+      }
       try {
         const chatId = extractChatId(jid);
         const info = await deps.getFeishuChatInfo!(authUser.id, chatId);
+        rememberFeishuChatName(cacheKey, info?.name ?? null, now);
         if (info?.name) groupNames[jid] = info.name;
       } catch (err) {
         logger.debug({ jid, err }, 'feishu chat name enrichment failed');

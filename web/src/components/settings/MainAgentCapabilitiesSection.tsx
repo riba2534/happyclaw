@@ -27,6 +27,8 @@ import {
   getHostSkillPolicy,
   skillSelectionError,
 } from '../../utils/agent-runtime-policy';
+import { SettingsGroup, SettingsRow, SettingsSection } from './SettingsLayout';
+import { SettingsFormFooter } from './SettingsFormControls';
 
 type CapabilityMode = 'inherit' | 'custom' | 'disabled';
 
@@ -232,133 +234,140 @@ export function MainAgentCapabilitiesSection() {
 
   if (profilesLoading && !profile) {
     return (
-      <div className="flex min-h-28 items-center justify-center border-b border-border py-6">
-        <Loader2 className="size-5 animate-spin text-muted-foreground" />
-      </div>
+      <SettingsGroup>
+        <div className="flex min-h-28 items-center justify-center">
+          <Loader2 className="size-5 animate-spin text-muted-foreground" />
+        </div>
+      </SettingsGroup>
     );
   }
 
   if (!profile) {
     return (
-      <div className="border-b border-border py-6 text-sm text-destructive">
+      <div
+        role="alert"
+        className="rounded-lg bg-error/10 px-3 py-2.5 text-body text-error"
+      >
         无法读取当前管理员的主 HappyClaw 配置。
       </div>
     );
   }
 
   return (
-    <section className="space-y-5 border-b border-border py-6">
-      <div>
-        <h3 className="text-sm font-semibold text-foreground">
-          模型与系统附加能力
-        </h3>
-        <p className="mt-1 text-xs leading-5 text-muted-foreground">
-          为主智能体选择完整模型网关环境，并按来源控制 Skills 与 HappyClaw
-          附加的 MCP。宿主机 Skills 可独立于宿主机 Prompt 与 Rules 启用。
-        </p>
-      </div>
-
-      <div className="max-w-xl space-y-2">
-        <label className="text-xs font-medium text-muted-foreground">
-          模型配置
-        </label>
-        <Select value={modelConfigId} onValueChange={setModelConfigId}>
-          <SelectTrigger aria-label="主 HappyClaw 模型配置">
-            <SelectValue placeholder="选择模型配置" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="inherit">
-              自动选择已启用模型
-              {`（当前 ${modelConfigs.filter((item) => item.enabled).length} 个）`}
-            </SelectItem>
-            {modelConfigs.map((model) => (
-              <SelectItem key={model.id} value={model.id}>
-                {model.name}
-                {model.anthropic_model ? ` · ${model.anthropic_model}` : ''}
-                {!model.enabled ? '（仅显式使用）' : ''}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-        <p className="text-[11px] leading-5 text-muted-foreground">
-          Home
-          工作区、主会话、独立会话与定时任务都会继承该选择。自动选择只使用已启用配置；未启用的配置仍可在这里显式使用。
-        </p>
-      </div>
-
-      <div className="max-w-xl space-y-2">
-        <label className="text-xs font-medium text-muted-foreground">
-          推理努力档位
-        </label>
-        <Select
-          value={effort}
-          onValueChange={(next) => setEffort(next as AgentEffortLevel)}
-        >
-          <SelectTrigger aria-label="主 HappyClaw 推理努力档位">
-            <SelectValue placeholder="选择推理努力档位" />
-          </SelectTrigger>
-          <SelectContent>
-            {AGENT_EFFORT_OPTIONS.map((option) => (
-              <SelectItem key={option.value} value={option.value}>
-                {option.label}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-        <p className="text-[11px] leading-5 text-muted-foreground">
-          跟随模型配置时保留 Provider 环境或 SDK
-          默认值；显式档位会覆盖该默认值。
-        </p>
-      </div>
-
-      <AgentSkillsPolicyEditor
-        managedPolicy={{ mode: skillsMode, ids: skillIds }}
-        onManagedModeChange={setSkillsMode}
-        onManagedIdsChange={setSkillIds}
-        managedOptions={skillOptions}
-        hostPolicy={{ mode: hostSkillsMode, ids: hostSkillIds }}
-        onHostModeChange={setHostSkillsMode}
-        onHostIdsChange={setHostSkillIds}
-        hostOptions={hostSkillOptions}
-        loading={skillsLoading}
-        error={skillsError}
-        hostAvailable
-        managedError={managedSkillsError}
-        hostError={hostSkillsError}
-      />
-
-      <div className="max-w-xl border-t border-border pt-5">
-        <CapabilityPicker
-          label="HappyClaw MCP"
-          value={mcpMode}
-          onValueChange={setMcpMode}
-          customLabel="只允许所选 MCP"
-          disabledLabel="关闭 HappyClaw MCP"
-        >
-          {mcpMode === 'custom' && (
-            <PolicyResourcePicker
-              label="允许目录"
-              options={mcpOptions}
-              selectedIds={mcpIds}
-              onChange={setMcpIds}
-              loading={mcpLoading}
-              error={mcpError}
-              emptyText="没有已启用的 HappyClaw MCP"
+    <>
+      <SettingsSection
+        title="模型与系统附加能力"
+        description={
+          <>
+            为主智能体选择完整模型网关环境，并按来源控制 Skills 与 HappyClaw
+            附加的 MCP。宿主机 Skills 可独立于宿主机 Prompt 与 Rules 启用。
+          </>
+        }
+      >
+        <div className="space-y-6">
+          <SettingsGroup>
+            <SettingsRow
+              label="模型配置"
+              description="Home 工作区、主会话、独立会话与定时任务都会继承该选择。自动选择只使用已启用配置；未启用的配置仍可在这里显式使用。"
+              control={
+                <Select value={modelConfigId} onValueChange={setModelConfigId}>
+                  <SelectTrigger
+                    aria-label="主 HappyClaw 模型配置"
+                    className="w-full sm:w-64"
+                  >
+                    <SelectValue placeholder="选择模型配置" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="inherit">
+                      自动选择已启用模型
+                      {`（当前 ${modelConfigs.filter((item) => item.enabled).length} 个）`}
+                    </SelectItem>
+                    {modelConfigs.map((model) => (
+                      <SelectItem key={model.id} value={model.id}>
+                        {model.name}
+                        {model.anthropic_model
+                          ? ` · ${model.anthropic_model}`
+                          : ''}
+                        {!model.enabled ? '（仅显式使用）' : ''}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              }
             />
-          )}
-        </CapabilityPicker>
-      </div>
+            <SettingsRow
+              label="推理努力档位"
+              description="跟随模型配置时保留 Provider 环境或 SDK 默认值；显式档位会覆盖该默认值。"
+              control={
+                <Select
+                  value={effort}
+                  onValueChange={(next) => setEffort(next as AgentEffortLevel)}
+                >
+                  <SelectTrigger
+                    aria-label="主 HappyClaw 推理努力档位"
+                    className="w-full sm:w-48"
+                  >
+                    <SelectValue placeholder="选择推理努力档位" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {AGENT_EFFORT_OPTIONS.map((option) => (
+                      <SelectItem key={option.value} value={option.value}>
+                        {option.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              }
+            />
+            <CapabilityPicker
+              label="HappyClaw MCP"
+              value={mcpMode}
+              onValueChange={setMcpMode}
+              customLabel="只允许所选 MCP"
+              disabledLabel="关闭 HappyClaw MCP"
+            >
+              {mcpMode === 'custom' && (
+                <PolicyResourcePicker
+                  label="允许目录"
+                  options={mcpOptions}
+                  selectedIds={mcpIds}
+                  onChange={setMcpIds}
+                  loading={mcpLoading}
+                  error={mcpError}
+                  emptyText="没有已启用的 HappyClaw MCP"
+                />
+              )}
+            </CapabilityPicker>
+          </SettingsGroup>
 
-      <div className="flex justify-end">
-        <Button
-          onClick={() => void save()}
-          disabled={!dirty || saving || !!capabilityError}
-          className="min-h-11"
-        >
-          {saving && <Loader2 className="size-4 animate-spin" />}
-          保存模型与能力
-        </Button>
-      </div>
+          <AgentSkillsPolicyEditor
+            managedPolicy={{ mode: skillsMode, ids: skillIds }}
+            onManagedModeChange={setSkillsMode}
+            onManagedIdsChange={setSkillIds}
+            managedOptions={skillOptions}
+            hostPolicy={{ mode: hostSkillsMode, ids: hostSkillIds }}
+            onHostModeChange={setHostSkillsMode}
+            onHostIdsChange={setHostSkillIds}
+            hostOptions={hostSkillOptions}
+            loading={skillsLoading}
+            error={skillsError}
+            hostAvailable
+            managedError={managedSkillsError}
+            hostError={hostSkillsError}
+          />
+        </div>
+
+        <SettingsFormFooter>
+          <Button
+            onClick={() => void save()}
+            disabled={!dirty || saving || !!capabilityError}
+          >
+            {saving && <Loader2 className="size-4 animate-spin" />}
+            保存模型与能力
+          </Button>
+        </SettingsFormFooter>
+      </SettingsSection>
+
       {currentRuntimePolicy && (
         <ErrorBoundary resetKeys={[profile.id]}>
           <EffectiveCapabilitiesPreview
@@ -368,7 +377,7 @@ export function MainAgentCapabilitiesSection() {
           />
         </ErrorBoundary>
       )}
-    </section>
+    </>
   );
 }
 
@@ -398,24 +407,25 @@ function CapabilityPicker({
   children: React.ReactNode;
 }) {
   return (
-    <div className="min-w-0 space-y-2">
-      <label className="text-xs font-medium text-muted-foreground">
-        {label}
-      </label>
-      <Select
-        value={value}
-        onValueChange={(next) => onValueChange(next as CapabilityMode)}
-      >
-        <SelectTrigger aria-label={label}>
-          <SelectValue />
-        </SelectTrigger>
-        <SelectContent>
-          <SelectItem value="inherit">使用全部已启用项</SelectItem>
-          <SelectItem value="custom">{customLabel}</SelectItem>
-          <SelectItem value="disabled">{disabledLabel}</SelectItem>
-        </SelectContent>
-      </Select>
+    <SettingsRow
+      label={label}
+      control={
+        <Select
+          value={value}
+          onValueChange={(next) => onValueChange(next as CapabilityMode)}
+        >
+          <SelectTrigger aria-label={label} className="w-full sm:w-48">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="inherit">使用全部已启用项</SelectItem>
+            <SelectItem value="custom">{customLabel}</SelectItem>
+            <SelectItem value="disabled">{disabledLabel}</SelectItem>
+          </SelectContent>
+        </Select>
+      }
+    >
       {children}
-    </div>
+    </SettingsRow>
   );
 }

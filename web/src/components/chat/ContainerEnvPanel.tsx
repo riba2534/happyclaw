@@ -1,9 +1,12 @@
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useMemo, useState, useRef } from 'react';
 import { Loader2, Save, Plus, X, RefreshCw, Trash2 } from 'lucide-react';
 import { useContainerEnvStore } from '../../stores/container-env';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
+import { IconButton } from '@/components/common/IconButton';
+import { cn } from '@/lib/utils';
 import { ScrollEdgeAffordance } from '../common/ScrollEdgeAffordance';
+import { confirmDialog } from '../../stores/confirm';
 
 interface ContainerEnvPanelProps {
   groupJid: string;
@@ -92,7 +95,13 @@ export function ContainerEnvPanel({
   };
 
   const handleClear = async () => {
-    if (!window.confirm('确定要清空所有覆盖配置并重建工作区吗？')) return;
+    const confirmed = await confirmDialog({
+      title: '清空覆盖配置',
+      message: '确定要清空所有覆盖配置并重建工作区吗？',
+      confirmText: '清空并重建',
+      variant: 'danger',
+    });
+    if (!confirmed) return;
     setClearing(true);
     const ok = await saveConfig(groupJid, {
       anthropicBaseUrl: '',
@@ -109,6 +118,22 @@ export function ContainerEnvPanel({
       saveTimerRef.current = setTimeout(() => setSaveSuccess(false), 2000);
     }
   };
+
+  // Only meaningful edits enable saving: blank rows and system-managed keys
+  // are dropped on save, so they do not count as changes.
+  const dirty = useMemo(() => {
+    const normalize = (entries: { key: string; value: string }[]) =>
+      JSON.stringify(
+        entries
+          .map(({ key, value }) => [key.trim(), value] as const)
+          .filter(([key]) => key && !SYSTEM_MANAGED_ENV_KEYS.has(key))
+          .sort(([a], [b]) => a.localeCompare(b)),
+      );
+    const saved = Object.entries(config?.customEnv || {}).map(
+      ([key, value]) => ({ key, value }),
+    );
+    return normalize(customEnv) !== normalize(saved);
+  }, [config, customEnv]);
 
   const addCustomEnv = () => {
     setCustomEnv((prev) => [...prev, { key: '', value: '' }]);
@@ -130,7 +155,7 @@ export function ContainerEnvPanel({
 
   if (loading && !config) {
     return (
-      <div className="p-4 text-sm text-muted-foreground text-center">
+      <div className="p-4 text-center text-caption text-muted-foreground">
         加载中...
       </div>
     );
@@ -139,12 +164,8 @@ export function ContainerEnvPanel({
   if (error && !config) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-3 p-4 text-center">
-        <p className="text-sm text-destructive">环境变量加载失败：{error}</p>
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() => void loadConfig(groupJid)}
-        >
+        <p className="text-body text-error">环境变量加载失败：{error}</p>
+        <Button variant="outline" onClick={() => void loadConfig(groupJid)}>
           重试
         </Button>
       </div>
@@ -163,27 +184,26 @@ export function ContainerEnvPanel({
   );
 
   return (
-    <div className="flex flex-col h-full min-h-0">
+    <div className="flex h-full min-h-0 flex-col">
       {/* Header */}
-      <div className="flex items-center justify-between px-4 py-3 border-b border-border">
-        <h3 className="font-semibold text-foreground text-sm">
+      <div className="flex h-11 shrink-0 items-center justify-between gap-2 border-b border-surface-border pr-2 pl-4">
+        <h3 className="truncate text-title-sm text-foreground">
           工作区环境变量
         </h3>
-        <div className="flex items-center gap-1">
-          <button
+        <div className="flex shrink-0 items-center gap-0.5">
+          <IconButton
+            label="刷新"
+            icon={<RefreshCw className={cn(loading && 'animate-spin')} />}
             onClick={() => loadConfig(groupJid)}
-            className="text-muted-foreground hover:text-foreground p-2 rounded-md hover:bg-muted cursor-pointer"
-            title="刷新"
-          >
-            <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
-          </button>
+            className="text-muted-foreground pointer-coarse:size-9"
+          />
           {onClose && (
-            <button
+            <IconButton
+              label="关闭"
+              icon={<X />}
               onClick={onClose}
-              className="text-muted-foreground hover:text-foreground p-2 rounded-md hover:bg-muted cursor-pointer"
-            >
-              <X className="w-5 h-5" />
-            </button>
+              className="text-muted-foreground pointer-coarse:size-9"
+            />
           )}
         </div>
       </div>
@@ -192,23 +212,23 @@ export function ContainerEnvPanel({
       <div className="relative min-h-0 flex-1">
         <div
           ref={contentScrollRef}
-          className="hc-scroll-pane h-full overflow-y-auto px-4 py-3 space-y-4"
+          className="hc-scroll-pane h-full space-y-4 overflow-y-auto px-4 py-3"
           data-testid="environment-scroll"
         >
-          <p className="text-[11px] text-muted-foreground leading-relaxed">
+          <p className="text-caption leading-relaxed text-muted-foreground">
             这里保存项目运行需要的环境变量，仅对当前工作区生效。Provider
             地址和凭据由系统管理员统一管理；保存后工作区会自动重建。
           </p>
           {error && (
             <p
               role="alert"
-              className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-[11px] leading-5 text-destructive"
+              className="rounded-lg bg-error/10 px-3 py-2 text-caption text-error"
             >
               保存失败：{error}
             </p>
           )}
           {hasLegacySystemOverride && (
-            <p className="rounded-md border border-warning/30 bg-warning-bg px-3 py-2 text-[11px] leading-5 text-warning">
+            <p className="rounded-lg bg-warning/10 px-3 py-2 text-caption text-warning">
               该工作区包含旧版模型或 Provider
               覆盖。为兼容现有运行暂时保留，但不再允许在工作区编辑；请迁移到系统“模型配置”设置。
             </p>
@@ -216,21 +236,21 @@ export function ContainerEnvPanel({
 
           {/* Custom Env Vars */}
           <div>
-            <div className="flex items-center justify-between mb-2">
-              <label className="text-xs font-medium text-muted-foreground">
-                自定义环境变量
-              </label>
-              <button
+            <div className="mb-2 flex items-center justify-between">
+              <span className="text-label text-foreground">自定义环境变量</span>
+              <Button
+                variant="ghost"
+                size="xs"
                 onClick={addCustomEnv}
-                className="flex-shrink-0 flex items-center gap-1 text-[11px] text-primary hover:text-primary cursor-pointer"
+                className="-mr-1.5 text-muted-foreground"
               >
-                <Plus className="w-3 h-3" />
+                <Plus />
                 添加
-              </button>
+              </Button>
             </div>
 
             {customEnv.length === 0 ? (
-              <p className="text-[11px] text-muted-foreground">
+              <p className="text-caption text-muted-foreground">
                 暂无自定义变量
               </p>
             ) : (
@@ -244,9 +264,12 @@ export function ContainerEnvPanel({
                         updateCustomEnv(i, 'key', e.target.value)
                       }
                       placeholder="KEY"
-                      className="w-[40%] px-2 py-1 text-[11px] font-mono h-auto"
+                      aria-label={`第 ${i + 1} 个变量名`}
+                      className="w-[40%] font-mono md:text-caption"
                     />
-                    <span className="text-muted-foreground/50 text-xs">=</span>
+                    <span className="text-caption text-faint-foreground">
+                      =
+                    </span>
                     <Input
                       type="text"
                       value={item.value}
@@ -254,14 +277,15 @@ export function ContainerEnvPanel({
                         updateCustomEnv(i, 'value', e.target.value)
                       }
                       placeholder="value"
-                      className="flex-1 px-2 py-1 text-[11px] font-mono h-auto"
+                      aria-label={`第 ${i + 1} 个变量值`}
+                      className="min-w-0 flex-1 font-mono md:text-caption"
                     />
-                    <button
+                    <IconButton
+                      label="删除变量"
+                      icon={<X />}
                       onClick={() => removeCustomEnv(i)}
-                      className="flex-shrink-0 p-1 text-muted-foreground hover:text-red-500 cursor-pointer"
-                    >
-                      <X className="w-3.5 h-3.5" />
-                    </button>
+                      className="text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                    />
                   </div>
                 ))}
               </div>
@@ -272,31 +296,27 @@ export function ContainerEnvPanel({
       </div>
 
       {/* Footer */}
-      <div className="flex-shrink-0 p-3 border-t border-border space-y-2">
-        <div className="flex gap-2">
-          <Button
-            onClick={handleSave}
-            disabled={saving || clearing || !config}
-            className="flex-1"
-            size="sm"
-          >
-            {saving && <Loader2 className="size-4 animate-spin" />}
-            <Save className="w-4 h-4" />
-            {saveSuccess ? '已保存' : '保存并重建工作区'}
-          </Button>
-          <Button
+      <div className="shrink-0 space-y-2 border-t border-surface-border p-3">
+        <div className="flex items-center justify-end gap-2">
+          <IconButton
+            label="清空所有覆盖配置"
+            icon={clearing ? <Loader2 className="animate-spin" /> : <Trash2 />}
+            variant="outline"
+            size="icon"
             onClick={handleClear}
             disabled={saving || clearing || !config}
-            variant="outline"
-            size="sm"
-            title="清空所有覆盖配置"
+            tooltipSide="top"
+          />
+          <Button
+            onClick={handleSave}
+            disabled={saving || clearing || !config || !dirty}
           >
-            {clearing && <Loader2 className="size-4 animate-spin" />}
-            <Trash2 className="w-4 h-4" />
+            {saving ? <Loader2 className="animate-spin" /> : <Save />}
+            {saveSuccess ? '已保存' : '保存并重建工作区'}
           </Button>
         </div>
         {saveSuccess && (
-          <p className="text-[11px] text-primary text-center">
+          <p className="text-center text-caption text-success">
             配置已保存，工作区已重建
           </p>
         )}

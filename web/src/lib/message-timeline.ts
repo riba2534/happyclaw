@@ -61,6 +61,10 @@ export function getMessageDisplayTimestamp(
   return message.timestamp;
 }
 
+function compareCodeUnits(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
 export function orderMessagesForTimeline<T extends TimelineMessageLike>(
   messages: readonly T[],
 ): T[] {
@@ -68,12 +72,14 @@ export function orderMessagesForTimeline<T extends TimelineMessageLike>(
     .filter(isMessageVisibleInTimeline)
     .slice()
     .sort((left, right) => {
+      // ISO timestamps and ids order correctly by code unit; locale-aware
+      // comparison was several times slower on long histories.
       const leftTimestamp = getMessageDisplayTimestamp(left);
       const rightTimestamp = getMessageDisplayTimestamp(right);
       if (leftTimestamp === rightTimestamp) {
-        return left.id.localeCompare(right.id);
+        return compareCodeUnits(left.id, right.id);
       }
-      return leftTimestamp.localeCompare(rightTimestamp);
+      return compareCodeUnits(leftTimestamp, rightTimestamp);
     });
 }
 
@@ -98,6 +104,45 @@ export function applyFollowUpTransition<T extends TimelineMessageLike>(
       delivery_run_id:
         transition.delivery_run_id ?? message.delivery_run_id ?? null,
       delivery_updated_at: transition.delivery_updated_at,
+    } as T;
+  });
+  return changed ? updated : (messages as T[]);
+}
+
+/**
+ * Queued follow-ups can be edited before they run, and the edit lands only in
+ * the queue. Carry the queue's content onto the hidden message rows so a
+ * released row shows what was actually sent instead of the original text.
+ */
+export function syncFollowUpContent<
+  T extends TimelineMessageLike & {
+    content: string;
+    attachments?: string | null;
+  },
+>(
+  messages: readonly T[],
+  items: readonly { id: string; content: string; attachments?: string }[],
+): T[] {
+  if (items.length === 0 || messages.length === 0) return messages as T[];
+  const byId = new Map(items.map((item) => [item.id, item]));
+  let changed = false;
+  const updated = messages.map((message) => {
+    const item = byId.get(message.id);
+    if (
+      !item ||
+      (message.content === item.content &&
+        (item.attachments === undefined ||
+          message.attachments === item.attachments))
+    ) {
+      return message;
+    }
+    changed = true;
+    return {
+      ...message,
+      content: item.content,
+      ...(item.attachments !== undefined
+        ? { attachments: item.attachments }
+        : {}),
     } as T;
   });
   return changed ? updated : (messages as T[]);

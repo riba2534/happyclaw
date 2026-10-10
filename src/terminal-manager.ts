@@ -70,7 +70,16 @@ export class TerminalManager {
       try {
         const workerArgs = JSON.stringify({
           file: 'docker',
-          args: ['exec', '-it', '-u', 'node', containerName, '/bin/sh', '-c', shellBootstrap],
+          args: [
+            'exec',
+            '-it',
+            '-u',
+            'node',
+            containerName,
+            '/bin/sh',
+            '-c',
+            shellBootstrap,
+          ],
           name: 'xterm-256color',
           cols,
           rows,
@@ -93,7 +102,9 @@ export class TerminalManager {
 
         // Track whether PTY worker has been alive long enough to be considered healthy
         let ptyHealthy = false;
-        const ptyHealthTimer = setTimeout(() => { ptyHealthy = true; }, 2000);
+        const ptyHealthTimer = setTimeout(() => {
+          ptyHealthy = true;
+        }, 2000);
 
         // When the PTY worker fails to spawn, BOTH 'error' and 'close' fire.
         // Without this once-only guard, each would delete the session and call
@@ -104,7 +115,13 @@ export class TerminalManager {
           fellBackToPipe = true;
           this.ptyDisabled = true;
           this.sessions.delete(groupJid);
-          this.startPipeMode(groupJid, containerName, shellBootstrap, onData, onExit);
+          this.startPipeMode(
+            groupJid,
+            containerName,
+            shellBootstrap,
+            onData,
+            onExit,
+          );
         };
 
         // Parse JSON-line messages from the worker
@@ -121,7 +138,10 @@ export class TerminalManager {
                 onData(msg.data);
               } else if (msg.type === 'exit') {
                 if (!session.stoppedManually) {
-                  logger.info({ groupJid, exitCode: msg.exitCode, signal: msg.signal }, 'Terminal session exited');
+                  logger.info(
+                    { groupJid, exitCode: msg.exitCode, signal: msg.signal },
+                    'Terminal session exited',
+                  );
                   this.sessions.delete(groupJid);
                   onExit(msg.exitCode, msg.signal);
                 }
@@ -134,7 +154,10 @@ export class TerminalManager {
         });
 
         proc.stderr?.on('data', (chunk: Buffer) => {
-          logger.warn({ groupJid, stderr: chunk.toString().trim() }, 'PTY worker stderr');
+          logger.warn(
+            { groupJid, stderr: chunk.toString().trim() },
+            'PTY worker stderr',
+          );
         });
 
         proc.on('close', (exitCode) => {
@@ -142,7 +165,10 @@ export class TerminalManager {
           if (session.stoppedManually || !this.sessions.has(groupJid)) return;
           // If PTY worker crashes quickly (< 2s), node-pty is broken — fall back to pipe mode permanently
           if (!ptyHealthy) {
-            logger.warn({ groupJid, exitCode }, 'PTY worker crashed on startup, disabling PTY and falling back to pipe mode');
+            logger.warn(
+              { groupJid, exitCode },
+              'PTY worker crashed on startup, disabling PTY and falling back to pipe mode',
+            );
             fallBackToPipeOnce();
             return;
           }
@@ -171,7 +197,10 @@ export class TerminalManager {
         this.ptyDisabled = true;
       }
     } else if (!fs.existsSync(PTY_WORKER_PATH)) {
-      logger.warn({ path: PTY_WORKER_PATH }, 'PTY worker script not found, falling back to pipe terminal');
+      logger.warn(
+        { path: PTY_WORKER_PATH },
+        'PTY worker script not found, falling back to pipe terminal',
+      );
     }
 
     this.startPipeMode(groupJid, containerName, shellBootstrap, onData, onExit);
@@ -185,13 +214,26 @@ export class TerminalManager {
     onData: (data: string) => void,
     onExit: (exitCode: number, signal?: number) => void,
   ): void {
-    const proc = spawn('docker', ['exec', '-i', '-u', 'node', containerName, '/bin/sh', '-c', shellBootstrap], {
-      stdio: ['pipe', 'pipe', 'pipe'],
-      env: {
-        ...process.env,
-        TERM: process.env.TERM || 'xterm-256color',
+    const proc = spawn(
+      'docker',
+      [
+        'exec',
+        '-i',
+        '-u',
+        'node',
+        containerName,
+        '/bin/sh',
+        '-c',
+        shellBootstrap,
+      ],
+      {
+        stdio: ['pipe', 'pipe', 'pipe'],
+        env: {
+          ...process.env,
+          TERM: process.env.TERM || 'xterm-256color',
+        },
       },
-    });
+    );
 
     const session: PipeTerminalSession = {
       mode: 'pipe',
@@ -234,13 +276,32 @@ export class TerminalManager {
     );
   }
 
+  /**
+   * Stop reading this session's output until resume(). In PTY mode the
+   * worker's stdout pipe fills and the worker pauses the pty; in pipe mode
+   * the docker exec process blocks on its own writes.
+   */
+  pause(groupJid: string): void {
+    const session = this.sessions.get(groupJid);
+    session?.process.stdout?.pause();
+    if (session?.mode === 'pipe') session.process.stderr?.pause();
+  }
+
+  resume(groupJid: string): void {
+    const session = this.sessions.get(groupJid);
+    session?.process.stdout?.resume();
+    if (session?.mode === 'pipe') session.process.stderr?.resume();
+  }
+
   write(groupJid: string, data: string): void {
     const session = this.sessions.get(groupJid);
     if (!session) return;
 
     if (session.mode === 'pty') {
       // Send write command to PTY worker via JSON line
-      session.process.stdin?.write(JSON.stringify({ type: 'write', data }) + '\n');
+      session.process.stdin?.write(
+        JSON.stringify({ type: 'write', data }) + '\n',
+      );
     } else if (session.process.stdin?.writable) {
       // Pipe mode: local line buffer with editing support.
       // Characters are buffered locally; only the final edited line is sent
@@ -306,7 +367,9 @@ export class TerminalManager {
     const session = this.sessions.get(groupJid);
     if (session?.mode === 'pty') {
       try {
-        session.process.stdin?.write(JSON.stringify({ type: 'resize', cols, rows }) + '\n');
+        session.process.stdin?.write(
+          JSON.stringify({ type: 'resize', cols, rows }) + '\n',
+        );
       } catch {
         // Worker may already be dead — ignore
       }
@@ -322,7 +385,11 @@ export class TerminalManager {
       try {
         if (session.mode === 'pty') {
           session.process.stdin?.write(JSON.stringify({ type: 'kill' }) + '\n');
-          setTimeout(() => { try { session.process.kill(); } catch {} }, 500);
+          setTimeout(() => {
+            try {
+              session.process.kill();
+            } catch {}
+          }, 500);
         } else {
           session.process.kill();
         }

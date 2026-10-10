@@ -86,13 +86,26 @@ async function openContextSheet(page: Page): Promise<Locator> {
   await page.getByRole('button', { name: '展开上下文面板' }).click();
   const sheet = page.getByTestId('mobile-context-sheet');
   await expect(sheet).toBeVisible();
+  await settleAnimations(sheet);
   return sheet;
 }
 
+/** Wait for enter animations: rows of a sliding sheet are not "stable". */
+async function settleAnimations(scope: Locator) {
+  await scope.evaluate((element) =>
+    Promise.all(
+      element
+        .getAnimations({ subtree: true })
+        .map((animation) => animation.finished.catch(() => undefined)),
+    ),
+  );
+}
+
 async function clickFile(sheet: Locator, fileName: string) {
-  const file = sheet.getByText(fileName, { exact: true });
-  await file.scrollIntoViewIfNeeded();
-  await file.click();
+  // click() scrolls into view, waits for stability and re-resolves the
+  // locator if the row re-renders; a separate scrollIntoViewIfNeeded() fails
+  // outright when the element is replaced mid-action on slow CI machines.
+  await sheet.getByText(fileName, { exact: true }).click();
 }
 
 async function wheelInside(page: Page, scrollPane: Locator, deltaY: number) {
@@ -300,7 +313,9 @@ test('audio and video controls can take focus without escaping the sheet scope',
     await clickFile(sheet, item.file);
     const preview = page.getByRole('dialog', { name: item.dialog });
     await expect(preview).toBeVisible();
+    await settleAnimations(preview);
     const media = preview.locator(item.selector);
+    await expect(media).toBeAttached();
     await media.focus();
     await expect(media).toBeFocused();
     await expect

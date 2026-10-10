@@ -12,7 +12,12 @@ export class RunStreamFence {
   private readonly activeRuns = new Map<string, string>();
   private readonly turnOwners = new Map<string, Map<string, string>>();
 
-  constructor(private readonly maxTurnsPerJid = 64) {}
+  constructor(
+    private readonly maxTurnsPerJid = 64,
+    // Every session and isolated-task run has its own runtime JID; without a
+    // cap the outer map grew by one entry per run for the process lifetime.
+    private readonly maxJids = 2_000,
+  ) {}
 
   start(jid: string, runId: string): void {
     this.activeRuns.set(jid, runId);
@@ -66,10 +71,14 @@ export class RunStreamFence {
 
   private rememberTurnOwner(jid: string, turnId: string, runId: string): void {
     let owners = this.turnOwners.get(jid);
-    if (!owners) {
+    if (owners) {
+      // Most recently proven JIDs are the last to be evicted.
+      this.turnOwners.delete(jid);
+    } else {
       owners = new Map<string, string>();
-      this.turnOwners.set(jid, owners);
     }
+    this.turnOwners.set(jid, owners);
+    if (this.turnOwners.size > this.maxJids) this.evictIdleJids();
     // Refresh insertion order so the most recently proven exact owner is the
     // last one evicted from the bounded compatibility cache.
     owners.delete(turnId);
@@ -79,5 +88,24 @@ export class RunStreamFence {
       if (!oldest) break;
       owners.delete(oldest);
     }
+  }
+
+  /**
+   * Evict the least recently proven JIDs that have no active run. A JID with
+   * a live run keeps its owners even past the cap: dropping them would let a
+   * late event from the previous run be credited to the current one. The
+   * overshoot is bounded by the number of concurrently active runs.
+   */
+  private evictIdleJids(): void {
+    for (const candidate of this.turnOwners.keys()) {
+      if (this.turnOwners.size <= this.maxJids) return;
+      if (this.activeRuns.has(candidate)) continue;
+      this.turnOwners.delete(candidate);
+    }
+  }
+
+  /** Diagnostic visibility for bound assertions. */
+  get trackedJidCount(): number {
+    return this.turnOwners.size;
   }
 }

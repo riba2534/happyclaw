@@ -4,7 +4,7 @@
  *
  * Manages:
  * - Text/thinking buffering and flushing
- * - Tool use start/end tracking (top-level, nested, Skill, Task)
+ * - Tool use start/end tracking (top-level, nested, Skill, Agent/Task)
  * - Sub-agent message conversion to StreamEvents
  * - Cleanup of residual tool states
  */
@@ -1279,6 +1279,26 @@ export class StreamEventProcessor {
       });
       return true;
     }
+    // Claude Code 2.1.283+ forwards turn warnings and notices it used to drop
+    // (hook feedback, MCP sign-in notices, ...). prevent_continuation marks a
+    // turn that a hook stopped.
+    if (message.subtype === 'informational') {
+      const content =
+        typeof message.content === 'string' ? message.content : '';
+      const stopsTurn = message.prevent_continuation === true;
+      this.emitStreamEvent({
+        eventType: 'notification',
+        agentScope: 'system',
+        title: stopsTurn ? 'Claude Code stopped the turn' : 'Claude Code',
+        summary: content.slice(0, 500),
+        detail: content,
+        displayLevel:
+          stopsTurn || message.level === 'warning' ? 'primary' : 'detail',
+        messageUuid: message.uuid,
+        sessionId: message.session_id,
+      });
+      return true;
+    }
     if (message.subtype === 'local_command_output') {
       this.emitStreamEvent({
         eventType: 'notification',
@@ -1644,8 +1664,32 @@ export class StreamEventProcessor {
             },
           });
         }
+        this.endTopLevelToolOnResult(block.tool_use_id);
       }
     }
+  }
+
+  /**
+   * A returned top-level tool is finished. Waiting for the next assistant
+   * message to infer its end left "正在运行命令" (and a spinning card) on
+   * screen for 5-6s per tool while the model was already planning its next
+   * step. Task tools end via their task lifecycle, and the active Skill keeps
+   * nesting the tools it runs, so both keep the inferred end.
+   */
+  private endTopLevelToolOnResult(toolUseId: string): void {
+    if (
+      toolUseId !== this.activeTopLevelToolUseId ||
+      this.taskToolUseIds.has(toolUseId) ||
+      toolUseId === this.activeSkillToolUseId
+    ) {
+      return;
+    }
+    this.emit({
+      status: 'stream',
+      result: null,
+      streamEvent: { eventType: 'tool_use_end', toolUseId },
+    });
+    this.activeTopLevelToolUseId = null;
   }
 
   /** Check if a tool_use was already resolved by the streaming accumulator. */

@@ -32,7 +32,8 @@ describe('dynamic Workflow product contract', () => {
     );
 
     expect(bubble).toContain('<WorkflowRunCard');
-    expect(bubble).toContain('<MarkdownRenderer');
+    // Replies render through FinalMarkdown (block-wise, MarkdownRenderer per block).
+    expect(bubble).toContain('<FinalMarkdown');
     expect(card).toContain('动态工作流');
     expect(card).toContain('工具调用');
     expect(card).toContain('任务摘要');
@@ -69,8 +70,14 @@ describe('dynamic Workflow product contract', () => {
       'web/src/components/chat/SessionSidebar.tsx',
       'utf8',
     );
+    const presentation = fs.readFileSync(
+      'web/src/lib/session-presentation.ts',
+      'utf8',
+    );
 
-    expect(sidebar).toContain('getPresentedMessageContent');
+    // Both the mobile list and the desktop tree preview through this helper.
+    expect(sidebar).toContain("from '../../lib/session-presentation'");
+    expect(presentation).toContain('getPresentedMessageContent');
   });
 
   test('keeps running Workflow state across a held background acknowledgement', () => {

@@ -217,6 +217,9 @@ describe('Feishu Capability Broker executor', () => {
         msg_type: 'interactive',
         content: JSON.stringify(card),
         reply_in_thread: true,
+        // Idempotent Feishu uuid (≤50 chars) so an ambiguous send can be
+        // replayed without a second visible reply.
+        uuid: expect.stringMatching(/^hc[a-f0-9]{40}$/),
       },
     });
     expect(result.data).toMatchObject({ messageId: 'om_card' });

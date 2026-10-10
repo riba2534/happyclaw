@@ -139,6 +139,14 @@ export interface IMChannelConnectOpts {
     chatJid: string,
     command: string,
     senderImId?: string,
+    /** Structured provider mentions (Feishu), e.g. for /allow @user. */
+    mentions?: Array<{
+      key?: string;
+      name?: string;
+      id?: { open_id?: string; user_id?: string; union_id?: string };
+    }>,
+    /** Routed native metadata (topic/thread) of the command message. */
+    messageMeta?: ChannelMessageMeta,
   ) => Promise<string | null>;
   /** 根据 jid 解析群组 folder，用于下载文件/图片到工作区 */
   resolveGroupFolder?: (jid: string) => string | undefined;
@@ -165,17 +173,23 @@ export interface IMChannelConnectOpts {
     sourceJid: string;
     targetJid?: string;
     senderImId: string;
+    /** Native chat type of the command message, when known. */
+    chatType?: 'p2p' | 'group';
   }) => Promise<string>;
   onSessionClear?: (input: {
     sourceJid: string;
     targetJid?: string;
     senderImId: string;
+    /** Native chat type of the command message, when known. */
+    chatType?: 'p2p' | 'group';
   }) => Promise<string>;
   onSessionFresh?: (input: {
     sourceJid: string;
     targetJid?: string;
     senderImId: string;
     notes: string;
+    /** Native chat type of the command message, when known. */
+    chatType?: 'p2p' | 'group';
   }) => Promise<string>;
   onFollowUpCardAction?: (input: {
     sourceJid: string;
@@ -215,6 +229,16 @@ export interface IMChannelConnectOpts {
   normalizeIncomingJid?: (jid: string) => string | null;
   /** Persist the provider event but postpone policy/routing execution. */
   shouldDeferInbound?: () => boolean;
+  /**
+   * Subscribe to the inbound gate opening again (startup recovery done or a
+   * shutdown pause lifted). Returns an unsubscribe function.
+   */
+  onInboundGateOpen?: (listener: () => void) => () => void;
+  /** A provider message in a bound chat was recalled by a user or admin. */
+  onMessageRecalled?: (
+    chatJid: string,
+    messageId: string,
+  ) => void | Promise<void>;
   /** WeChat iLink authorization/transport lifecycle. */
   onWeChatConnectionStateChange?: (state: WeChatConnectionState) => void;
   /** WeCom WebSocket authentication/transport lifecycle. */
@@ -290,6 +314,11 @@ export interface ChannelMessageDeliveryOptions {
   chunkIndex?: number;
   /** Enforce the one-outbox-row/one-provider-request invariant. */
   physicalOutput?: boolean;
+  /**
+   * Provider message id of the input this output answers. Feishu private
+   * chats reply to it instead of guessing the chat's latest inbound message.
+   */
+  inputMessageId?: string;
 }
 
 /**
@@ -351,6 +380,8 @@ export function createFeishuChannel(config: FeishuConnectionConfig): IMChannel {
         onP2pSender: opts.onP2pSender,
         normalizeIncomingJid: opts.normalizeIncomingJid,
         shouldDeferInbound: opts.shouldDeferInbound,
+        onInboundGateOpen: opts.onInboundGateOpen,
+        onMessageRecalled: opts.onMessageRecalled,
       });
       return connected;
     },
@@ -382,13 +413,23 @@ export function createFeishuChannel(config: FeishuConnectionConfig): IMChannel {
       mimeType: string,
       caption?: string,
       fileName?: string,
+      options?: ChannelMessageDeliveryOptions,
     ): Promise<void> {
       if (!inner) {
         throw new Error(
           `Feishu channel is not connected; image to ${chatId} was not sent`,
         );
       }
-      await inner.sendImage(chatId, imageBuffer, mimeType, caption, fileName);
+      // Delivery options carry the outbox identity that becomes Feishu's
+      // idempotency uuid; dropping them would make a replay send twice.
+      await inner.sendImage(
+        chatId,
+        imageBuffer,
+        mimeType,
+        caption,
+        fileName,
+        options,
+      );
     },
 
     async setTyping(_chatId: string, _isTyping: boolean): Promise<void> {
@@ -424,13 +465,14 @@ export function createFeishuChannel(config: FeishuConnectionConfig): IMChannel {
       chatId: string,
       filePath: string,
       fileName: string,
+      options?: ChannelMessageDeliveryOptions,
     ): Promise<void> {
       if (!inner) {
         throw new Error(
           `Feishu channel is not connected; file to ${chatId} was not sent`,
         );
       }
-      await inner.sendFile(chatId, filePath, fileName);
+      await inner.sendFile(chatId, filePath, fileName, options);
     },
 
     async getChatInfo(chatId: string) {
@@ -447,6 +489,7 @@ export function createFeishuChannel(config: FeishuConnectionConfig): IMChannel {
       chatId: string,
       onCardCreated?: (messageId: string) => void,
       lifecycle?: StreamingCardLifecycle,
+      inputMessageId?: string,
     ): Promise<StreamingSession | undefined> {
       if (!inner) return undefined;
       const larkClient = inner.getLarkClient();
@@ -459,7 +502,9 @@ export function createFeishuChannel(config: FeishuConnectionConfig): IMChannel {
       const opts: StreamingCardOptions = {
         client: larkClient,
         chatId: target.chatId,
-        replyToMsgId: inner.getLastMessageId(chatId),
+        // Anchor on THIS turn's input, not on whatever message the private
+        // chat received last (a queued follow-up would otherwise be quoted).
+        replyToMsgId: inner.getLastMessageId(chatId, inputMessageId),
         replyInThread: target.replyInThread,
         onCardCreated,
         lifecycle,

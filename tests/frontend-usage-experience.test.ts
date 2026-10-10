@@ -170,6 +170,29 @@ describe('usage analytics frontend contract', () => {
     });
   });
 
+  test('takes windowed KPIs from the server summary without the row breakdown', async () => {
+    const raw = enhancedResponse(7, 10);
+    const normalized = normalizeUsageResponse(
+      { ...raw, breakdown: [] },
+      DEFAULT_QUERY,
+      new Date('2026-07-16T12:00:00+08:00'),
+    );
+    expect(normalized.summary).toMatchObject({
+      inputTokens: 10,
+      outputTokens: 2,
+      cacheReadTokens: 3,
+      cacheCreationTokens: 4,
+      totalTokens: 19,
+      providerEstimatedCostUSD: 1,
+      activeDays: 1,
+    });
+
+    apiMock.get.mockResolvedValue({ ...raw, breakdown: [] });
+    await useUsageStore.getState().loadStats(DEFAULT_QUERY);
+    expect(apiMock.get.mock.calls[0][0]).toContain('breakdown=none');
+    expect(useUsageStore.getState().summary?.totalTokens).toBe(19);
+  });
+
   test('keeps four token classes mutually exclusive and trusts de-duplicated run totals', () => {
     const raw = enhancedResponse(7, 10);
     raw.summary.runCount = 1;
@@ -326,11 +349,19 @@ describe('usage page product and accessibility surface', () => {
     expect(page).toContain('账单扣费：不适用（未启用计费）');
     expect(page).toMatch(/visibleBilling\?\.applicable \?\? billingEnabled/);
     expect(page).toMatch(/exportError\.status === 404/);
+    // Stats come without the row breakdown; export availability must not
+    // depend on it.
+    expect(page).toContain('disabled={exporting || !hasExportableUsage}');
     expect(page).toMatch(/exportError\.status === 413/);
     expect(page).toMatch(
       /Promise\.all\(\[loadStats\(query\), loadFilters\(query\)\]\)/,
     );
     expect(page).not.toMatch(/PieChart|<Pie|模型用量分布/);
-    expect(auth).toContain('useUsageStore.getState().reset()');
+    // Signing in or out resets the usage cache through the user-scope
+    // registry, so auth never has to download the usage store to clear it.
+    expect(auth).toContain('resetUserScopedStores()');
+    expect(read('web/src/stores/usage.ts')).toContain(
+      'registerUserScopedReset(() => useUsageStore.getState().reset())',
+    );
   });
 });

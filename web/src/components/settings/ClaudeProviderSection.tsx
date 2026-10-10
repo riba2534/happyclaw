@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Loader2 } from 'lucide-react';
+import { Loader2, Plus } from 'lucide-react';
 
 import { ConfirmDialog } from '@/components/common/ConfirmDialog';
+import { Button } from '@/components/ui/button';
 import { api } from '../../api/client';
 import type {
   BalancingConfig,
@@ -13,6 +14,8 @@ import { getErrorMessage } from './types';
 import { ProviderList } from './ProviderList';
 import { ProviderEditor } from './ProviderEditor';
 import { BalancingSettings } from './BalancingSettings';
+import { useVisibleInterval } from '../../hooks/useVisibleInterval';
+import { SettingsSection } from './SettingsLayout';
 
 interface ClaudeProviderSectionProps {
   setNotice: (msg: string | null) => void;
@@ -61,9 +64,6 @@ export function ClaudeProviderSection({
   const [pendingDeleteProvider, setPendingDeleteProvider] =
     useState<ProviderWithHealth | null>(null);
 
-  // 健康轮询标记
-  const healthTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-
   // ─── 加载提供商列表 ──────────────────────────────────────────
   const loadProviders = useCallback(async () => {
     try {
@@ -84,39 +84,23 @@ export function ClaudeProviderSection({
     loadProviders();
   }, [loadProviders]);
 
-  // ─── 健康状态轮询（启用 >= 2 个提供商时） ────────────────────
-  useEffect(() => {
-    if (healthTimerRef.current) {
-      clearInterval(healthTimerRef.current);
-      healthTimerRef.current = null;
+  // ─── 健康状态轮询（启用 >= 2 个提供商时，仅页面可见时） ──────
+  const pollHealth = useCallback(async () => {
+    try {
+      const data = await api.get<{ statuses: ProviderHealthStatus[] }>(
+        '/api/config/claude/providers/health',
+      );
+      setProviders((prev) =>
+        prev.map((p) => {
+          const updated = data.statuses.find((s) => s.profileId === p.id);
+          return updated ? { ...p, health: updated } : p;
+        }),
+      );
+    } catch {
+      // 静默忽略
     }
-
-    if (enabledCount < 2) return;
-
-    const pollHealth = async () => {
-      try {
-        const data = await api.get<{ statuses: ProviderHealthStatus[] }>(
-          '/api/config/claude/providers/health',
-        );
-        setProviders((prev) =>
-          prev.map((p) => {
-            const updated = data.statuses.find((s) => s.profileId === p.id);
-            return updated ? { ...p, health: updated } : p;
-          }),
-        );
-      } catch {
-        // 静默忽略
-      }
-    };
-
-    healthTimerRef.current = setInterval(pollHealth, 10000);
-    return () => {
-      if (healthTimerRef.current) {
-        clearInterval(healthTimerRef.current);
-        healthTimerRef.current = null;
-      }
-    };
-  }, [enabledCount]);
+  }, []);
+  useVisibleInterval(pollHealth, 10000, enabledCount >= 2);
 
   // ─── 切换提供商启用/禁用 ──────────────────────────────────────
   const handleToggle = useCallback(
@@ -257,48 +241,63 @@ export function ClaudeProviderSection({
     setEditingProvider(null);
   }, []);
 
+  const handleAdd = useCallback(() => {
+    setEditingProvider(null);
+    setEditorOpen(true);
+  }, []);
+
   const busy =
     loading || togglingId !== null || deletingId !== null || balancingSaving;
 
   if (loading && providers.length === 0) {
     return (
       <div className="flex items-center justify-center py-12">
-        <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
+        <Loader2 className="size-5 animate-spin text-muted-foreground" />
       </div>
     );
   }
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-6">
       {/* 提供商列表 */}
-      <ProviderList
-        providers={providers}
-        onEdit={(p) => {
-          setEditingProvider(p);
-          setEditorOpen(true);
-        }}
-        onDelete={(p) => setPendingDeleteProvider(p)}
-        onToggle={handleToggle}
-        onResetHealth={handleResetHealth}
-        onDuplicate={handleDuplicate}
-        onAdd={() => {
-          setEditingProvider(null);
-          setEditorOpen(true);
-        }}
-        togglingId={togglingId}
-        deletingId={deletingId}
-        disabled={busy}
-      />
-
-      {/* 负载均衡设置：配置了多个模型时展示（池只在 >=2 启用时生效） */}
-      {balancing && providers.length >= 2 && (
-        <BalancingSettings
-          balancing={balancing}
-          onChange={handleBalancingChange}
+      <SettingsSection
+        title="模型配置列表"
+        description={`${providers.length} 个模型配置`}
+        actions={
+          providers.length > 0 && (
+            <Button onClick={handleAdd} disabled={busy}>
+              <Plus />
+              添加模型配置
+            </Button>
+          )
+        }
+      >
+        <ProviderList
+          providers={providers}
+          onEdit={(p) => {
+            setEditingProvider(p);
+            setEditorOpen(true);
+          }}
+          onDelete={(p) => setPendingDeleteProvider(p)}
+          onToggle={handleToggle}
+          onResetHealth={handleResetHealth}
+          onDuplicate={handleDuplicate}
+          onAdd={handleAdd}
+          togglingId={togglingId}
+          deletingId={deletingId}
           disabled={busy}
-          saving={balancingSaving}
         />
-      )}
+
+        {/* 负载均衡设置：配置了多个模型时展示（池只在 >=2 启用时生效） */}
+        {balancing && providers.length >= 2 && (
+          <BalancingSettings
+            balancing={balancing}
+            onChange={handleBalancingChange}
+            disabled={busy}
+            saving={balancingSaving}
+          />
+        )}
+      </SettingsSection>
 
       {/* 编辑器弹窗 */}
       <ProviderEditor

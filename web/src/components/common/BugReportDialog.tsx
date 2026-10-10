@@ -14,6 +14,8 @@ import {
 } from '@/components/ui/dialog';
 import { showToast } from '@/utils/toast';
 import { planImageClipboardPaste } from '@/lib/mixed-paste';
+import { cn } from '@/lib/utils';
+import { IconButton } from './IconButton';
 
 interface BugReportDialogProps {
   open: boolean;
@@ -340,10 +342,15 @@ export function BugReportDialog({ open, onClose }: BugReportDialogProps) {
 
   return (
     <Dialog open={open} onOpenChange={(v) => !v && handleClose()}>
-      <DialogContent className="sm:max-w-2xl max-h-[85vh] overflow-y-auto">
+      <DialogContent
+        className={cn(
+          'max-h-[85vh] overflow-y-auto',
+          step === 2 ? 'sm:max-w-2xl' : 'sm:max-w-lg',
+        )}
+      >
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
-            <Bug className="w-5 h-5" />
+            <Bug className="size-4 text-muted-foreground" />
             {step === 1 && '报告问题'}
             {step === 2 && '预览 & 编辑'}
           </DialogTitle>
@@ -353,53 +360,59 @@ export function BugReportDialog({ open, onClose }: BugReportDialogProps) {
         {step === 1 && !showConfirm && (
           <div className="space-y-4" onPaste={handlePaste}>
             <div>
-              <label className="text-sm font-medium text-foreground mb-1 block">
+              <label
+                htmlFor="bug-report-description"
+                className="mb-1.5 block text-label text-foreground"
+              >
                 问题描述 <span className="text-error">*</span>
               </label>
               <Textarea
+                id="bug-report-description"
                 value={description}
                 onChange={(e) => setDescription(e.target.value)}
                 placeholder="请描述你遇到的问题..."
                 rows={4}
                 maxLength={MAX_DESCRIPTION_LENGTH}
               />
-              <p className="text-xs text-muted-foreground mt-1">
+              <p className="mt-1.5 text-caption text-muted-foreground tabular-nums">
                 {description.length}/{MAX_DESCRIPTION_LENGTH}
               </p>
             </div>
 
             <div>
-              <label className="text-sm font-medium text-foreground mb-1 block">
+              <p className="mb-1.5 text-label text-foreground">
                 截图（可选，最多 {MAX_SCREENSHOTS} 张）
-              </label>
+              </p>
               <div className="flex flex-wrap gap-2">
                 {screenshots.map((_, i) => (
                   <div
                     key={i}
-                    className="relative w-16 h-16 rounded-md bg-muted border border-border flex items-center justify-center text-xs text-muted-foreground"
+                    className="relative flex size-16 items-center justify-center rounded-lg bg-surface-hover text-caption text-muted-foreground ring-1 ring-surface-border"
                   >
                     截图 {i + 1}
-                    <button
-                      type="button"
+                    <IconButton
+                      label={`移除截图 ${i + 1}`}
+                      icon={<X />}
+                      size="icon-xs"
+                      variant="outline"
                       onClick={() => removeScreenshot(i)}
-                      className="absolute -top-1 -right-1 w-4 h-4 bg-red-500 text-white rounded-full flex items-center justify-center"
-                    >
-                      <X className="w-3 h-3" />
-                    </button>
+                      className="absolute -top-2 -right-2 size-5 rounded-full bg-surface-raised dark:bg-surface-raised"
+                    />
                   </div>
                 ))}
                 {screenshots.length < MAX_SCREENSHOTS && (
-                  <button
+                  <Button
                     type="button"
+                    variant="outline"
                     onClick={() => fileInputRef.current?.click()}
-                    className="w-16 h-16 rounded-md border-2 border-dashed border-border flex flex-col items-center justify-center text-muted-foreground hover:border-brand-400 hover:text-brand-500 transition-colors"
+                    className="size-16 flex-col gap-1 border-dashed text-muted-foreground"
                   >
-                    <ImagePlus className="w-5 h-5" />
-                    <span className="text-[10px] mt-0.5">添加</span>
-                  </button>
+                    <ImagePlus />
+                    <span className="text-micro">添加</span>
+                  </Button>
                 )}
               </div>
-              <p className="text-xs text-muted-foreground mt-1">
+              <p className="mt-1.5 text-caption text-muted-foreground">
                 支持粘贴截图或点击添加，单张不超过 5MB
               </p>
               <input
@@ -415,15 +428,17 @@ export function BugReportDialog({ open, onClose }: BugReportDialogProps) {
 
         {/* Confirmation when gh available */}
         {step === 1 && showConfirm && (
-          <div className="text-center py-4 space-y-3">
-            <p className="text-sm text-foreground">
+          <div className="space-y-1 py-4 text-center">
+            <p className="text-body text-foreground">
               将以{' '}
-              <span className="font-semibold text-foreground">
+              <span className="font-medium text-foreground">
                 {caps?.ghUsername || 'GitHub'}
               </span>{' '}
               的身份提交 Issue 到
             </p>
-            <p className="text-sm text-muted-foreground">riba2534/happyclaw</p>
+            <p className="font-mono text-caption text-muted-foreground">
+              riba2534/happyclaw
+            </p>
           </div>
         )}
 
@@ -431,10 +446,14 @@ export function BugReportDialog({ open, onClose }: BugReportDialogProps) {
         {step === 2 && (
           <div className="space-y-4">
             <div>
-              <label className="text-sm font-medium text-foreground mb-1 block">
+              <label
+                htmlFor="bug-report-title"
+                className="mb-1.5 block text-label text-foreground"
+              >
                 Issue 标题
               </label>
               <Input
+                id="bug-report-title"
                 value={title}
                 onChange={(e) => setTitle(e.target.value)}
                 maxLength={256}
@@ -442,27 +461,31 @@ export function BugReportDialog({ open, onClose }: BugReportDialogProps) {
             </div>
 
             <div>
-              <label className="text-sm font-medium text-foreground mb-1 block">
+              <label
+                htmlFor="bug-report-body"
+                className="mb-1.5 block text-label text-foreground"
+              >
                 Issue 内容（Markdown）
               </label>
               <Textarea
+                id="bug-report-body"
                 value={body}
                 onChange={(e) => setBody(e.target.value)}
                 rows={12}
-                className="font-mono text-xs"
+                className="font-mono text-caption md:text-caption"
               />
             </div>
 
             {Object.keys(systemInfo).length > 0 && (
               <div>
-                <p className="text-xs font-medium text-muted-foreground mb-1">
+                <p className="mb-1.5 text-caption font-medium text-muted-foreground">
                   系统信息
                 </p>
                 <div className="flex flex-wrap gap-1">
                   {Object.entries(systemInfo).map(([k, v]) => (
                     <span
                       key={k}
-                      className="text-xs bg-muted text-muted-foreground px-2 py-0.5 rounded"
+                      className="rounded-md bg-surface-selected px-1.5 py-0.5 text-caption break-all text-muted-foreground"
                     >
                       {k}: {v}
                     </span>
@@ -481,7 +504,7 @@ export function BugReportDialog({ open, onClose }: BugReportDialogProps) {
                 取消
               </Button>
               <Button onClick={handleSubmitClick} disabled={loading}>
-                {loading && <Loader2 className="w-4 h-4 animate-spin" />}
+                {loading && <Loader2 className="size-4 animate-spin" />}
                 {loading ? '分析中...' : '提交'}
               </Button>
             </>
@@ -514,11 +537,11 @@ export function BugReportDialog({ open, onClose }: BugReportDialogProps) {
                 返回
               </Button>
               <Button variant="outline" onClick={handleCopy}>
-                <Copy className="w-4 h-4" />
+                <Copy />
                 {copied ? '已复制' : '复制内容'}
               </Button>
               <Button onClick={handleManualSubmit} disabled={loading}>
-                {loading && <Loader2 className="w-4 h-4 animate-spin" />}
+                {loading && <Loader2 className="size-4 animate-spin" />}
                 {loading ? '提交中...' : '提交 Issue'}
               </Button>
             </>

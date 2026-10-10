@@ -9,6 +9,7 @@ import {
 import {
   Dialog,
   DialogContent,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
@@ -97,7 +98,7 @@ export function BindingTargetDialog({
     >
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle className="text-base truncate">
+          <DialogTitle className="truncate pr-8">
             {targetType === 'workspace'
               ? '选择工作区'
               : targetType === 'session'
@@ -122,16 +123,16 @@ export function BindingTargetDialog({
           />
         )}
 
-        <div className="space-y-3 max-h-80 overflow-y-auto">
+        <div className="-mx-1 max-h-80 space-y-4 overflow-y-auto px-1">
           {targetsLoading && (
-            <div className="flex items-center justify-center py-8 text-muted-foreground">
-              <Loader2 className="w-4 h-4 animate-spin mr-2" />
+            <div className="flex items-center justify-center py-8 text-body text-muted-foreground">
+              <Loader2 className="mr-2 size-4 animate-spin" />
               加载中...
             </div>
           )}
 
           {!targetsLoading && targets.length === 0 && (
-            <div className="text-center py-8 text-muted-foreground text-sm">
+            <div className="py-8 text-center text-caption text-muted-foreground">
               {targetType === 'workspace'
                 ? '暂无可绑定的工作区。请先创建工作区。'
                 : targetType === 'session'
@@ -141,50 +142,54 @@ export function BindingTargetDialog({
           )}
 
           {!targetsLoading && targets.length > 0 && filtered.length === 0 && (
-            <div className="text-center py-6 text-muted-foreground text-sm">
+            <div className="py-6 text-center text-caption text-muted-foreground">
               没有匹配的目标
             </div>
           )}
 
           {!targetsLoading &&
             Array.from(grouped.entries()).map(([agentKey, agentGroup]) => (
-              <div key={agentKey} className="space-y-2">
-                <div className="flex items-center gap-1.5 px-1 text-xs font-semibold text-foreground">
-                  <Bot className="w-3.5 h-3.5 text-primary" />
+              <div key={agentKey} className="space-y-1.5">
+                <div className="flex items-center gap-1.5 px-1 text-caption font-medium text-foreground">
+                  <Bot className="size-3.5 text-muted-foreground" />
                   {agentGroup.agentName}
                 </div>
                 {Array.from(agentGroup.workspaces.entries()).map(
                   ([groupJid, items]) => (
                     <div
                       key={groupJid}
-                      className="space-y-1 rounded-md border border-border/60 p-2"
+                      className="overflow-hidden rounded-lg ring-1 ring-surface-border"
                     >
-                      <div className="flex items-center gap-1.5 px-1 text-xs font-medium text-muted-foreground">
-                        <FolderOpen className="w-3 h-3" />
-                        {items[0].groupName}
+                      <div className="flex items-center gap-1.5 border-b border-surface-border bg-muted/40 px-3 py-1.5 text-caption text-muted-foreground">
+                        <FolderOpen className="size-3.5" />
+                        <span className="truncate">{items[0].groupName}</span>
                       </div>
-                      {items.map((target) => {
-                        const key = `${target.groupJid}:${target.type}:${target.sessionId ?? ''}`;
-                        const isSelecting = selecting === key;
-                        return (
-                          <button
-                            key={key}
-                            onClick={() => onSelect(target)}
-                            disabled={!!selecting}
-                            className="w-full flex items-center gap-3 px-3 py-2 rounded-md border border-border hover:border-brand-300 hover:bg-brand-50/50 dark:hover:border-brand-600 dark:hover:bg-brand-700/10 transition-colors text-left cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-                          >
-                            <MessageSquare className="w-4 h-4 text-muted-foreground flex-shrink-0" />
-                            <span className="flex-1 text-sm truncate">
-                              {target.type === 'session'
-                                ? target.sessionName || '会话'
-                                : '绑定到此工作区'}
-                            </span>
-                            {isSelecting && (
-                              <Loader2 className="w-3.5 h-3.5 animate-spin text-primary" />
-                            )}
-                          </button>
-                        );
-                      })}
+                      <div className="space-y-0.5 p-1">
+                        {items.map((target) => {
+                          const key = `${target.groupJid}:${target.type}:${target.sessionId ?? ''}`;
+                          const isSelecting = selecting === key;
+                          return (
+                            <Button
+                              key={key}
+                              type="button"
+                              variant="ghost"
+                              onClick={() => onSelect(target)}
+                              disabled={!!selecting}
+                              className="h-8 w-full justify-start gap-2.5 px-2 font-normal pointer-coarse:min-h-11"
+                            >
+                              <MessageSquare className="size-4 text-muted-foreground" />
+                              <span className="min-w-0 flex-1 truncate text-left text-body">
+                                {target.type === 'session'
+                                  ? target.sessionName || '会话'
+                                  : '绑定到此工作区'}
+                              </span>
+                              {isSelecting && (
+                                <Loader2 className="size-3.5 animate-spin text-muted-foreground" />
+                              )}
+                            </Button>
+                          );
+                        })}
+                      </div>
                     </div>
                   ),
                 )}
@@ -193,18 +198,18 @@ export function BindingTargetDialog({
         </div>
 
         {canUnbind && (
-          <div className="border-t border-border pt-3 mt-1">
+          <DialogFooter className="sm:justify-start">
             <Button
               variant="ghost"
               size="sm"
               onClick={onRestoreDefault}
               disabled={!!selecting}
-              className="text-muted-foreground hover:text-foreground w-full"
+              className="text-muted-foreground"
             >
-              <RotateCcw className="w-3.5 h-3.5 mr-1.5" />
+              <RotateCcw className="size-3.5" />
               解除渠道绑定
             </Button>
-          </div>
+          </DialogFooter>
         )}
       </DialogContent>
     </Dialog>

@@ -5,8 +5,10 @@ import {
   useState,
   useMemo,
   useCallback,
+  memo,
 } from 'react';
-import { useVirtualizer } from '@tanstack/react-virtual';
+import { elementScroll, useVirtualizer } from '@tanstack/react-virtual';
+import { toast } from 'sonner';
 import { Message, useChatStore } from '../../stores/chat';
 import { MessageBubble } from './MessageBubble';
 import { StreamingDisplay } from './StreamingDisplay';
@@ -17,6 +19,7 @@ import {
   ChevronUp,
   ChevronDown,
   AlertTriangle,
+  Copy,
   Code2,
   Zap,
   BookOpen,
@@ -33,7 +36,16 @@ import {
   orderMessagesForTimeline,
 } from '../../lib/message-timeline';
 import { resolveAgentDisplayIdentity } from '../../utils/agent-identity';
+import { copyToClipboard } from '../../utils/clipboard';
+import {
+  formatChatDateLabel,
+  localDayKey,
+  msUntilNextLocalDay,
+  startOfLocalDay,
+  type ChatDateLabel,
+} from '../../lib/chat-date-label';
 import { useAuthStore } from '../../stores/auth';
+import { useShellStore } from '../../stores/shell';
 import type { InteractionMode } from '../../types';
 
 interface MessageListProps {
@@ -57,24 +69,75 @@ interface MessageListProps {
   agentAvatarEmoji?: string | null;
   agentAvatarColor?: string | null;
   interactionMode?: InteractionMode;
-  /** Callback to send a message (used for quick prompts in empty state) */
+  /** Present when the viewer can send; empty-state starters then fill the composer. */
   onSend?: (content: string) => void;
 }
 
 type FlatItem =
-  | { type: 'date'; content: string }
+  | { type: 'date'; content: string; title: string }
   | { type: 'divider'; content: string }
   | { type: 'spawn'; content: string }
   | { type: 'error'; content: string }
   | { type: 'message'; content: Message };
 
-// Intl.DateTimeFormat construction is expensive; reuse one instance across all
-// rows so flatMessages doesn't re-pay the cost per message on every re-group.
-const DATE_LABEL_FORMATTER = new Intl.DateTimeFormat('zh-CN', {
-  year: 'numeric',
-  month: 'long',
-  day: 'numeric',
-});
+/**
+ * Day label of a timestamp, formatted once per local calendar day: grouping
+ * reruns over the whole history on every new message or usage update, and
+ * formatting each of 5,000 dates took ~11ms of it.
+ */
+function dateLabel(
+  timestamp: string,
+  today: Date,
+  cache: Map<number, ChatDateLabel>,
+): ChatDateLabel {
+  const date = new Date(timestamp);
+  const day = localDayKey(date);
+  let label = cache.get(day);
+  if (label === undefined) {
+    label = formatChatDateLabel(date, today);
+    cache.set(day, label);
+  }
+  return label;
+}
+
+/** Start of the local day, refreshed at midnight so "今天" rolls over. */
+function useLocalToday(): Date {
+  const [today, setToday] = useState(() => startOfLocalDay(new Date()));
+  useEffect(() => {
+    const timer = window.setTimeout(
+      () => setToday(startOfLocalDay(new Date())),
+      msUntilNextLocalDay(new Date()) + 1000,
+    );
+    return () => window.clearTimeout(timer);
+  }, [today]);
+  return today;
+}
+
+/** Programmatic scrolls jump instead of animating when less motion is asked for. */
+function prefersReducedMotion(): boolean {
+  return (
+    typeof window.matchMedia === 'function' &&
+    window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  );
+}
+
+/** Counted toward the "new messages" badge; mirrors the rows that render. */
+function isVisibleArrival(message: Message): boolean {
+  return !(
+    message.source_kind === 'interrupt_partial' &&
+    !getPresentedMessageContent(message).trim() &&
+    !message.attachments
+  );
+}
+
+async function copyErrorText(text: string) {
+  try {
+    await copyToClipboard(text);
+    toast.success('已复制错误信息');
+  } catch {
+    toast.error('复制失败，请手动选择文本复制');
+  }
+}
 
 const quickPrompts = [
   { icon: Code2, title: '分析代码', desc: '帮我阅读和分析一段代码的逻辑' },
@@ -83,7 +146,9 @@ const quickPrompts = [
   { icon: Wrench, title: '调试问题', desc: '帮我定位和修复一个 Bug' },
 ];
 
-export function MessageList({
+// Memoized: ChatView re-renders for dialogs, panels and run status; the
+// transcript and composer only need to when their own props change.
+export const MessageList = memo(function MessageList({
   messages,
   loading,
   hasMore,
@@ -101,10 +166,12 @@ export function MessageList({
   onSend,
 }: MessageListProps) {
   const { mode: displayMode } = useDisplayMode();
+  const requestComposerDraft = useShellStore((s) => s.requestComposerDraft);
   const thinkingCache = useChatStore((s) => s.thinkingCache ?? {});
   const thinkingDurationCache = useChatStore(
     (s) => s.thinkingDurationCache ?? {},
   );
+  const traceCache = useChatStore((s) => s.traceCache ?? {});
   const hasWorkflowCard = useChatStore((state) => {
     const current = agentId
       ? state.agentStreaming[agentId]
@@ -146,31 +213,175 @@ export function MessageList({
     () => orderMessagesForTimeline(messages),
     [messages],
   );
+  const today = useLocalToday();
   const parentRef = useRef<HTMLDivElement>(null);
   const scrollStateRef = useRef({ autoScroll: true, atTop: false });
   const [autoScroll, setAutoScroll] = useState(true);
   const [atTop, setAtTop] = useState(false);
+  // Messages that arrived below while the reader was scrolled up.
+  const [unseenCount, setUnseenCount] = useState(0);
   const prevMessageCount = useRef(timelineMessages.length);
-  // Window during which the scroll handler ignores updates and the streaming
-  // RAF skips its catch-up scroll, so a user-initiated smooth scroll can run
-  // uninterrupted (≈500ms browser default + 100ms slack).
+  const lastMessageIdRef = useRef(timelineMessages.at(-1)?.id ?? null);
+  // Window during which the streaming RAF and resize pinning defer to one
+  // catch-up scroll, so a programmatic smooth scroll can run uninterrupted
+  // (≈500ms browser default + 100ms slack).
   const smoothScrollUntilRef = useRef(0);
   const smoothCatchUpTimerRef = useRef<number | null>(null);
   const SMOOTH_SCROLL_LOCK_MS = 600;
+  // A programmatic scroll to the bottom keeps the reader pinned until it
+  // lands or the browser reports scrollend: content growing under the
+  // animation, or rows measuring themselves, can leave it short, and that
+  // must not read as the reader leaving. Their own wheel, touch, key or
+  // scrollbar input ends it at once. Capped in case scrollend never comes.
+  const pinUntilRef = useRef(0);
+  const PIN_INTENT_MAX_MS = 3000;
+  // Where pinToBottom jumped to before animating the last screen.
+  const jumpTopRef = useRef<number | null>(null);
+  // While the first page settles (and while a finished reply swaps in for its
+  // stream), bottom pinning ignores scroll events caused by rows measuring
+  // differently than estimated. Any user scroll ends it early.
+  const settleUntilRef = useRef(0);
+  // Where the virtualizer last moved scrollTop to absorb a row measuring
+  // itself: a scroll event landing there is layout, not the reader leaving.
+  const layoutScrollTopRef = useRef<number | null>(null);
+  const lastScrollTopRef = useRef(0);
+  const isEmptyRef = useRef(timelineMessages.length === 0);
 
-  const scheduleSmoothCatchUp = useCallback(() => {
+  const setPinned = useCallback((pinned: boolean) => {
+    if (scrollStateRef.current.autoScroll === pinned) return;
+    scrollStateRef.current.autoScroll = pinned;
+    setAutoScroll(pinned);
+    if (pinned) setUnseenCount(0);
+  }, []);
+
+  // "回到顶部" only shows when there is somewhere to go. Recomputed on scroll
+  // and on resize: content that fits the viewport never fires a scroll event.
+  const syncEdges = useCallback(() => {
+    const parent = parentRef.current;
+    if (!parent) return;
+    const isAtTop = parent.scrollTop < 50;
+    if (scrollStateRef.current.atTop !== isAtTop) {
+      scrollStateRef.current.atTop = isAtTop;
+      setAtTop(isAtTop);
+    }
+    // Content that fits has no bottom to return to.
+    if (parent.scrollHeight - parent.clientHeight < 10) setPinned(true);
+  }, [setPinned]);
+
+  // Chrome ignores wheel, touch and key scrolling while a programmatic smooth
+  // scroll runs: the animation carries on to the bottom. Reader input during
+  // one has to stop it first so the reader's own scroll takes effect.
+  const animationWheelRef = useRef<((event: WheelEvent) => void) | null>(null);
+  const detachAnimationWheel = useCallback(() => {
+    const handler = animationWheelRef.current;
+    animationWheelRef.current = null;
+    if (handler) parentRef.current?.removeEventListener('wheel', handler);
+  }, []);
+
+  const cancelSmoothCatchUp = useCallback(() => {
     if (smoothCatchUpTimerRef.current !== null) {
       window.clearTimeout(smoothCatchUpTimerRef.current);
+      smoothCatchUpTimerRef.current = null;
     }
+  }, []);
+
+  const scheduleSmoothCatchUp = useCallback(() => {
+    cancelSmoothCatchUp();
     const delay = Math.max(0, smoothScrollUntilRef.current - Date.now()) + 16;
     smoothCatchUpTimerRef.current = window.setTimeout(() => {
       smoothCatchUpTimerRef.current = null;
+      detachAnimationWheel();
       if (!scrollStateRef.current.autoScroll) return;
       const parent = parentRef.current;
       if (!parent) return;
       parent.scrollTo({ top: parent.scrollHeight });
     }, delay);
-  }, []);
+  }, [cancelSmoothCatchUp, detachAnimationWheel]);
+
+  /** Ends the running smooth scroll where it is; false if none was running. */
+  const stopSmoothScroll = useCallback(() => {
+    const parent = parentRef.current;
+    const animating = Date.now() < smoothScrollUntilRef.current;
+    smoothScrollUntilRef.current = 0;
+    cancelSmoothCatchUp();
+    detachAnimationWheel();
+    if (!parent || !animating) return false;
+    parent.scrollTo({ top: parent.scrollTop });
+    return true;
+  }, [cancelSmoothCatchUp, detachAnimationWheel]);
+
+  /**
+   * The reader took over: drop every programmatic hold on the bottom (smooth
+   * scroll, its catch-up, pin intent, first-page settling) so their own scroll
+   * is not undone moments later. `leaveBottom` is for input that clearly
+   * scrolls up; anything else is left to the scroll events that follow.
+   */
+  const releasePin = useCallback(
+    (leaveBottom: boolean) => {
+      const parent = parentRef.current;
+      if (!parent) return;
+      const now = Date.now();
+      const holding =
+        now < smoothScrollUntilRef.current ||
+        now < pinUntilRef.current ||
+        now < settleUntilRef.current;
+      settleUntilRef.current = 0;
+      if (!holding) return;
+      pinUntilRef.current = 0;
+      stopSmoothScroll();
+      if (leaveBottom && parent.scrollTop > 0) setPinned(false);
+    },
+    [setPinned, stopSmoothScroll],
+  );
+
+  /** Scroll to the bottom and stay pinned there, animating at most one screen. */
+  const pinToBottom = useCallback(() => {
+    const parent = parentRef.current;
+    if (!parent) return;
+    const maxTop = parent.scrollHeight - parent.clientHeight;
+    if (maxTop - parent.scrollTop < 10) return;
+    pinUntilRef.current = Date.now() + PIN_INTENT_MAX_MS;
+    jumpTopRef.current = null;
+    if (prefersReducedMotion()) {
+      parent.scrollTop = maxTop;
+      return;
+    }
+    // A long animation outlasts the lock and mounts every row on the way:
+    // jump to one screen above the bottom and animate only the last screen.
+    if (maxTop - parent.scrollTop > parent.clientHeight) {
+      parent.scrollTop = maxTop - parent.clientHeight;
+      jumpTopRef.current = parent.scrollTop;
+    }
+    smoothScrollUntilRef.current = Date.now() + SMOOTH_SCROLL_LOCK_MS;
+    parent.scrollTo({ top: parent.scrollHeight, behavior: 'smooth' });
+    scheduleSmoothCatchUp();
+    // Wheel up during the animation: take the wheel over and apply its delta
+    // after stopping the animation. Non-passive only for this window, so
+    // ordinary wheel scrolling never waits on the main thread.
+    if (!animationWheelRef.current) {
+      const handler = (event: WheelEvent) => {
+        if (event.ctrlKey) return;
+        if (Date.now() >= smoothScrollUntilRef.current) {
+          // The animation is over: handle this one like the passive listener.
+          detachAnimationWheel();
+          if (event.deltaY < 0) releasePin(true);
+          return;
+        }
+        if (event.deltaY >= 0) return;
+        event.preventDefault();
+        const unit =
+          event.deltaMode === WheelEvent.DOM_DELTA_LINE
+            ? 16
+            : event.deltaMode === WheelEvent.DOM_DELTA_PAGE
+              ? parent.clientHeight
+              : 1;
+        releasePin(true);
+        parent.scrollTo({ top: parent.scrollTop + event.deltaY * unit });
+      };
+      animationWheelRef.current = handler;
+      parent.addEventListener('wheel', handler, { passive: false });
+    }
+  }, [detachAnimationWheel, releasePin, scheduleSmoothCatchUp]);
 
   useEffect(() => {
     return () => {
@@ -182,21 +393,20 @@ export function MessageList({
 
   // Compute flatMessages (with date headers) before virtualizer
   const flatMessages = useMemo<FlatItem[]>(() => {
+    const labels = new Map<number, ChatDateLabel>();
     const grouped = timelineMessages.reduce(
       (acc, msg) => {
-        const date = DATE_LABEL_FORMATTER.format(
-          new Date(getMessageDisplayTimestamp(msg)),
-        );
-        if (!acc[date]) acc[date] = [];
-        acc[date].push(msg);
+        const date = dateLabel(getMessageDisplayTimestamp(msg), today, labels);
+        if (!acc[date.label]) acc[date.label] = { date, msgs: [] };
+        acc[date.label].msgs.push(msg);
         return acc;
       },
-      {} as Record<string, Message[]>,
+      {} as Record<string, { date: ChatDateLabel; msgs: Message[] }>,
     );
 
     const items: FlatItem[] = [];
-    Object.entries(grouped).forEach(([date, msgs]) => {
-      items.push({ type: 'date', content: date });
+    Object.values(grouped).forEach(({ date, msgs }) => {
+      items.push({ type: 'date', content: date.label, title: date.title });
       msgs.forEach((msg) => {
         const messageHasRunningWorkflow = msg.workflow_runs?.some(
           (run) => run.status === 'running',
@@ -238,7 +448,121 @@ export function MessageList({
       });
     });
     return items;
-  }, [timelineMessages, hasWorkflowCard]);
+  }, [timelineMessages, hasWorkflowCard, today]);
+
+  // A finished reply replaces its streaming block in one store update (the
+  // block is held, settled, until the final message arrives). The new row is
+  // seeded with the block's measured height instead of the length estimate,
+  // which overshot by 1.2–1.6x and rolled a pinned reader back a screen; a
+  // reader scrolled into the reply keeps the row where the block was.
+  const runtimeJid = agentId
+    ? `${groupJid}#agent:${agentId}`
+    : (groupJid ?? '');
+  const hasLive = useChatStore((s) =>
+    agentId ? !!s.agentStreaming[agentId] : !!s.streaming[groupJid ?? ''],
+  );
+  // The previous run's settled card is keyed by its run, and the live card
+  // by the active run: the card that settles keeps its element (and DOM)
+  // while the next queued run streams into a card of its own below it.
+  const settledRunKey = useChatStore((s) => {
+    const settled = s.settledStreaming[runtimeJid];
+    return settled ? (settled.runId ?? 'settled') : null;
+  });
+  const liveRunKey = useChatStore((s) => s.activeRuns[runtimeJid]?.runId);
+  const hasSettled = settledRunKey !== null;
+  const hasStreaming = hasLive || hasSettled;
+  const streamingBlockRef = useRef<HTMLDivElement>(null);
+  const seedSizesRef = useRef(new Map<string, number>());
+  const pendingSwapRef = useRef<{
+    id: string;
+    anchorTop: number | null;
+    pinned: boolean;
+  } | null>(null);
+  const swappedIdRef = useRef<string | null>(null);
+  // The swapped-in row keeps the streaming block's place on screen briefly.
+  const anchorHoldRef = useRef<{
+    id: string;
+    anchorTop: number;
+    until: number;
+  } | null>(null);
+  const SWAP_ANCHOR_HOLD_MS = 400;
+  const applyAnchorHold = useCallback(() => {
+    const hold = anchorHoldRef.current;
+    const parent = parentRef.current;
+    if (!hold || !parent) return;
+    const row = parent.querySelector<HTMLElement>(
+      `[data-message-id="${CSS.escape(hold.id)}"]`,
+    );
+    if (!row) return;
+    const delta =
+      row.getBoundingClientRect().top -
+      parent.getBoundingClientRect().top -
+      hold.anchorTop;
+    if (Math.abs(delta) < 1) return;
+    layoutScrollTopRef.current = parent.scrollTop + delta;
+    parent.scrollTop += delta;
+  }, []);
+  const committedStreamRef = useRef({
+    hasLive,
+    hasSettled,
+    messages: timelineMessages,
+  });
+  {
+    const committed = committedStreamRef.current;
+    // The card a final replaces: the settled one, or a live one finalized
+    // without run_finished first.
+    const replaced =
+      committed.hasSettled && !hasSettled
+        ? 'settled'
+        : committed.hasLive && !hasLive
+          ? 'live'
+          : null;
+    if (
+      replaced &&
+      committed.messages !== timelineMessages &&
+      !pendingSwapRef.current
+    ) {
+      const before = new Set(committed.messages.map((m) => m.id));
+      let reply: Message | undefined;
+      for (let i = timelineMessages.length - 1; i >= 0; i -= 1) {
+        const m = timelineMessages[i];
+        if (!before.has(m.id) && m.is_from_me && m.sender !== '__system__') {
+          reply = m;
+          break;
+        }
+      }
+      const block = streamingBlockRef.current?.querySelector<HTMLElement>(
+        `[data-hc-stream-card="${replaced}"]`,
+      );
+      const parent = parentRef.current;
+      if (reply && block && parent) {
+        // Still the committed DOM: the block is on screen until this commits.
+        if (block.querySelector('[data-markdown-root]')) {
+          seedSizesRef.current.set(reply.id, block.offsetHeight);
+          if (seedSizesRef.current.size > 20) {
+            const oldest = seedSizesRef.current.keys().next().value;
+            if (oldest !== undefined) seedSizesRef.current.delete(oldest);
+          }
+        }
+        pendingSwapRef.current = {
+          id: reply.id,
+          anchorTop:
+            block.offsetHeight > 0
+              ? block.getBoundingClientRect().top -
+                parent.getBoundingClientRect().top
+              : null,
+          pinned: scrollStateRef.current.autoScroll,
+        };
+      }
+    }
+  }
+  useLayoutEffect(() => {
+    committedStreamRef.current = {
+      hasLive,
+      hasSettled,
+      messages: timelineMessages,
+    };
+  });
 
   // Chat always starts at bottom — no scroll position restoration.
   // key={...} on <MessageList> guarantees a fresh mount on group/tab switch.
@@ -273,6 +597,8 @@ export function MessageList({
         case 'error':
           return 56;
         case 'message': {
+          const seeded = seedSizesRef.current.get(item.content.id);
+          if (seeded !== undefined) return seeded;
           const len = item.content.content.length;
           if (item.content.is_from_me) {
             // AI messages often contain markdown tables, code blocks, and
@@ -288,6 +614,15 @@ export function MessageList({
       }
     },
     overscan: window.innerWidth < 1024 ? 12 : 8,
+    // Re-render on scroll in a normal React update instead of flushSync inside
+    // the scroll event: rows mounted there were measured (a forced layout)
+    // before the frame's own layout, and wheel scrolling through a long
+    // history cut long tasks from ~9 to ~3 per 6s at 4x CPU throttle.
+    useFlushSync: false,
+    scrollToFn: (offset, options, instance) => {
+      layoutScrollTopRef.current = offset + (options.adjustments ?? 0);
+      elementScroll(offset, options, instance);
+    },
   });
 
   // Detect at-bottom (autoScroll) and at-top (loadMore) via the scroll event.
@@ -296,66 +631,191 @@ export function MessageList({
   // spuriously flips autoScroll off (the failure mode of the IntersectionObserver
   // approach in PR #455). The ref is updated synchronously to avoid races with
   // the streaming RAF catch-up.
+  const touchStartYRef = useRef<number | null>(null);
+  const touchingRef = useRef(false);
   useEffect(() => {
     const parent = parentRef.current;
     if (!parent) return;
 
     const handleScroll = () => {
-      // While a programmatic smooth scroll is animating, ignore intermediate
-      // scroll events — they would briefly set autoScroll=false mid-animation
-      // and flicker the floating "scroll to bottom" button.
-      if (Date.now() < smoothScrollUntilRef.current) return;
-
       const { scrollTop, scrollHeight, clientHeight } = parent;
-      const isAtBottom = scrollHeight - scrollTop - clientHeight < 10;
-      const isAtTop = scrollTop < 50;
+      const movedUp = scrollTop < lastScrollTopRef.current - 1;
+      lastScrollTopRef.current = scrollTop;
+      const layoutTop = layoutScrollTopRef.current;
+      layoutScrollTopRef.current = null;
+      const layoutScroll =
+        layoutTop !== null && Math.abs(scrollTop - layoutTop) < 2;
+      const now = Date.now();
 
-      if (scrollStateRef.current.autoScroll !== isAtBottom) {
-        scrollStateRef.current.autoScroll = isAtBottom;
-        setAutoScroll(isAtBottom);
+      if (scrollHeight - scrollTop - clientHeight < 10) {
+        // Landed: whatever was carrying the reader down is done.
+        pinUntilRef.current = 0;
+        smoothScrollUntilRef.current = 0;
+        setPinned(true);
+      } else if (
+        movedUp &&
+        !layoutScroll &&
+        now >= pinUntilRef.current &&
+        now >= settleUntilRef.current
+      ) {
+        // Only moving up leaves the bottom. A scroll toward the bottom that
+        // lands short because content grew meanwhile (a smooth scroll
+        // mid-animation, or a frame racing a streaming render) never does.
+        setPinned(false);
       }
-      if (scrollStateRef.current.atTop !== isAtTop) {
-        scrollStateRef.current.atTop = isAtTop;
-        setAtTop(isAtTop);
-      }
+      syncEdges();
 
       if (scrollTop < 100 && hasMore && !loading) {
         onLoadMore();
       }
     };
 
-    parent.addEventListener('scroll', handleScroll);
-    return () => parent.removeEventListener('scroll', handleScroll);
-  }, [hasMore, loading, onLoadMore, groupJid]);
+    const endSettle = () => {
+      settleUntilRef.current = 0;
+    };
+    const handleWheel = (event: WheelEvent) => {
+      if (event.ctrlKey) return;
+      anchorHoldRef.current = null;
+      // pinToBottom's own listener handles the wheel while it is attached.
+      if (animationWheelRef.current) return;
+      if (event.deltaY < 0) releasePin(true);
+      else endSettle();
+    };
+    const handleTouchStart = (event: TouchEvent) => {
+      endSettle();
+      anchorHoldRef.current = null;
+      touchStartYRef.current = event.touches[0]?.clientY ?? null;
+      touchingRef.current = true;
+      // Let the finger take over; a tap resumes the way down on touchend.
+      stopSmoothScroll();
+    };
+    const handleTouchMove = (event: TouchEvent) => {
+      const startY = touchStartYRef.current;
+      const y = event.touches[0]?.clientY;
+      // The finger moving down drags the content down: scrolling up.
+      if (startY !== null && y !== undefined && y - startY > 8) {
+        touchStartYRef.current = null;
+        releasePin(true);
+      }
+    };
+    const handleTouchEnd = () => {
+      touchStartYRef.current = null;
+      touchingRef.current = false;
+      if (
+        Date.now() < pinUntilRef.current &&
+        scrollStateRef.current.autoScroll
+      ) {
+        pinToBottom();
+      }
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      anchorHoldRef.current = null;
+      const scrollsUp =
+        event.key === 'PageUp' ||
+        event.key === 'ArrowUp' ||
+        event.key === 'Home' ||
+        (event.key === ' ' && event.shiftKey);
+      if (scrollsUp) releasePin(true);
+      else endSettle();
+    };
+    const handlePointerDown = (event: PointerEvent) => {
+      // Grabbing the scrollbar takes manual control; where it is dragged
+      // decides the rest.
+      if (event.target === parent && event.offsetX >= parent.clientWidth) {
+        anchorHoldRef.current = null;
+        releasePin(false);
+      }
+    };
+    // A scroll toward the bottom can stop short of it (content grew, or a row
+    // measuring itself cut the animation off); finish the job once it ends.
+    const handleScrollEnd = () => {
+      if (Date.now() >= pinUntilRef.current || touchingRef.current) return;
+      // scrollend also fires for the instant jump before the animated last
+      // screen; the animation is still to come.
+      const jumpTop = jumpTopRef.current;
+      if (jumpTop !== null && Math.abs(parent.scrollTop - jumpTop) < 2) return;
+      jumpTopRef.current = null;
+      pinUntilRef.current = 0;
+      smoothScrollUntilRef.current = 0;
+      if (
+        scrollStateRef.current.autoScroll &&
+        parent.scrollHeight - parent.scrollTop - parent.clientHeight >= 10
+      ) {
+        parent.scrollTop = parent.scrollHeight;
+      }
+    };
 
-  // 新消息自动滚到底部
+    parent.addEventListener('scroll', handleScroll);
+    parent.addEventListener('scrollend', handleScrollEnd);
+    parent.addEventListener('wheel', handleWheel, { passive: true });
+    parent.addEventListener('touchstart', handleTouchStart, { passive: true });
+    parent.addEventListener('touchmove', handleTouchMove, { passive: true });
+    parent.addEventListener('touchend', handleTouchEnd);
+    parent.addEventListener('touchcancel', handleTouchEnd);
+    parent.addEventListener('keydown', handleKeyDown);
+    parent.addEventListener('pointerdown', handlePointerDown);
+    return () => {
+      parent.removeEventListener('scroll', handleScroll);
+      parent.removeEventListener('scrollend', handleScrollEnd);
+      parent.removeEventListener('wheel', handleWheel);
+      parent.removeEventListener('touchstart', handleTouchStart);
+      parent.removeEventListener('touchmove', handleTouchMove);
+      parent.removeEventListener('touchend', handleTouchEnd);
+      parent.removeEventListener('touchcancel', handleTouchEnd);
+      parent.removeEventListener('keydown', handleKeyDown);
+      parent.removeEventListener('pointerdown', handlePointerDown);
+    };
+  }, [
+    hasMore,
+    loading,
+    onLoadMore,
+    groupJid,
+    pinToBottom,
+    releasePin,
+    setPinned,
+    stopSmoothScroll,
+    syncEdges,
+  ]);
+
+  // 新消息自动滚到底部；读者停在上方时只累计“有新消息”的计数
   useEffect(() => {
-    if (autoScroll && timelineMessages.length > prevMessageCount.current) {
-      requestAnimationFrame(() => {
-        const parent = parentRef.current;
-        if (!parent) return;
-        smoothScrollUntilRef.current = Date.now() + SMOOTH_SCROLL_LOCK_MS;
-        parent.scrollTo({ top: parent.scrollHeight, behavior: 'smooth' });
-        scheduleSmoothCatchUp();
-      });
-    }
+    const previousLastId = lastMessageIdRef.current;
+    const lastId = timelineMessages.at(-1)?.id ?? null;
+    lastMessageIdRef.current = lastId;
+    const grew = timelineMessages.length > prevMessageCount.current;
     prevMessageCount.current = timelineMessages.length;
-  }, [timelineMessages.length, autoScroll, scheduleSmoothCatchUp]);
+    // An older page only prepends; the newest row stays the same.
+    if (!grew || lastId === previousLastId) return;
+    if (scrollStateRef.current.autoScroll) {
+      requestAnimationFrame(() => pinToBottom());
+      return;
+    }
+    let from = -1;
+    if (previousLastId) {
+      for (let i = timelineMessages.length - 1; i >= 0; i -= 1) {
+        if (timelineMessages[i].id === previousLastId) {
+          from = i;
+          break;
+        }
+      }
+      if (from < 0) return;
+    }
+    let arrived = 0;
+    for (let i = from + 1; i < timelineMessages.length; i += 1) {
+      // A reply that replaced the stream the reader saw is not news.
+      if (timelineMessages[i].id === swappedIdRef.current) continue;
+      if (isVisibleArrival(timelineMessages[i])) arrived += 1;
+    }
+    if (arrived > 0) setUnseenCount((count) => count + arrived);
+  }, [timelineMessages, pinToBottom]);
 
   // 外部触发滚到底部（发送消息后）
   useEffect(() => {
     if (scrollTrigger && scrollTrigger > 0) {
-      scrollStateRef.current.autoScroll = true;
-      setAutoScroll(true);
-      requestAnimationFrame(() => {
-        const parent = parentRef.current;
-        if (!parent) return;
-        smoothScrollUntilRef.current = Date.now() + SMOOTH_SCROLL_LOCK_MS;
-        parent.scrollTo({ top: parent.scrollHeight, behavior: 'smooth' });
-        scheduleSmoothCatchUp();
-      });
+      setPinned(true);
+      requestAnimationFrame(() => pinToBottom());
     }
-  }, [scrollTrigger, scheduleSmoothCatchUp]);
+  }, [scrollTrigger, pinToBottom, setPinned]);
 
   // Fallback: 消息在挂载后加载（首次页面加载时 store 为空）
   // initialOffset 只在挂载时生效，消息后加载需要手动定位
@@ -384,18 +844,38 @@ export function MessageList({
     }
   }, [flatMessages.length, virtualizer, timelineMessages.length]);
 
+  useLayoutEffect(() => {
+    isEmptyRef.current = flatMessages.length === 0;
+    syncEdges();
+  }, [flatMessages.length, syncEdges]);
+
   // Safety net: initialOffset relies on estimated sizes which may be inaccurate.
   // After mount (or when messages load asynchronously), verify we're actually at
   // the bottom and correct if not. Depends on flatMessages.length so that async
-  // message loading triggers a fresh round of corrections.
+  // message loading triggers a fresh round of corrections. After the first
+  // page has settled this only runs while the reader is pinned to the bottom:
+  // a new message or an older page must not pull someone reading history back
+  // down. While the first page settles, rows measuring taller than estimated
+  // fire scroll events that look like "left the bottom", so ignore those.
+  const hadRowsRef = useRef(false);
   useEffect(() => {
     if (flatMessages.length === 0) return;
+    if (!hadRowsRef.current) {
+      hadRowsRef.current = true;
+      settleUntilRef.current = Date.now() + 700;
+    }
     const timers: number[] = [];
     for (const delay of [50, 150, 300, 500]) {
       timers.push(
         window.setTimeout(() => {
           const el = parentRef.current;
           if (!el) return;
+          if (
+            !scrollStateRef.current.autoScroll &&
+            Date.now() > settleUntilRef.current
+          ) {
+            return;
+          }
           const gap = el.scrollHeight - el.scrollTop - el.clientHeight;
           if (gap > 100) {
             el.scrollTop = el.scrollHeight;
@@ -407,15 +887,137 @@ export function MessageList({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [flatMessages.length]);
 
+  // Loading an older page inserts rows above the ones being read. Shift the
+  // scroll position by the height they add so the visible rows stay put, and
+  // keep paging if the reader is still at the very top (no further scroll
+  // event would fire there).
+  // The loading row above the list shifts it too; count it in the offset.
+  const loadingRowHeightRef = useRef(0);
+  const measureLoadingRow = useCallback((node: HTMLDivElement | null) => {
+    loadingRowHeightRef.current = node ? node.offsetHeight : 0;
+  }, []);
+  const totalSize = virtualizer.getTotalSize();
+  const committedTotalRef = useRef(totalSize);
+  const firstMessageIdRef = useRef<string | null>(null);
+  useLayoutEffect(() => {
+    const parent = parentRef.current;
+    const firstId = timelineMessages[0]?.id ?? null;
+    const previousFirstId = firstMessageIdRef.current;
+    firstMessageIdRef.current = firstId;
+    if (
+      !parent ||
+      !previousFirstId ||
+      previousFirstId === firstId ||
+      scrollStateRef.current.autoScroll ||
+      !timelineMessages.some((m) => m.id === previousFirstId)
+    ) {
+      return;
+    }
+    const added =
+      totalSize + loadingRowHeightRef.current - committedTotalRef.current;
+    if (added > 0) parent.scrollTop += added;
+    if (parent.scrollTop < 100 && hasMore && !loading) onLoadMore();
+    // Only a change of the first row is a prepend; size changes alone are not.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [timelineMessages]);
+  // Declared after the prepend check so it still sees the previous commit.
+  useLayoutEffect(() => {
+    committedTotalRef.current = totalSize + loadingRowHeightRef.current;
+  });
+
+  // Keep a reader who is pinned to the bottom there while rows below grow
+  // after their first measurement (images, Mermaid, late code highlighting),
+  // while a row shrinks under a correction, and while the viewport shrinks
+  // (keyboard, a taller composer). The empty state reads from the top.
+  const contentRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const content = contentRef.current;
+    const parent = parentRef.current;
+    if (!content || !parent || typeof ResizeObserver === 'undefined') return;
+    let lastHeight = content.offsetHeight;
+    let lastViewport = parent.clientHeight;
+    const observer = new ResizeObserver(() => {
+      const height = content.offsetHeight;
+      const viewport = parent.clientHeight;
+      const changed = height !== lastHeight || viewport < lastViewport;
+      lastHeight = height;
+      lastViewport = viewport;
+      syncEdges();
+      if (!changed || isEmptyRef.current) return;
+      if (
+        !scrollStateRef.current.autoScroll &&
+        Date.now() > settleUntilRef.current
+      ) {
+        return;
+      }
+      if (Date.now() < smoothScrollUntilRef.current) {
+        scheduleSmoothCatchUp();
+        return;
+      }
+      parent.scrollTop = parent.scrollHeight;
+    });
+    observer.observe(content);
+    observer.observe(parent);
+    return () => observer.disconnect();
+  }, [scheduleSmoothCatchUp, syncEdges]);
+
+  // Place the swapped-in reply: a pinned reader lands on the bottom at once
+  // (no animated catch-up); otherwise the row holds the block's place on
+  // screen while the rows around it finish measuring (a date row or the row
+  // itself correcting its estimate), until the reader scrolls.
+  useLayoutEffect(() => {
+    const swap = pendingSwapRef.current;
+    if (!swap) return;
+    pendingSwapRef.current = null;
+    swappedIdRef.current = swap.id;
+    const parent = parentRef.current;
+    if (!parent) return;
+    if (swap.pinned) {
+      if (parent.scrollHeight - parent.scrollTop - parent.clientHeight >= 1) {
+        layoutScrollTopRef.current = parent.scrollHeight - parent.clientHeight;
+        parent.scrollTop = parent.scrollHeight;
+      }
+      return;
+    }
+    if (swap.anchorTop === null) return;
+    const hold = {
+      id: swap.id,
+      anchorTop: swap.anchorTop,
+      until: Date.now() + SWAP_ANCHOR_HOLD_MS,
+    };
+    anchorHoldRef.current = hold;
+    const keepAnchor = () => {
+      if (anchorHoldRef.current !== hold) return;
+      applyAnchorHold();
+      if (Date.now() < hold.until) requestAnimationFrame(keepAnchor);
+      else anchorHoldRef.current = null;
+    };
+    keepAnchor();
+  }, [flatMessages, applyAnchorHold]);
+  // Rows that measure during the swap commit re-render synchronously before
+  // paint; re-anchor in that commit too, not a frame later.
+  useLayoutEffect(() => {
+    if (anchorHoldRef.current) applyAnchorHold();
+  });
+
+  // A finished reply swaps the streaming block for its final row, inserted at
+  // an estimated height and then measured; the correction moves scrollTop and
+  // can look like leaving the bottom. A reader pinned before the swap stays
+  // pinned: the settle window keeps those scroll events from unpinning, and
+  // the resize and safety-net passes pin again once the row has measured.
+  const wasStreamingRef = useRef(hasStreaming);
+  useLayoutEffect(() => {
+    const finished = wasStreamingRef.current && !hasStreaming;
+    wasStreamingRef.current = hasStreaming;
+    if (!finished || !scrollStateRef.current.autoScroll) return;
+    settleUntilRef.current = Math.max(settleUntilRef.current, Date.now() + 700);
+  }, [hasStreaming]);
   // Auto-scroll when streaming content is active. Subscribes directly to the
   // chat store (no React re-render) and schedules a single rAF-coalesced
   // scrollTo per animation frame, regardless of how many text_delta /
   // thinking_delta updates land. This replaces the 100ms setInterval poll
   // (PR #455 era) which competed with smooth scrolls and caused 3-4 visible
   // jumps when the user scrolled to the bottom mid-stream.
-  const hasStreaming = useChatStore((s) =>
-    agentId ? !!s.agentStreaming[agentId] : !!s.streaming[groupJid ?? ''],
-  );
   useEffect(() => {
     if (!hasStreaming) return;
 
@@ -461,18 +1063,25 @@ export function MessageList({
   }, [hasStreaming, agentId, groupJid, scheduleSmoothCatchUp]);
 
   const scrollToTop = useCallback(() => {
-    parentRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
-  }, []);
-
-  const scrollToBottom = useCallback(() => {
-    scrollStateRef.current.autoScroll = true;
-    setAutoScroll(true);
-    smoothScrollUntilRef.current = Date.now() + SMOOTH_SCROLL_LOCK_MS;
     const parent = parentRef.current;
     if (!parent) return;
-    parent.scrollTo({ top: parent.scrollHeight, behavior: 'smooth' });
-    scheduleSmoothCatchUp();
-  }, [scheduleSmoothCatchUp]);
+    releasePin(false);
+    if (parent.scrollTop > 0) setPinned(false);
+    if (prefersReducedMotion()) {
+      parent.scrollTop = 0;
+      return;
+    }
+    // Same as the way down: animate only the last screen.
+    if (parent.scrollTop > parent.clientHeight) {
+      parent.scrollTop = parent.clientHeight;
+    }
+    parent.scrollTo({ top: 0, behavior: 'smooth' });
+  }, [releasePin, setPinned]);
+
+  const scrollToBottom = useCallback(() => {
+    setPinned(true);
+    pinToBottom();
+  }, [pinToBottom, setPinned]);
 
   const showScrollButtons = timelineMessages.length > 0;
 
@@ -480,18 +1089,25 @@ export function MessageList({
     <div className="relative flex-1 overflow-hidden overflow-x-hidden">
       <div
         ref={parentRef}
-        className="h-full overflow-y-auto overflow-x-hidden pb-10 pt-6"
+        className="h-full overflow-y-auto overflow-x-hidden pb-10"
       >
+        {/* The top inset sits on the content, not the scroller: a sticky
+            status row sticks inside the scroller's padding box, and with
+            the padding on the scroller 24px of text scrolled by above it. */}
         <div
+          ref={contentRef}
           className={
             displayMode === 'compact'
-              ? 'mx-auto px-4 min-w-0'
-              : 'max-w-4xl mx-auto px-4 min-w-0'
+              ? 'mx-auto px-4 pt-6 min-w-0'
+              : 'mx-auto min-w-0 max-w-3xl px-4 pt-6 lg:px-6'
           }
         >
           {loading && hasMore && (
-            <div className="flex justify-center py-4">
-              <Loader2 className="animate-spin text-primary" size={24} />
+            <div ref={measureLoadingRow} className="flex justify-center py-4">
+              <Loader2
+                className="animate-spin text-muted-foreground"
+                size={18}
+              />
             </div>
           )}
 
@@ -520,10 +1136,15 @@ export function MessageList({
                       transform: `translateY(${virtualItem.start}px)`,
                     }}
                   >
-                    <div className="flex justify-center my-6">
-                      <span className="bg-surface px-4 py-1 rounded-full text-xs text-muted-foreground border border-border">
+                    <div className="my-6 flex items-center gap-3">
+                      <div className="h-px flex-1 bg-surface-border" />
+                      <span
+                        className="text-caption text-faint-foreground"
+                        title={item.title}
+                      >
                         {item.content}
                       </span>
+                      <div className="h-px flex-1 bg-surface-border" />
                     </div>
                   </div>
                 );
@@ -543,12 +1164,12 @@ export function MessageList({
                       transform: `translateY(${virtualItem.start}px)`,
                     }}
                   >
-                    <div className="flex items-center gap-3 my-6 px-4">
-                      <div className="flex-1 border-t border-amber-300" />
-                      <span className="text-xs text-amber-600 whitespace-pre-wrap">
+                    <div className="my-6 flex items-center gap-3">
+                      <div className="h-px flex-1 bg-surface-border" />
+                      <span className="text-caption whitespace-pre-wrap text-muted-foreground">
                         {item.content}
                       </span>
-                      <div className="flex-1 border-t border-amber-300" />
+                      <div className="h-px flex-1 bg-surface-border" />
                     </div>
                   </div>
                 );
@@ -568,13 +1189,13 @@ export function MessageList({
                       transform: `translateY(${virtualItem.start}px)`,
                     }}
                   >
-                    <div className="flex items-center gap-2 my-4 px-4">
-                      <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-violet-50 dark:bg-violet-950/40 text-xs text-violet-600 dark:text-violet-400 border border-violet-200 dark:border-violet-800">
-                        <span>⚡</span>
-                        <span className="font-medium">并行任务</span>
-                        <span className="text-violet-400 dark:text-violet-500">
-                          |
+                    <div className="my-4 flex items-center gap-2">
+                      <span className="inline-flex h-7 max-w-full items-center gap-1.5 rounded-md bg-surface-raised px-2.5 text-caption text-muted-foreground ring-1 ring-surface-border">
+                        <Zap className="size-3.5 shrink-0 text-primary-text" />
+                        <span className="font-medium text-foreground">
+                          并行任务
                         </span>
+                        <span className="text-faint-foreground">·</span>
                         <span className="max-w-[400px] truncate">
                           {item.content}
                         </span>
@@ -598,13 +1219,24 @@ export function MessageList({
                       transform: `translateY(${virtualItem.start}px)`,
                     }}
                   >
-                    <div className="flex items-center gap-3 my-6 px-4">
-                      <div className="flex-1 border-t border-red-300" />
-                      <span className="text-xs text-red-600 whitespace-pre-wrap flex items-center gap-1">
-                        <AlertTriangle size={14} />
-                        {item.content}
-                      </span>
-                      <div className="flex-1 border-t border-red-300" />
+                    {/* Inline callout in the message column: long errors
+                        stay readable instead of squeezing between rules. */}
+                    <div className="my-4 flex items-start gap-2 rounded-lg bg-error/5 px-3 py-2 ring-1 ring-error/15">
+                      <AlertTriangle className="mt-0.5 size-3.5 shrink-0 text-error" />
+                      <div className="min-w-0 flex-1 text-caption leading-5">
+                        <span className="font-medium text-error">运行出错</span>
+                        <span className="ml-2 break-words whitespace-pre-wrap text-muted-foreground">
+                          {item.content}
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => void copyErrorText(item.content)}
+                        className="-my-0.5 -mr-1.5 inline-flex h-6 shrink-0 cursor-pointer items-center gap-1 rounded-md px-1.5 text-caption text-muted-foreground transition-colors hover:bg-error/10 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:outline-none pointer-coarse:h-10 pointer-coarse:px-2.5"
+                      >
+                        <Copy className="size-3.5" />
+                        复制错误
+                      </button>
                     </div>
                   </div>
                 );
@@ -625,6 +1257,7 @@ export function MessageList({
                   }}
                   ref={virtualizer.measureElement}
                   data-index={virtualItem.index}
+                  data-message-id={message.id}
                 >
                   <ErrorBoundary>
                     <MessageBubble
@@ -632,6 +1265,7 @@ export function MessageList({
                       showTime={showTime}
                       thinkingContent={thinkingCache[message.id]}
                       thinkingDurationMs={thinkingDurationCache[message.id]}
+                      traceEvents={traceCache[message.id]}
                       agentName={agentIdentity.name}
                       agentAvatarUrl={agentAvatarUrl}
                       agentAvatarEmoji={agentAvatarEmoji}
@@ -643,86 +1277,107 @@ export function MessageList({
             })}
           </div>
 
+          {/* In the scroll flow rather than an overlay, so a short viewport
+              (phone in landscape, keyboard up) can scroll to every starter.
+              The top inset subtracts the content's own pt-6. */}
           {timelineMessages.length === 0 && !loading && (
             <div
               data-hc-empty-state
-              className="absolute inset-x-0 top-0 bottom-0 flex justify-center px-6 pt-[clamp(4.5rem,14vh,9rem)]"
+              className={
+                displayMode === 'compact'
+                  ? 'mx-auto w-full max-w-3xl pt-[clamp(3rem,calc(14vh_-_1.5rem),7.5rem)] lg:px-6'
+                  : 'pt-[clamp(3rem,calc(14vh_-_1.5rem),7.5rem)]'
+              }
             >
-              <div className="w-full max-w-3xl">
-                <div className="flex items-start gap-3">
-                  <EmojiAvatar
-                    imageUrl={agentIdentity.imageUrl}
-                    emoji={agentIdentity.emoji}
-                    color={agentIdentity.color}
-                    fallbackChar={agentIdentity.fallbackChar}
-                    size="md"
-                    className="mt-0.5 !h-10 !w-10 shrink-0 !text-lg"
-                  />
-                  <div className="min-w-0 flex-1">
-                    <h2 className="text-xl font-semibold leading-7 text-foreground">
-                      {agentId ? '开始当前会话' : '开始主会话'}
-                    </h2>
-                    <p className="mt-1 max-w-2xl text-sm leading-6 text-muted-foreground">
-                      {agentId && contextLabel
-                        ? `“${contextLabel}”使用独立上下文。直接输入你的问题。`
-                        : `我是 ${agentIdentity.name}。直接输入你的问题，或从下面选择一个常用起点。`}
-                    </p>
-                  </div>
+              <div className="flex items-start gap-3">
+                <EmojiAvatar
+                  imageUrl={agentIdentity.imageUrl}
+                  emoji={agentIdentity.emoji}
+                  color={agentIdentity.color}
+                  fallbackChar={agentIdentity.fallbackChar}
+                  size="md"
+                  className="mt-0.5 !size-9 shrink-0 !text-base"
+                />
+                <div className="min-w-0 flex-1">
+                  <h2 className="text-title-lg text-foreground">
+                    {agentId ? '开始当前会话' : '开始主会话'}
+                  </h2>
+                  <p className="mt-1 max-w-2xl text-body text-muted-foreground">
+                    {agentId && contextLabel
+                      ? `“${contextLabel}”使用独立上下文。直接输入你的问题。`
+                      : `我是 ${agentIdentity.name}。直接输入你的问题，或从下面选择一个常用起点。`}
+                  </p>
                 </div>
-
-                {onSend && (
-                  <div className="mt-6 grid gap-2.5 sm:grid-cols-2">
-                    {quickPrompts.map((prompt) => (
-                      <button
-                        key={prompt.title}
-                        onClick={() => onSend(prompt.desc)}
-                        className="group min-h-[72px] rounded-lg border border-border/70 bg-background/70 px-3.5 py-3 text-left transition-colors hover:border-border hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring active:scale-[0.99] cursor-pointer"
-                      >
-                        <div className="flex items-start gap-3">
-                          <prompt.icon
-                            className="mt-0.5 h-4.5 w-4.5 shrink-0 text-muted-foreground group-hover:text-foreground"
-                            strokeWidth={1.75}
-                          />
-                          <span className="min-w-0">
-                            <span className="block truncate text-sm font-medium text-foreground">
-                              {prompt.title}
-                            </span>
-                            <span className="mt-0.5 block overflow-hidden text-ellipsis text-xs leading-5 text-muted-foreground">
-                              {prompt.desc}
-                            </span>
-                          </span>
-                        </div>
-                      </button>
-                    ))}
-                  </div>
-                )}
               </div>
+
+              {onSend && (
+                <div className="mt-6 grid gap-2.5 sm:grid-cols-2">
+                  {quickPrompts.map((prompt) => (
+                    <button
+                      key={prompt.title}
+                      onClick={() => requestComposerDraft(prompt.desc)}
+                      className="group min-h-16 cursor-pointer rounded-xl bg-surface-raised px-3.5 py-3 text-left ring-1 ring-surface-border transition-[background-color,box-shadow] hover:bg-surface-hover hover:ring-foreground/15 focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:outline-none active:scale-[0.99]"
+                    >
+                      <div className="flex items-start gap-3">
+                        <prompt.icon
+                          className="mt-0.5 h-4.5 w-4.5 shrink-0 text-muted-foreground group-hover:text-foreground"
+                          strokeWidth={1.75}
+                        />
+                        <span className="min-w-0">
+                          <span className="block truncate text-body font-medium text-foreground">
+                            {prompt.title}
+                          </span>
+                          <span className="mt-0.5 block overflow-hidden text-caption text-ellipsis text-muted-foreground">
+                            {prompt.desc}
+                          </span>
+                        </span>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
           )}
 
-          {groupJid && !agentId && (
-            <StreamingDisplay
-              groupJid={groupJid}
-              isWaiting={!!isWaiting}
-              senderName={agentIdentity.name}
-              agentAvatarUrl={agentAvatarUrl}
-              agentAvatarEmoji={agentAvatarEmoji}
-              agentAvatarColor={agentAvatarColor}
-              interactionMode={interactionMode}
-            />
-          )}
-          {groupJid && agentId && (
-            <StreamingDisplay
-              groupJid={groupJid}
-              isWaiting={!!isWaiting}
-              agentId={agentId}
-              senderName={agentIdentity.name}
-              agentAvatarUrl={agentAvatarUrl}
-              agentAvatarEmoji={agentAvatarEmoji}
-              agentAvatarColor={agentAvatarColor}
-              interactionMode={interactionMode}
-            />
-          )}
+          <div ref={streamingBlockRef} data-hc-streaming-block="">
+            {groupJid && settledRunKey !== null && (
+              <div key={`run:${settledRunKey}`} data-hc-stream-card="settled">
+                <StreamingDisplay
+                  groupJid={groupJid}
+                  isWaiting={false}
+                  agentId={agentId}
+                  senderName={agentIdentity.name}
+                  agentAvatarUrl={agentAvatarUrl}
+                  agentAvatarEmoji={agentAvatarEmoji}
+                  agentAvatarColor={agentAvatarColor}
+                  interactionMode={interactionMode}
+                  settled
+                />
+              </div>
+            )}
+            {groupJid && (
+              <div
+                key={
+                  liveRunKey && liveRunKey !== settledRunKey
+                    ? `run:${liveRunKey}`
+                    : 'live'
+                }
+                data-hc-stream-card="live"
+              >
+                <StreamingDisplay
+                  groupJid={groupJid}
+                  isWaiting={!!isWaiting}
+                  agentId={agentId}
+                  senderName={agentIdentity.name}
+                  agentAvatarUrl={agentAvatarUrl}
+                  agentAvatarEmoji={agentAvatarEmoji}
+                  agentAvatarColor={agentAvatarColor}
+                  interactionMode={interactionMode}
+                  stopHint
+                />
+              </div>
+            )}
+          </div>
 
           {/* Inline streaming for spawn agents — parallel tasks in same chat */}
           {groupJid &&
@@ -748,24 +1403,41 @@ export function MessageList({
         <div className="absolute right-4 bottom-4 flex flex-col gap-1.5">
           {!atTop && (
             <button
+              type="button"
               onClick={scrollToTop}
-              className="w-8 h-8 rounded-full bg-foreground/5 backdrop-blur-sm flex items-center justify-center text-muted-foreground/60 hover:text-foreground hover:bg-foreground/10 transition-all cursor-pointer"
+              className="flex size-8 cursor-pointer items-center justify-center rounded-full bg-surface-raised text-muted-foreground shadow-menu ring-1 ring-surface-border transition-colors hover:text-foreground pointer-coarse:size-10"
               title="回到顶部"
+              aria-label="回到顶部"
             >
               <ChevronUp className="w-4 h-4" />
             </button>
           )}
           {!autoScroll && (
             <button
+              type="button"
               onClick={scrollToBottom}
-              className="w-8 h-8 rounded-full bg-foreground/5 backdrop-blur-sm flex items-center justify-center text-muted-foreground/60 hover:text-foreground hover:bg-foreground/10 transition-all cursor-pointer"
+              className="relative flex size-8 cursor-pointer items-center justify-center rounded-full bg-surface-raised text-muted-foreground shadow-menu ring-1 ring-surface-border transition-colors hover:text-foreground pointer-coarse:size-10"
               title="回到底部"
+              aria-label={
+                unseenCount > 0
+                  ? `回到底部，有 ${unseenCount} 条新消息`
+                  : '回到底部'
+              }
             >
               <ChevronDown className="w-4 h-4" />
+              {unseenCount > 0 && (
+                <span
+                  aria-hidden="true"
+                  data-hc-unseen-count
+                  className="absolute -top-1.5 -right-1.5 h-4 min-w-4 rounded-full bg-primary px-1 text-center text-micro leading-4 font-medium text-primary-foreground tabular-nums ring-2 ring-background"
+                >
+                  {unseenCount > 99 ? '99+' : unseenCount}
+                </span>
+              )}
             </button>
           )}
         </div>
       )}
     </div>
   );
-}
+});

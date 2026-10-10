@@ -1,3 +1,4 @@
+// @vitest-environment happy-dom
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
@@ -20,13 +21,9 @@ vi.mock('../utils/messageSnapshotCache', () => ({
   clearMessageSnapshotCache: mocks.clearMessageSnapshotCache,
 }));
 
-vi.mock('./usage', () => ({
-  useUsageStore: {
-    getState: () => ({ reset: mocks.resetUsage }),
-  },
-}));
-
 const { useAuthStore } = await import('./auth');
+const { registerUserScopedReset } = await import('./user-scope');
+registerUserScopedReset(mocks.resetUsage);
 
 const registeredUser = {
   id: 'user-1',
@@ -98,5 +95,31 @@ describe('auth store public appearance hydration', () => {
       user: registeredUser,
       appearance,
     });
+  });
+});
+
+describe('auth store sign-in from a public page', () => {
+  test('login leaves no pending check and drops stale page prewarms', async () => {
+    // A cold load of /login: checkAuth never ran, so `checking` is still
+    // the initial true, and index.html prefetched a 401 for /api/auth/me.
+    useAuthStore.setState({ authenticated: false, checking: true });
+    const holder = window as {
+      __authPrewarm?: unknown;
+      __groupsPrewarm?: unknown;
+    };
+    holder.__authPrewarm = Promise.resolve(new Response(null, { status: 401 }));
+    holder.__groupsPrewarm = Promise.resolve(null);
+
+    await useAuthStore.getState().login('member', 'password-123');
+
+    expect(useAuthStore.getState()).toMatchObject({
+      authenticated: true,
+      checking: false,
+    });
+    expect(holder.__authPrewarm).toBeUndefined();
+    expect(holder.__groupsPrewarm).toBeUndefined();
+    // User-scoped stores that were loaded are reset synchronously; auth
+    // never has to download them first.
+    expect(mocks.resetUsage).toHaveBeenCalledTimes(1);
   });
 });

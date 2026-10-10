@@ -8,10 +8,13 @@ import {
   MoreHorizontal,
   Pencil,
   Plus,
-  Search,
   Trash2,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { IconButton } from '@/components/common/IconButton';
+import { SearchInput } from '@/components/common/SearchInput';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -19,9 +22,12 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import type { AgentInfo } from '../../types';
-import { getPresentedMessageContent } from '../../lib/message-presentation';
-
-const RECENT_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+import {
+  buildSessionMeta,
+  isNativeManagedSession,
+  isRecentSession,
+  messagePreview,
+} from '../../lib/session-presentation';
 
 interface SessionSidebarProps {
   sessions: AgentInfo[];
@@ -38,66 +44,6 @@ interface SessionSidebarProps {
   onRenameSession?: (id: string, name: string) => void;
   onDeleteSession: (id: string) => void;
   onBindSession?: (id: string | null) => void;
-}
-
-function sessionActivityAt(session: AgentInfo): string {
-  return (
-    session.last_active_at ||
-    session.latest_message?.timestamp ||
-    session.created_at
-  );
-}
-
-function timestampMs(value: string): number | null {
-  const parsed = new Date(value).getTime();
-  return Number.isFinite(parsed) ? parsed : null;
-}
-
-function isRecentSession(session: AgentInfo): boolean {
-  const timestamp = timestampMs(sessionActivityAt(session));
-  if (timestamp === null) return false;
-  return Date.now() - timestamp <= RECENT_WINDOW_MS;
-}
-
-function formatSessionTime(value: string): string {
-  const timestamp = timestampMs(value);
-  if (timestamp === null) return '';
-
-  const elapsed = Math.max(0, Date.now() - timestamp);
-  const minutes = Math.floor(elapsed / 60_000);
-  if (minutes < 1) return '刚刚';
-  if (minutes < 60) return `${minutes} 分钟前`;
-
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours} 小时前`;
-
-  const days = Math.floor(hours / 24);
-  if (days < 7) return `${days} 天前`;
-
-  return new Date(timestamp).toLocaleDateString('zh-CN', {
-    month: 'numeric',
-    day: 'numeric',
-  });
-}
-
-function messagePreview(session: AgentInfo): string {
-  const content = session.latest_message?.content || '';
-  return getPresentedMessageContent({
-    content,
-    source_kind: null,
-    finalization_reason: null,
-  })
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-function isNativeManagedSession(session: AgentInfo): boolean {
-  return (
-    session.source_kind === 'native_thread' ||
-    session.source_kind === 'feishu_thread' ||
-    session.title_source === 'native_root' ||
-    session.title_source === 'feishu_root'
-  );
 }
 
 export function SessionSidebar({
@@ -157,67 +103,57 @@ export function SessionSidebar({
       data-hc-session-sidebar
       className="flex h-full min-h-0 w-full flex-col bg-transparent"
     >
-      <div className="border-b border-border/80 px-3 py-3">
-        <div className="flex items-center justify-between gap-2">
-          <div className="min-w-0">
-            <div className="flex items-center gap-2">
-              <div className="truncate text-[13px] font-semibold text-foreground">
-                {title || '会话'}
-              </div>
-              <span className="rounded-md bg-brand-50 px-1.5 py-0.5 text-[10px] font-medium text-primary dark:bg-brand-700/15 dark:text-brand-300">
-                {totalCount}
-              </span>
+      <div className="border-b border-surface-border px-3 py-2.5">
+        <div className="flex min-h-9 items-center gap-1">
+          {onClose && (
+            <IconButton
+              label="返回工作区"
+              icon={<ArrowLeft />}
+              onClick={onClose}
+              hideTooltip
+              className="-ml-1.5 text-muted-foreground pointer-coarse:size-9"
+            />
+          )}
+          <div className="flex min-w-0 flex-1 items-center gap-2">
+            <div className="truncate text-title-sm text-foreground">
+              {title || '会话'}
             </div>
+            <Badge variant="neutral" className="tabular-nums">
+              {totalCount}
+            </Badge>
           </div>
-          <div className="flex shrink-0 items-center gap-1">
-            {canModify && onCreateSession && (
-              <button
-                onClick={onCreateSession}
-                disabled={isCreatingSession}
-                aria-busy={isCreatingSession}
-                className="grid min-h-9 min-w-9 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60 cursor-pointer"
-                title={createSessionLabel}
-                aria-label={
-                  isCreatingSession
-                    ? `正在${createSessionLabel}`
-                    : createSessionLabel
-                }
-              >
-                {isCreatingSession ? (
-                  <Loader2
-                    className="h-4 w-4 animate-spin"
-                    aria-hidden="true"
-                  />
+          {canModify && onCreateSession && (
+            <IconButton
+              label={
+                isCreatingSession
+                  ? `正在${createSessionLabel}`
+                  : createSessionLabel
+              }
+              icon={
+                isCreatingSession ? (
+                  <Loader2 className="animate-spin" aria-hidden="true" />
                 ) : (
-                  <Plus className="h-4 w-4" aria-hidden="true" />
-                )}
-              </button>
-            )}
-            {onClose && (
-              <button
-                onClick={onClose}
-                className="grid min-h-9 min-w-9 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring cursor-pointer"
-                title="返回工作区"
-                aria-label="返回工作区"
-              >
-                <ArrowLeft className="h-4 w-4" />
-              </button>
-            )}
-          </div>
+                  <Plus aria-hidden="true" />
+                )
+              }
+              onClick={onCreateSession}
+              disabled={isCreatingSession}
+              aria-busy={isCreatingSession}
+              className="-mr-1 text-muted-foreground pointer-coarse:size-9"
+            />
+          )}
         </div>
 
         {showNavigationTools && (
           <>
-            <label className="mt-3 flex min-h-9 items-center gap-2 rounded-md border border-border bg-background px-2.5 focus-within:border-primary/50 focus-within:ring-2 focus-within:ring-ring/20">
-              <span className="sr-only">搜索{sessionNoun}</span>
-              <Search className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-              <input
-                value={query}
-                onChange={(event) => setQuery(event.target.value)}
-                placeholder={`搜索 ${totalCount} 个${sessionNoun}…`}
-                className="min-w-0 flex-1 bg-transparent text-xs outline-none placeholder:text-muted-foreground"
-              />
-            </label>
+            <SearchInput
+              value={query}
+              onChange={setQuery}
+              placeholder={`搜索 ${totalCount} 个${sessionNoun}…`}
+              ariaLabel={`搜索${sessionNoun}`}
+              debounce={0}
+              className="mt-2.5"
+            />
             <div className="mt-2 flex items-center gap-1" aria-label="会话范围">
               <FilterButton
                 active={scope === 'all'}
@@ -248,20 +184,22 @@ export function SessionSidebar({
         />
 
         {visibleSessions.length === 0 ? (
-          <div className="px-3 py-8 text-center text-[11px] leading-5 text-muted-foreground">
+          <div className="px-3 py-8 text-center text-caption text-muted-foreground">
             {sessions.length === 0
               ? `暂无其他${sessionNoun}`
               : `没有匹配的${sessionNoun}`}
             {(query || scope !== 'all') && (
-              <button
+              <Button
+                variant="ghost"
+                size="sm"
                 onClick={() => {
                   setQuery('');
                   setScope('all');
                 }}
-                className="mx-auto mt-2 block min-h-9 rounded-md px-3 text-primary hover:bg-brand-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring cursor-pointer"
+                className="mx-auto mt-2 flex"
               >
                 清除筛选
-              </button>
+              </Button>
             )}
           </div>
         ) : (
@@ -328,29 +266,15 @@ function FilterButton({
       onClick={onClick}
       aria-pressed={active}
       className={cn(
-        'min-h-7 rounded-md px-2 text-[11px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring cursor-pointer',
+        'min-h-8 cursor-pointer rounded-md px-2.5 text-caption transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none',
         active
-          ? 'bg-secondary font-medium text-foreground'
-          : 'text-muted-foreground hover:bg-muted hover:text-foreground',
+          ? 'bg-surface-selected font-medium text-foreground'
+          : 'text-muted-foreground hover:bg-surface-hover hover:text-foreground',
       )}
     >
       {children}
     </button>
   );
-}
-
-function buildSessionMeta(session: AgentInfo): string {
-  const time = formatSessionTime(sessionActivityAt(session));
-  let detail = '';
-
-  if (session.title_generating) detail = '正在生成标题';
-  else if (session.status === 'running') detail = '正在生成回复';
-  else if (isNativeManagedSession(session)) detail = '渠道原生话题';
-  else if ((session.linked_im_groups?.length ?? 0) > 0)
-    detail = '已绑定消息渠道';
-  else detail = messagePreview(session) || '暂无消息';
-
-  return [time, detail].filter(Boolean).join(' · ');
 }
 
 function SessionRow({
@@ -391,10 +315,10 @@ function SessionRow({
   return (
     <div
       className={cn(
-        'group flex min-h-11 items-center gap-1 rounded-md transition-colors',
+        'group flex min-h-12 items-center gap-1 rounded-lg transition-colors',
         active
-          ? 'bg-primary/10 text-primary ring-1 ring-inset ring-primary/15'
-          : 'text-foreground hover:bg-muted/70',
+          ? 'bg-surface-selected text-foreground'
+          : 'text-foreground hover:bg-surface-hover',
       )}
     >
       <button
@@ -403,29 +327,26 @@ function SessionRow({
         className="flex min-w-0 flex-1 items-start gap-2 px-2.5 py-1.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring cursor-pointer"
       >
         {titleGenerating ? (
-          <Loader2 className="mt-1 h-3.5 w-3.5 shrink-0 animate-spin text-teal-500" />
+          <Loader2 className="mt-1 h-3.5 w-3.5 shrink-0 animate-spin text-muted-foreground" />
         ) : running ? (
-          <span className="mt-1.5 h-2 w-2 shrink-0 rounded-full bg-emerald-500" />
+          <span className="mt-1.5 h-2 w-2 shrink-0 animate-pulse rounded-full bg-primary" />
         ) : linkedCount > 0 ? (
-          <MessageSquare className="mt-1 h-3.5 w-3.5 shrink-0 text-teal-600" />
+          <MessageSquare className="mt-1 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
         ) : (
           <span
             className={cn(
               'mt-1.5 h-2 w-2 shrink-0 rounded-full',
-              active ? 'bg-primary' : 'bg-border',
+              active ? 'bg-foreground/60' : 'bg-border',
             )}
           />
         )}
         <span className="min-w-0 flex-1">
           <span
-            className={cn(
-              'block truncate text-[12px] leading-4',
-              active && 'font-medium',
-            )}
+            className={cn('block truncate text-body', active && 'font-medium')}
           >
             {name}
           </span>
-          <span className="mt-0.5 block truncate text-[10px] leading-4 text-muted-foreground">
+          <span className="mt-0.5 block truncate text-caption text-muted-foreground">
             {meta}
           </span>
         </span>
@@ -434,40 +355,29 @@ function SessionRow({
       {showMenu && (
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <button
+            <IconButton
+              label={`${name}的更多操作`}
+              icon={<MoreHorizontal className="size-3.5" />}
+              hideTooltip
               onClick={(event) => event.stopPropagation()}
-              className="mr-1 grid min-h-8 min-w-8 place-items-center rounded-md text-muted-foreground opacity-100 transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100 cursor-pointer"
-              title={`${name}的更多操作`}
-              aria-label={`${name}的更多操作`}
-            >
-              <MoreHorizontal className="h-3.5 w-3.5" />
-            </button>
+              className="mr-1 text-muted-foreground pointer-coarse:size-9 sm:opacity-0 sm:group-focus-within:opacity-100 sm:group-hover:opacity-100 sm:data-[state=open]:opacity-100"
+            />
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-36">
             {onBind && (
-              <DropdownMenuItem
-                onClick={onBind}
-                className="transition-[background-color,box-shadow] duration-150 ease-out hover:bg-accent hover:text-accent-foreground hover:shadow-md focus:shadow-md data-[highlighted]:bg-accent data-[highlighted]:shadow-md active:shadow-none"
-              >
+              <DropdownMenuItem onClick={onBind}>
                 <Link className="h-4 w-4" />
                 会话绑定
               </DropdownMenuItem>
             )}
             {!isMain && !readonlyTitle && onRename && (
-              <DropdownMenuItem
-                onClick={onRename}
-                className="transition-[background-color,box-shadow] duration-150 ease-out hover:bg-accent hover:text-accent-foreground hover:shadow-md focus:shadow-md data-[highlighted]:bg-accent data-[highlighted]:shadow-md active:shadow-none"
-              >
+              <DropdownMenuItem onClick={onRename}>
                 <Pencil className="h-4 w-4" />
                 重命名
               </DropdownMenuItem>
             )}
             {!isMain && onDelete && (
-              <DropdownMenuItem
-                variant="destructive"
-                onClick={onDelete}
-                className="transition-[background-color,box-shadow] duration-150 ease-out hover:bg-destructive/10 hover:text-destructive hover:shadow-md focus:shadow-md data-[highlighted]:bg-destructive/10 data-[highlighted]:shadow-md active:shadow-none"
-              >
+              <DropdownMenuItem variant="destructive" onClick={onDelete}>
                 <Trash2 className="h-4 w-4" />
                 删除
               </DropdownMenuItem>

@@ -121,22 +121,45 @@ function lookupResponse(
 }
 
 describe('Feishu merged-forward companion detection', () => {
-  test('holds an image topic root and links its immediate direct caption', async () => {
+  test('never holds an image topic root but still links its immediate direct caption', async () => {
     const lookup = vi.fn();
     const resolver = new FeishuForwardBundleResolver(lookup);
 
-    expect(resolver.observeRoot(mediaTopicRoot())).toEqual({
-      kind: 'forward_bundle',
-      bundleId: 'om_media_root',
-      role: 'forwarded_content',
-    });
+    // The image root runs at once (no forward_bundle hold); the caption asks
+    // the scheduler to coalesce into that run, like a rapid topic reply.
+    expect(resolver.observeRoot(mediaTopicRoot())).toBeUndefined();
     await expect(resolver.resolveCompanion(mediaTopicNote())).resolves.toEqual({
-      kind: 'forward_bundle',
+      kind: 'rapid_topic_bundle',
       bundleId: 'om_media_root',
       role: 'forwarder_comment',
       relatedMessageId: 'om_media_root',
     });
     expect(lookup).not.toHaveBeenCalled();
+  });
+
+  test('treats a deterministic 4xx root lookup as "not a companion"', async () => {
+    const lookup = vi.fn().mockRejectedValue(
+      Object.assign(new Error('Request failed with status code 400'), {
+        response: { status: 400, data: { code: 230027, msg: 'no permission' } },
+      }),
+    );
+    const resolver = new FeishuForwardBundleResolver(lookup);
+
+    await expect(resolver.resolveCompanion(note())).resolves.toBeUndefined();
+    // Cached as definitive: a second note does not hit the API again.
+    await expect(resolver.resolveCompanion(note())).resolves.toBeUndefined();
+    expect(lookup).toHaveBeenCalledTimes(1);
+
+    const rateLimited = new FeishuForwardBundleResolver(
+      vi.fn().mockRejectedValue(
+        Object.assign(new Error('Request failed with status code 429'), {
+          response: { status: 429, data: { code: 99991400 } },
+        }),
+      ),
+    );
+    await expect(rateLimited.resolveCompanion(note())).rejects.toBeInstanceOf(
+      TransientFeishuForwardLookupError,
+    );
   });
 
   test('does not merge an image reply outside the exact thread, sender or 3s window', async () => {

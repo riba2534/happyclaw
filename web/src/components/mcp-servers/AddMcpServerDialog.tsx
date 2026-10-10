@@ -4,12 +4,16 @@ import { toast } from 'sonner';
 import {
   Dialog,
   DialogContent,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { IconButton } from '@/components/common/IconButton';
+import { SegmentedControl } from '@/components/common/SegmentedControl';
+import { Callout, ChoiceCard } from '@/components/capabilities/capability-ui';
 import type { McpServerCreate } from '../../stores/mcp-servers';
 import type { McpServerSource } from '../../utils/mcp-servers';
 
@@ -135,15 +139,19 @@ export function AddMcpServerDialog({
 
   return (
     <Dialog open={open} onOpenChange={(v) => !v && handleClose()}>
-      <DialogContent className="sm:max-w-lg max-h-[80vh] overflow-y-auto">
+      <DialogContent className="sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>添加 MCP 服务器</DialogTitle>
         </DialogHeader>
 
-        <form onSubmit={handleSubmit} className="space-y-4">
+        <form
+          id="add-mcp-server-form"
+          onSubmit={handleSubmit}
+          className="space-y-4"
+        >
           {isAdmin && (
             <div>
-              <Label className="mb-1">归属范围</Label>
+              <Label className="mb-1.5">归属范围</Label>
               <div className="grid grid-cols-2 gap-2">
                 {(
                   [
@@ -151,22 +159,14 @@ export function AddMcpServerDialog({
                     ['system', '系统 MCP', '所有用户可见，管理员维护'],
                   ] as const
                 ).map(([value, title, description]) => (
-                  <button
+                  <ChoiceCard
                     key={value}
-                    type="button"
                     disabled={submitting}
-                    onClick={() => setScope(value)}
-                    className={`rounded-lg border px-3 py-2 text-left transition-colors ${
-                      scope === value
-                        ? 'border-primary bg-brand-50 ring-1 ring-primary'
-                        : 'border-border hover:bg-muted/60'
-                    }`}
-                  >
-                    <span className="block text-sm font-medium">{title}</span>
-                    <span className="mt-0.5 block text-[11px] text-muted-foreground">
-                      {description}
-                    </span>
-                  </button>
+                    selected={scope === value}
+                    onSelect={() => setScope(value)}
+                    title={title}
+                    description={description}
+                  />
                 ))}
               </div>
             </div>
@@ -174,7 +174,7 @@ export function AddMcpServerDialog({
 
           {isAdmin && scope === 'system' && (
             <div>
-              <Label className="mb-1">成员访问</Label>
+              <Label className="mb-1.5">成员访问</Label>
               <div className="grid grid-cols-2 gap-2">
                 {(
                   [
@@ -182,38 +182,29 @@ export function AddMcpServerDialog({
                     ['shared', '共享给成员', '允许普通成员的智能体使用'],
                   ] as const
                 ).map(([value, title, description]) => (
-                  <button
+                  <ChoiceCard
                     key={value}
-                    type="button"
                     disabled={submitting}
-                    aria-pressed={memberAccess === value}
-                    onClick={() => setMemberAccess(value)}
-                    className={`rounded-lg border px-3 py-2 text-left transition-colors ${
-                      memberAccess === value
-                        ? 'border-primary bg-brand-50 ring-1 ring-primary'
-                        : 'border-border hover:bg-muted/60'
-                    }`}
-                  >
-                    <span className="block text-sm font-medium">{title}</span>
-                    <span className="mt-0.5 block text-[11px] text-muted-foreground">
-                      {description}
-                    </span>
-                  </button>
+                    selected={memberAccess === value}
+                    onSelect={() => setMemberAccess(value)}
+                    title={title}
+                    description={description}
+                  />
                 ))}
               </div>
               {memberAccess === 'shared' && (
-                <p className="mt-2 rounded-lg border border-warning/20 bg-warning-bg px-3 py-2 text-xs leading-5 text-warning">
+                <Callout tone="warning" className="mt-2">
                   共享会把完整 command、args、url、env 和 headers
                   配置交给普通成员的智能体
                   运行。请确认其中所有凭据都允许成员使用。
-                </p>
+                </Callout>
               )}
             </div>
           )}
 
           {/* ID */}
           <div>
-            <Label htmlFor="mcp-id" className="mb-1">
+            <Label htmlFor="mcp-id" className="mb-1.5">
               服务器 ID <span className="text-error">*</span>
             </Label>
             <Input
@@ -223,38 +214,32 @@ export function AddMcpServerDialog({
               placeholder="my-mcp-server"
               disabled={submitting}
             />
-            <p className="mt-1 text-xs text-muted-foreground">
+            <p className="mt-1.5 text-caption text-muted-foreground">
               唯一标识符，只能包含字母、数字、短横线和下划线
             </p>
           </div>
 
           {/* Type selector */}
           <div>
-            <Label className="mb-1">类型</Label>
-            <div className="flex gap-2">
-              {(['stdio', 'http', 'sse'] as const).map((t) => (
-                <button
-                  key={t}
-                  type="button"
-                  disabled={submitting}
-                  onClick={() => setServerType(t)}
-                  className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
-                    serverType === t
-                      ? 'bg-primary text-primary-foreground'
-                      : 'bg-muted text-muted-foreground hover:bg-muted/80'
-                  } disabled:opacity-50`}
-                >
-                  {t.toUpperCase()}
-                </button>
-              ))}
-            </div>
+            <Label className="mb-1.5">类型</Label>
+            <SegmentedControl
+              label="类型"
+              value={serverType}
+              onChange={(next) => {
+                if (!submitting) setServerType(next);
+              }}
+              options={(['stdio', 'http', 'sse'] as const).map((t) => ({
+                value: t,
+                label: t.toUpperCase(),
+              }))}
+            />
           </div>
 
           {isHttpType ? (
             <>
               {/* URL */}
               <div>
-                <Label htmlFor="mcp-url" className="mb-1">
+                <Label htmlFor="mcp-url" className="mb-1.5">
                   URL <span className="text-error">*</span>
                 </Label>
                 <Input
@@ -269,7 +254,7 @@ export function AddMcpServerDialog({
 
               {/* Headers */}
               <div>
-                <Label className="mb-1">Headers</Label>
+                <Label className="mb-1.5">Headers</Label>
                 <div className="space-y-2">
                   {headers.map((row, i) => (
                     <div key={i} className="flex items-center gap-2">
@@ -282,7 +267,7 @@ export function AddMcpServerDialog({
                         }}
                         placeholder="Authorization"
                         disabled={submitting}
-                        className="w-2/5 font-mono text-sm"
+                        className="w-2/5 font-mono"
                       />
                       <Input
                         type="password"
@@ -294,18 +279,17 @@ export function AddMcpServerDialog({
                         }}
                         placeholder="Bearer token..."
                         disabled={submitting}
-                        className="flex-1 font-mono text-sm"
+                        className="flex-1 font-mono"
                       />
-                      <button
-                        type="button"
+                      <IconButton
+                        label="移除 Header"
+                        icon={<X />}
                         onClick={() =>
                           setHeaders(headers.filter((_, j) => j !== i))
                         }
                         disabled={submitting}
-                        className="p-1.5 text-muted-foreground hover:text-error transition-colors disabled:opacity-50"
-                      >
-                        <X size={16} />
-                      </button>
+                        className="text-muted-foreground hover:text-error"
+                      />
                     </div>
                   ))}
                   <Button
@@ -317,7 +301,7 @@ export function AddMcpServerDialog({
                     }
                     disabled={submitting}
                   >
-                    <Plus size={14} />
+                    <Plus />
                     添加 Header
                   </Button>
                 </div>
@@ -327,7 +311,7 @@ export function AddMcpServerDialog({
             <>
               {/* Command */}
               <div>
-                <Label htmlFor="mcp-command" className="mb-1">
+                <Label htmlFor="mcp-command" className="mb-1.5">
                   命令 <span className="text-error">*</span>
                 </Label>
                 <Input
@@ -342,7 +326,7 @@ export function AddMcpServerDialog({
 
               {/* Args */}
               <div>
-                <Label className="mb-1">参数</Label>
+                <Label className="mb-1.5">参数</Label>
                 <div className="space-y-2">
                   {args.map((arg, i) => (
                     <div key={i} className="flex items-center gap-2">
@@ -355,16 +339,15 @@ export function AddMcpServerDialog({
                         }}
                         placeholder={`参数 ${i + 1}`}
                         disabled={submitting}
-                        className="flex-1 font-mono text-sm"
+                        className="flex-1 font-mono"
                       />
-                      <button
-                        type="button"
+                      <IconButton
+                        label="移除参数"
+                        icon={<X />}
                         onClick={() => setArgs(args.filter((_, j) => j !== i))}
                         disabled={submitting}
-                        className="p-1.5 text-muted-foreground hover:text-error transition-colors disabled:opacity-50"
-                      >
-                        <X size={16} />
-                      </button>
+                        className="text-muted-foreground hover:text-error"
+                      />
                     </div>
                   ))}
                   <Button
@@ -374,7 +357,7 @@ export function AddMcpServerDialog({
                     onClick={() => setArgs([...args, ''])}
                     disabled={submitting}
                   >
-                    <Plus size={14} />
+                    <Plus />
                     添加参数
                   </Button>
                 </div>
@@ -382,7 +365,7 @@ export function AddMcpServerDialog({
 
               {/* Env */}
               <div>
-                <Label className="mb-1">环境变量</Label>
+                <Label className="mb-1.5">环境变量</Label>
                 <div className="space-y-2">
                   {env.map((row, i) => (
                     <div key={i} className="flex items-center gap-2">
@@ -395,7 +378,7 @@ export function AddMcpServerDialog({
                         }}
                         placeholder="KEY"
                         disabled={submitting}
-                        className="w-2/5 font-mono text-sm"
+                        className="w-2/5 font-mono"
                       />
                       <Input
                         type="password"
@@ -407,16 +390,15 @@ export function AddMcpServerDialog({
                         }}
                         placeholder="value"
                         disabled={submitting}
-                        className="flex-1 font-mono text-sm"
+                        className="flex-1 font-mono"
                       />
-                      <button
-                        type="button"
+                      <IconButton
+                        label="移除环境变量"
+                        icon={<X />}
                         onClick={() => setEnv(env.filter((_, j) => j !== i))}
                         disabled={submitting}
-                        className="p-1.5 text-muted-foreground hover:text-error transition-colors disabled:opacity-50"
-                      >
-                        <X size={16} />
-                      </button>
+                        className="text-muted-foreground hover:text-error"
+                      />
                     </div>
                   ))}
                   <Button
@@ -426,7 +408,7 @@ export function AddMcpServerDialog({
                     onClick={() => setEnv([...env, { key: '', value: '' }])}
                     disabled={submitting}
                   >
-                    <Plus size={14} />
+                    <Plus />
                     添加环境变量
                   </Button>
                 </div>
@@ -436,7 +418,7 @@ export function AddMcpServerDialog({
 
           {/* Description */}
           <div>
-            <Label htmlFor="mcp-desc" className="mb-1">
+            <Label htmlFor="mcp-desc" className="mb-1.5">
               描述
             </Label>
             <Input
@@ -447,30 +429,30 @@ export function AddMcpServerDialog({
               disabled={submitting}
             />
           </div>
-
-          {/* Actions */}
-          <div className="flex items-center justify-end gap-3 pt-2">
-            <Button
-              type="button"
-              variant="ghost"
-              onClick={handleClose}
-              disabled={submitting}
-            >
-              取消
-            </Button>
-            <Button
-              type="submit"
-              disabled={
-                submitting ||
-                !id.trim() ||
-                (isHttpType ? !url.trim() : !command.trim())
-              }
-            >
-              {submitting && <Loader2 className="size-4 animate-spin" />}
-              添加
-            </Button>
-          </div>
         </form>
+
+        <DialogFooter>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={handleClose}
+            disabled={submitting}
+          >
+            取消
+          </Button>
+          <Button
+            type="submit"
+            form="add-mcp-server-form"
+            disabled={
+              submitting ||
+              !id.trim() ||
+              (isHttpType ? !url.trim() : !command.trim())
+            }
+          >
+            {submitting && <Loader2 className="animate-spin" />}
+            添加
+          </Button>
+        </DialogFooter>
       </DialogContent>
     </Dialog>
   );

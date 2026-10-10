@@ -1,7 +1,9 @@
 import { Check, Loader2, Search } from 'lucide-react';
 import { useId, useMemo, useState } from 'react';
+import { Badge } from '@/components/ui/badge';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
+import { cn } from '@/lib/utils';
 
 export interface PolicyResourceOption {
   id: string;
@@ -58,23 +60,23 @@ export function PolicyResourcePicker({
       <div className="mb-1.5 flex items-center justify-between gap-2">
         <label
           htmlFor={searchId}
-          className="text-xs font-medium text-muted-foreground"
+          className="text-caption font-medium text-muted-foreground"
         >
           {label}
         </label>
         {!loading && !error && selectedIds.length > 0 && (
           <span
             aria-live="polite"
-            className="inline-flex items-center gap-1 text-[11px] text-primary"
+            className="inline-flex items-center gap-1 text-caption text-foreground"
           >
-            <Check className="h-3 w-3" />
+            <Check className="size-3 text-primary-text" />
             已选 {selectedIds.length}
           </span>
         )}
       </div>
-      <div className="overflow-hidden rounded-md border bg-background">
-        <div className="relative border-b">
-          <Search className="pointer-events-none absolute left-2.5 top-2.5 h-3.5 w-3.5 text-muted-foreground" />
+      <div className="overflow-hidden rounded-lg bg-background ring-1 ring-surface-border">
+        <div className="relative border-b border-surface-border">
+          <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-faint-foreground" />
           <Input
             id={searchId}
             value={query}
@@ -82,32 +84,33 @@ export function PolicyResourcePicker({
             placeholder="搜索名称或 ID"
             disabled={disabled || loading}
             aria-label={`搜索${label}`}
-            className="h-10 rounded-none border-0 pl-8 shadow-none focus-visible:ring-2 focus-visible:ring-inset"
+            className="h-9 rounded-none border-0 bg-transparent pl-8 shadow-none focus-visible:ring-2 focus-visible:ring-inset dark:bg-transparent"
           />
         </div>
-        <div className="max-h-[min(48vh,28rem)] overflow-y-auto p-1.5">
+        <div className="max-h-[min(48vh,28rem)] overflow-y-auto p-1">
           {loading ? (
-            <div className="flex items-center justify-center gap-2 py-6 text-xs text-muted-foreground">
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            <div className="flex items-center justify-center gap-2 py-6 text-caption text-muted-foreground">
+              <Loader2 className="size-3.5 animate-spin" />
               正在加载目录
             </div>
           ) : error ? (
-            <div className="px-2 py-5 text-center text-xs text-error">
+            <div className="px-2 py-5 text-center text-caption text-error">
               {error}
             </div>
           ) : visible.length === 0 ? (
-            <div className="px-2 py-5 text-center text-xs text-muted-foreground">
+            <div className="px-2 py-5 text-center text-caption text-muted-foreground">
               {query ? '没有匹配项' : emptyText}
             </div>
           ) : (
             visible.map((option) => (
               <label
                 key={option.id}
-                className={`flex items-start gap-2 rounded px-2 py-2 text-left transition-colors ${
+                className={cn(
+                  'flex items-start gap-2.5 rounded-md px-2 py-2 text-left transition-colors duration-100',
                   disabled
                     ? 'cursor-not-allowed'
-                    : 'cursor-pointer hover:bg-muted/60'
-                }`}
+                    : 'cursor-pointer hover:bg-surface-hover',
+                )}
               >
                 <Checkbox
                   checked={selected.has(option.id)}
@@ -116,24 +119,20 @@ export function PolicyResourcePicker({
                   className="mt-0.5"
                 />
                 <span className="min-w-0 flex-1">
-                  <span className="flex min-w-0 items-center gap-2 text-xs font-medium text-foreground">
+                  <span className="flex min-w-0 items-center gap-1.5 text-label text-foreground">
                     <span className="truncate">{option.name}</span>
                     {option.sourceLabel && (
-                      <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-normal text-muted-foreground">
-                        {option.sourceLabel}
-                      </span>
+                      <Badge variant="neutral">{option.sourceLabel}</Badge>
                     )}
                     {option.unavailable && (
-                      <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] text-amber-700 dark:bg-amber-950/40 dark:text-amber-300">
-                        当前不可用
-                      </span>
+                      <Badge variant="warning">当前不可用</Badge>
                     )}
                   </span>
-                  <span className="mt-0.5 block truncate font-mono text-[10px] text-muted-foreground">
+                  <span className="mt-0.5 block truncate font-mono text-micro text-faint-foreground">
                     {option.id}
                   </span>
                   {option.description && (
-                    <span className="mt-0.5 block line-clamp-2 text-[11px] text-muted-foreground">
+                    <span className="mt-0.5 line-clamp-2 block text-caption text-muted-foreground">
                       {option.description}
                     </span>
                   )}

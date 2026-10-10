@@ -7,6 +7,7 @@ import { pathToFileURL } from 'node:url';
 import { afterAll, describe, expect, test } from 'vitest';
 
 import { createMcpTools } from '../container/agent-runner/src/mcp-tools.js';
+import { RUNNER_DISALLOWED_BUILTIN_TOOLS } from '../container/agent-runner/src/builtin-tool-policy.js';
 import { hasBackgroundTaskTools } from '../container/agent-runner/src/prompt-plan.js';
 
 const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'happyclaw-tool-init-'));
@@ -274,4 +275,47 @@ describe('HappyClaw tool initialization', () => {
     // background-task prompt as soon as the dead allowlist entry is removed.
     expect(hasBackgroundTaskTools(initializedTools ?? [])).toBe(true);
   }, 20_000);
+
+  test('the runner deny list names real CLI tools and keeps Workflow', async () => {
+    const initTools = async (disallowedTools: string[]) => {
+      const stream = runnerSdk.query({
+        prompt: 'Reply with OK.',
+        options: {
+          pathToClaudeCodeExecutable: runnerClaudeExecutable,
+          cwd,
+          model: 'claude-sonnet-4-5-20250929',
+          env: {
+            ...cleanEnv(),
+            ANTHROPIC_BASE_URL: 'http://127.0.0.1:9',
+            ANTHROPIC_AUTH_TOKEN: 'happyclaw-init-test',
+            ANTHROPIC_API_KEY: '',
+            CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
+          },
+          allowedTools: ['Bash', 'Read', 'Task'],
+          disallowedTools,
+          permissionMode: 'bypassPermissions',
+          allowDangerouslySkipPermissions: true,
+          settingSources: [],
+        },
+      });
+      for await (const message of stream) {
+        if (message.type === 'system' && message.subtype === 'init') {
+          stream.close();
+          return message.tools;
+        }
+      }
+      return [];
+    };
+    // A deny list naming tools the CLI no longer ships would silently stop
+    // applying, so every entry must exist without it.
+    const unrestricted = await initTools([]);
+    expect(unrestricted).toEqual(
+      expect.arrayContaining([...RUNNER_DISALLOWED_BUILTIN_TOOLS]),
+    );
+    const restricted = await initTools([...RUNNER_DISALLOWED_BUILTIN_TOOLS]);
+    for (const tool of RUNNER_DISALLOWED_BUILTIN_TOOLS) {
+      expect(restricted).not.toContain(tool);
+    }
+    expect(restricted).toContain('Workflow');
+  }, 30_000);
 });

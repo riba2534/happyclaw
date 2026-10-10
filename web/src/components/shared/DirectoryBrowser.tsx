@@ -7,9 +7,11 @@ import {
   FolderPlus,
   Loader2,
 } from 'lucide-react';
+import { IconButton } from '@/components/common/IconButton';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Spinner } from '@/components/ui/spinner';
 import { api } from '../../api/client';
 import { extractErrorMessage } from '../../utils/error';
 
@@ -189,7 +191,7 @@ export function DirectoryBrowser({
       {description && (
         <p
           id={descriptionId}
-          className="mb-2 text-xs leading-5 text-muted-foreground"
+          className="mb-2 text-caption leading-5 text-muted-foreground"
         >
           {description}
         </p>
@@ -201,7 +203,7 @@ export function DirectoryBrowser({
           value={value}
           onChange={(event) => onChange(event.target.value, 'input')}
           placeholder={placeholder || '默认: data/groups/{folder}/'}
-          className="h-10 flex-1 text-sm"
+          className="flex-1 pointer-coarse:h-10"
           aria-describedby={describedBy || undefined}
           aria-invalid={!!error}
           autoComplete="off"
@@ -211,7 +213,7 @@ export function DirectoryBrowser({
           type="button"
           variant="outline"
           onClick={handleToggleBrowse}
-          className="h-10 flex-shrink-0 whitespace-nowrap"
+          className="shrink-0 pointer-coarse:h-10"
           aria-expanded={browsing}
           aria-controls={`${resolvedInputId}-browser`}
           disabled={disabled}
@@ -223,44 +225,44 @@ export function DirectoryBrowser({
       {browsing && (
         <div
           id={`${resolvedInputId}-browser`}
-          className="mt-2 overflow-hidden rounded-lg border border-border bg-card"
+          className="mt-2 overflow-hidden rounded-lg border border-surface-border bg-surface-raised"
           aria-busy={loading}
         >
           {currentPath && (
-            <div className="flex items-center justify-between gap-2 border-b border-border bg-muted px-3 py-2">
-              <div className="flex min-w-0 items-center gap-1 overflow-x-auto text-xs text-muted-foreground">
-                <button
-                  type="button"
+            <div className="flex min-h-10 items-center justify-between gap-2 border-b border-surface-border py-1 pr-1.5 pl-1">
+              <div className="flex min-w-0 items-center gap-0.5 overflow-x-auto text-caption text-muted-foreground">
+                <IconButton
+                  label="返回允许的目录根列表"
+                  icon={<Folder />}
                   onClick={() => void fetchDirectories()}
-                  className="grid h-9 w-9 flex-shrink-0 place-items-center rounded-md transition-colors hover:bg-accent hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                  aria-label="返回允许的目录根列表"
-                >
-                  <Folder className="h-4 w-4" />
-                </button>
+                  className="text-muted-foreground pointer-coarse:size-9"
+                />
                 {breadcrumbs.map((breadcrumb, index) => {
                   const isCurrent = index === breadcrumbs.length - 1;
                   return (
                     <span
                       key={breadcrumb.path}
-                      className="flex flex-shrink-0 items-center gap-1"
+                      className="flex shrink-0 items-center gap-0.5"
                     >
-                      <ChevronRight className="h-3 w-3 text-muted-foreground/50" />
-                      <button
-                        type="button"
-                        onClick={() =>
-                          isCurrent
-                            ? undefined
-                            : handleNavigate(breadcrumb.path)
-                        }
-                        className={`min-h-9 rounded px-1.5 transition-colors hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
-                          isCurrent
-                            ? 'font-medium text-foreground'
-                            : 'cursor-pointer'
-                        }`}
-                        disabled={isCurrent}
-                      >
-                        {breadcrumb.name}
-                      </button>
+                      <ChevronRight className="size-3 text-faint-foreground" />
+                      {isCurrent ? (
+                        <span
+                          aria-current="location"
+                          className="px-1.5 font-medium text-foreground"
+                        >
+                          {breadcrumb.name}
+                        </span>
+                      ) : (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="xs"
+                          onClick={() => handleNavigate(breadcrumb.path)}
+                          className="px-1.5 text-caption font-normal text-muted-foreground pointer-coarse:h-9"
+                        >
+                          {breadcrumb.name}
+                        </Button>
+                      )}
                     </span>
                   );
                 })}
@@ -269,30 +271,30 @@ export function DirectoryBrowser({
                 type="button"
                 size="sm"
                 onClick={() => handleSelect(currentPath)}
-                className="h-9 flex-shrink-0"
+                className="shrink-0 pointer-coarse:h-9"
                 disabled={!canSelectCurrent}
               >
-                <FolderCheck className="h-4 w-4" />
+                <FolderCheck />
                 {canSelectCurrent ? '选择此目录' : '不可挂载'}
               </Button>
             </div>
           )}
           {currentPath && !canSelectCurrent && (
-            <p className="border-b border-border bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-700 dark:bg-amber-950/30 dark:text-amber-300">
+            <p className="border-b border-surface-border bg-warning/10 px-3 py-2 text-caption leading-5 text-warning">
               此目录仅可用于导航，不能直接挂载。请进入允许挂载的子目录后再选择。
             </p>
           )}
 
-          <div className="max-h-64 overflow-y-auto" aria-live="polite">
+          <div className="max-h-64 overflow-y-auto p-1" aria-live="polite">
             {loading ? (
-              <div className="flex items-center justify-center gap-2 py-8 text-sm text-muted-foreground">
-                <Loader2 className="h-5 w-5 animate-spin" />
+              <div className="flex items-center justify-center gap-2 py-8 text-caption text-muted-foreground">
+                <Spinner />
                 正在读取服务器目录…
               </div>
             ) : error ? (
               <div
                 id={errorId}
-                className="px-3 py-4 text-center text-sm text-error"
+                className="px-3 py-4 text-center text-caption text-error"
                 role="alert"
               >
                 {error}
@@ -300,18 +302,19 @@ export function DirectoryBrowser({
             ) : (
               <>
                 {(parentPath !== null || currentPath !== null) && (
-                  <button
+                  <Button
                     type="button"
+                    variant="ghost"
                     onClick={handleGoUp}
-                    className="flex min-h-11 w-full items-center gap-2 border-b border-border px-3 py-2 text-sm text-muted-foreground transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+                    className="w-full justify-start px-2 font-normal text-muted-foreground pointer-coarse:h-11"
                   >
-                    <ArrowLeft className="h-4 w-4" />
+                    <ArrowLeft />
                     返回上级
-                  </button>
+                  </Button>
                 )}
 
                 {directories.length === 0 && (
-                  <div className="px-3 py-4 text-center text-sm text-muted-foreground">
+                  <div className="px-3 py-4 text-center text-caption text-muted-foreground">
                     此目录下没有子目录
                   </div>
                 )}
@@ -322,25 +325,26 @@ export function DirectoryBrowser({
                   return (
                     <div
                       key={directory.path}
-                      className="flex min-h-11 items-center justify-between gap-2 px-3 py-1.5 transition-colors hover:bg-muted/50"
+                      className="flex items-center gap-1"
                     >
-                      <button
+                      <Button
                         type="button"
+                        variant="ghost"
                         onClick={() => handleNavigate(directory.path)}
-                        className="flex min-h-9 min-w-0 flex-1 items-center gap-2 rounded text-left text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        className="min-w-0 flex-1 justify-start px-2 font-normal pointer-coarse:h-11"
                       >
-                        <Folder className="h-4 w-4 flex-shrink-0 text-primary" />
+                        <Folder className="text-muted-foreground" />
                         <span className="truncate">{directory.name}</span>
                         {directory.hasChildren && (
-                          <ChevronRight className="h-3.5 w-3.5 flex-shrink-0 text-muted-foreground/50" />
+                          <ChevronRight className="size-3.5 text-faint-foreground" />
                         )}
-                      </button>
+                      </Button>
                       <Button
                         type="button"
                         variant="ghost"
                         size="sm"
                         onClick={() => handleSelect(directory.path)}
-                        className="h-9 flex-shrink-0 text-primary"
+                        className="shrink-0 text-muted-foreground pointer-coarse:h-9"
                         disabled={!canSelectDirectory}
                         aria-label={
                           canSelectDirectory
@@ -358,9 +362,9 @@ export function DirectoryBrowser({
           </div>
 
           {allowCreateFolder && currentPath && (
-            <div className="border-t border-border px-3 py-2">
+            <div className="border-t border-surface-border p-1">
               {creating ? (
-                <div className="flex flex-wrap items-center gap-2 sm:flex-nowrap">
+                <div className="flex flex-wrap items-center gap-2 p-1 sm:flex-nowrap">
                   <Input
                     type="text"
                     value={newFolderName}
@@ -373,19 +377,18 @@ export function DirectoryBrowser({
                       }
                     }}
                     placeholder="文件夹名称"
-                    className="h-10 min-w-40 flex-1 text-sm"
+                    className="min-w-40 flex-1 pointer-coarse:h-10"
                     aria-label="新文件夹名称"
                     autoFocus
                   />
                   <Button
                     type="button"
-                    size="sm"
                     onClick={() => void handleCreateFolder()}
                     disabled={!newFolderName.trim() || createLoading}
-                    className="h-10"
+                    className="pointer-coarse:h-10"
                   >
                     {createLoading ? (
-                      <Loader2 className="h-4 w-4 animate-spin" />
+                      <Loader2 className="animate-spin" />
                     ) : (
                       '创建'
                     )}
@@ -393,12 +396,11 @@ export function DirectoryBrowser({
                   <Button
                     type="button"
                     variant="ghost"
-                    size="sm"
                     onClick={() => {
                       setCreating(false);
                       setNewFolderName('');
                     }}
-                    className="h-10"
+                    className="pointer-coarse:h-10"
                   >
                     取消
                   </Button>
@@ -407,11 +409,10 @@ export function DirectoryBrowser({
                 <Button
                   type="button"
                   variant="ghost"
-                  size="sm"
                   onClick={() => setCreating(true)}
-                  className="h-10 text-primary"
+                  className="px-2 font-normal text-muted-foreground pointer-coarse:h-10"
                 >
-                  <FolderPlus className="h-4 w-4" />
+                  <FolderPlus />
                   新建文件夹
                 </Button>
               )}

@@ -476,7 +476,9 @@ describe('IM strict send acknowledgement', () => {
         ),
       { sleep: async () => {} },
     );
-    expect(missingFile).toMatchObject({ ok: false, outcome: 'pre_accept' });
+    // A local file that cannot be read is a definitive non-delivery (no
+    // Feishu request was made); retrying cannot make it readable.
+    expect(missingFile).toMatchObject({ ok: false, outcome: 'rejected' });
     expect(controls.feishuFileCreate).not.toHaveBeenCalled();
     expect(controls.feishuMessageCreate).not.toHaveBeenCalled();
   });

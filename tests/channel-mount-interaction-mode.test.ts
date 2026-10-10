@@ -326,7 +326,9 @@ describe('mount-specific interaction mode', () => {
         delete process.env.HAPPYCLAW_SKIP_MIGRATION_BACKUP;
       else process.env.HAPPYCLAW_SKIP_MIGRATION_BACKUP = previous;
     }
-    expect(db.getRouterState('schema_version')).toBe('75');
+    expect(db.getRouterState('schema_version')).toBe(
+      String(db.CURRENT_SCHEMA_VERSION),
+    );
     expect(db.getChannelMount(target)?.workspace_jid).toBe(workspaceJid);
     expect(db.getChannelMountInteractionModeOverride(target)).toBe(null);
     expect(db.getWorkspaceInteractionMode(folder)).toBe('proactive');

@@ -6,6 +6,7 @@ import {
   RefreshCw,
   Workflow,
 } from 'lucide-react';
+import { ListGroup } from '@/components/common/ListRow';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
@@ -15,7 +16,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+import { SettingsGroup } from '@/components/settings/SettingsLayout';
+import { cn } from '@/lib/utils';
 import type { AgentProfile, AgentProfileGovernance } from '@/types';
+import { AgentSection } from './AgentSection';
 
 export function AgentGovernanceSection({
   selected,
@@ -47,21 +51,17 @@ export function AgentGovernanceSection({
     ) ?? 0;
 
   return (
-    <section className="space-y-4 rounded-xl border border-border bg-card p-5">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="min-w-0">
-          <h2 className="text-sm font-semibold text-foreground">运行归属</h2>
-          <p className="mt-1 text-xs text-muted-foreground">
-            工作区、运行态会话和渠道绑定的当前归属
-          </p>
-        </div>
+    <AgentSection
+      title="运行归属"
+      description="工作区、运行态会话和渠道绑定的当前归属"
+      actions={
         <Button variant="outline" size="sm" onClick={onRefresh} disabled={busy}>
-          <RefreshCw className={busy ? 'h-4 w-4 animate-spin' : 'h-4 w-4'} />
+          <RefreshCw className={cn(busy && 'animate-spin')} />
           刷新
         </Button>
-      </div>
-
-      <div className="grid gap-3 sm:grid-cols-3">
+      }
+    >
+      <SettingsGroup className="grid grid-cols-3 divide-x divide-y-0">
         <SummaryItem
           icon={Workflow}
           label="工作区"
@@ -77,11 +77,11 @@ export function AgentGovernanceSection({
           label="渠道绑定"
           value={governance?.channel_mounts.length ?? 0}
         />
-      </div>
+      </SettingsGroup>
 
       {error && !governance ? (
         <div
-          className="flex flex-wrap items-center gap-3 rounded-md border border-error/30 bg-error-bg px-3 py-3 text-sm text-error"
+          className="flex flex-wrap items-center gap-3 rounded-lg bg-error/10 px-3 py-2 text-caption text-error"
           role="alert"
         >
           <span className="min-w-0 flex-1">{error}</span>
@@ -90,19 +90,22 @@ export function AgentGovernanceSection({
           </Button>
         </div>
       ) : busy && !governance ? (
-        <div className="flex items-center gap-2 py-4 text-sm text-muted-foreground">
-          <Loader2 className="h-4 w-4 animate-spin" />
+        <div className="flex items-center gap-2 py-2 text-body text-muted-foreground">
+          <Loader2 className="size-4 animate-spin" />
           正在加载
         </div>
       ) : (
         <div className="grid gap-4 xl:grid-cols-2">
           <div className="min-w-0 space-y-2">
-            <div className="text-xs font-medium text-muted-foreground">
+            <div className="text-caption font-medium text-muted-foreground">
               工作区与运行态会话
             </div>
-            <div className="max-h-64 overflow-auto rounded-md border">
+            <ListGroup className="max-h-72 overflow-y-auto">
               {(governance?.workspaces.length ?? 0) === 0 ? (
-                <div className="px-3 py-4 text-sm text-muted-foreground">
+                <div
+                  role="listitem"
+                  className="px-4 py-3 text-caption leading-5 text-muted-foreground"
+                >
                   {selected.is_default
                     ? '暂无工作区'
                     : '尚未绑定工作区。该智能体当前没有 Session 或 Memory；请显式为它新建工作区，或迁移一个非 Home 工作区。'}
@@ -111,27 +114,28 @@ export function AgentGovernanceSection({
                 governance?.workspaces.map((workspace) => (
                   <div
                     key={workspace.jid}
-                    className="border-b px-3 py-2 last:border-b-0"
+                    role="listitem"
+                    className="space-y-2 px-4 py-3"
                   >
                     <div className="flex min-w-0 items-center justify-between gap-2">
                       <div className="min-w-0">
-                        <div className="truncate text-sm font-medium text-foreground">
+                        <div className="truncate text-body font-medium text-foreground">
                           {workspace.name}
                         </div>
-                        <div className="truncate text-xs text-muted-foreground">
+                        <div className="truncate font-mono text-caption text-muted-foreground">
                           {workspace.folder}
                         </div>
                       </div>
-                      <Badge variant="secondary">
+                      <Badge variant="neutral">
                         {workspace.runtime_sessions.length} 个运行态会话
                       </Badge>
                     </div>
                     {workspace.runtime_sessions.length > 0 && (
-                      <div className="mt-2 space-y-1">
+                      <div className="space-y-0.5">
                         {workspace.runtime_sessions.map((session) => (
                           <div
                             key={`${workspace.jid}:${session.runtime_agent_id || 'main'}`}
-                            className="truncate text-xs text-muted-foreground"
+                            className="truncate font-mono text-micro text-muted-foreground"
                           >
                             {session.runtime_agent_id || 'main'} ·{' '}
                             {session.sdk_session_id || '-'}
@@ -140,13 +144,9 @@ export function AgentGovernanceSection({
                       </div>
                     )}
                     {workspace.is_home ? (
-                      <div className="mt-2">
-                        <Badge variant="outline">
-                          Home · 固定归属 HappyClaw
-                        </Badge>
-                      </div>
+                      <Badge variant="outline">Home · 固定归属 HappyClaw</Badge>
                     ) : (
-                      <div className="mt-2 flex items-center gap-2">
+                      <div className="flex items-center gap-2">
                         <Select
                           value={workspaceMoveTargets[workspace.jid] || ''}
                           onValueChange={(value) =>
@@ -154,7 +154,8 @@ export function AgentGovernanceSection({
                           }
                         >
                           <SelectTrigger
-                            className="h-8 min-w-0 flex-1 text-xs"
+                            size="sm"
+                            className="min-w-0 flex-1 text-caption"
                             aria-label={`迁移工作区 ${workspace.name}`}
                           >
                             <SelectValue placeholder="迁移到其他智能体" />
@@ -174,7 +175,6 @@ export function AgentGovernanceSection({
                         <Button
                           variant="outline"
                           size="sm"
-                          className="h-8"
                           disabled={
                             movingWorkspaceJid === workspace.jid ||
                             !workspaceMoveTargets[workspace.jid]
@@ -187,9 +187,9 @@ export function AgentGovernanceSection({
                           }
                         >
                           {movingWorkspaceJid === workspace.jid ? (
-                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                            <Loader2 className="animate-spin" />
                           ) : (
-                            <ArrowRight className="h-3.5 w-3.5" />
+                            <ArrowRight />
                           )}
                           迁移
                         </Button>
@@ -198,36 +198,40 @@ export function AgentGovernanceSection({
                   </div>
                 ))
               )}
-            </div>
+            </ListGroup>
           </div>
 
           <div className="min-w-0 space-y-2">
-            <div className="text-xs font-medium text-muted-foreground">
+            <div className="text-caption font-medium text-muted-foreground">
               渠道绑定
             </div>
-            <div className="max-h-64 overflow-auto rounded-md border">
+            <ListGroup className="max-h-72 overflow-y-auto">
               {(governance?.channel_mounts.length ?? 0) === 0 ? (
-                <div className="px-3 py-4 text-sm text-muted-foreground">
+                <div
+                  role="listitem"
+                  className="px-4 py-3 text-caption text-muted-foreground"
+                >
                   暂无渠道绑定
                 </div>
               ) : (
                 governance?.channel_mounts.map((mount) => (
                   <div
                     key={mount.channel_jid}
-                    className="border-b px-3 py-2 last:border-b-0"
+                    role="listitem"
+                    className="space-y-1.5 px-4 py-3"
                   >
                     <div className="flex min-w-0 items-center justify-between gap-2">
                       <div className="min-w-0">
-                        <div className="truncate text-sm font-medium text-foreground">
+                        <div className="truncate text-body font-medium text-foreground">
                           {mount.channel_jid}
                         </div>
-                        <div className="truncate text-xs text-muted-foreground">
+                        <div className="truncate font-mono text-caption text-muted-foreground">
                           {mount.workspace_folder || mount.workspace_jid}
                         </div>
                       </div>
                       <Badge variant="outline">{mount.channel_type}</Badge>
                     </div>
-                    <div className="mt-2 flex flex-wrap gap-2 text-xs text-muted-foreground">
+                    <div className="flex flex-wrap gap-x-2 gap-y-0.5 text-caption text-muted-foreground">
                       <span>
                         {mount.session_id
                           ? `session ${mount.session_id}`
@@ -239,11 +243,11 @@ export function AgentGovernanceSection({
                   </div>
                 ))
               )}
-            </div>
+            </ListGroup>
           </div>
         </div>
       )}
-    </section>
+    </AgentSection>
   );
 }
 
@@ -257,12 +261,14 @@ function SummaryItem({
   value: number;
 }) {
   return (
-    <div className="min-w-0 rounded-md bg-muted/30 px-3 py-2">
-      <div className="flex items-center gap-2 text-xs text-muted-foreground">
-        <Icon className="h-3.5 w-3.5" />
-        {label}
+    <div className="min-w-0 border-surface-border px-4 py-3">
+      <div className="flex items-center gap-1.5 text-caption text-muted-foreground">
+        <Icon className="size-3.5 text-faint-foreground" />
+        <span className="truncate">{label}</span>
       </div>
-      <div className="mt-1 text-lg font-semibold text-foreground">{value}</div>
+      <div className="mt-1 text-title text-foreground tabular-nums">
+        {value}
+      </div>
     </div>
   );
 }

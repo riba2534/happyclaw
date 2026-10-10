@@ -26,10 +26,19 @@ import {
 import { toast } from 'sonner';
 import { api, apiFetch } from '../api/client';
 import { useMediaQuery } from '@/hooks/useMediaQuery';
+import { cn } from '@/lib/utils';
 import { createUnsavedNavigationGuard } from '@/utils/unsaved-navigation';
+import {
+  ConfirmDialog,
+  EmptyState,
+  IconButton,
+  ListGroup,
+  PageContainer,
+  PageHeader,
+  SegmentedControl,
+} from '@/components/common';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent } from '@/components/ui/card';
 import {
   Dialog,
   DialogContent,
@@ -38,16 +47,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from '@/components/ui/alert-dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import {
@@ -140,7 +139,7 @@ function provenanceLabel(source: WorkspaceMemoryProvenance): string {
 function MemoryKindBadge({ kind }: { kind: WorkspaceMemoryKind }) {
   const Icon = KIND_ICONS[kind];
   return (
-    <Badge variant="secondary">
+    <Badge variant="neutral">
       <Icon />
       {KIND_META[kind].label}
     </Badge>
@@ -158,35 +157,49 @@ function MemoryListItem({
   snippet?: string;
   onSelect: (item: WorkspaceMemoryItem) => void;
 }) {
+  const Icon = KIND_ICONS[item.kind];
   return (
-    <button
-      type="button"
-      onClick={() => onSelect(item)}
-      className={`w-full rounded-xl border px-3.5 py-3 text-left transition-colors ${
-        active
-          ? 'border-primary bg-primary/5 ring-1 ring-primary/15'
-          : 'border-border bg-background hover:bg-muted/50'
-      }`}
-    >
-      <div className="flex items-start justify-between gap-3">
+    <div role="listitem">
+      <button
+        type="button"
+        onClick={() => onSelect(item)}
+        aria-current={active || undefined}
+        data-selected={active || undefined}
+        className={cn(
+          'flex w-full items-start gap-3 px-4 py-3 text-left outline-none transition-colors duration-100 hover:bg-surface-hover focus-visible:bg-surface-hover focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:ring-inset',
+          active && 'bg-surface-selected hover:bg-surface-selected',
+        )}
+      >
+        <Icon
+          aria-hidden="true"
+          className="mt-0.5 size-4 shrink-0 text-muted-foreground"
+        />
         <div className="min-w-0 flex-1">
-          <div className="truncate text-sm font-semibold text-foreground">
-            {item.title?.trim() || item.content.split('\n')[0] || '无标题记忆'}
+          <div className="flex min-w-0 items-center gap-2">
+            <span className="min-w-0 flex-1 truncate text-body font-medium text-foreground">
+              {item.title?.trim() ||
+                item.content.split('\n')[0] ||
+                '无标题记忆'}
+            </span>
+            <span className="shrink-0 text-micro text-faint-foreground tabular-nums">
+              r{item.revision}
+            </span>
           </div>
-          <p className="mt-1 line-clamp-2 text-xs leading-5 text-muted-foreground">
+          <p className="mt-0.5 line-clamp-2 text-caption text-muted-foreground">
             {snippet || item.content}
           </p>
+          <div className="mt-1 flex flex-wrap items-center gap-x-1.5 text-micro text-faint-foreground">
+            <span>{KIND_META[item.kind].label}</span>
+            <span aria-hidden="true">·</span>
+            <span className="truncate">{provenanceLabel(item.provenance)}</span>
+            <span aria-hidden="true">·</span>
+            <span className="tabular-nums">
+              {formatTime(item.provenance.observedAt || item.updatedAt)}
+            </span>
+          </div>
         </div>
-        <MemoryKindBadge kind={item.kind} />
-      </div>
-      <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-muted-foreground">
-        <span>{provenanceLabel(item.provenance)}</span>
-        <span aria-hidden="true">·</span>
-        <span>{formatTime(item.provenance.observedAt || item.updatedAt)}</span>
-        <span aria-hidden="true">·</span>
-        <span>r{item.revision}</span>
-      </div>
-    </button>
+      </button>
+    </div>
   );
 }
 
@@ -397,6 +410,10 @@ export function MemoryPage() {
     [searchParams, setAllowedSearchParams],
   );
 
+  // Load the workspace list once. Selection follows the URL in the effect
+  // below; keying the fetch on the URL param refetched the list right after
+  // the page wrote the default workspace into it.
+  const [workspacesLoaded, setWorkspacesLoaded] = useState(false);
   useEffect(() => {
     let cancelled = false;
     setWorkspaceLoading(true);
@@ -404,27 +421,11 @@ export function MemoryPage() {
       .get<{ workspaces: WorkspaceSummary[] }>('/api/workspaces')
       .then(({ workspaces: loaded }) => {
         if (cancelled) return;
-        const active = loaded.filter(
-          (workspace) => workspace.status === 'active',
+        setWorkspaces(
+          loaded.filter((workspace) => workspace.status === 'active'),
         );
-        setWorkspaces(active);
         setWorkspaceError(null);
-
-        const requested = requestedWorkspace
-          ? active.find((workspace) => workspace.jid === requestedWorkspace)
-          : undefined;
-        const legacy = legacyFolder
-          ? active.find((workspace) => workspace.folder === legacyFolder)
-          : undefined;
-        const next =
-          requested ||
-          legacy ||
-          active.find((workspace) => workspace.is_home) ||
-          active[0];
-        activateWorkspace(next?.jid || '');
-        if (next && next.jid !== requestedWorkspace) {
-          updateWorkspaceParam(next.jid);
-        }
+        setWorkspacesLoaded(true);
       })
       .catch((error) => {
         if (!cancelled) {
@@ -437,11 +438,32 @@ export function MemoryPage() {
     return () => {
       cancelled = true;
     };
+  }, []);
+
+  useEffect(() => {
+    if (!workspacesLoaded) return;
+    const requested = requestedWorkspace
+      ? workspaces.find((workspace) => workspace.jid === requestedWorkspace)
+      : undefined;
+    const legacy = legacyFolder
+      ? workspaces.find((workspace) => workspace.folder === legacyFolder)
+      : undefined;
+    const next =
+      requested ||
+      legacy ||
+      workspaces.find((workspace) => workspace.is_home) ||
+      workspaces[0];
+    activateWorkspace(next?.jid || '');
+    if (next && next.jid !== requestedWorkspace) {
+      updateWorkspaceParam(next.jid);
+    }
   }, [
     activateWorkspace,
     legacyFolder,
     requestedWorkspace,
     updateWorkspaceParam,
+    workspaces,
+    workspacesLoaded,
   ]);
 
   const loadItems = useCallback(
@@ -912,552 +934,498 @@ export function MemoryPage() {
     await loadDetail(selectedItem.id, { discardDraft: true });
   };
 
+  // A search without hits clears the detail pane, unless it holds unsaved
+  // edits; the selection comes back once the query changes.
+  const shownItem = searchHits?.length === 0 && !dirty ? null : selectedItem;
+
   const itemSnippet = (itemId: string): string | undefined =>
     searchHits?.find((hit) => hit.item.id === itemId)?.snippet;
 
+  const kindOptions = [
+    {
+      value: 'all' as KindFilter,
+      label: `全部 ${items.length}${nextCursor ? '+' : ''}`,
+    },
+    ...WORKSPACE_MEMORY_KINDS.map((kind) => ({
+      value: kind as KindFilter,
+      label: `${KIND_META[kind].label} ${counts[kind]}${nextCursor ? '+' : ''}`,
+      icon: KIND_ICONS[kind],
+    })),
+  ];
+
   return (
-    <div className="min-h-full bg-background p-4 lg:p-8" data-memory-v2="true">
-      <div className="mx-auto max-w-7xl space-y-4">
-        <Card>
-          <CardContent className="space-y-4">
-            <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-              <div className="flex items-start gap-3">
-                <div className="rounded-xl bg-brand-100 p-2.5">
-                  <BookOpen className="size-5 text-primary" />
-                </div>
-                <div>
-                  <h1 className="text-2xl font-bold text-foreground">
-                    Workspace Memory
-                  </h1>
-                  <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
-                    沉淀当前工作区跨 Session
-                    可复用的事实、决策、经验和待跟进事项。
-                  </p>
-                </div>
-              </div>
-
-              <div className="flex flex-wrap items-end gap-2">
-                <div className="min-w-56">
-                  <Label
-                    htmlFor="memory-workspace"
-                    className="mb-1.5 block text-xs text-muted-foreground"
-                  >
-                    工作区
-                  </Label>
-                  <Select
-                    value={selectedWorkspaceJid}
-                    onValueChange={handleWorkspaceChange}
-                    disabled={workspaceLoading || workspaces.length === 0}
-                  >
-                    <SelectTrigger
-                      id="memory-workspace"
-                      className="h-9 w-full min-w-56"
-                    >
-                      <SelectValue placeholder="选择工作区" />
-                    </SelectTrigger>
-                    <SelectContent position="popper" align="end">
-                      {workspaces.map((workspace) => (
-                        <SelectItem key={workspace.jid} value={workspace.jid}>
-                          {workspace.name}
-                          {workspace.is_home ? ' · Home' : ''}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-                <Button
-                  className="h-9"
-                  onClick={openCreate}
-                  disabled={!selectedWorkspaceJid || !canModify}
-                >
-                  <Plus />
-                  新建记忆
-                </Button>
-              </div>
-            </div>
-
-            <div className="rounded-xl border border-primary/15 bg-primary/5 px-4 py-3 text-sm">
-              <div className="flex items-start gap-2.5">
-                <MessageSquareText className="mt-0.5 size-4 shrink-0 text-primary" />
-                <div>
-                  <div className="font-medium text-foreground">
-                    Workspace Memory 与 Session 历史彼此独立
-                  </div>
-                  <p className="mt-0.5 leading-5 text-muted-foreground">
-                    Session 保留一段对话的上下文；这里仅保存经过提炼、可跨
-                    Session
-                    使用的工作区知识。忘记一条工作区记忆不会删除聊天历史。
-                  </p>
-                </div>
-              </div>
-            </div>
-
-            {selectedWorkspace && (
-              <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                <span className="font-medium text-foreground">
-                  {selectedWorkspace.name}
+    <PageContainer size="wide" className="space-y-5" data-memory-v2="true">
+      <div>
+        <PageHeader
+          title="记忆"
+          subtitle="沉淀当前工作区跨 Session 可复用的事实、决策、经验和待跟进事项。"
+          className="flex-col gap-3 sm:flex-row"
+          actions={
+            <>
+              <Label htmlFor="memory-workspace" className="sr-only">
+                工作区
+              </Label>
+              <Select
+                value={selectedWorkspaceJid}
+                onValueChange={handleWorkspaceChange}
+                disabled={workspaceLoading || workspaces.length === 0}
+              >
+                <SelectTrigger id="memory-workspace" className="w-48 sm:w-56">
+                  <SelectValue placeholder="选择工作区" />
+                </SelectTrigger>
+                <SelectContent position="popper" align="end">
+                  {workspaces.map((workspace) => (
+                    <SelectItem key={workspace.jid} value={workspace.jid}>
+                      {workspace.name}
+                      {workspace.is_home ? ' · Home' : ''}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Button
+                onClick={openCreate}
+                disabled={!selectedWorkspaceJid || !canModify}
+              >
+                <Plus />
+                新建记忆
+              </Button>
+            </>
+          }
+        />
+        {selectedWorkspace && (
+          <div className="mt-2 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-caption text-muted-foreground">
+            <span className="font-medium text-foreground">
+              {selectedWorkspace.name}
+            </span>
+            <span aria-hidden="true">·</span>
+            <span>{selectedWorkspace.agent_profile?.name || '主智能体'}</span>
+            <span aria-hidden="true">·</span>
+            <span>{canModify ? '可编辑' : '只读'}</span>
+            {storeRevision !== null && (
+              <>
+                <span aria-hidden="true">·</span>
+                <span className="tabular-nums">
+                  Store revision {storeRevision}
                 </span>
-                <span>·</span>
-                <span>
-                  {selectedWorkspace.agent_profile?.name || '主智能体'}
-                </span>
-                <span>·</span>
-                <span>{canModify ? '可编辑' : '只读'}</span>
-                {storeRevision !== null && (
-                  <>
-                    <span>·</span>
-                    <span>Store revision {storeRevision}</span>
-                  </>
-                )}
-              </div>
+              </>
             )}
-          </CardContent>
-        </Card>
-
-        {workspaceError && (
-          <Card>
-            <CardContent role="alert" className="text-sm text-destructive">
-              {workspaceError}
-            </CardContent>
-          </Card>
+          </div>
         )}
+      </div>
 
-        {!workspaceLoading && !workspaceError && workspaces.length === 0 && (
-          <Card>
-            <CardContent className="py-12 text-center">
-              <BookOpen className="mx-auto size-8 text-muted-foreground" />
-              <h2 className="mt-3 font-semibold text-foreground">
-                还没有工作区
-              </h2>
-              <p className="mt-1 text-sm text-muted-foreground">
-                创建工作区后，才能沉淀该工作区的长期记忆。
-              </p>
-            </CardContent>
-          </Card>
-        )}
+      <div className="flex items-start gap-3 rounded-xl bg-surface-raised px-4 py-3 ring-1 ring-surface-border">
+        <MessageSquareText className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+        <div className="min-w-0">
+          <div className="text-label text-foreground">
+            Workspace Memory 与 Session 历史彼此独立
+          </div>
+          <p className="mt-0.5 text-caption text-muted-foreground">
+            Session 保留一段对话的上下文；这里仅保存经过提炼、可跨 Session
+            使用的工作区知识。忘记一条工作区记忆不会删除聊天历史。
+          </p>
+        </div>
+      </div>
 
-        {selectedWorkspaceJid && (
-          <>
-            <Card>
-              <CardContent className="space-y-4">
-                <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
-                  {WORKSPACE_MEMORY_KINDS.map((kind) => {
-                    const Icon = KIND_ICONS[kind];
-                    return (
-                      <button
-                        key={kind}
-                        type="button"
-                        onClick={() =>
-                          setKindFilter((current) =>
-                            current === kind ? 'all' : kind,
-                          )
-                        }
-                        className={`rounded-xl border p-3 text-left transition-colors ${
-                          kindFilter === kind
-                            ? 'border-primary bg-primary/5'
-                            : 'border-border hover:bg-muted/50'
-                        }`}
-                      >
-                        <div className="flex items-center justify-between">
-                          <Icon className="size-4 text-primary" />
-                          <span className="text-lg font-semibold text-foreground">
-                            {counts[kind]}
-                            {nextCursor ? '+' : ''}
-                          </span>
-                        </div>
-                        <div className="mt-2 text-sm font-medium text-foreground">
-                          {KIND_META[kind].label}
-                        </div>
-                        <div className="mt-0.5 text-[11px] text-muted-foreground">
-                          {KIND_META[kind].description}
-                        </div>
-                      </button>
-                    );
-                  })}
+      {workspaceError && (
+        <div
+          role="alert"
+          className="rounded-lg bg-destructive/10 px-4 py-3 text-body text-destructive"
+        >
+          {workspaceError}
+        </div>
+      )}
+
+      {!workspaceLoading && !workspaceError && workspaces.length === 0 && (
+        <div className="rounded-xl bg-surface-raised ring-1 ring-surface-border">
+          <EmptyState
+            icon={BookOpen}
+            title="还没有工作区"
+            description="创建工作区后，才能沉淀该工作区的长期记忆。"
+          />
+        </div>
+      )}
+
+      {selectedWorkspaceJid && (
+        <>
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+            <div className="relative min-w-0 flex-1">
+              <Search className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                className="pr-8 pl-8"
+                placeholder="搜索当前工作区的记忆"
+                aria-label="搜索当前工作区的记忆"
+              />
+              {searching && (
+                <Loader2 className="absolute top-1/2 right-2.5 size-4 -translate-y-1/2 animate-spin text-muted-foreground" />
+              )}
+            </div>
+            <div className="flex min-w-0 items-center gap-2">
+              <SegmentedControl
+                label="按类别筛选"
+                value={kindFilter}
+                options={kindOptions}
+                onChange={setKindFilter}
+                className="min-w-0 flex-1 sm:flex-none"
+              />
+              <Button
+                variant="outline"
+                className="shrink-0"
+                onClick={() => void refreshMemoryView()}
+                disabled={listLoading || searching}
+              >
+                <RefreshCw
+                  className={cn((listLoading || searching) && 'animate-spin')}
+                />
+                刷新
+              </Button>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-[20rem_minmax(0,1fr)]">
+            {(!isMobile || !showDetail) && (
+              <section aria-label="记忆列表" className="min-w-0 space-y-2">
+                <div className="flex items-baseline justify-between gap-2 px-1">
+                  <h2 className="text-title-sm text-foreground">
+                    {kindFilter === 'all'
+                      ? '全部工作区记忆'
+                      : KIND_META[kindFilter].label}
+                  </h2>
+                  <span className="text-caption text-muted-foreground tabular-nums">
+                    {searchHits
+                      ? `${searchHits.length} 条搜索结果`
+                      : `${visibleItems.length} 条活跃记忆`}
+                  </span>
                 </div>
 
-                <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-                  <div className="relative flex-1">
-                    <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-                    <Input
-                      value={query}
-                      onChange={(event) => setQuery(event.target.value)}
-                      className="h-10 pl-9"
-                      placeholder="搜索当前工作区的记忆"
-                      aria-label="搜索当前工作区的记忆"
-                    />
-                    {searching && (
-                      <Loader2 className="absolute right-3 top-1/2 size-4 -translate-y-1/2 animate-spin text-muted-foreground" />
+                {listError && (
+                  <div
+                    role="alert"
+                    className="rounded-lg bg-destructive/10 px-3 py-2 text-caption text-destructive"
+                  >
+                    {listError}
+                  </div>
+                )}
+
+                {visibleItems.length === 0 ? (
+                  <div className="rounded-xl bg-surface-raised ring-1 ring-surface-border">
+                    {listLoading ? (
+                      <div className="flex items-center justify-center gap-2 py-12 text-body text-muted-foreground">
+                        <Loader2 className="size-4 animate-spin" />
+                        正在加载工作区记忆
+                      </div>
+                    ) : (
+                      <EmptyState
+                        icon={BookOpen}
+                        title={
+                          query.trim()
+                            ? '没有匹配的记忆'
+                            : '这个工作区还没有记忆'
+                        }
+                        description={
+                          query.trim()
+                            ? '换一个关键词，或清除类别筛选后重试。'
+                            : canModify
+                              ? '创建第一条事实、决策、经验或待跟进事项。'
+                              : '你可以查看该工作区，但不能修改它。'
+                        }
+                      />
                     )}
                   </div>
+                ) : (
+                  <ListGroup className="max-h-[620px] overflow-y-auto">
+                    {visibleItems.map((item) => (
+                      <MemoryListItem
+                        key={item.id}
+                        item={item}
+                        active={item.id === selectedId}
+                        snippet={itemSnippet(item.id)}
+                        onSelect={(next) => void loadDetail(next.id)}
+                      />
+                    ))}
+                  </ListGroup>
+                )}
+
+                {!searchHits && nextCursor && (
                   <Button
-                    variant="outline"
-                    className="h-10"
-                    onClick={() => void refreshMemoryView()}
-                    disabled={listLoading || searching}
+                    variant="ghost"
+                    className="w-full"
+                    disabled={loadingMore}
+                    onClick={() =>
+                      void loadItems({ append: true, cursor: nextCursor })
+                    }
                   >
-                    <RefreshCw
-                      className={listLoading || searching ? 'animate-spin' : ''}
-                    />
-                    刷新
+                    {loadingMore && <Loader2 className="animate-spin" />}
+                    加载更多
                   </Button>
-                </div>
-              </CardContent>
-            </Card>
+                )}
+              </section>
+            )}
 
-            <div className="grid grid-cols-1 gap-4 lg:grid-cols-[380px_1fr]">
-              {(!isMobile || !showDetail) && (
-                <Card>
-                  <CardContent>
-                    <div className="mb-3 flex items-center justify-between gap-2">
-                      <div>
-                        <h2 className="font-semibold text-foreground">
-                          {kindFilter === 'all'
-                            ? '全部工作区记忆'
-                            : KIND_META[kindFilter].label}
-                        </h2>
-                        <p className="mt-0.5 text-xs text-muted-foreground">
-                          {searchHits
-                            ? `${searchHits.length} 条搜索结果`
-                            : `${visibleItems.length} 条活跃记忆`}
-                        </p>
-                      </div>
-                      {kindFilter !== 'all' && (
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => setKindFilter('all')}
-                        >
-                          清除筛选
-                        </Button>
-                      )}
-                    </div>
-
-                    {listError && (
-                      <div
-                        role="alert"
-                        className="mb-3 rounded-lg border border-destructive/20 bg-destructive/5 p-3 text-xs text-destructive"
-                      >
-                        {listError}
-                      </div>
-                    )}
-
-                    <div className="max-h-[620px] space-y-2 overflow-y-auto pr-1">
-                      {listLoading && visibleItems.length === 0 && (
-                        <div className="flex items-center justify-center gap-2 py-12 text-sm text-muted-foreground">
-                          <Loader2 className="size-4 animate-spin" />
-                          正在加载工作区记忆
-                        </div>
-                      )}
-                      {!listLoading && visibleItems.length === 0 && (
-                        <div className="py-12 text-center">
-                          <BookOpen className="mx-auto size-7 text-muted-foreground" />
-                          <p className="mt-3 text-sm font-medium text-foreground">
-                            {query.trim()
-                              ? '没有匹配的记忆'
-                              : '这个工作区还没有记忆'}
-                          </p>
-                          <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                            {query.trim()
-                              ? '换一个关键词，或清除类别筛选后重试。'
-                              : canModify
-                                ? '创建第一条事实、决策、经验或待跟进事项。'
-                                : '你可以查看该工作区，但不能修改它。'}
-                          </p>
-                        </div>
-                      )}
-                      {visibleItems.map((item) => (
-                        <MemoryListItem
-                          key={item.id}
-                          item={item}
-                          active={item.id === selectedId}
-                          snippet={itemSnippet(item.id)}
-                          onSelect={(next) => void loadDetail(next.id)}
-                        />
-                      ))}
-                      {!searchHits && nextCursor && (
-                        <Button
-                          variant="outline"
-                          className="w-full"
-                          disabled={loadingMore}
-                          onClick={() =>
-                            void loadItems({ append: true, cursor: nextCursor })
-                          }
-                        >
-                          {loadingMore && <Loader2 className="animate-spin" />}
-                          加载更多
-                        </Button>
-                      )}
-                    </div>
-                  </CardContent>
-                </Card>
-              )}
-
-              {(!isMobile || showDetail) && (
-                <Card>
-                  <CardContent>
+            {(!isMobile || showDetail) && (
+              <section
+                aria-label="记忆详情"
+                className="min-w-0 overflow-hidden rounded-xl bg-surface-raised ring-1 ring-surface-border"
+              >
+                {(isMobile || shownItem) && (
+                  <div className="flex min-h-12 flex-wrap items-center gap-2 border-b border-surface-border px-3 py-2">
                     {isMobile && (
-                      <Button
-                        variant="ghost"
-                        className="mb-3"
+                      <IconButton
+                        label="返回记忆列表"
+                        icon={<ArrowLeft />}
                         onClick={() => setShowDetail(false)}
-                      >
-                        <ArrowLeft />
-                        返回记忆列表
-                      </Button>
+                      />
                     )}
-
-                    {detailLoading && !selectedItem && (
-                      <div className="flex items-center justify-center gap-2 py-16 text-sm text-muted-foreground">
-                        <Loader2 className="size-4 animate-spin" />
-                        正在加载记忆详情
-                      </div>
-                    )}
-
-                    {!selectedItem && !detailLoading && (
-                      <div className="py-16 text-center">
-                        <FileText className="mx-auto size-8 text-muted-foreground" />
-                        <h2 className="mt-3 font-semibold text-foreground">
-                          选择一条工作区记忆
-                        </h2>
-                        <p className="mt-1 text-sm text-muted-foreground">
-                          查看来源与修订记录，或在有权限时编辑和忘记它。
-                        </p>
-                      </div>
-                    )}
-
-                    {selectedItem && (
-                      <div className="space-y-5">
-                        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                          <div>
-                            <div className="flex flex-wrap items-center gap-2">
-                              <MemoryKindBadge kind={selectedItem.kind} />
-                              <Badge variant="outline">
-                                Revision {selectedItem.revision}
-                              </Badge>
-                            </div>
-                            <h2 className="mt-3 text-lg font-semibold text-foreground">
-                              {selectedItem.title || '无标题记忆'}
-                            </h2>
-                          </div>
-                          {canModify && (
+                    {shownItem && (
+                      <>
+                        <MemoryKindBadge kind={shownItem.kind} />
+                        <Badge variant="outline" className="tabular-nums">
+                          Revision {shownItem.revision}
+                        </Badge>
+                        {dirty && (
+                          <span className="text-caption text-warning">
+                            有未保存修改
+                          </span>
+                        )}
+                        {canModify && (
+                          <div className="ml-auto flex items-center gap-1">
                             <Button
-                              variant="destructive"
+                              variant="ghost"
+                              size="sm"
+                              className="text-muted-foreground hover:text-destructive"
                               onClick={() => setForgetOpen(true)}
                             >
                               <Trash2 />
                               忘记
                             </Button>
-                          )}
-                        </div>
-
-                        {conflict && (
-                          <div
-                            role="alert"
-                            className="rounded-xl border border-warning/30 bg-warning-bg p-4"
-                          >
-                            <div className="flex items-start gap-2.5">
-                              <AlertTriangle className="mt-0.5 size-4 shrink-0 text-warning" />
-                              <div className="min-w-0 flex-1">
-                                <div className="font-medium text-foreground">
-                                  保存冲突：这条记忆已被其他会话更新
-                                </div>
-                                <p className="mt-1 text-sm leading-5 text-muted-foreground">
-                                  你的草稿仍保留在编辑框中。当前服务端 revision{' '}
-                                  {conflict.currentRevision ?? '未知'}，store
-                                  revision {conflict.storeRevision ?? '未知'}
-                                  。加载最新版会覆盖当前草稿。
-                                </p>
-                                <Button
-                                  variant="outline"
-                                  size="sm"
-                                  className="mt-3"
-                                  onClick={() => void reloadAfterConflict()}
-                                >
-                                  <RefreshCw />
-                                  加载服务端最新版
-                                </Button>
-                              </div>
-                            </div>
-                          </div>
-                        )}
-
-                        <div className="grid gap-3 rounded-xl border border-border bg-muted/20 p-4 text-sm sm:grid-cols-3">
-                          <div>
-                            <div className="text-xs text-muted-foreground">
-                              来源
-                            </div>
-                            <div className="mt-1 break-all font-medium text-foreground">
-                              {provenanceLabel(selectedItem.provenance)}
-                            </div>
-                          </div>
-                          <div>
-                            <div className="text-xs text-muted-foreground">
-                              观察时间
-                            </div>
-                            <div className="mt-1 font-medium text-foreground">
-                              {formatTime(
-                                selectedItem.provenance.observedAt ||
-                                  selectedItem.createdAt,
-                              )}
-                            </div>
-                          </div>
-                          <div>
-                            <div className="text-xs text-muted-foreground">
-                              最近修订
-                            </div>
-                            <div className="mt-1 font-medium text-foreground">
-                              r{selectedItem.revision} ·{' '}
-                              {formatTime(selectedItem.updatedAt)}
-                            </div>
-                          </div>
-                        </div>
-
-                        <div className="grid gap-4 sm:grid-cols-[180px_1fr]">
-                          <div>
-                            <Label htmlFor="memory-kind">类别</Label>
-                            <Select
-                              value={draft.kind}
-                              onValueChange={(value) =>
-                                setDraft((current) => ({
-                                  ...current,
-                                  kind: value as WorkspaceMemoryKind,
-                                }))
-                              }
-                              disabled={!canModify || saving}
-                            >
-                              <SelectTrigger
-                                id="memory-kind"
-                                className="mt-1.5 w-full"
-                              >
-                                <SelectValue />
-                              </SelectTrigger>
-                              <SelectContent>
-                                {WORKSPACE_MEMORY_KINDS.map((kind) => (
-                                  <SelectItem key={kind} value={kind}>
-                                    {KIND_META[kind].label}
-                                  </SelectItem>
-                                ))}
-                              </SelectContent>
-                            </Select>
-                          </div>
-                          <div>
-                            <Label htmlFor="memory-title">标题</Label>
-                            <Input
-                              id="memory-title"
-                              className="mt-1.5"
-                              value={draft.title}
-                              onChange={(event) =>
-                                setDraft((current) => ({
-                                  ...current,
-                                  title: event.target.value,
-                                }))
-                              }
-                              disabled={!canModify || saving}
-                              placeholder="简短描述这条记忆"
-                            />
-                          </div>
-                        </div>
-
-                        <div>
-                          <Label htmlFor="memory-content">内容</Label>
-                          <Textarea
-                            id="memory-content"
-                            className="mt-1.5 min-h-52 resize-y text-sm leading-6"
-                            value={draft.content}
-                            onChange={(event) =>
-                              setDraft((current) => ({
-                                ...current,
-                                content: event.target.value,
-                              }))
-                            }
-                            disabled={!canModify || saving}
-                          />
-                        </div>
-
-                        {canModify && (
-                          <div className="flex flex-wrap items-center gap-3">
                             <Button
+                              size="sm"
                               onClick={() => void handleSave()}
                               disabled={
                                 !dirty || !draft.content.trim() || saving
                               }
                             >
-                              {saving && <Loader2 className="animate-spin" />}
-                              <Save />
+                              {saving ? (
+                                <Loader2 className="animate-spin" />
+                              ) : (
+                                <Save />
+                              )}
                               保存 revision
                             </Button>
-                            {dirty && (
-                              <span className="text-sm text-warning">
-                                有未保存修改
-                              </span>
-                            )}
                           </div>
                         )}
+                      </>
+                    )}
+                  </div>
+                )}
 
-                        <div className="border-t border-border pt-5">
-                          <div className="mb-3 flex items-center gap-2">
-                            <History className="size-4 text-muted-foreground" />
-                            <h3 className="font-semibold text-foreground">
-                              修订记录
-                            </h3>
+                {detailLoading && !selectedItem && (
+                  <div className="flex items-center justify-center gap-2 py-16 text-body text-muted-foreground">
+                    <Loader2 className="size-4 animate-spin" />
+                    正在加载记忆详情
+                  </div>
+                )}
+
+                {!shownItem && !detailLoading && (
+                  <EmptyState
+                    icon={FileText}
+                    title="选择一条工作区记忆"
+                    description="查看来源与修订记录，或在有权限时编辑和忘记它。"
+                    className="py-16"
+                  />
+                )}
+
+                {shownItem && (
+                  <div className="space-y-5 p-4 sm:p-5">
+                    <h2 className="text-title text-foreground">
+                      {shownItem.title || '无标题记忆'}
+                    </h2>
+
+                    {conflict && (
+                      <div
+                        role="alert"
+                        className="flex items-start gap-2.5 rounded-lg bg-warning/10 px-4 py-3"
+                      >
+                        <AlertTriangle className="mt-0.5 size-4 shrink-0 text-warning" />
+                        <div className="min-w-0 flex-1">
+                          <div className="text-label text-foreground">
+                            保存冲突：这条记忆已被其他会话更新
                           </div>
-                          {versions.length === 0 ? (
-                            <p className="text-sm text-muted-foreground">
-                              暂无可用修订记录。
-                            </p>
-                          ) : (
-                            <div className="space-y-2">
-                              {versions.map((version) => (
-                                <div
-                                  key={version.revision}
-                                  className="rounded-lg border border-border px-3 py-2.5"
-                                >
-                                  <div className="flex flex-wrap items-center justify-between gap-2">
-                                    <div className="flex items-center gap-2">
-                                      <Badge variant="outline">
-                                        r{version.revision}
-                                      </Badge>
-                                      <span className="text-sm font-medium text-foreground">
-                                        {CHANGE_TYPE_LABELS[
-                                          version.changeType
-                                        ] || version.changeType}
-                                      </span>
-                                    </div>
-                                    <span className="text-xs text-muted-foreground">
-                                      {formatTime(version.createdAt)}
-                                    </span>
-                                  </div>
-                                  <div className="mt-1.5 text-xs text-muted-foreground">
-                                    {provenanceLabel(version.provenance)}
-                                  </div>
-                                </div>
-                              ))}
-                              {versionNextCursor && (
-                                <Button
-                                  variant="outline"
-                                  className="w-full"
-                                  disabled={loadingMoreVersions}
-                                  onClick={() => void loadMoreVersions()}
-                                >
-                                  {loadingMoreVersions && (
-                                    <Loader2 className="animate-spin" />
-                                  )}
-                                  加载更多修订
-                                </Button>
-                              )}
-                            </div>
-                          )}
+                          <p className="mt-1 text-caption leading-5 text-muted-foreground">
+                            你的草稿仍保留在编辑框中。当前服务端 revision{' '}
+                            {conflict.currentRevision ?? '未知'}，store revision{' '}
+                            {conflict.storeRevision ?? '未知'}
+                            。加载最新版会覆盖当前草稿。
+                          </p>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="mt-2.5"
+                            onClick={() => void reloadAfterConflict()}
+                          >
+                            <RefreshCw />
+                            加载服务端最新版
+                          </Button>
                         </div>
                       </div>
                     )}
-                  </CardContent>
-                </Card>
-              )}
-            </div>
-          </>
-        )}
-      </div>
+
+                    <dl className="grid gap-x-6 gap-y-3 rounded-lg px-4 py-3 ring-1 ring-surface-border sm:grid-cols-3">
+                      <div className="min-w-0">
+                        <dt className="text-caption text-muted-foreground">
+                          来源
+                        </dt>
+                        <dd className="mt-0.5 text-body break-all text-foreground">
+                          {provenanceLabel(shownItem.provenance)}
+                        </dd>
+                      </div>
+                      <div className="min-w-0">
+                        <dt className="text-caption text-muted-foreground">
+                          观察时间
+                        </dt>
+                        <dd className="mt-0.5 text-body text-foreground tabular-nums">
+                          {formatTime(
+                            shownItem.provenance.observedAt ||
+                              shownItem.createdAt,
+                          )}
+                        </dd>
+                      </div>
+                      <div className="min-w-0">
+                        <dt className="text-caption text-muted-foreground">
+                          最近修订
+                        </dt>
+                        <dd className="mt-0.5 text-body text-foreground tabular-nums">
+                          r{shownItem.revision} ·{' '}
+                          {formatTime(shownItem.updatedAt)}
+                        </dd>
+                      </div>
+                    </dl>
+
+                    <div className="grid gap-4 sm:grid-cols-[11rem_minmax(0,1fr)]">
+                      <div className="space-y-1.5">
+                        <Label htmlFor="memory-kind" className="text-label">
+                          类别
+                        </Label>
+                        <Select
+                          value={draft.kind}
+                          onValueChange={(value) =>
+                            setDraft((current) => ({
+                              ...current,
+                              kind: value as WorkspaceMemoryKind,
+                            }))
+                          }
+                          disabled={!canModify || saving}
+                        >
+                          <SelectTrigger id="memory-kind" className="w-full">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {WORKSPACE_MEMORY_KINDS.map((kind) => (
+                              <SelectItem key={kind} value={kind}>
+                                {KIND_META[kind].label}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div className="space-y-1.5">
+                        <Label htmlFor="memory-title" className="text-label">
+                          标题
+                        </Label>
+                        <Input
+                          id="memory-title"
+                          value={draft.title}
+                          onChange={(event) =>
+                            setDraft((current) => ({
+                              ...current,
+                              title: event.target.value,
+                            }))
+                          }
+                          disabled={!canModify || saving}
+                          placeholder="简短描述这条记忆"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="space-y-1.5">
+                      <Label htmlFor="memory-content" className="text-label">
+                        内容
+                      </Label>
+                      <Textarea
+                        id="memory-content"
+                        className="min-h-52 resize-y text-body leading-6"
+                        value={draft.content}
+                        onChange={(event) =>
+                          setDraft((current) => ({
+                            ...current,
+                            content: event.target.value,
+                          }))
+                        }
+                        disabled={!canModify || saving}
+                      />
+                    </div>
+
+                    <section className="space-y-2 border-t border-surface-border pt-5">
+                      <h3 className="flex items-center gap-2 text-title-sm text-foreground">
+                        <History className="size-4 text-muted-foreground" />
+                        修订记录
+                      </h3>
+                      {versions.length === 0 ? (
+                        <p className="text-caption text-muted-foreground">
+                          暂无可用修订记录。
+                        </p>
+                      ) : (
+                        <>
+                          <div className="divide-y divide-surface-border overflow-hidden rounded-lg ring-1 ring-surface-border">
+                            {versions.map((version) => (
+                              <div
+                                key={version.revision}
+                                className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2"
+                              >
+                                <Badge
+                                  variant="outline"
+                                  className="tabular-nums"
+                                >
+                                  r{version.revision}
+                                </Badge>
+                                <span className="text-label text-foreground">
+                                  {CHANGE_TYPE_LABELS[version.changeType] ||
+                                    version.changeType}
+                                </span>
+                                <span className="min-w-0 flex-1 truncate text-caption text-muted-foreground">
+                                  {provenanceLabel(version.provenance)}
+                                </span>
+                                <span className="text-caption text-muted-foreground tabular-nums">
+                                  {formatTime(version.createdAt)}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                          {versionNextCursor && (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="w-full"
+                              disabled={loadingMoreVersions}
+                              onClick={() => void loadMoreVersions()}
+                            >
+                              {loadingMoreVersions && (
+                                <Loader2 className="animate-spin" />
+                              )}
+                              加载更多修订
+                            </Button>
+                          )}
+                        </>
+                      )}
+                    </section>
+                  </div>
+                )}
+              </section>
+            )}
+          </div>
+        </>
+      )}
 
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>
         <DialogContent>
@@ -1469,8 +1437,10 @@ export function MemoryPage() {
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
-            <div>
-              <Label htmlFor="create-memory-kind">类别</Label>
+            <div className="space-y-1.5">
+              <Label htmlFor="create-memory-kind" className="text-label">
+                类别
+              </Label>
               <Select
                 value={createDraft.kind}
                 onValueChange={(value) =>
@@ -1481,10 +1451,7 @@ export function MemoryPage() {
                 }
                 disabled={creating}
               >
-                <SelectTrigger
-                  id="create-memory-kind"
-                  className="mt-1.5 w-full"
-                >
+                <SelectTrigger id="create-memory-kind" className="w-full">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -1496,11 +1463,12 @@ export function MemoryPage() {
                 </SelectContent>
               </Select>
             </div>
-            <div>
-              <Label htmlFor="create-memory-title">标题（可选）</Label>
+            <div className="space-y-1.5">
+              <Label htmlFor="create-memory-title" className="text-label">
+                标题（可选）
+              </Label>
               <Input
                 id="create-memory-title"
-                className="mt-1.5"
                 value={createDraft.title}
                 onChange={(event) =>
                   setCreateDraft((current) => ({
@@ -1512,11 +1480,13 @@ export function MemoryPage() {
                 placeholder="例如：采用 SQLite 作为 canonical store"
               />
             </div>
-            <div>
-              <Label htmlFor="create-memory-content">内容</Label>
+            <div className="space-y-1.5">
+              <Label htmlFor="create-memory-content" className="text-label">
+                内容
+              </Label>
               <Textarea
                 id="create-memory-content"
-                className="mt-1.5 min-h-36"
+                className="min-h-36"
                 value={createDraft.content}
                 onChange={(event) =>
                   setCreateDraft((current) => ({
@@ -1528,13 +1498,12 @@ export function MemoryPage() {
                 placeholder="写下可供未来 Session 复用的结论和必要背景。"
               />
             </div>
-            <div>
-              <Label htmlFor="create-memory-session">
+            <div className="space-y-1.5">
+              <Label htmlFor="create-memory-session" className="text-label">
                 来源 Session ID（可选）
               </Label>
               <Input
                 id="create-memory-session"
-                className="mt-1.5"
                 value={createDraft.sessionId}
                 onChange={(event) =>
                   setCreateDraft((current) => ({
@@ -1566,32 +1535,18 @@ export function MemoryPage() {
         </DialogContent>
       </Dialog>
 
-      <AlertDialog open={forgetOpen} onOpenChange={setForgetOpen}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>忘记这条工作区记忆？</AlertDialogTitle>
-            <AlertDialogDescription>
-              它将从未来 Session 的 Workspace Memory 检索中移除，但不会删除来源
-              Session 或聊天历史。此操作使用当前 revision{' '}
-              {selectedItem?.revision ?? '—'}，若内容已更新会先提示冲突。
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={forgetting}>取消</AlertDialogCancel>
-            <AlertDialogAction
-              variant="destructive"
-              disabled={forgetting}
-              onClick={(event) => {
-                event.preventDefault();
-                void handleForget();
-              }}
-            >
-              {forgetting && <Loader2 className="animate-spin" />}
-              确认忘记
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-    </div>
+      <ConfirmDialog
+        open={forgetOpen}
+        onClose={() => {
+          if (!forgetting) setForgetOpen(false);
+        }}
+        onConfirm={() => void handleForget()}
+        title="忘记这条工作区记忆？"
+        message={`它将从未来 Session 的 Workspace Memory 检索中移除，但不会删除来源 Session 或聊天历史。此操作使用当前 revision ${selectedItem?.revision ?? '—'}，若内容已更新会先提示冲突。`}
+        confirmText="确认忘记"
+        confirmVariant="danger"
+        loading={forgetting}
+      />
+    </PageContainer>
   );
 }

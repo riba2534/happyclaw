@@ -111,3 +111,38 @@ describe('account-scoped channel status WebSocket event', () => {
     expect(other.send).not.toHaveBeenCalled();
   });
 });
+
+describe('broadcast backpressure', () => {
+  test('drops a client only after its send buffer stays backed up', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      const { MAX_WS_BUFFERED_BYTES } = await import('../src/web.js');
+      const healthy = addClient('session-healthy', 'ws-owner');
+      const stalled = Object.assign(addClient('session-stalled', 'ws-owner'), {
+        bufferedAmount: MAX_WS_BUFFERED_BYTES + 1,
+        terminate: vi.fn(),
+      });
+      const status = () =>
+        broadcastWhatsAppStatus('ws-owner', 'whatsapp-account-a', {
+          status: 'connected',
+        } as any);
+
+      // A brief burst (two observations within the grace) keeps the client.
+      status();
+      vi.advanceTimersByTime(4_000);
+      status();
+      expect(stalled.terminate).not.toHaveBeenCalled();
+      expect(stalled.send).toHaveBeenCalledTimes(2);
+
+      // Still over the limit after the grace period: dropped.
+      vi.advanceTimersByTime(7_000);
+      status();
+      expect(stalled.terminate).toHaveBeenCalledTimes(1);
+      expect(harness.clients.has(stalled)).toBe(false);
+      expect(healthy.send).toHaveBeenCalledTimes(3);
+      expect(harness.clients.has(healthy)).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

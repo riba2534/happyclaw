@@ -5,6 +5,7 @@ import {
   getReconnectDelay,
   classifyCloseCode,
   RECONNECT_DELAYS,
+  withReconnectJitter,
 } from '../src/qq-reconnect.js';
 
 describe('isTransientError', () => {
@@ -35,6 +36,13 @@ describe('isTransientError', () => {
       false,
     );
     expect(isTransientError({ code: 'ENOSPC' })).toBe(false);
+  });
+
+  test('treats the ws opening-handshake timeout as transient', () => {
+    // ws rejects with a plain Error, no errno code.
+    expect(isTransientError(new Error('Opening handshake has timed out'))).toBe(
+      true,
+    );
   });
 
   test('returns false for non-error inputs', () => {
@@ -159,5 +167,29 @@ describe('regression: 2026-05-15 DNS outage', () => {
     // follows usually carries 1006 (no close frame). We must not treat
     // 1006 as a special case — the transient-error path drives the retry.
     expect(classifyCloseCode(1006)).toEqual({ kind: 'normal' });
+  });
+});
+
+describe('withReconnectJitter', () => {
+  test('stays within ±20% of the ladder delay', () => {
+    expect(withReconnectJitter(10_000, () => 0)).toBe(8_000);
+    expect(withReconnectJitter(10_000, () => 0.5)).toBe(10_000);
+    expect(withReconnectJitter(10_000, () => 1)).toBe(12_000);
+    for (let i = 0; i < 100; i += 1) {
+      const delay = withReconnectJitter(1_000);
+      expect(delay).toBeGreaterThanOrEqual(800);
+      expect(delay).toBeLessThanOrEqual(1_200);
+    }
+  });
+
+  test('transient failures still climb the ladder via their own counter', () => {
+    // The connector takes max(budgeted, transient) attempts; transient
+    // retries therefore reach the 60s cap instead of polling every second.
+    const delays = [0, 1, 2, 3, 4, 5, 6].map((transient) =>
+      getReconnectDelay(Math.max(0, transient)),
+    );
+    expect(delays).toEqual([
+      1_000, 2_000, 5_000, 10_000, 30_000, 60_000, 60_000,
+    ]);
   });
 });

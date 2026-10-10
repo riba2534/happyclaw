@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
 import {
   CheckCircle2,
+  ChevronRight,
   ExternalLink,
   Eye,
   EyeOff,
@@ -15,12 +16,22 @@ import {
   Dialog,
   DialogContent,
   DialogDescription,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import { Input } from '@/components/ui/input';
+import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { Checkbox } from '@/components/ui/checkbox';
+import { Input } from '@/components/ui/input';
+import {
+  NativeSelect,
+  NativeSelectOption,
+} from '@/components/ui/native-select';
 import { Switch } from '@/components/ui/switch';
+import { IconButton } from '@/components/common/IconButton';
+import { SegmentedControl } from '@/components/common/SegmentedControl';
+import { SettingsField } from './SettingsLayout';
 import { api } from '../../api/client';
 import {
   buildDefaultProviderEnv,
@@ -746,12 +757,12 @@ export function ProviderEditor({
 
   return (
     <Dialog open={open} onOpenChange={(v) => !v && handleClose()}>
-      <DialogContent className="z-[10001] max-h-[calc(100dvh-1rem)] overflow-y-auto sm:max-w-2xl">
+      <DialogContent className="sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle>
             {isCreate ? '添加模型配置' : `编辑模型配置：${provider?.name}`}
           </DialogTitle>
-          <DialogDescription className="text-left text-xs leading-5">
+          <DialogDescription>
             {providerType === 'third_party'
               ? '填写端点、密钥和模型即可；Claude Code 运行参数会自动预填，也可在高级设置中调整。'
               : providerType === 'codex'
@@ -760,61 +771,33 @@ export function ProviderEditor({
           </DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-4">
+        <div className="space-y-5">
           {/* 类型选择（仅创建模式） */}
           {isCreate && (
-            <div>
-              <label className="block text-xs text-muted-foreground mb-1">
-                模型配置类型
-              </label>
-              <div className="inline-flex rounded-lg border border-border p-1 bg-muted">
-                <button
-                  type="button"
-                  aria-pressed={providerType === 'official'}
-                  onClick={() => setProviderType('official')}
-                  className={`min-h-9 rounded-md px-3 py-1.5 text-sm transition-colors cursor-pointer ${
-                    providerType === 'official'
-                      ? 'bg-background text-primary shadow-sm'
-                      : 'text-muted-foreground'
-                  }`}
-                >
-                  官方
-                </button>
-                <button
-                  type="button"
-                  aria-pressed={providerType === 'third_party'}
-                  onClick={() => setProviderType('third_party')}
-                  className={`min-h-9 rounded-md px-3 py-1.5 text-sm transition-colors cursor-pointer ${
-                    providerType === 'third_party'
-                      ? 'bg-background text-primary shadow-sm'
-                      : 'text-muted-foreground'
-                  }`}
-                >
-                  第三方
-                </button>
-                <button
-                  type="button"
-                  aria-pressed={providerType === 'codex'}
-                  onClick={() => setProviderType('codex')}
-                  className={`min-h-9 rounded-md px-3 py-1.5 text-sm transition-colors cursor-pointer ${
-                    providerType === 'codex'
-                      ? 'bg-background text-primary shadow-sm'
-                      : 'text-muted-foreground'
-                  }`}
-                >
-                  ChatGPT 订阅
-                </button>
-              </div>
-            </div>
+            <SettingsField label="模型配置类型">
+              <SegmentedControl
+                label="模型配置类型"
+                value={providerType}
+                onChange={setProviderType}
+                options={[
+                  { value: 'official', label: '官方' },
+                  { value: 'third_party', label: '第三方' },
+                  { value: 'codex', label: 'ChatGPT 订阅' },
+                ]}
+              />
+            </SettingsField>
           )}
 
           {/* 名称（创建 ChatGPT 订阅配置时由 OAuth 回调自动命名，隐藏） */}
           {!(isCreate && providerType === 'codex') && (
-            <div>
-              <label className="block text-xs text-muted-foreground mb-1">
-                {providerType === 'third_party' ? '配置名称（可选）' : '名称'}
-              </label>
+            <SettingsField
+              label={
+                providerType === 'third_party' ? '配置名称（可选）' : '名称'
+              }
+              htmlFor="provider-name"
+            >
               <Input
+                id="provider-name"
                 type="text"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
@@ -827,63 +810,54 @@ export function ProviderEditor({
                       : '留空时使用模型名称'
                 }
               />
-            </div>
+            </SettingsField>
           )}
 
           {/* ─── 官方模式 ─── */}
           {providerType === 'official' && (
             <div className="space-y-4">
-              <div>
-                <label className="block text-xs text-muted-foreground mb-2">
-                  认证方式
-                </label>
-                <div className="inline-flex rounded-lg border border-border p-1 bg-muted">
-                  {(['oauth', 'setup_token', 'api_key'] as const).map((tab) => (
-                    <button
-                      key={tab}
-                      type="button"
-                      onClick={() => setAuthTab(tab)}
-                      className={`px-3 py-1.5 text-xs rounded-md transition-colors cursor-pointer ${
-                        authTab === tab
-                          ? 'bg-background text-primary shadow-sm'
-                          : 'text-muted-foreground'
-                      }`}
-                    >
-                      {tab === 'oauth'
-                        ? 'OAuth 登录'
-                        : tab === 'setup_token'
-                          ? 'Setup Token'
-                          : 'API Key'}
-                    </button>
-                  ))}
-                </div>
-              </div>
+              <SettingsField label="认证方式">
+                <SegmentedControl
+                  label="认证方式"
+                  value={authTab}
+                  onChange={setAuthTab}
+                  options={[
+                    { value: 'oauth', label: 'OAuth 登录' },
+                    { value: 'setup_token', label: 'Setup Token' },
+                    { value: 'api_key', label: 'API Key' },
+                  ]}
+                />
+              </SettingsField>
 
               {authTab === 'oauth' && (
-                <div className="rounded-lg border border-teal-200 bg-teal-50/50 p-4 space-y-3">
-                  <div className="text-sm font-medium text-foreground">
-                    一键登录 Claude（推荐）
-                  </div>
-                  <div className="text-xs text-muted-foreground">
-                    点击按钮后会打开 claude.ai
-                    授权页面，完成授权后将页面上显示的授权码粘贴回来。
+                <div className="space-y-3 rounded-lg border border-surface-border p-4">
+                  <div>
+                    <div className="text-label text-foreground">
+                      一键登录 Claude（推荐）
+                    </div>
+                    <div className="mt-1 text-caption leading-5 text-muted-foreground">
+                      点击按钮后会打开 claude.ai
+                      授权页面，完成授权后将页面上显示的授权码粘贴回来。
+                    </div>
                   </div>
 
                   {/* 编辑模式显示现有凭据 */}
                   {!isCreate && provider?.hasClaudeOAuthCredentials && (
-                    <div className="rounded-md border border-emerald-200 dark:border-emerald-800 bg-emerald-50/50 dark:bg-emerald-950/30 p-3 space-y-1 text-xs">
-                      <div className="text-emerald-700 dark:text-emerald-300">
+                    <div className="space-y-1 rounded-lg bg-success/10 px-3 py-2.5 text-caption text-success">
+                      <div>
                         Access Token:{' '}
-                        {provider.claudeOAuthCredentialsAccessTokenMasked ||
-                          '***'}
+                        <span className="font-mono">
+                          {provider.claudeOAuthCredentialsAccessTokenMasked ||
+                            '***'}
+                        </span>
                       </div>
                       {provider.claudeOAuthCredentialsExpiresAt && (
                         <div
                           className={
                             provider.claudeOAuthCredentialsExpiresAt <=
                             Date.now()
-                              ? 'text-red-700 dark:text-red-400 font-medium'
-                              : 'text-emerald-700 dark:text-emerald-300'
+                              ? 'font-medium text-error'
+                              : undefined
                           }
                         >
                           过期时间:{' '}
@@ -895,7 +869,7 @@ export function ProviderEditor({
                             : ' (已过期)'}
                         </div>
                       )}
-                      <div className="text-emerald-600">
+                      <div className="text-muted-foreground">
                         SDK 会在 token 过期时自动刷新。
                       </div>
                     </div>
@@ -903,13 +877,14 @@ export function ProviderEditor({
 
                   {!oauthState ? (
                     <Button
+                      variant="outline"
                       onClick={handleOAuthStart}
                       disabled={saving || oauthLoading}
                     >
                       {oauthLoading ? (
-                        <Loader2 className="size-4 animate-spin" />
+                        <Loader2 className="animate-spin" />
                       ) : (
-                        <ExternalLink className="size-4" />
+                        <ExternalLink />
                       )}
                       {!isCreate && provider?.hasClaudeOAuthCredentials
                         ? '重新登录 Claude'
@@ -917,7 +892,7 @@ export function ProviderEditor({
                     </Button>
                   ) : (
                     <div className="space-y-2">
-                      <div className="text-xs text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded-md px-3 py-2">
+                      <div className="rounded-lg bg-warning/10 px-3 py-2 text-caption leading-5 text-warning">
                         授权窗口已打开，请在 claude.ai
                         完成授权后，将页面上显示的授权码粘贴到下方。
                       </div>
@@ -928,19 +903,21 @@ export function ProviderEditor({
                           onChange={(e) => setOauthCode(e.target.value)}
                           disabled={oauthExchanging}
                           placeholder="粘贴授权码"
+                          aria-label="粘贴授权码"
                           className="flex-1"
                         />
                         <Button
+                          variant="outline"
                           onClick={handleOAuthCallback}
                           disabled={oauthExchanging || !oauthCode.trim()}
                         >
                           {oauthExchanging && (
-                            <Loader2 className="size-4 animate-spin" />
+                            <Loader2 className="animate-spin" />
                           )}
                           确认
                         </Button>
                         <Button
-                          variant="outline"
+                          variant="ghost"
                           onClick={() => {
                             setOauthState(null);
                             setOauthCode('');
@@ -955,14 +932,30 @@ export function ProviderEditor({
               )}
 
               {authTab === 'setup_token' && (
-                <div className="space-y-2">
-                  <label className="block text-xs text-muted-foreground mb-1">
-                    setup-token 或 .credentials.json{' '}
-                    {!isCreate && provider?.hasClaudeCodeOauthToken
-                      ? `(${provider.claudeCodeOauthTokenMasked})`
-                      : ''}
-                  </label>
+                <SettingsField
+                  label={
+                    <>
+                      setup-token 或 .credentials.json{' '}
+                      {!isCreate && provider?.hasClaudeCodeOauthToken && (
+                        <span className="font-mono font-normal text-muted-foreground">
+                          ({provider.claudeCodeOauthTokenMasked})
+                        </span>
+                      )}
+                    </>
+                  }
+                  htmlFor="provider-setup-token"
+                  description={
+                    <>
+                      支持粘贴{' '}
+                      <code className="rounded bg-muted px-1 font-mono">
+                        cat ~/.claude/.credentials.json
+                      </code>{' '}
+                      的 JSON 内容
+                    </>
+                  }
+                >
                   <Input
+                    id="provider-setup-token"
                     type="password"
                     value={setupToken}
                     onChange={(e) => setSetupToken(e.target.value)}
@@ -975,28 +968,40 @@ export function ProviderEditor({
                         : '粘贴 setup-token 或 cat ~/.claude/.credentials.json 输出'
                     }
                   />
-                  <p className="text-xs text-muted-foreground">
-                    支持粘贴{' '}
-                    <code className="bg-muted px-1 rounded">
-                      cat ~/.claude/.credentials.json
-                    </code>{' '}
-                    的 JSON 内容
-                  </p>
-                </div>
+                </SettingsField>
               )}
 
               {authTab === 'api_key' && (
-                <div className="space-y-2">
-                  <label className="block text-xs text-muted-foreground mb-1">
+                <SettingsField
+                  label={
                     <span className="flex items-center gap-1.5">
-                      <Key className="w-3.5 h-3.5" />
+                      <Key className="size-3.5 text-muted-foreground" />
                       ANTHROPIC_API_KEY{' '}
-                      {!isCreate && provider?.hasAnthropicApiKey
-                        ? `(${provider.anthropicApiKeyMasked})`
-                        : ''}
+                      {!isCreate && provider?.hasAnthropicApiKey && (
+                        <span className="font-mono font-normal text-muted-foreground">
+                          ({provider.anthropicApiKeyMasked})
+                        </span>
+                      )}
                     </span>
-                  </label>
+                  }
+                  htmlFor="provider-api-key"
+                  description={
+                    <>
+                      直接使用 Anthropic 官方 API Key，从{' '}
+                      <a
+                        href="https://console.anthropic.com/settings/keys"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-primary-text underline underline-offset-2"
+                      >
+                        console.anthropic.com
+                      </a>{' '}
+                      获取
+                    </>
+                  }
+                >
                   <Input
+                    id="provider-api-key"
                     type="password"
                     value={apiKey}
                     onChange={(e) => setApiKey(e.target.value)}
@@ -1008,41 +1013,33 @@ export function ProviderEditor({
                     }
                     className="font-mono"
                   />
-                  <p className="text-xs text-muted-foreground">
-                    直接使用 Anthropic 官方 API Key，从{' '}
-                    <a
-                      href="https://console.anthropic.com/settings/keys"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-teal-600 underline"
-                    >
-                      console.anthropic.com
-                    </a>{' '}
-                    获取
-                  </p>
-                </div>
+                </SettingsField>
               )}
             </div>
           )}
 
           {/* ─── ChatGPT 订阅模式 ─── */}
           {providerType === 'codex' && (
-            <div className="rounded-lg border border-green-200 bg-green-50/50 p-4 space-y-3 dark:border-green-800 dark:bg-green-950/30">
-              <div className="text-sm font-medium text-foreground">
-                使用 ChatGPT 订阅登录
-              </div>
-              <div className="text-xs leading-5 text-muted-foreground">
-                点击按钮打开 ChatGPT 登录页（需要 Plus / Pro / Team
-                订阅）。完成授权后浏览器会跳转到{' '}
-                <code className="rounded bg-muted px-1">localhost:1455</code>{' '}
-                ——该页面打不开是正常的，把浏览器地址栏的完整地址复制粘贴到下方即可。
+            <div className="space-y-3 rounded-lg border border-surface-border p-4">
+              <div>
+                <div className="text-label text-foreground">
+                  使用 ChatGPT 订阅登录
+                </div>
+                <div className="mt-1 text-caption leading-5 text-muted-foreground">
+                  点击按钮打开 ChatGPT 登录页（需要 Plus / Pro / Team
+                  订阅）。完成授权后浏览器会跳转到{' '}
+                  <code className="rounded bg-muted px-1 font-mono">
+                    localhost:1455
+                  </code>{' '}
+                  ——该页面打不开是正常的，把浏览器地址栏的完整地址复制粘贴到下方即可。
+                </div>
               </div>
 
               {/* 编辑模式显示现有凭据 */}
               {!isCreate && provider?.hasCodexOAuthCredentials && (
-                <div className="space-y-1 rounded-md border border-emerald-200 bg-emerald-50/50 p-3 text-xs dark:border-emerald-800 dark:bg-emerald-950/30">
+                <div className="space-y-1 rounded-lg bg-success/10 px-3 py-2.5 text-caption text-success">
                   {provider.codexOAuthCredentialsEmail && (
-                    <div className="text-emerald-700 dark:text-emerald-300">
+                    <div>
                       账号：{provider.codexOAuthCredentialsEmail}
                       {provider.codexOAuthCredentialsPlanType
                         ? `（${provider.codexOAuthCredentialsPlanType}）`
@@ -1053,8 +1050,8 @@ export function ProviderEditor({
                     <div
                       className={
                         provider.codexOAuthCredentialsExpiresAt <= Date.now()
-                          ? 'font-medium text-red-700 dark:text-red-400'
-                          : 'text-emerald-700 dark:text-emerald-300'
+                          ? 'font-medium text-error'
+                          : undefined
                       }
                     >
                       过期时间:{' '}
@@ -1066,7 +1063,7 @@ export function ProviderEditor({
                         : ' (已过期)'}
                     </div>
                   )}
-                  <div className="text-emerald-600">
+                  <div className="text-muted-foreground">
                     网关会在 token 过期时自动刷新。
                   </div>
                 </div>
@@ -1075,14 +1072,12 @@ export function ProviderEditor({
               {/* 编辑模式：目标模型与推理力度（由网关映射到上游请求） */}
               {!isCreate && (
                 <div className="grid gap-3 sm:grid-cols-2">
-                  <div>
-                    <label
-                      htmlFor="codex-model-select"
-                      className="block text-xs text-muted-foreground mb-1"
-                    >
-                      模型
-                    </label>
-                    <select
+                  <SettingsField
+                    label="模型"
+                    htmlFor="codex-model-select"
+                    description="SDK 请求的 Claude 模型名会由网关统一映射为此模型。"
+                  >
+                    <NativeSelect
                       id="codex-model-select"
                       value={codexModel}
                       onChange={(e) => {
@@ -1106,60 +1101,53 @@ export function ProviderEditor({
                         }
                       }}
                       disabled={saving}
-                      className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/30"
+                      className="w-full font-mono"
                     >
                       {codexModelChoices.map((m) => (
-                        <option key={m.value} value={m.value}>
+                        <NativeSelectOption key={m.value} value={m.value}>
                           {m.value === codexCatalog.defaultModel
                             ? `${m.label}·默认`
                             : m.label}
-                        </option>
+                        </NativeSelectOption>
                       ))}
-                    </select>
-                    <p className="text-xs text-muted-foreground mt-1">
-                      SDK 请求的 Claude 模型名会由网关统一映射为此模型。
-                    </p>
-                  </div>
-                  <div>
-                    <label
-                      htmlFor="codex-effort-select"
-                      className="block text-xs text-muted-foreground mb-1"
-                    >
-                      推理力度
-                    </label>
-                    <select
+                    </NativeSelect>
+                  </SettingsField>
+                  <SettingsField
+                    label="推理力度"
+                    htmlFor="codex-effort-select"
+                    description="对应上游 reasoning.effort，越高越慢但推理越深。"
+                  >
+                    <NativeSelect
                       id="codex-effort-select"
                       value={codexEffort}
                       onChange={(e) => setCodexEffort(e.target.value)}
                       disabled={saving}
-                      className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/30"
+                      className="w-full font-mono"
                     >
                       {codexEffortChoices.map((effort) => (
-                        <option key={effort} value={effort}>
+                        <NativeSelectOption key={effort} value={effort}>
                           {effort ===
                           (selectedCodexModel?.defaultEffort ??
                             codexCatalog.defaultEffort)
                             ? `${effort}（默认）`
                             : effort}
-                        </option>
+                        </NativeSelectOption>
                       ))}
-                    </select>
-                    <p className="text-xs text-muted-foreground mt-1">
-                      对应上游 reasoning.effort，越高越慢但推理越深。
-                    </p>
-                  </div>
+                    </NativeSelect>
+                  </SettingsField>
                 </div>
               )}
 
               {!oauthState ? (
                 <Button
+                  variant={isCreate ? 'default' : 'outline'}
                   onClick={handleCodexOAuthStart}
                   disabled={saving || oauthLoading}
                 >
                   {oauthLoading ? (
-                    <Loader2 className="size-4 animate-spin" />
+                    <Loader2 className="animate-spin" />
                   ) : (
-                    <ExternalLink className="size-4" />
+                    <ExternalLink />
                   )}
                   {!isCreate && provider?.hasCodexOAuthCredentials
                     ? '重新登录 ChatGPT'
@@ -1167,7 +1155,7 @@ export function ProviderEditor({
                 </Button>
               ) : (
                 <div className="space-y-2">
-                  <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-300">
+                  <div className="rounded-lg bg-warning/10 px-3 py-2 text-caption leading-5 text-warning">
                     授权窗口已打开，请在 ChatGPT
                     完成登录授权后，将跳转页面的完整地址粘贴到下方。
                   </div>
@@ -1178,19 +1166,19 @@ export function ProviderEditor({
                       onChange={(e) => setOauthCode(e.target.value)}
                       disabled={oauthExchanging}
                       placeholder="粘贴 localhost:1455 回调完整地址"
+                      aria-label="粘贴 localhost:1455 回调完整地址"
                       className="flex-1"
                     />
                     <Button
+                      variant={isCreate ? 'default' : 'outline'}
                       onClick={handleCodexOAuthCallback}
                       disabled={oauthExchanging || !oauthCode.trim()}
                     >
-                      {oauthExchanging && (
-                        <Loader2 className="size-4 animate-spin" />
-                      )}
+                      {oauthExchanging && <Loader2 className="animate-spin" />}
                       确认
                     </Button>
                     <Button
-                      variant="outline"
+                      variant="ghost"
                       onClick={() => {
                         setOauthState(null);
                         setOauthCode('');
@@ -1206,15 +1194,14 @@ export function ProviderEditor({
 
           {/* ─── 第三方模式 ─── */}
           {providerType === 'third_party' && (
-            <div className="space-y-5">
-              <div>
-                <label className="mb-1.5 flex items-center justify-between gap-3 text-xs font-medium text-foreground">
-                  <span>API 端点</span>
-                  <span className="font-normal text-muted-foreground">
-                    ANTHROPIC_BASE_URL
-                  </span>
-                </label>
+            <div className="space-y-4">
+              <SettingsField
+                label={<FieldLabel text="API 端点" hint="ANTHROPIC_BASE_URL" />}
+                htmlFor="provider-base-url"
+                description="填写 Anthropic 兼容接口的完整地址。"
+              >
                 <Input
+                  id="provider-base-url"
                   type="url"
                   inputMode="url"
                   value={baseUrl}
@@ -1223,21 +1210,23 @@ export function ProviderEditor({
                   placeholder="https://api.example.com/anthropic"
                   autoComplete="off"
                 />
-                <p className="mt-1.5 text-xs text-muted-foreground">
-                  填写 Anthropic 兼容接口的完整地址。
-                </p>
-              </div>
+              </SettingsField>
 
-              <div>
-                <label className="mb-1.5 flex items-center justify-between gap-3 text-xs font-medium text-foreground">
-                  <span>API 密钥</span>
-                  <span className="font-normal text-muted-foreground">
-                    {!isCreate && provider?.hasAnthropicAuthToken
-                      ? `当前 ${provider.anthropicAuthTokenMasked}`
-                      : 'ANTHROPIC_AUTH_TOKEN'}
-                  </span>
-                </label>
+              <SettingsField
+                label={
+                  <FieldLabel
+                    text="API 密钥"
+                    hint={
+                      !isCreate && provider?.hasAnthropicAuthToken
+                        ? `当前 ${provider.anthropicAuthTokenMasked}`
+                        : 'ANTHROPIC_AUTH_TOKEN'
+                    }
+                  />
+                }
+                htmlFor="provider-auth-token"
+              >
                 <Input
+                  id="provider-auth-token"
                   type="password"
                   value={authToken}
                   onChange={(e) => {
@@ -1256,13 +1245,17 @@ export function ProviderEditor({
                   autoComplete="new-password"
                 />
                 {!isCreate && provider?.hasAnthropicAuthToken && (
-                  <label className="mt-2 inline-flex min-h-8 items-center gap-2 text-xs text-muted-foreground">
-                    <input
-                      type="checkbox"
+                  <label
+                    htmlFor="provider-clear-auth-token"
+                    className="flex min-h-8 w-fit cursor-pointer items-center gap-2 text-caption text-muted-foreground"
+                  >
+                    <Checkbox
+                      id="provider-clear-auth-token"
                       checked={clearTokenOnSave}
-                      onChange={(e) => {
-                        setClearTokenOnSave(e.target.checked);
-                        if (e.target.checked) {
+                      onCheckedChange={(next) => {
+                        const checked = next === true;
+                        setClearTokenOnSave(checked);
+                        if (checked) {
                           setAuthToken('');
                           setAuthTokenDirty(false);
                         }
@@ -1272,35 +1265,33 @@ export function ProviderEditor({
                     保存时清空当前密钥
                   </label>
                 )}
-              </div>
+              </SettingsField>
 
-              <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_13rem] sm:items-end">
-                <div className="min-w-0">
-                  <label className="mb-1.5 flex items-center justify-between gap-3 text-xs font-medium text-foreground">
-                    <span>模型名称</span>
-                    <span className="font-normal text-muted-foreground">
-                      ANTHROPIC_MODEL
-                    </span>
-                  </label>
-                  <Input
-                    type="text"
-                    value={model}
-                    onChange={(e) => setModel(e.target.value)}
-                    disabled={saving}
-                    placeholder="例如 glm-5.2、k3、qwen3.7-max"
-                    autoComplete="off"
-                  />
-                </div>
+              <SettingsField
+                label={<FieldLabel text="模型名称" hint="ANTHROPIC_MODEL" />}
+                htmlFor="provider-model"
+              >
+                <Input
+                  id="provider-model"
+                  type="text"
+                  value={model}
+                  onChange={(e) => setModel(e.target.value)}
+                  disabled={saving}
+                  placeholder="例如 glm-5.2、k3、qwen3.7-max"
+                  autoComplete="off"
+                />
+              </SettingsField>
 
-                <div className="flex min-h-16 items-center justify-between gap-3 rounded-xl border border-border/80 bg-muted/35 px-3.5 py-2.5">
+              <div className="divide-y divide-surface-border rounded-lg ring-1 ring-surface-border">
+                <div className="flex items-center justify-between gap-4 px-3 py-2.5">
                   <label
                     htmlFor="provider-one-million-context"
-                    className="min-w-0"
+                    className="min-w-0 cursor-pointer"
                   >
-                    <span className="block text-xs font-medium text-foreground">
+                    <span className="block text-label text-foreground">
                       1M 上下文
                     </span>
-                    <span className="mt-0.5 block text-[11px] leading-4 text-muted-foreground">
+                    <span className="mt-0.5 block text-caption text-muted-foreground">
                       自动添加 [1m]
                     </span>
                   </label>
@@ -1312,18 +1303,16 @@ export function ProviderEditor({
                     aria-label="启用 1M 上下文"
                   />
                 </div>
-              </div>
 
-              <div className="rounded-xl border border-primary/15 bg-primary/[0.035] px-3.5 py-3">
-                <div className="flex items-start gap-2.5">
-                  <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-primary" />
+                <div className="flex items-start gap-2.5 px-3 py-2.5">
+                  <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-success" />
                   <div className="min-w-0">
-                    <div className="text-xs font-medium text-foreground">
+                    <div className="text-label text-foreground">
                       系统预填 Claude Code 运行环境
                     </div>
-                    <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                    <p className="mt-1 text-caption leading-5 text-muted-foreground">
                       实际模型：
-                      <code className="break-all font-medium text-foreground">
+                      <code className="break-all font-mono font-medium text-foreground">
                         {buildProviderModel(model, oneMillionContext) ||
                           '填写模型后生成'}
                       </code>
@@ -1331,7 +1320,7 @@ export function ProviderEditor({
                       上下文窗口：
                       {oneMillionContext ? '1,000,000' : '200,000'} tokens
                     </p>
-                    <p className="mt-0.5 text-[11px] leading-4 text-muted-foreground">
+                    <p className="mt-0.5 text-caption leading-5 text-faint-foreground">
                       默认同步模型映射、压缩窗口、请求超时与兼容参数；可在高级设置中调整。
                     </p>
                   </div>
@@ -1342,68 +1331,74 @@ export function ProviderEditor({
 
           {/* ─── 官方模型选择 ─── */}
           {providerType === 'official' && (
-            <div>
-              <label className="block text-xs text-muted-foreground mb-1">
-                模型
-              </label>
-              <select
+            <SettingsField
+              label="模型"
+              htmlFor="provider-official-model"
+              description="别名自动解析为最新版本，留空使用 default。"
+            >
+              <NativeSelect
+                id="provider-official-model"
                 value={model}
                 onChange={(e) => setModel(e.target.value)}
                 disabled={saving}
-                className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/30"
+                className="w-full font-mono"
               >
-                <option value="">default（默认）</option>
-                <option value="opus">opus</option>
-                <option value="sonnet">sonnet</option>
-                <option value="haiku">haiku</option>
-                <option value="fable">fable</option>
-              </select>
-              <p className="text-xs text-muted-foreground mt-1">
-                别名自动解析为最新版本，留空使用 default。
-              </p>
-            </div>
+                {/* prettier-ignore */}
+                <NativeSelectOption value="">default（默认）</NativeSelectOption>
+                <NativeSelectOption value="opus">opus</NativeSelectOption>
+                <NativeSelectOption value="sonnet">sonnet</NativeSelectOption>
+                <NativeSelectOption value="haiku">haiku</NativeSelectOption>
+                <NativeSelectOption value="fable">fable</NativeSelectOption>
+              </NativeSelect>
+            </SettingsField>
           )}
 
           {/* ─── 环境变量 ─── */}
           {providerType !== 'codex' && (
-            <details className="border-t border-border pt-4">
-              <summary className="cursor-pointer text-sm font-medium text-foreground">
-                {providerType === 'third_party'
-                  ? '高级设置 · 环境变量'
-                  : '高级设置 · 自定义环境变量'}
+            <details className="group/env overflow-hidden rounded-lg ring-1 ring-surface-border">
+              <summary className="flex min-h-10 cursor-pointer list-none items-center gap-2 px-3 py-2 text-label text-foreground outline-none transition-colors duration-100 select-none hover:bg-surface-hover focus-visible:bg-surface-hover [&::-webkit-details-marker]:hidden">
+                <ChevronRight
+                  className="size-4 shrink-0 text-muted-foreground transition-transform duration-150 group-open/env:rotate-90"
+                  aria-hidden="true"
+                />
+                <span className="min-w-0 flex-1 truncate">
+                  {providerType === 'third_party'
+                    ? '高级设置 · 环境变量'
+                    : '高级设置 · 自定义环境变量'}
+                </span>
                 {providerType === 'third_party' && (
-                  <span className="ml-2 text-xs font-normal text-muted-foreground">
+                  <span className="shrink-0 text-caption text-muted-foreground">
                     {defaultProviderEnv.length} 项默认配置
                   </span>
                 )}
                 {customEnvRows.length > 0 && (
-                  <span className="ml-2 text-xs font-normal text-muted-foreground">
+                  <span className="shrink-0 text-caption text-muted-foreground">
                     {customEnvRows.length} 项自定义
                   </span>
                 )}
               </summary>
 
-              <div className="mt-4 space-y-5">
+              <div className="space-y-5 border-t border-surface-border px-3 py-4">
                 {providerType === 'third_party' && (
                   <section aria-labelledby="default-provider-env-heading">
                     <div className="mb-2 flex flex-wrap items-baseline justify-between gap-2">
                       <div>
                         <h3
                           id="default-provider-env-heading"
-                          className="text-xs font-medium text-foreground"
+                          className="text-label text-foreground"
                         >
                           系统预填环境变量
                         </h3>
-                        <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                        <p className="mt-0.5 text-caption leading-5 text-muted-foreground">
                           默认值会随模型和上下文更新；修改后以你的自定义值为准。
                         </p>
                       </div>
-                      <span className="rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">
+                      <Badge variant="neutral">
                         {defaultProviderEnv.length} 项
-                      </span>
+                      </Badge>
                     </div>
 
-                    <div className="overflow-hidden rounded-lg border border-border/80 bg-muted/20">
+                    <div className="divide-y divide-surface-border overflow-hidden rounded-lg ring-1 ring-surface-border">
                       {defaultProviderEnv.map((row, index) => {
                         const hasOverride = Object.hasOwn(
                           providerEnvOverrides,
@@ -1417,30 +1412,25 @@ export function ProviderEditor({
                         return (
                           <div
                             key={row.key}
-                            className={`grid min-w-0 gap-2 px-3 py-2.5 sm:grid-cols-[minmax(0,1fr)_minmax(12rem,0.8fr)] sm:items-center sm:gap-4 ${
-                              index > 0 ? 'border-t border-border/70' : ''
-                            }`}
+                            className="grid min-w-0 gap-2 px-3 py-2 sm:grid-cols-[minmax(0,1fr)_minmax(12rem,0.8fr)] sm:items-center sm:gap-4"
                           >
                             <div className="flex min-w-0 items-center justify-between gap-2">
                               <label
                                 htmlFor={inputId}
-                                className="min-w-0 break-all font-mono text-[11px] text-foreground"
+                                className="min-w-0 font-mono text-micro break-words text-foreground"
                               >
-                                {row.key}
+                                <EnvKey name={row.key} />
                               </label>
-                              <span
-                                className={`shrink-0 rounded-full border px-1.5 py-0.5 text-[10px] ${
-                                  hasOverride
-                                    ? 'border-primary/25 bg-primary/5 text-primary'
-                                    : 'border-border bg-background text-muted-foreground'
-                                }`}
+                              <Badge
+                                variant={hasOverride ? 'info' : 'outline'}
+                                className="shrink-0"
                               >
                                 {hasOverride
                                   ? '已自定义'
                                   : MANAGED_ENV_SOURCE_LABELS[row.source]}
-                              </span>
+                              </Badge>
                             </div>
-                            <div className="flex min-w-0 items-center gap-1.5">
+                            <div className="flex min-w-0 items-center gap-1">
                               <Input
                                 id={inputId}
                                 type="text"
@@ -1455,19 +1445,17 @@ export function ProviderEditor({
                                 disabled={saving}
                                 placeholder="填写模型后生成"
                                 autoComplete="off"
-                                className="h-9 min-w-0 px-2.5 font-mono text-xs"
+                                className="min-w-0 font-mono text-caption md:text-caption"
                               />
                               {hasOverride && (
-                                <button
-                                  type="button"
+                                <IconButton
+                                  label="恢复默认值"
+                                  aria-label={`恢复 ${row.key} 的默认值`}
+                                  icon={<RotateCcw />}
                                   onClick={() => resetProviderEnv(row.key)}
                                   disabled={saving}
-                                  className="flex size-11 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:opacity-50 sm:size-9"
-                                  aria-label={`恢复 ${row.key} 的默认值`}
-                                  title="恢复默认值"
-                                >
-                                  <RotateCcw className="size-3.5" />
-                                </button>
+                                  className="pointer-coarse:size-11"
+                                />
                               )}
                             </div>
                           </div>
@@ -1481,7 +1469,7 @@ export function ProviderEditor({
                   aria-labelledby="custom-provider-env-heading"
                   className={
                     providerType === 'third_party'
-                      ? 'border-t border-border pt-4'
+                      ? 'border-t border-surface-border pt-4'
                       : undefined
                   }
                 >
@@ -1489,26 +1477,28 @@ export function ProviderEditor({
                     <div>
                       <h3
                         id="custom-provider-env-heading"
-                        className="text-xs font-medium text-foreground"
+                        className="text-label text-foreground"
                       >
                         自定义环境变量
                       </h3>
-                      <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                      <p className="mt-0.5 text-caption leading-5 text-muted-foreground">
                         仅用于 API 自定义 Header 等特殊需求。
                       </p>
                     </div>
-                    <button
+                    <Button
                       type="button"
+                      variant="ghost"
+                      size="sm"
                       onClick={addRow}
-                      className="inline-flex min-h-11 shrink-0 cursor-pointer items-center gap-1 rounded-md px-2 text-xs text-primary hover:bg-muted"
+                      className="shrink-0 pointer-coarse:min-h-11"
                     >
-                      <Plus className="size-3.5" />
+                      <Plus />
                       添加
-                    </button>
+                    </Button>
                   </div>
 
                   {customEnvRows.length === 0 ? (
-                    <p className="text-xs text-muted-foreground">
+                    <p className="text-caption text-muted-foreground">
                       没有自定义环境变量，大多数配置无需添加。
                     </p>
                   ) : (
@@ -1525,48 +1515,45 @@ export function ProviderEditor({
                               updateRow(idx, 'key', e.target.value)
                             }
                             placeholder="KEY"
-                            className="h-auto w-full px-2.5 py-1.5 font-mono text-xs sm:w-[38%]"
+                            aria-label={`第 ${idx + 1} 行环境变量 Key`}
+                            className="w-full font-mono text-caption sm:w-[38%] md:text-caption"
                           />
-                          <Input
-                            type={
-                              showCustomEnvValues[idx] ? 'text' : 'password'
-                            }
-                            value={row.value}
-                            onChange={(e) =>
-                              updateRow(idx, 'value', e.target.value)
-                            }
-                            placeholder="value"
-                            className="h-auto flex-1 px-2.5 py-1.5 font-mono text-xs"
-                          />
-                          <button
-                            type="button"
-                            onClick={() =>
-                              setShowCustomEnvValues((current) => ({
-                                ...current,
-                                [idx]: !current[idx],
-                              }))
-                            }
-                            className="flex size-8 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
-                            aria-label={
-                              showCustomEnvValues[idx]
-                                ? '隐藏环境变量值'
-                                : '显示环境变量值'
-                            }
-                          >
-                            {showCustomEnvValues[idx] ? (
-                              <EyeOff className="size-4" />
-                            ) : (
-                              <Eye className="size-4" />
-                            )}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => removeRow(idx)}
-                            className="flex size-8 cursor-pointer items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-red-500"
-                            aria-label="删除环境变量"
-                          >
-                            <X className="size-4" />
-                          </button>
+                          <div className="flex min-w-0 flex-1 items-center gap-1">
+                            <Input
+                              type={
+                                showCustomEnvValues[idx] ? 'text' : 'password'
+                              }
+                              value={row.value}
+                              onChange={(e) =>
+                                updateRow(idx, 'value', e.target.value)
+                              }
+                              placeholder="value"
+                              aria-label={`第 ${idx + 1} 行环境变量值`}
+                              className="min-w-0 flex-1 font-mono text-caption md:text-caption"
+                            />
+                            <IconButton
+                              label={
+                                showCustomEnvValues[idx]
+                                  ? '隐藏环境变量值'
+                                  : '显示环境变量值'
+                              }
+                              icon={
+                                showCustomEnvValues[idx] ? <EyeOff /> : <Eye />
+                              }
+                              onClick={() =>
+                                setShowCustomEnvValues((current) => ({
+                                  ...current,
+                                  [idx]: !current[idx],
+                                }))
+                              }
+                            />
+                            <IconButton
+                              label="删除环境变量"
+                              icon={<X />}
+                              onClick={() => removeRow(idx)}
+                              className="hover:text-destructive"
+                            />
+                          </div>
                         </div>
                       ))}
                     </div>
@@ -1575,26 +1562,52 @@ export function ProviderEditor({
               </div>
             </details>
           )}
-
-          {/* ─── 操作按钮 ─── */}
-          <div className="sticky -bottom-4 z-10 -mx-4 flex justify-end gap-2 border-t border-border bg-background/95 px-4 pb-4 pt-3 backdrop-blur supports-[backdrop-filter]:bg-background/85">
-            <Button
-              variant="outline"
-              onClick={handleClose}
-              disabled={saving || oauthExchanging}
-            >
-              取消
-            </Button>
-            {/* OAuth 模式下创建时不需要保存按钮（OAuth 回调会自动触发 onSave） */}
-            {!(isCreate && providerType === 'codex') && (
-              <Button onClick={handleSave} disabled={saving || oauthExchanging}>
-                {saving && <Loader2 className="size-4 animate-spin" />}
-                {isCreate ? '创建' : '保存'}
-              </Button>
-            )}
-          </div>
         </div>
+
+        {/* ─── 操作按钮 ─── */}
+        <DialogFooter>
+          <Button
+            variant="outline"
+            onClick={handleClose}
+            disabled={saving || oauthExchanging}
+          >
+            取消
+          </Button>
+          {/* OAuth 模式下创建时不需要保存按钮（OAuth 回调会自动触发 onSave） */}
+          {!(isCreate && providerType === 'codex') && (
+            <Button onClick={handleSave} disabled={saving || oauthExchanging}>
+              {saving && <Loader2 className="animate-spin" />}
+              {isCreate ? '创建' : '保存'}
+            </Button>
+          )}
+        </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+/** Env var name that wraps after underscores instead of mid-word. */
+function EnvKey({ name }: { name: string }) {
+  const parts = name.split('_');
+  return parts.map((part, index) => (
+    <Fragment key={index}>
+      {part}
+      {index < parts.length - 1 && (
+        <>
+          _<wbr />
+        </>
+      )}
+    </Fragment>
+  ));
+}
+
+function FieldLabel({ text, hint }: { text: string; hint: string }) {
+  return (
+    <span className="flex items-center justify-between gap-3">
+      <span>{text}</span>
+      <span className="truncate font-mono text-micro font-normal text-faint-foreground">
+        {hint}
+      </span>
+    </span>
   );
 }

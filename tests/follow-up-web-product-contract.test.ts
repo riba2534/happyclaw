@@ -41,11 +41,14 @@ describe('Codex-style Web follow-up product contract', () => {
 
   test('uses an exact query attempt instead of a warm or backoff process for stop state', () => {
     const chatView = read('web/src/components/chat/ChatView.tsx');
+    const sessionPresentation = read('web/src/lib/session-presentation.ts');
     const store = read('web/src/stores/chat.ts');
 
     expect(chatView).not.toMatch(/activeAgent\?\.status === 'running'/);
     expect(chatView).toMatch(/isRunning=\{currentContextWaiting\}/);
-    expect(chatView).toMatch(/status: 'idle' as const/);
+    // Session lists downgrade warm-but-idle runners via the shared helper.
+    expect(chatView).toContain('buildConversationSessions(');
+    expect(sessionPresentation).toMatch(/status: 'idle' as const/);
     expect(store).toMatch(/queryInFlight\?: boolean/);
     expect(store).toMatch(/queryId\?: string \| null/);
     expect(store).toMatch(/hasExactQueryAttempt\(g\)/);

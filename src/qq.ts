@@ -34,6 +34,7 @@ import { ProcessingLock, isStale } from './im-safety/index.js';
 import {
   isTransientError,
   getReconnectDelay,
+  withReconnectJitter,
   classifyCloseCode,
 } from './qq-reconnect.js';
 import {
@@ -67,7 +68,15 @@ const KEEPALIVE_INTERVAL_MS = 5 * 60 * 1000;
 // Safety net: if we ever end up disconnected with no reconnect pending,
 // the watchdog kicks a fresh attempt instead of leaving the bot dead.
 const WATCHDOG_INTERVAL_MS = 60_000;
+// A socket whose heartbeats go unacknowledged this many times in a row is
+// half-open (readyState stays OPEN while nothing arrives); drop it so the
+// normal resume path runs instead of waiting for TCP to notice.
+const MAX_MISSED_HEARTBEAT_ACKS = 3;
 const QQ_TOKEN_REQUEST_TIMEOUT_MS = 15_000;
+/** Opening handshake (TCP, TLS, HTTP upgrade) of a gateway socket. */
+const QQ_WS_HANDSHAKE_TIMEOUT_MS = 15_000;
+/** From creating a gateway socket to READY/RESUMED. */
+const QQ_SESSION_READY_TIMEOUT_MS = 30_000;
 const QQ_API_REQUEST_TIMEOUT_MS = 30_000;
 const QQ_MAX_JSON_RESPONSE_BYTES = 2 * 1024 * 1024;
 
@@ -666,6 +675,15 @@ export function createQQConnection(config: QQConnectionConfig): QQConnection {
   let lastConnectTime = 0;
   let keepaliveMode = false;
   let lastErrorIsTransient = false;
+  // Transient failures do not spend the attempt budget, but they still back
+  // off: DNS/refused errors fail instantly, and a fixed 1s retry polled the
+  // gateway once a second per account for the whole outage.
+  let transientAttempts = 0;
+  // True from the moment a (re)connect attempt starts until it settles. The
+  // watchdog used to see "disconnected, no timer pending" during that window
+  // (the new socket is still CONNECTING) and start a second attempt; two
+  // sockets on one session then kept resetting each other (see connectWs).
+  let connectInFlight = false;
 
   // Message deduplication
   // LRU deduplication cache（共享 helper）
@@ -1563,13 +1581,17 @@ export function createQQConnection(config: QQConnectionConfig): QQConnection {
   // ─── WebSocket Connection ─────────────────────────────────
 
   function clearTimers(): void {
-    if (heartbeatTimer) {
-      clearInterval(heartbeatTimer);
-      heartbeatTimer = null;
-    }
+    stopHeartbeat();
     if (reconnectTimer) {
       clearTimeout(reconnectTimer);
       reconnectTimer = null;
+    }
+  }
+
+  function stopHeartbeat(): void {
+    if (heartbeatTimer) {
+      clearInterval(heartbeatTimer);
+      heartbeatTimer = null;
     }
   }
 
@@ -1585,8 +1607,8 @@ export function createQQConnection(config: QQConnectionConfig): QQConnection {
     watchdogTimer = setInterval(() => {
       if (stopping) return;
       if (connection.isConnected()) return;
-      // A reconnect is already in flight (including keepalive ticks).
-      if (reconnectTimer) return;
+      // A reconnect is already pending or running (including keepalive ticks).
+      if (reconnectTimer || connectInFlight) return;
       // Invariant violation: disconnected, not stopping, no retry pending.
       // Reset the budget and kick a fresh attempt — this is the safety net
       // that prevents the bot from staying permanently dead.
@@ -1595,22 +1617,36 @@ export function createQQConnection(config: QQConnectionConfig): QQConnection {
         'QQ watchdog detected stale disconnected state, kicking fresh reconnect',
       );
       reconnectAttempts = 0;
+      transientAttempts = 0;
       keepaliveMode = false;
       lastErrorIsTransient = false;
       scheduleReconnect(opts);
     }, WATCHDOG_INTERVAL_MS);
   }
 
-  function sendWs(payload: QQWsPayload): void {
-    if (ws?.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify(payload));
-    }
-  }
-
-  function startHeartbeat(intervalMs: number): void {
+  function startHeartbeat(
+    socket: WebSocket,
+    intervalMs: number,
+    acks: { awaiting: boolean; missed: number },
+  ): void {
     if (heartbeatTimer) clearInterval(heartbeatTimer);
     heartbeatTimer = setInterval(() => {
-      sendWs({ op: OP_HEARTBEAT, d: lastSequence });
+      // Bound to its socket: a heartbeat must never be credited to a newer
+      // connection, nor keep firing for a socket that was superseded.
+      if (socket !== ws || socket.readyState !== WebSocket.OPEN) return;
+      if (acks.awaiting) {
+        acks.missed += 1;
+        if (acks.missed >= MAX_MISSED_HEARTBEAT_ACKS) {
+          logger.warn(
+            { missed: acks.missed, intervalMs },
+            'QQ heartbeats unacknowledged; dropping the half-open socket',
+          );
+          socket.terminate();
+          return;
+        }
+      }
+      socket.send(JSON.stringify({ op: OP_HEARTBEAT, d: lastSequence }));
+      acks.awaiting = true;
     }, intervalMs);
   }
 
@@ -1629,13 +1665,62 @@ export function createQQConnection(config: QQConnectionConfig): QQConnection {
       // doesn't double-schedule a reconnect that the rejection's catch path
       // is already handling.
       let connectionEstablished = false;
+      // Set once this socket sent RESUME; cleared by RESUMED.
+      let resumePending = false;
+      const heartbeatAcks = { awaiting: false, missed: 0 };
 
-      ws = new WebSocket(gatewayUrl);
+      // Every handler below acts only while this socket is the current one.
+      // A superseded socket that the gateway later drops (1006 once its
+      // heartbeats stop) used to clear the live socket's heartbeat timer and
+      // schedule a RESUME of the session the live socket held; the gateway
+      // answered 4902 "reset by resume" and the cycle repeated every ~60s
+      // (2,600-2,850 connects/day in production, 2026-10-02..05).
+      const previous = ws;
+      const socket = new WebSocket(gatewayUrl, {
+        handshakeTimeout: QQ_WS_HANDSHAKE_TIMEOUT_MS,
+      });
+      ws = socket;
+      if (previous && previous.readyState !== WebSocket.CLOSED) {
+        try {
+          previous.close(1000, 'Superseded');
+        } catch {
+          /* already gone */
+        }
+      }
+      const isCurrent = (): boolean => socket === ws;
+      const settleSuperseded = (): void => {
+        if (!settled) {
+          settled = true;
+          resolve();
+        }
+      };
+
+      // A gateway that accepts the socket but never confirms the session
+      // (no HELLO, or IDENTIFY/RESUME unanswered) would otherwise hold
+      // connectInFlight forever and the watchdog would never step in. Fail
+      // the attempt so the caller's retry path runs.
+      const readyTimer = setTimeout(() => {
+        if (settled || stopping || !isCurrent()) return;
+        logger.warn(
+          { isResume, timeoutMs: QQ_SESSION_READY_TIMEOUT_MS },
+          'QQ gateway did not confirm the session in time, dropping the socket',
+        );
+        settled = true;
+        reject(
+          Object.assign(new Error('QQ gateway session setup timed out'), {
+            code: 'ETIMEDOUT',
+          }),
+        );
+        socket.terminate();
+      }, QQ_SESSION_READY_TIMEOUT_MS);
+      readyTimer.unref?.();
 
       const onSessionReady = (): void => {
+        clearTimeout(readyTimer);
         connectionEstablished = true;
         lastConnectTime = Date.now();
         reconnectAttempts = 0;
+        transientAttempts = 0;
         keepaliveMode = false;
         if (!settled) {
           settled = true;
@@ -1643,7 +1728,8 @@ export function createQQConnection(config: QQConnectionConfig): QQConnection {
         }
       };
 
-      ws.on('open', () => {
+      socket.on('open', () => {
+        if (!isCurrent()) return;
         logger.info(
           { gatewayUrl: gatewayUrl.slice(0, 50) },
           'QQ WebSocket connected',
@@ -1651,18 +1737,22 @@ export function createQQConnection(config: QQConnectionConfig): QQConnection {
         // Don't reset reconnectAttempts here — wait until READY/RESUMED
       });
 
-      ws.on('message', (data) => {
-        if (!inboundLifecycle.isCurrent(lease)) return;
+      socket.on('message', (data) => {
+        if (!isCurrent() || !inboundLifecycle.isCurrent(lease)) return;
         const task = (async (): Promise<void> => {
           try {
             const payload: QQWsPayload = JSON.parse(data.toString());
-            await handleWsMessage(
-              payload,
-              opts,
-              gatewayUrl,
-              lease,
+            await handleWsMessage(payload, opts, gatewayUrl, lease, {
+              socket,
+              heartbeatAcks,
               onSessionReady,
-            );
+              onResumeSent: () => {
+                resumePending = true;
+              },
+              onResumed: () => {
+                resumePending = false;
+              },
+            });
           } catch (err) {
             if (inboundLifecycle.isCancellation(err, lease)) {
               logger.debug('QQ inbound callback cancelled');
@@ -1674,9 +1764,34 @@ export function createQQConnection(config: QQConnectionConfig): QQConnection {
         return inboundLifecycle.track(task);
       });
 
-      ws.on('close', (code, reason) => {
+      socket.on('close', (code, reason) => {
+        if (!isCurrent()) {
+          logger.debug(
+            { code, reason: reason.toString() },
+            'Superseded QQ WebSocket closed',
+          );
+          settleSuperseded();
+          return;
+        }
         logger.info({ code, reason: reason.toString() }, 'QQ WebSocket closed');
-        clearTimers();
+        clearTimeout(readyTimer);
+        stopHeartbeat();
+        // A connect-time failure is retried by the rejection's catch path,
+        // which may already have scheduled the next attempt by the time this
+        // socket's close arrives; only an established session's close
+        // replaces the pending reconnect with its own.
+        if (connectionEstablished && reconnectTimer) {
+          clearTimeout(reconnectTimer);
+          reconnectTimer = null;
+        }
+        if (resumePending) {
+          // The gateway dropped this socket before confirming RESUME: the
+          // session is not resumable, so the next attempt identifies afresh
+          // instead of repeating the rejected RESUME.
+          resumePending = false;
+          sessionId = null;
+          lastSequence = null;
+        }
         if (inboundLifecycle.isCurrent(lease)) inboundLifecycle.invalidate();
 
         if (!settled) {
@@ -1751,7 +1866,12 @@ export function createQQConnection(config: QQConnectionConfig): QQConnection {
         }
       });
 
-      ws.on('error', (err) => {
+      socket.on('error', (err) => {
+        if (!isCurrent()) {
+          settleSuperseded();
+          return;
+        }
+        clearTimeout(readyTimer);
         logger.error({ err }, 'QQ WebSocket error');
         lastErrorIsTransient = isTransientError(err);
         if (!settled) {
@@ -1767,18 +1887,31 @@ export function createQQConnection(config: QQConnectionConfig): QQConnection {
     opts: QQConnectOpts,
     gatewayUrl: string,
     lease: ChannelInboundLease,
-    onSessionReady?: () => void,
+    hooks: {
+      socket: WebSocket;
+      heartbeatAcks: { awaiting: boolean; missed: number };
+      onSessionReady?: () => void;
+      onResumeSent?: () => void;
+      onResumed?: () => void;
+    },
   ): Promise<void> {
+    const { socket, onSessionReady } = hooks;
     inboundLifecycle.assertCurrent(lease);
     switch (payload.op) {
       case OP_HELLO: {
         const heartbeatInterval = payload.d?.heartbeat_interval || 41250;
-        startHeartbeat(heartbeatInterval);
+        startHeartbeat(socket, heartbeatInterval, hooks.heartbeatAcks);
 
         const token = await getAccessToken();
+        // The token fetch can outlast this socket: answer only on the socket
+        // that said HELLO, and only while it is still the live one, so a
+        // superseded handshake never IDENTIFYs/RESUMEs on its successor.
+        if (socket !== ws || socket.readyState !== WebSocket.OPEN) return;
+        const send = (message: QQWsPayload): void =>
+          socket.send(JSON.stringify(message));
         if (sessionId) {
           // Resume existing session (after reconnect)
-          sendWs({
+          send({
             op: OP_RESUME,
             d: {
               token: `QQBot ${token}`,
@@ -1786,9 +1919,10 @@ export function createQQConnection(config: QQConnectionConfig): QQConnection {
               seq: lastSequence,
             },
           });
+          hooks.onResumeSent?.();
         } else {
           // Fresh identify
-          sendWs({
+          send({
             op: OP_IDENTIFY,
             d: {
               token: `QQBot ${token}`,
@@ -1819,6 +1953,7 @@ export function createQQConnection(config: QQConnectionConfig): QQConnection {
           }
         } else if (eventType === 'RESUMED') {
           logger.info('QQ bot session resumed');
+          hooks.onResumed?.();
           onSessionReady?.();
         } else if (eventType === 'C2C_MESSAGE_CREATE') {
           await inboundLifecycle.runMessage(
@@ -1841,12 +1976,13 @@ export function createQQConnection(config: QQConnectionConfig): QQConnection {
       }
 
       case OP_HEARTBEAT_ACK:
-        // Heartbeat acknowledged, all good
+        hooks.heartbeatAcks.awaiting = false;
+        hooks.heartbeatAcks.missed = 0;
         break;
 
       case OP_RECONNECT:
         logger.info('QQ server requested reconnect');
-        ws?.close();
+        socket.close();
         break;
 
       case OP_INVALID_SESSION: {
@@ -1856,7 +1992,7 @@ export function createQQConnection(config: QQConnectionConfig): QQConnection {
           sessionId = null;
           lastSequence = null;
         }
-        ws?.close();
+        socket.close();
         break;
       }
 
@@ -1892,10 +2028,15 @@ export function createQQConnection(config: QQConnectionConfig): QQConnection {
     } else if (keepaliveMode) {
       delay = KEEPALIVE_INTERVAL_MS;
     } else {
-      delay = getReconnectDelay(reconnectAttempts);
       // Transient errors (DNS hiccups, brief TCP resets) shouldn't burn our
-      // attempt budget — otherwise a 3-minute network blip kills the bot.
-      if (!lastErrorIsTransient) {
+      // attempt budget — otherwise a 3-minute network blip kills the bot —
+      // but they walk the same delay ladder through their own counter.
+      delay = withReconnectJitter(
+        getReconnectDelay(Math.max(reconnectAttempts, transientAttempts)),
+      );
+      if (lastErrorIsTransient) {
+        transientAttempts++;
+      } else {
         reconnectAttempts++;
       }
     }
@@ -1903,13 +2044,21 @@ export function createQQConnection(config: QQConnectionConfig): QQConnection {
     lastErrorIsTransient = false;
 
     logger.info(
-      { delay, attempt: reconnectAttempts, keepaliveMode, wasTransient },
+      {
+        delay,
+        attempt: reconnectAttempts,
+        transientAttempts,
+        keepaliveMode,
+        wasTransient,
+      },
       'QQ scheduling reconnect',
     );
     reconnectTimer = setTimeout(async () => {
       reconnectTimer = null;
       if (stopping) return;
 
+      let failure: unknown = null;
+      connectInFlight = true;
       try {
         if (sessionId && resumeGatewayUrl) {
           // Try to resume
@@ -1920,8 +2069,13 @@ export function createQQConnection(config: QQConnectionConfig): QQConnection {
           await connectWs(opts, url, false);
         }
       } catch (err) {
-        logger.error({ err }, 'QQ reconnect failed');
-        lastErrorIsTransient = isTransientError(err);
+        failure = err ?? new Error('QQ reconnect failed');
+      } finally {
+        connectInFlight = false;
+      }
+      if (failure) {
+        logger.error({ err: failure }, 'QQ reconnect failed');
+        lastErrorIsTransient = isTransientError(failure);
         scheduleReconnect(opts);
       }
     }, delay);
@@ -2487,6 +2641,7 @@ export function createQQConnection(config: QQConnectionConfig): QQConnection {
 
       startWatchdog(opts);
 
+      connectInFlight = true;
       try {
         // Validate token first
         await getAccessToken();
@@ -2502,6 +2657,8 @@ export function createQQConnection(config: QQConnectionConfig): QQConnection {
         // the adapter returns false and its credential claim is released.
         // The outer adapter immediately calls disconnect() for deterministic
         // timer/socket cleanup; a later explicit reload performs the retry.
+      } finally {
+        connectInFlight = false;
       }
     },
 
@@ -2527,6 +2684,8 @@ export function createQQConnection(config: QQConnectionConfig): QQConnection {
       lastSequence = null;
       resumeGatewayUrl = null;
       reconnectAttempts = 0;
+      transientAttempts = 0;
+      connectInFlight = false;
       quickDisconnectCount = 0;
       lastConnectTime = 0;
       keepaliveMode = false;

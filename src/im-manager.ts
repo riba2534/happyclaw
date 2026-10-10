@@ -166,6 +166,7 @@ export interface ConnectFeishuOptions {
       name?: string;
       id?: { open_id?: string };
     }>,
+    messageMeta?: ChannelMessageMeta,
   ) => Promise<string | null>;
   resolveGroupFolder?: (chatJid: string) => string | undefined;
   resolveEffectiveChatJid?: (
@@ -191,17 +192,23 @@ export interface ConnectFeishuOptions {
     sourceJid: string;
     targetJid?: string;
     senderImId: string;
+    /** Native chat type of the command message, when known. */
+    chatType?: 'p2p' | 'group';
   }) => Promise<string>;
   onSessionClear?: (input: {
     sourceJid: string;
     targetJid?: string;
     senderImId: string;
+    /** Native chat type of the command message, when known. */
+    chatType?: 'p2p' | 'group';
   }) => Promise<string>;
   onSessionFresh?: (input: {
     sourceJid: string;
     targetJid?: string;
     senderImId: string;
     notes: string;
+    /** Native chat type of the command message, when known. */
+    chatType?: 'p2p' | 'group';
   }) => Promise<string>;
   onFollowUpCardAction?: (input: {
     sourceJid: string;
@@ -225,6 +232,11 @@ export interface ConnectFeishuOptions {
     operatorImId: string,
   ) => FollowUpActionResult;
   onP2pSender?: (senderOpenId: string) => void;
+  /** A Feishu message in a bound chat was recalled (cancel/break its input). */
+  onMessageRecalled?: (
+    chatJid: string,
+    messageId: string,
+  ) => void | Promise<void>;
 }
 
 export class IMConnectionManager {
@@ -268,6 +280,8 @@ export class IMConnectionManager {
    */
   private inboundPaused = false;
   private inboundDeferred = false;
+  /** Connectors waiting to drain durable inbound once the gate reopens. */
+  private inboundGateListeners = new Set<() => void>();
 
   pauseInbound(): void {
     this.inboundPaused = true;
@@ -277,6 +291,7 @@ export class IMConnectionManager {
   resumeInbound(): void {
     this.inboundPaused = false;
     logger.info('IM inbound callbacks resumed');
+    this.notifyInboundGateOpen();
   }
 
   deferInbound(): void {
@@ -287,6 +302,18 @@ export class IMConnectionManager {
   resumeDeferredInbound(): void {
     this.inboundDeferred = false;
     logger.info('Durable IM inbound execution resumed after recovery');
+    this.notifyInboundGateOpen();
+  }
+
+  private notifyInboundGateOpen(): void {
+    if (this.inboundDeferred || this.inboundPaused) return;
+    for (const listener of [...this.inboundGateListeners]) {
+      try {
+        listener();
+      } catch (error) {
+        logger.warn({ error }, 'IM inbound gate listener failed');
+      }
+    }
   }
 
   onChannelReady(
@@ -393,6 +420,14 @@ export class IMConnectionManager {
         this.inboundDeferred ||
         this.inboundPaused ||
         opts.shouldDeferInbound?.() === true,
+      onInboundGateOpen: (listener: () => void) => {
+        this.inboundGateListeners.add(listener);
+        const unsubscribeHost = opts.onInboundGateOpen?.(listener);
+        return () => {
+          this.inboundGateListeners.delete(listener);
+          unsubscribeHost?.();
+        };
+      },
       normalizeIncomingJid,
       onNewChat: (jid, name) => {
         if (inboundAllowed()) opts.onNewChat(scope(jid), name);
@@ -436,9 +471,26 @@ export class IMConnectionManager {
         : {}),
       ...(opts.onCommand
         ? {
-            onCommand: (jid: string, command: string, sender?: string) =>
+            onCommand: (
+              jid: string,
+              command: string,
+              sender?: string,
+              mentions?: Parameters<
+                NonNullable<IMChannelConnectOpts['onCommand']>
+              >[3],
+              messageMeta?: ChannelMessageMeta,
+            ) =>
+              // Mentions (/allow @user) and the routed topic meta (/recall
+              // in a topic) must reach the host; dropping them made those
+              // commands fail.
               inboundAllowed()
-                ? opts.onCommand!(scope(jid), command, sender)
+                ? opts.onCommand!(
+                    scope(jid),
+                    command,
+                    sender,
+                    mentions,
+                    messageMeta,
+                  )
                 : Promise.resolve(null),
           }
         : {}),
@@ -499,6 +551,7 @@ export class IMConnectionManager {
               sourceJid: string;
               targetJid?: string;
               senderImId: string;
+              chatType?: 'p2p' | 'group';
             }) =>
               inboundAllowed()
                 ? opts.onSessionBreak!({
@@ -514,6 +567,7 @@ export class IMConnectionManager {
               sourceJid: string;
               targetJid?: string;
               senderImId: string;
+              chatType?: 'p2p' | 'group';
             }) =>
               inboundAllowed()
                 ? opts.onSessionClear!({
@@ -530,6 +584,7 @@ export class IMConnectionManager {
               targetJid?: string;
               senderImId: string;
               notes: string;
+              chatType?: 'p2p' | 'group';
             }) =>
               inboundAllowed()
                 ? opts.onSessionFresh!({
@@ -624,6 +679,14 @@ export class IMConnectionManager {
             onP2pSender: (senderOpenId: string) => {
               if (inboundAllowed()) opts.onP2pSender!(senderOpenId);
             },
+          }
+        : {}),
+      ...(opts.onMessageRecalled
+        ? {
+            onMessageRecalled: (jid: string, messageId: string) =>
+              inboundAllowed()
+                ? opts.onMessageRecalled!(scope(jid), messageId)
+                : undefined,
           }
         : {}),
     };
@@ -1388,6 +1451,7 @@ export class IMConnectionManager {
         isSenderAllowedInGroup: options?.isSenderAllowedInGroup,
         onCardInterrupt: options?.onCardInterrupt,
         onP2pSender: options?.onP2pSender,
+        onMessageRecalled: options?.onMessageRecalled,
       },
       options?.accountId,
       options?.scopeIncomingJids,

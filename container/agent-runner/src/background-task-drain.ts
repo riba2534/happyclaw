@@ -32,6 +32,8 @@ export function isMergedBackgroundCompletionPlaceholder(
  *   uuid-stamped user message, and its `completed` frame follows the Result.
  * - `system` hook frames: Stop hooks settle before the Result, so a hook frame
  *   after it is a late async hook (e.g. an async SessionStart hook).
+ * - `system/informational`: status lines and notices Claude Code 2.1.283+
+ *   forwards (they were dropped before); a notice is not Agent activity.
  * They must neither invalidate a drain-ready Result candidate nor leave it
  * unscheduled, or the Result waits for the idle close.
  */
@@ -43,7 +45,8 @@ export function isSdkBookkeepingFrame(message: unknown): boolean {
     frame.type === 'system' &&
     (frame.subtype === 'hook_started' ||
       frame.subtype === 'hook_progress' ||
-      frame.subtype === 'hook_response')
+      frame.subtype === 'hook_response' ||
+      frame.subtype === 'informational')
   );
 }
 

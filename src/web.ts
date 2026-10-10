@@ -124,12 +124,20 @@ import type { ExpandContext } from './plugin-expander-context.js';
 import { PLUGIN_EXPANSION_ATTACHMENT_TYPE } from './plugin-expander-sentinel.js';
 import { persistPluginExpansion } from './plugin-expander-store.js';
 import { logger } from './logger.js';
+import { buildPresentedAttachments } from './attachment-thumbnails.js';
+import { createOrderedDispatcher } from './ordered-dispatch.js';
 import {
   createWebSocketHeartbeat,
   startWebSocketHeartbeat,
 } from './ws-heartbeat.js';
 import { recordRunContextSnapshot } from './run-context-snapshot.js';
 import { RunStreamFence } from './run-stream-fence.js';
+import { sweepStaleStreamingEntries } from './streaming-state-sweep.js';
+import {
+  createBackpressureTracker,
+  createStreamFlowControl,
+  type StreamFlowControl,
+} from './ws-flow-control.js';
 import {
   executeSessionReset,
   executeFreshWindowReset,
@@ -198,7 +206,14 @@ function buildWebExpandContext(
   });
 }
 
+/** Output flow control of each running terminal, keyed by group JID. */
+const terminalFlows = new Map<string, StreamFlowControl>();
+
 function releaseTerminalOwnership(ws: WebSocket, groupJid: string): void {
+  if (terminalOwners.get(groupJid) === ws) {
+    terminalFlows.get(groupJid)?.dispose();
+    terminalFlows.delete(groupJid);
+  }
   if (wsTerminals.get(ws) === groupJid) {
     wsTerminals.delete(ws);
   }
@@ -1405,19 +1420,7 @@ app.use(
   serveStatic({ root: './web/dist' }),
 );
 
-// 字体（16.2MB 中文字体族）与图标：内容事实上不可变（变更时改文件名），
-// 缺缓存头曾导致每次打开全量重下。
-app.use(
-  '/fonts/*',
-  async (c, next) => {
-    await next();
-    if (c.res.status === 200 || c.res.status === 304) {
-      c.res.headers.set('Cache-Control', 'public, max-age=31536000, immutable');
-    }
-  },
-  conditionalStatic(),
-  serveStatic({ root: './web/dist' }),
-);
+// 图标：内容事实上不可变（变更时改文件名），缺缓存头曾导致每次打开全量重下。
 app.use(
   '/icons/*',
   async (c, next) => {
@@ -1469,6 +1472,7 @@ app.use(
 // 反向代理 + 公网域名场景下，管理员只能通过日志定位"为什么 WS 连不上"
 // （前端只看到 onclose、后端默认静默 destroy socket），没有这行日志运维成本极高。
 const warnedRejectedOrigins = new Set<string>();
+const MAX_WARNED_REJECTED_ORIGINS = 1_000;
 
 export function evaluateWsSpawnCommandAccess(
   user: { id: string; role: UserRole },
@@ -1553,6 +1557,10 @@ function setupWebSocket(server: any): WebSocketServer {
         const allowed = isAllowedOrigin(origin);
         if (!allowed) {
           if (!warnedRejectedOrigins.has(origin)) {
+            // Origin is client-controlled; keep the dedupe set bounded.
+            if (warnedRejectedOrigins.size >= MAX_WARNED_REJECTED_ORIGINS) {
+              warnedRejectedOrigins.clear();
+            }
             warnedRejectedOrigins.add(origin);
             logger.warn(
               {
@@ -1704,6 +1712,7 @@ function setupWebSocket(server: any): WebSocketServer {
         // See GitHub issue #241.
         if (Date.now() - snap.updatedAt > 30 * 60 * 1000) {
           streamingSnapshots.delete(jid);
+          if (!activeLogicalRuns.has(jid)) streamingFullTexts.delete(jid);
           continue;
         }
         // Skip empty or unowned snapshots. Every live query projection must
@@ -1730,7 +1739,7 @@ function setupWebSocket(server: any): WebSocketServer {
               chatJid: jid,
               runId: snap.runId,
               snapshot: {
-                partialText: snap.partialText,
+                partialText: snapshotResyncText(jid, snap.partialText),
                 thinkingText: snap.thinkingText,
                 activeTools: snap.activeTools,
                 recentEvents: snap.recentEvents,
@@ -2184,6 +2193,13 @@ function setupWebSocket(server: any): WebSocketServer {
               }
             }
 
+            terminalFlows.get(chatJid)?.dispose();
+            const flow = createStreamFlowControl({
+              getBufferedAmount: () => ws.bufferedAmount,
+              pause: () => terminalManager.pause(chatJid),
+              resume: () => terminalManager.resume(chatJid),
+            });
+            terminalFlows.set(chatJid, flow);
             terminalManager.start(
               chatJid,
               groupStatus.containerName,
@@ -2194,6 +2210,9 @@ function setupWebSocket(server: any): WebSocketServer {
                   ws.send(
                     JSON.stringify({ type: 'terminal_output', chatJid, data }),
                   );
+                  // Pause the pty/exec output while this socket is behind
+                  // instead of buffering it (or tripping the valve below).
+                  flow.afterSend();
                 }
               },
               (_exitCode, _signal) => {
@@ -2346,6 +2365,23 @@ function setupWebSocket(server: any): WebSocketServer {
 // --- Broadcast Functions ---
 
 /**
+ * A client this far behind on reads is stalled (or on a dead link the
+ * heartbeat has not caught yet); buffering every further stream frame for it
+ * only grows server memory. It is dropped and resyncs from snapshots on
+ * reconnect.
+ */
+export const MAX_WS_BUFFERED_BYTES = 16 * 1024 * 1024;
+
+export function isWsClientBackedUp(client: {
+  bufferedAmount: number;
+}): boolean {
+  return client.bufferedAmount > MAX_WS_BUFFERED_BYTES;
+}
+
+/** Drops a client only after it stays over the limit for 10s / 3 checks. */
+const wsBackpressure = createBackpressureTracker();
+
+/**
  * Broadcast to all connected WebSocket clients.
  * If adminOnly is true, only send to clients whose session belongs to an admin user.
  * If ownerUserId is provided, only send to that user and admins (for group isolation).
@@ -2413,6 +2449,16 @@ function safeBroadcast(
       if (allowedUserIds === null || !allowedUserIds.has(session.user_id)) {
         continue;
       }
+    }
+
+    if (wsBackpressure.observe(client, isWsClientBackedUp(client))) {
+      wsClients.delete(client);
+      try {
+        client.terminate();
+      } catch {
+        /* ignore */
+      }
+      continue;
     }
 
     try {
@@ -2497,7 +2543,51 @@ export function broadcastToWebClients(chatJid: string, text: string): void {
   );
 }
 
+/**
+ * Image attachments above this many base64 chars (~64KB decoded, the
+ * thumbnail threshold) are replaced by thumbnails before broadcast.
+ */
+const BROADCAST_THUMBNAIL_MIN_ATTACHMENT_CHARS = 87_000;
+const dispatchMessageBroadcast = createOrderedDispatcher((err, chatJid) => {
+  logger.warn({ err, chatJid }, 'Failed to broadcast new message');
+});
+
+/**
+ * Push a stored message to every client allowed to see the chat.
+ *
+ * Large images go out as the same 480px thumbnails REST history serves
+ * (originals stay fetchable via `hasOriginal`): echoing a 3 MB photo as a
+ * 4 MB frame to every open tab used to stall their stream events. Messages
+ * of one chat stay in order even when a thumbnail has to be rendered first.
+ */
 export function broadcastNewMessage(
+  chatJid: string,
+  msg: NewMessage & { is_from_me?: boolean },
+  agentId?: string,
+  source?: string,
+): void {
+  const needsThumbnail =
+    typeof msg.attachments === 'string' &&
+    msg.attachments.length > BROADCAST_THUMBNAIL_MIN_ATTACHMENT_CHARS;
+  dispatchMessageBroadcast(
+    chatJid,
+    msg,
+    (ready) => deliverNewMessage(chatJid, ready, agentId, source),
+    needsThumbnail
+      ? async (original) => {
+          const attachments = await buildPresentedAttachments(
+            original.id,
+            original.attachments,
+          ).catch(() => original.attachments);
+          return attachments === original.attachments
+            ? original
+            : { ...original, attachments: attachments ?? undefined };
+        }
+      : undefined,
+  );
+}
+
+function deliverNewMessage(
   chatJid: string,
   msg: NewMessage & { is_from_me?: boolean },
   agentId?: string,
@@ -2696,6 +2786,114 @@ const MAX_SNAPSHOT_TOMBSTONES = 500;
 /** Accumulates full (non-truncated) text per group for shutdown persistence & disk buffer. */
 const streamingFullTexts = new Map<string, string>();
 const MAX_SNAPSHOT_TEXT = 4000;
+/** A reconnect resync carries the whole reply up to the client's own cap. */
+const MAX_SNAPSHOT_RESYNC_TEXT = 200_000;
+
+const SNAPSHOT_FENCE_PATTERN = /^ {0,3}(`{3,}|~{3,})/;
+const SNAPSHOT_LIST_ITEM_PATTERN = /^ {0,3}(?:[-*+]|\d{1,9}[.)])(?:\s|$)/;
+
+/**
+ * Where `text`'s top-level Markdown blocks start (blank lines outside code
+ * fences and `$$` math, unless the next line continues the block). Mirrors
+ * splitMarkdownBlocks in web/src/lib/markdown-blocks.ts.
+ */
+function markdownBlockStarts(text: string): number[] {
+  const starts = [0];
+  let offset = 0;
+  let fence: { char: string; length: number } | null = null;
+  let inMath = false;
+  let lastContentLine = '';
+  let pendingBlank = false;
+  let hasContent = false;
+  for (const line of text.split('\n')) {
+    const lineStart = offset;
+    offset += line.length + 1;
+    if (fence) {
+      const close = SNAPSHOT_FENCE_PATTERN.exec(line);
+      if (
+        close &&
+        close[1][0] === fence.char &&
+        close[1].length >= fence.length &&
+        line.trim() === close[1]
+      ) {
+        fence = null;
+      }
+      continue;
+    }
+    if (inMath) {
+      if (line.trim() === '$$') inMath = false;
+      continue;
+    }
+    if (line.trim() === '') {
+      if (hasContent) pendingBlank = true;
+      continue;
+    }
+    if (pendingBlank) {
+      const continues =
+        /^[ \t]/.test(line) ||
+        (SNAPSHOT_LIST_ITEM_PATTERN.test(line) &&
+          SNAPSHOT_LIST_ITEM_PATTERN.test(lastContentLine));
+      if (!continues) starts.push(lineStart);
+      pendingBlank = false;
+    }
+    hasContent = true;
+    const open = SNAPSHOT_FENCE_PATTERN.exec(line);
+    if (open) fence = { char: open[1][0], length: open[1].length };
+    else if (line.trim() === '$$') inMath = true;
+    if (!/^[ \t]/.test(line)) lastContentLine = line;
+  }
+  return starts;
+}
+
+/**
+ * The text a reconnecting client restores. It used to be the last 4000 raw
+ * characters, cut mid-word or mid-fence, and it replaced the longer text the
+ * client already had. Send the whole streamed reply; past the client's cap,
+ * cut at a block boundary with the client's `markdownTail` marker.
+ */
+function snapshotResyncText(jid: string, tail: string): string {
+  const full = streamingFullTexts.get(jid);
+  return capSnapshotText(full && full.endsWith(tail) ? full : tail);
+}
+
+/** `text` up to `max` characters, cut at a block boundary (markdownTail). */
+export function capSnapshotText(
+  text: string,
+  max: number = MAX_SNAPSHOT_RESYNC_TEXT,
+): string {
+  if (text.length <= max) return text;
+  const minStart = text.length - max;
+  const start = markdownBlockStarts(text).find((index) => index >= minStart);
+  if (start !== undefined) return `…\n\n${text.slice(start)}`;
+  // One block longer than the budget: keep its last lines, re-opening the
+  // code fence the cut landed in so the tail doesn't render as prose.
+  const cut = text.indexOf('\n', minStart);
+  const tailStart = cut >= 0 ? cut + 1 : minStart;
+  const opener = openFenceLineAt(text, tailStart);
+  return `…\n\n${opener ? `${opener}\n` : ''}${text.slice(tailStart)}`;
+}
+
+/** The opening line of the code fence `index` lies inside, if any. */
+function openFenceLineAt(text: string, index: number): string | null {
+  let fence: { char: string; length: number; line: string } | null = null;
+  let offset = 0;
+  for (const line of text.split('\n')) {
+    if (offset >= index) break;
+    offset += line.length + 1;
+    const marker = SNAPSHOT_FENCE_PATTERN.exec(line)?.[1];
+    if (!marker) continue;
+    if (!fence) {
+      fence = { char: marker[0], length: marker.length, line };
+    } else if (
+      marker[0] === fence.char &&
+      marker.length >= fence.length &&
+      line.trim() === marker
+    ) {
+      fence = null;
+    }
+  }
+  return fence?.line ?? null;
+}
 const MAX_SNAPSHOT_THINKING = 8000;
 const MAX_SNAPSHOT_EVENTS = 20;
 const MAX_SNAPSHOT_TRACE_EVENTS = 200;
@@ -3140,6 +3338,24 @@ function updateStreamingSnapshot(
   streamingSnapshots.set(normalizedJid, snap);
 }
 
+const STREAMING_STATE_SWEEP_MS = 10 * 60 * 1000;
+let streamingStateSweepTimer: ReturnType<typeof setInterval> | null = null;
+
+/**
+ * The reconnect-time staleness check only removed the snapshot and only ran
+ * when a client connected, so the full-text accumulator of a run that ended
+ * without a terminal event stayed resident (rewritten to the disk buffer
+ * every 5s and replayed as an interrupt partial after a restart).
+ */
+export function sweepStaleStreamingState(now: number = Date.now()): number {
+  return sweepStaleStreamingEntries(
+    streamingSnapshots,
+    streamingFullTexts,
+    activeLogicalRuns,
+    now,
+  );
+}
+
 export function clearStreamingSnapshot(chatJid: string): void {
   const jid = normalizeHomeJid(chatJid);
   streamingSnapshots.delete(jid);
@@ -3484,27 +3700,8 @@ export function broadcastDockerPullComplete(
   safeBroadcast({ type: 'docker_pull_complete', success, error }, true);
 }
 
-function broadcastStatus(): void {
-  if (!deps) return;
-
-  const queueStatus = deps.queue.getStatus();
-  // Broadcast aggregate system metrics only to admin users.
-  // Non-admin users get per-user filtered metrics via REST /api/status.
-  safeBroadcast(
-    {
-      type: 'status_update',
-      activeContainers: queueStatus.activeContainerCount,
-      activeHostProcesses: queueStatus.activeHostProcessCount,
-      activeTotal: queueStatus.activeCount,
-      queueLength: queueStatus.waitingCount,
-    },
-    /* adminOnly */ true,
-  );
-}
-
 // --- Server Startup ---
 
-let statusInterval: ReturnType<typeof setInterval> | null = null;
 let httpServer: ReturnType<typeof serve> | null = null;
 let wss: WebSocketServer | null = null;
 
@@ -3514,7 +3711,7 @@ let wss: WebSocketServer | null = null;
  * module load) so integration tests can exercise HTTP routes via
  * `app.request(...)` — most notably `POST /api/messages` and its `/clear`
  * interception — without starting the HTTP server, WebSocket server, container
- * exit callbacks, or the status-broadcast interval.
+ * exit callbacks or other runtime timers.
  *
  * Mirrors the dependency wiring in {@link startWebServer} minus all the
  * runtime side effects. NOT for production use.
@@ -3605,9 +3802,12 @@ export function startWebServer(webDeps: WebDeps): void {
   webDeps.queue.setOnQueryStart(broadcastRunStarted);
   webDeps.queue.setOnQueryFinish(broadcastRunFinished);
 
-  // Broadcast status every 5 seconds
-  if (statusInterval) clearInterval(statusInterval);
-  statusInterval = setInterval(broadcastStatus, 5000);
+  if (streamingStateSweepTimer) clearInterval(streamingStateSweepTimer);
+  streamingStateSweepTimer = setInterval(
+    () => sweepStaleStreamingState(),
+    STREAMING_STATE_SWEEP_MS,
+  );
+  streamingStateSweepTimer.unref();
 }
 
 // --- Exports ---
@@ -3617,9 +3817,9 @@ export function shutdownTerminals(): void {
 }
 
 export async function shutdownWebServer(): Promise<void> {
-  if (statusInterval) {
-    clearInterval(statusInterval);
-    statusInterval = null;
+  if (streamingStateSweepTimer) {
+    clearInterval(streamingStateSweepTimer);
+    streamingStateSweepTimer = null;
   }
   // Close all WebSocket connections
   for (const client of wsClients.keys()) {

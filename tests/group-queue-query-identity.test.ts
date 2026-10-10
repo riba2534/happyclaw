@@ -352,4 +352,26 @@ describe('GroupQueue query identity', () => {
     expect(queue.getActiveQueryId(jid)).toBe('run-new');
     expect(finishes).toEqual([]);
   });
+
+  test('a reservation released before it was announced publishes no terminal', () => {
+    const queue = new GroupQueue();
+    const jid = 'web:query-release-unannounced';
+    const state = (queue as any).getGroup(jid);
+    state.active = true;
+    state.groupFolder = 'query-release-unannounced';
+
+    const finishes: string[] = [];
+    queue.setOnQueryFinish((_jid, queryId, reason) =>
+      finishes.push(`${queryId}:${reason}`),
+    );
+
+    const silent = queue.reserveNextQuery(jid)!;
+    expect(queue.releaseQueryReservation(jid, silent, true)).toBe(true);
+    expect(finishes).toEqual([]);
+
+    const announced = queue.reserveNextQuery(jid)!;
+    expect(queue.announceReservedQuery(jid, announced)).toBe(true);
+    expect(queue.releaseQueryReservation(jid, announced)).toBe(true);
+    expect(finishes).toEqual([`${announced}:released`]);
+  });
 });

@@ -8,6 +8,11 @@ import {
   Trash2,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import {
+  NativeSelect,
+  NativeSelectOption,
+} from '@/components/ui/native-select';
+import { IconButton } from '@/components/common/IconButton';
 import type { AvailableImGroup } from '../../types';
 import { ChannelAccountBadge, ChannelBadge } from './channel-meta';
 import {
@@ -82,41 +87,41 @@ export function ImBindingRow({
     return '未绑定';
   };
 
+  const showAudience =
+    group.channel_type === 'feishu' &&
+    (group.conversation_kind === 'group' ||
+      group.conversation_kind === 'topic') &&
+    !policyMismatch;
+
   return (
-    <div
-      className={`flex flex-col gap-3 rounded-lg border p-3 transition-colors sm:flex-row sm:items-center ${
-        isAllowlistLocked
-          ? 'border-amber-300 bg-amber-50/50 dark:border-amber-700/40 dark:bg-amber-900/10'
-          : hasBound
-            ? 'border-brand-200 bg-brand-50/50 dark:border-brand-700/30 dark:bg-brand-700/10'
-            : 'border-border'
-      }`}
-    >
-      <div className="flex w-full min-w-0 items-center gap-3 sm:flex-1">
+    <div role="listitem" className="px-4 py-3">
+      <div className="flex items-start gap-3">
         {/* Avatar */}
         {group.avatar ? (
           <img
             src={group.avatar}
             alt=""
-            className="w-10 h-10 rounded-lg flex-shrink-0 object-cover"
+            className="size-8 shrink-0 rounded-lg object-cover ring-1 ring-surface-border"
           />
         ) : (
-          <div className="w-10 h-10 rounded-lg flex-shrink-0 bg-muted flex items-center justify-center">
-            <MessageSquare className="w-5 h-5 text-muted-foreground" />
+          <div className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground ring-1 ring-surface-border">
+            <MessageSquare className="size-4" />
           </div>
         )}
 
         {/* Info */}
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2">
-            <span className="text-sm font-medium truncate">{group.name}</span>
+        <div className="min-w-0 flex-1">
+          <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+            <span className="min-w-0 truncate text-body font-medium text-foreground">
+              {group.name}
+            </span>
             <ChannelBadge channelType={group.channel_type} />
             <ChannelAccountBadge
               accountId={group.channel_account_id}
               accountName={group.channel_account_name}
             />
           </div>
-          <div className="flex items-center gap-2 mt-0.5 text-xs text-muted-foreground">
+          <div className="mt-0.5 flex flex-wrap items-center gap-x-2 text-caption text-muted-foreground">
             <span>
               {group.conversation_kind === 'direct'
                 ? '私聊'
@@ -127,32 +132,44 @@ export function ImBindingRow({
                     : '类型待确认'}
             </span>
             {group.member_count != null && (
-              <span className="flex items-center gap-0.5">
-                <Users className="w-3 h-3" />
+              <span className="flex items-center gap-0.5 tabular-nums">
+                <Users className="size-3" />
                 {group.member_count}
               </span>
             )}
             <span
-              className={
-                hasBound
-                  ? 'text-primary dark:text-brand-400'
-                  : 'text-muted-foreground'
-              }
+              className={hasBound ? 'text-foreground' : 'text-faint-foreground'}
             >
               → {bindingLabel()}
             </span>
           </div>
           {isAllowlistLocked && (
-            <div className="flex items-start gap-1 mt-1 text-xs text-amber-700 dark:text-amber-400">
-              <AlertTriangle className="w-3 h-3 mt-0.5 flex-shrink-0" />
-              <span>
-                发言者白名单为空，bot 无法响应任何人。请向 bot
-                发条私聊以认领群聊，或点击右侧「重置」清空白名单。
+            <div className="mt-1.5 flex flex-wrap items-start gap-x-2 gap-y-1 text-caption text-warning">
+              <span className="flex min-w-0 flex-1 items-start gap-1">
+                <AlertTriangle className="mt-0.5 size-3 shrink-0" />
+                <span>
+                  发言者白名单为空，bot 无法响应任何人。请向 bot
+                  发条私聊以认领群聊，或点击右侧「重置」清空白名单。
+                </span>
               </span>
+              <Button
+                size="xs"
+                variant="outline"
+                onClick={() => onResetAllowlist(group)}
+                disabled={isActioning}
+                className="text-warning hover:text-warning"
+              >
+                {isActioning ? (
+                  <Loader2 className="animate-spin" />
+                ) : (
+                  <AlertTriangle />
+                )}
+                解除限制
+              </Button>
             </div>
           )}
           {policyMismatch && (
-            <div className="mt-1 flex items-start gap-1 text-xs text-amber-700 dark:text-amber-400">
+            <div className="mt-1.5 flex items-start gap-1 text-caption text-warning">
               <AlertTriangle className="mt-0.5 size-3 shrink-0" />
               <span>
                 此绑定与渠道类型不符：私聊和普通群绑定会话，话题群绑定工作区。
@@ -160,29 +177,60 @@ export function ImBindingRow({
             </div>
           )}
         </div>
-      </div>
 
-      {/* Actions */}
-      <div className="flex w-full flex-shrink-0 flex-wrap items-center justify-end gap-2 border-t border-border/60 pt-2 sm:w-auto sm:flex-nowrap sm:border-0 sm:pt-0">
-        {isAllowlistLocked && (
+        {/* Actions */}
+        <div className="flex shrink-0 items-center gap-0.5">
+          {hasBound && (
+            <IconButton
+              label="解除渠道绑定"
+              onClick={() => onUnbind(group)}
+              disabled={isActioning}
+              className="text-muted-foreground"
+              icon={
+                isActioning ? (
+                  <Loader2 className="size-3.5 animate-spin" />
+                ) : (
+                  <RotateCcw className="size-3.5" />
+                )
+              }
+            />
+          )}
           <Button
             size="sm"
             variant="outline"
-            onClick={() => onResetAllowlist(group)}
+            onClick={() => onRebind(group)}
             disabled={isActioning}
-            className="text-amber-700 border-amber-300 hover:bg-amber-100 dark:text-amber-400 dark:border-amber-700 dark:hover:bg-amber-900/30"
+            className="mx-1"
           >
             {isActioning ? (
-              <Loader2 className="w-3 h-3 animate-spin" />
+              <Loader2 className="size-3.5 animate-spin" />
             ) : (
-              <AlertTriangle className="w-3 h-3 mr-1" />
+              <ArrowRightLeft className="size-3.5" />
             )}
-            解除限制
+            {hasBound ? '换绑' : '绑定'}
           </Button>
-        )}
-        {supportsActivation && (
-          <div className="flex items-center gap-1.5">
-            <select
+          <IconButton
+            label="删除（群已不存在/bot 已被踢时使用）"
+            onClick={() => onDelete(group)}
+            disabled={isActioning}
+            className="text-muted-foreground hover:text-error"
+            icon={
+              isActioning ? (
+                <Loader2 className="size-3.5 animate-spin" />
+              ) : (
+                <Trash2 className="size-3.5" />
+              )
+            }
+          />
+        </div>
+      </div>
+
+      {(supportsActivation || showAudience) && (
+        <div className="mt-2.5 flex flex-wrap items-center gap-2 sm:pl-11">
+          {supportsActivation && (
+            <NativeSelect
+              size="sm"
+              className="max-w-full"
               value={
                 group.channel_type === 'feishu' &&
                 group.activation_mode === 'owner_mentioned'
@@ -195,23 +243,20 @@ export function ImBindingRow({
               disabled={isActioning}
               aria-label={`${group.name} 的消息响应方式`}
               title="消息响应方式"
-              className="text-xs px-1.5 py-1 rounded border border-border bg-background text-foreground disabled:opacity-50"
             >
               {activationModeOptions.map((o) => (
-                <option key={o.value} value={o.value}>
+                <NativeSelectOption key={o.value} value={o.value}>
                   {o.value === 'auto'
                     ? `${o.label}（当前：${group.require_mention ? '仅 @机器人' : '所有允许成员'}）`
                     : o.label}
-                </option>
+                </NativeSelectOption>
               ))}
-            </select>
-          </div>
-        )}
-        {group.channel_type === 'feishu' &&
-          (group.conversation_kind === 'group' ||
-            group.conversation_kind === 'topic') &&
-          !policyMismatch && (
-            <select
+            </NativeSelect>
+          )}
+          {showAudience && (
+            <NativeSelect
+              size="sm"
+              className="max-w-full"
               value={
                 group.audience_mode === 'owner_only' ||
                 group.activation_mode === 'owner_mentioned'
@@ -227,60 +272,16 @@ export function ImBindingRow({
               disabled={isActioning}
               aria-label={`${group.name} 的响应对象`}
               title="响应对象"
-              className="text-xs px-1.5 py-1 rounded border border-border bg-background text-foreground disabled:opacity-50"
             >
               {AUDIENCE_MODE_OPTIONS.map((option) => (
-                <option key={option.value} value={option.value}>
+                <NativeSelectOption key={option.value} value={option.value}>
                   {option.label}
-                </option>
+                </NativeSelectOption>
               ))}
-            </select>
+            </NativeSelect>
           )}
-        {hasBound && (
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={() => onUnbind(group)}
-            disabled={isActioning}
-            className="text-muted-foreground hover:text-foreground"
-            title="解除渠道绑定"
-          >
-            {isActioning ? (
-              <Loader2 className="w-3.5 h-3.5 animate-spin" />
-            ) : (
-              <RotateCcw className="w-3.5 h-3.5" />
-            )}
-            <span className="sr-only">解除渠道绑定</span>
-          </Button>
-        )}
-        <Button
-          size="sm"
-          variant="outline"
-          onClick={() => onRebind(group)}
-          disabled={isActioning}
-        >
-          {isActioning ? (
-            <Loader2 className="w-3 h-3 animate-spin" />
-          ) : (
-            <ArrowRightLeft className="w-3 h-3 mr-1" />
-          )}
-          {hasBound ? '换绑' : '绑定'}
-        </Button>
-        <Button
-          size="sm"
-          variant="ghost"
-          onClick={() => onDelete(group)}
-          disabled={isActioning}
-          className="text-muted-foreground hover:text-error"
-          title="删除（群已不存在/bot 已被踢时使用）"
-        >
-          {isActioning ? (
-            <Loader2 className="w-3.5 h-3.5 animate-spin" />
-          ) : (
-            <Trash2 className="w-3.5 h-3.5" />
-          )}
-        </Button>
-      </div>
+        </div>
+      )}
     </div>
   );
 }

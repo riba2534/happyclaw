@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { api } from '@/api/client';
+import { cn } from '@/lib/utils';
 import type {
   CachedOAuthUsage,
   OAuthExtraUsage,
@@ -16,9 +17,9 @@ export function clampUsagePercentage(value: number | null): number | null {
 }
 
 function barColor(utilization: number): string {
-  if (utilization >= 80) return 'bg-red-500';
-  if (utilization >= 50) return 'bg-amber-500';
-  return 'bg-emerald-500';
+  if (utilization >= 80) return 'bg-error';
+  if (utilization >= 50) return 'bg-warning';
+  return 'bg-success';
 }
 
 export function formatResetTime(resetsAt: string | null): string | null {
@@ -113,19 +114,19 @@ function UsageColumn({
   const pct = clampUsagePercentage(bucket.utilization);
   const reset = formatResetTime(bucket.resets_at);
   return (
-    <div className="min-w-0 rounded-md bg-muted/35 px-2.5 py-2">
+    <div className="min-w-0 rounded-lg bg-muted/50 px-2.5 py-2">
       <div className="flex min-w-0 items-center justify-between gap-2">
         <span
-          className="truncate text-[11px] font-medium text-muted-foreground"
+          className="truncate text-micro font-medium text-muted-foreground"
           title={label}
         >
           {label}
         </span>
-        <span className="shrink-0 font-mono text-[11px] text-muted-foreground">
+        <span className="shrink-0 font-mono text-micro text-muted-foreground tabular-nums">
           {pct === null ? '—' : `${Math.round(pct)}%`}
         </span>
       </div>
-      <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-muted">
+      <div className="mt-1.5 h-1 overflow-hidden rounded-full bg-foreground/10">
         {pct !== null && (
           <div
             className={`h-full rounded-full transition-all ${barColor(pct)}`}
@@ -134,7 +135,7 @@ function UsageColumn({
         )}
       </div>
       {(reset || detail) && (
-        <div className="mt-1 truncate text-[10px] text-muted-foreground/60">
+        <div className="mt-1 truncate text-micro text-faint-foreground">
           {detail ?? (reset ? `${reset} 后重置` : null)}
         </div>
       )}
@@ -223,24 +224,26 @@ function LiveStatus({
         : '可用';
   const status = current ? currentStatus : `上次观测：${currentStatus}`;
   const color = !current
-    ? 'bg-muted-foreground/50'
+    ? 'bg-faint-foreground'
     : usingOverage
-      ? 'bg-blue-500'
+      ? 'bg-primary'
       : observation.status === 'rejected'
-        ? 'bg-red-500'
+        ? 'bg-error'
         : observation.status === 'allowed_warning'
-          ? 'bg-amber-500'
-          : 'bg-emerald-500';
+          ? 'bg-warning'
+          : 'bg-success';
   const pct = sdkUtilizationPercentage(observation);
   const reset = formatEpochReset(observation.resetsAt);
 
   return (
     <div
-      className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 rounded-md border border-border/60 px-2.5 py-1.5 text-[11px] text-muted-foreground"
+      className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border border-surface-border px-2.5 py-1.5 text-micro text-muted-foreground"
       title={new Date(observation.observedAt).toLocaleString()}
     >
       <span className={`size-1.5 shrink-0 rounded-full ${color}`} />
-      <span className="shrink-0 font-medium">{current ? 'Live' : 'Last'}</span>
+      <span className="shrink-0 font-medium text-foreground">
+        {current ? 'Live' : 'Last'}
+      </span>
       <span className="min-w-0 truncate">{status}</span>
       <span className="shrink-0">
         {displayRateLimitType(observation.rateLimitType)}
@@ -261,9 +264,11 @@ function LiveStatus({
 export function UsageBars({
   providerId,
   providerVersion,
+  className,
 }: {
   providerId: string;
   providerVersion?: string;
+  className?: string;
 }) {
   const [usage, setUsage] = useState<CachedOAuthUsage | null>(null);
   const [loading, setLoading] = useState(true);
@@ -329,12 +334,9 @@ export function UsageBars({
   }
 
   return (
-    <div className="mt-2 ml-4 min-w-0 space-y-2">
+    <div className={cn('min-w-0 space-y-2', className)}>
       {usage.error && (
-        <div
-          className="text-[10px] text-amber-600 dark:text-amber-400"
-          title={usage.error}
-        >
+        <div className="text-micro text-warning" title={usage.error}>
           暂时无法刷新，显示上次数据
           {Number.isFinite(usage.fetchedAt)
             ? `（${new Date(usage.fetchedAt).toLocaleString()}）`

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useEffect, useId, useState } from 'react';
 import {
   Dialog,
   DialogContent,
@@ -21,8 +21,18 @@ interface PromptDialogProps {
   onClose: () => void;
 }
 
-export function PromptDialog({ open, title, label, placeholder, defaultValue = '', confirmText = '确认', onConfirm, onClose }: PromptDialogProps) {
+export function PromptDialog({
+  open,
+  title,
+  label,
+  placeholder,
+  defaultValue = '',
+  confirmText = '确认',
+  onConfirm,
+  onClose,
+}: PromptDialogProps) {
   const [value, setValue] = useState(defaultValue);
+  const inputId = useId();
 
   useEffect(() => {
     if (open) setValue(defaultValue);
@@ -40,23 +50,36 @@ export function PromptDialog({ open, title, label, placeholder, defaultValue = '
       <DialogContent className="sm:max-w-sm">
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
-          <DialogDescription className="sr-only">{label || title}</DialogDescription>
+          <DialogDescription className="sr-only">
+            {label || title}
+          </DialogDescription>
         </DialogHeader>
 
         <div>
-          {label && <label className="block text-sm font-medium mb-2">{label}</label>}
+          {label && (
+            <label htmlFor={inputId} className="mb-2 block text-label">
+              {label}
+            </label>
+          )}
           <Input
+            id={inputId}
             value={value}
             onChange={(e) => setValue(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter') handleConfirm(); }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') handleConfirm();
+            }}
             placeholder={placeholder}
             autoFocus
           />
         </div>
 
         <DialogFooter>
-          <Button variant="outline" onClick={onClose}>取消</Button>
-          <Button onClick={handleConfirm} disabled={!value.trim()}>{confirmText}</Button>
+          <Button variant="outline" onClick={onClose}>
+            取消
+          </Button>
+          <Button onClick={handleConfirm} disabled={!value.trim()}>
+            {confirmText}
+          </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

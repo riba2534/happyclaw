@@ -325,6 +325,7 @@ HappyClaw 优先通过 Web 设置管理配置，不要求用户维护一组庞�
 | `MAX_FILE_SIZE_MB`                   | `50`                              | Web 和 IM 入站文件大小上限                                                         |
 | `CORS_ALLOWED_ORIGINS`               | 仅 localhost                      | 公网部署的 WebSocket Origin 白名单                                                 |
 | `TRUST_PROXY`                        | `false`                           | 位于可信反向代理后时设为 `true`                                                    |
+| `TRUST_PROXY_HOPS`                   | `1`                               | `X-Forwarded-For` 中可信代理层数（Cloudflare 在 Caddy 之前时设为 `2`）             |
 | `TZ`                                 | 系统时区                          | 日志与定时任务时区（建议 IANA 名称，如 `Asia/Shanghai`）；无效值回退并告警         |
 | `HTTPS_PROXY` / `HTTP_PROXY`         | 未设置                            | 独立配置 HTTPS/HTTP 出站代理；主进程与每个智能体容器都会使用，也接受对应的小写变量 |
 | `NO_PROXY`                           | 未设置                            | 独立配置不走代理的地址列表，也接受 `no_proxy`                                      |
@@ -435,6 +436,17 @@ location /ws {
 若代理位于 Cloudflare 等平台之后，还需确认其空闲超时高于 30 秒心跳间隔。
 上传大文件时另需放宽 `client_max_body_size`（不小于 `MAX_FILE_SIZE_MB`，并预留
 multipart 开销）与 `client_body_timeout`。
+
+位于反向代理之后必须设置 `TRUST_PROXY=true`，否则所有请求都显示为代理自身的地址：
+代理在另一台主机时，全部用户共用同一个按 IP 的登录限流桶，几十次失败即可锁住所有人；
+代理在本机（loopback）时，按 IP 的限流不生效。开启后，客户端 IP（登录限流与审计日志
+使用）取自 `X-Forwarded-For` 中由可信代理追加的那一项：右数第 `TRUST_PROXY_HOPS` 个
+（默认 1，即 Caddy 或 nginx 直接面向用户时）。更靠左的条目由客户端提供，不被信任。
+
+密码哈希与校验（登录、注册、初始化、修改密码、管理员创建用户或重置密码）在一个有界的
+bcrypt 工作线程池中执行，最多同时排队 32 个任务。超出的突发请求会立即收到 HTTP 503
+（`服务繁忙，请稍后重试`，带 `Retry-After: 1`），且不计入登录或注册限流次数；
+客户端稍后重试即可。
 
 ## 开发与测试
 
