@@ -84,6 +84,7 @@ interface WorkspaceTreeProps extends WorkspaceActions {
   onToggleExpanded?: (group: GroupEntry, expanded: boolean) => void;
   renderSessions?: (
     group: GroupEntry,
+    isCurrent: boolean,
     activeSessionId: string | null,
   ) => ReactNode;
 }
@@ -343,6 +344,7 @@ const WorkspaceRow = memo(function WorkspaceRow({
   onToggleExpanded?: (group: GroupEntry, expanded: boolean) => void;
   renderSessions?: (
     group: GroupEntry,
+    isCurrent: boolean,
     activeSessionId: string | null,
   ) => ReactNode;
   actions: WorkspaceActions;
@@ -472,7 +474,7 @@ const WorkspaceRow = memo(function WorkspaceRow({
               exit={{ height: 0, opacity: 0 }}
               className="overflow-hidden"
             >
-              {renderSessions!(group, activeSessionId)}
+              {renderSessions!(group, isActive, activeSessionId)}
             </m.div>
           )}
         </AnimatePresence>

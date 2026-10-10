@@ -162,15 +162,18 @@ export function UnifiedSidebar() {
       setWorkspaceExpanded(group.jid, expanded),
   );
   const navigateTo = useStableCallback((to: string) => navigate(to));
-  const renderSessions = useStableCallback(
-    (group: GroupEntry, sessionId: string | null) => (
+  // Called while the tree renders, so it must not read state through a
+  // ref: the row passes in whether it is current.
+  const renderSessions = useCallback(
+    (group: GroupEntry, isCurrent: boolean, sessionId: string | null) => (
       <SessionTreeList
         group={group}
-        isCurrent={group.jid === currentGroupJid}
+        isCurrent={isCurrent}
         activeSessionId={sessionId}
         navigate={navigateTo}
       />
     ),
+    [navigateTo],
   );
 
   return (
