@@ -21,6 +21,7 @@ import { useShellStore } from '../../stores/shell';
 import { useClearWorkspace } from '../../hooks/useClearWorkspace';
 import { useDeleteWorkspace } from '../../hooks/useDeleteWorkspace';
 import { useNewConversation } from '../../hooks/useNewConversation';
+import { useSessionActions } from '../../hooks/useSessionActions';
 import { useWorkspaceTree } from '../../hooks/useWorkspaceTree';
 import { useStableCallback } from '../../hooks/useStableCallback';
 import { ConfirmDialog } from '@/components/common';
@@ -44,7 +45,7 @@ import { preloadWhenIdle, useOpenedOnce } from '../../lib/preloaded-component';
 import { SkeletonCardList } from '@/components/common/Skeletons';
 import { cn } from '@/lib/utils';
 import { SHORTCUTS } from '@/lib/shortcuts';
-import { chatHref } from '../../lib/chat-navigation';
+import { chatHref, openWorkspaceSession } from '../../lib/chat-navigation';
 import { filterNavItems } from './nav-items';
 import { withBasePath } from '../../utils/url';
 import { SidebarItem } from './sidebar/SidebarItem';
@@ -77,7 +78,9 @@ export function UnifiedSidebar() {
   const setWorkspaceExpanded = useShellStore((s) => s.setWorkspaceExpanded);
   const revealWorkspace = useShellStore((s) => s.revealWorkspace);
   const createOpen = useShellStore((s) => s.createWorkspaceOpen);
+  const createAgentId = useShellStore((s) => s.createWorkspaceAgentId);
   const setCreateOpen = useShellStore((s) => s.setCreateWorkspaceOpen);
+  const requestComposerFocus = useShellStore((s) => s.requestComposerFocus);
   const setPaletteOpen = useShellStore((s) => s.setPaletteOpen);
   const createMounted = useOpenedOnce(createOpen);
   useEffect(
@@ -89,6 +92,7 @@ export function UnifiedSidebar() {
     [],
   );
   const { startNewConversation, creatingSession } = useNewConversation();
+  const { createSession } = useSessionActions();
   const [showBugReport, setShowBugReport] = useState(false);
   const bugReportMounted = useOpenedOnce(showBugReport);
   const [renameState, setRenameState] = useState({
@@ -162,14 +166,35 @@ export function UnifiedSidebar() {
       setWorkspaceExpanded(group.jid, expanded),
   );
   const navigateTo = useStableCallback((to: string) => navigate(to));
+  const createWorkspaceSession = useStableCallback(
+    async (group: GroupEntry) => {
+      const session = await createSession(group.jid);
+      if (!session) return;
+      revealWorkspace(group.jid);
+      openWorkspaceSession(navigateTo, group, session.id);
+      requestComposerFocus();
+    },
+  );
+  const createAgentWorkspace = useStableCallback((agentId: string) =>
+    setCreateOpen(true, agentId),
+  );
+  const openAgent = useStableCallback((agentId: string) =>
+    navigate(`/agent-profiles?agent=${encodeURIComponent(agentId)}`),
+  );
   // Called while the tree renders, so it must not read state through a
   // ref: the row passes in whether it is current.
   const renderSessions = useCallback(
-    (group: GroupEntry, isCurrent: boolean, sessionId: string | null) => (
+    (
+      group: GroupEntry,
+      isCurrent: boolean,
+      sessionId: string | null,
+      depth: number,
+    ) => (
       <SessionTreeList
         group={group}
         isCurrent={isCurrent}
         activeSessionId={sessionId}
+        depth={depth}
         navigate={navigateTo}
       />
     ),
@@ -342,6 +367,9 @@ export function UnifiedSidebar() {
                 onClearHistory={clearWorkspace}
                 onDelete={deleteWorkspace}
                 onTogglePin={pinWorkspace}
+                onCreateSession={createWorkspaceSession}
+                onCreateWorkspace={createAgentWorkspace}
+                onOpenAgent={openAgent}
                 isExpanded={isExpanded}
                 onToggleExpanded={toggleExpanded}
                 renderSessions={renderSessions}
@@ -362,6 +390,7 @@ export function UnifiedSidebar() {
       {createMounted && (
         <CreateContainerDialog
           open={createOpen}
+          defaultAgentProfileId={createAgentId}
           onClose={() => setCreateOpen(false)}
           onCreated={(jid, folder) => {
             selectGroup(jid);

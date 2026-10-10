@@ -66,6 +66,8 @@ interface ShellState {
   expandedWorkspaces: Record<string, boolean>;
   paletteOpen: boolean;
   createWorkspaceOpen: boolean;
+  /** Agent preselected in the create-workspace dialog (null = default). */
+  createWorkspaceAgentId: string | null;
   bindingRequest: BindingRequest | null;
   /** Incremented to ask the active composer to take focus. */
   composerFocusNonce: number;
@@ -79,7 +81,10 @@ interface ShellState {
   /** Opening a workspace drops an explicit collapse so it shows its sessions. */
   revealWorkspace: (jid: string) => void;
   setPaletteOpen: (open: boolean) => void;
-  setCreateWorkspaceOpen: (open: boolean) => void;
+  setCreateWorkspaceOpen: (
+    open: boolean,
+    agentProfileId?: string | null,
+  ) => void;
   requestBinding: (groupJid: string, target: string) => void;
   clearBindingRequest: () => void;
   requestComposerFocus: () => void;
@@ -94,6 +99,7 @@ export const useShellStore = create<ShellState>((set, get) => ({
   expandedWorkspaces: readExpanded(),
   paletteOpen: false,
   createWorkspaceOpen: false,
+  createWorkspaceAgentId: null,
   bindingRequest: null,
   composerFocusNonce: 0,
   composerDraftRequest: null,
@@ -122,7 +128,11 @@ export const useShellStore = create<ShellState>((set, get) => ({
     set({ expandedWorkspaces: next });
   },
   setPaletteOpen: (open) => set({ paletteOpen: open }),
-  setCreateWorkspaceOpen: (open) => set({ createWorkspaceOpen: open }),
+  setCreateWorkspaceOpen: (open, agentProfileId = null) =>
+    set({
+      createWorkspaceOpen: open,
+      createWorkspaceAgentId: open ? agentProfileId : null,
+    }),
   requestBinding: (groupJid, target) =>
     set({ bindingRequest: { groupJid, target, nonce: Date.now() } }),
   clearBindingRequest: () => set({ bindingRequest: null }),

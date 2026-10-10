@@ -112,3 +112,82 @@ test('opening a row menu from the keyboard focuses its first item', async ({
   await page.keyboard.press(' ');
   await expect(page.getByRole('menuitem').first()).toBeFocused();
 });
+
+test('shows each agent with its avatar; a single workspace is the agent row itself', async ({
+  page,
+}) => {
+  await page.goto(HARNESS_PATH);
+  const nav = page.getByRole('navigation', { name: '主导航' });
+
+  // One workspace: the agent row stands for it and opens it.
+  const post = nav.getByRole('button', { name: '地址证明助手', exact: true });
+  await expect(post).toBeVisible();
+  await expect(nav.getByText('📮')).toBeVisible();
+  await expect(
+    nav.getByRole('button', { name: '邮寄', exact: true }),
+  ).toHaveCount(0);
+  await post.click();
+  await expect(page.getByTestId('route')).toHaveText('/chat/post');
+  const postItem = nav.locator('li').filter({
+    has: page.getByRole('button', { name: '地址证明助手', exact: true }),
+  });
+  await expect(
+    postItem.getByRole('button', { name: 'post 会话 1' }),
+  ).toBeVisible();
+
+  // Several workspaces nest under the agent, which only expands/collapses.
+  await expect(nav.getByText('🧾')).toBeVisible();
+  const bill = nav.getByRole('button', { name: '收起 AI账单助手 的工作区' });
+  await expect(
+    nav.getByRole('button', { name: '账单一', exact: true }),
+  ).toBeVisible();
+  await bill.click();
+  await expect(
+    nav.getByRole('button', { name: '账单一', exact: true }),
+  ).toHaveCount(0);
+  await expect(page.getByTestId('route')).toHaveText('/chat/post');
+  await nav.getByRole('button', { name: '展开 AI账单助手 的工作区' }).click();
+  await nav.getByRole('button', { name: '账单二', exact: true }).click();
+  await expect(page.getByTestId('route')).toHaveText('/chat/bill2');
+});
+
+test('the + on a workspace row creates a session and opens it', async ({
+  page,
+}) => {
+  await page.goto(HARNESS_PATH);
+  const nav = page.getByRole('navigation', { name: '主导航' });
+
+  await nav.getByRole('button', { name: 'Beta 工作区', exact: true }).hover();
+  await nav.getByRole('button', { name: '新建会话（Beta 工作区）' }).click();
+  await expect(page.getByTestId('route')).toHaveText(
+    '/chat/beta?agent=beta-new',
+  );
+  const betaItem = nav.locator('li').filter({
+    has: page.getByRole('button', { name: 'Beta 工作区', exact: true }),
+  });
+  await expect(
+    betaItem.locator('[aria-current="page"]', { hasText: '新会话' }),
+  ).toHaveCount(1);
+});
+
+test('an agent menu creates a workspace with that agent preselected', async ({
+  page,
+}) => {
+  await page.goto(HARNESS_PATH);
+  const nav = page.getByRole('navigation', { name: '主导航' });
+
+  await nav.getByRole('button', { name: 'AI账单助手的更多操作' }).click();
+  await page.getByRole('menuitem', { name: '新建工作区' }).click();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog.locator('#workspace-agent-profile')).toHaveText(
+    'AI账单助手',
+  );
+  await page.keyboard.press('Escape');
+  await expect(dialog).toHaveCount(0);
+
+  // The section's own "+" keeps defaulting to the primary agent.
+  await nav.getByRole('button', { name: '新建工作区' }).first().click();
+  await expect(
+    page.getByRole('dialog').locator('#workspace-agent-profile'),
+  ).toContainText('HappyClaw');
+});

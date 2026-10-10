@@ -1,6 +1,6 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, m } from 'motion/react';
-import { Link2, Pencil, Plus, Search, Trash2 } from 'lucide-react';
+import { Link2, Pencil, Search, Trash2 } from 'lucide-react';
 import { DropdownMenuItem } from '@/components/ui/dropdown-menu';
 import { Spinner } from '@/components/ui/spinner';
 import { PromptDialog } from '@/components/common/PromptDialog';
@@ -26,7 +26,7 @@ import { sidebarRowClass } from './SidebarItem';
 import { RowMenu } from './WorkspaceTree';
 
 const EMPTY_AGENTS: AgentInfo[] = [];
-const INITIAL_VISIBLE = 12;
+const INITIAL_VISIBLE = 8;
 const SEARCH_THRESHOLD = 8;
 const MAIN_BINDING = '__main__';
 
@@ -36,6 +36,8 @@ interface SessionTreeListProps {
   isCurrent: boolean;
   /** Session open in the canvas (null = main conversation). */
   activeSessionId: string | null;
+  /** Nesting depth of the workspace row, so sessions align with its name. */
+  depth?: number;
   /**
    * Stable navigation from the sidebar. `useNavigate()` here would re-render
    * every expanded list on each route change.
@@ -48,6 +50,7 @@ export const SessionTreeList = memo(function SessionTreeList({
   group,
   isCurrent,
   activeSessionId,
+  depth = 0,
   navigate,
 }: SessionTreeListProps) {
   const loadAgents = useChatStore((s) => s.loadAgents);
@@ -62,7 +65,7 @@ export const SessionTreeList = memo(function SessionTreeList({
       .join(','),
   );
   const requestBinding = useShellStore((s) => s.requestBinding);
-  const { creatingSession, createSession, deleteSession } = useSessionActions();
+  const { deleteSession } = useSessionActions();
   const [visibleCount, setVisibleCount] = useState(INITIAL_VISIBLE);
   const [query, setQuery] = useState('');
   const [renameTarget, setRenameTarget] = useState<AgentInfo | null>(null);
@@ -93,14 +96,6 @@ export const SessionTreeList = memo(function SessionTreeList({
     return buildConversationSessions(agents, (id) => active.has(id));
   }, [agents, activeQueryIds]);
 
-  const isTopicWorkspace =
-    group.conversation_nav_mode === 'vertical_threads' ||
-    group.conversation_source === 'native_thread' ||
-    group.conversation_source === 'feishu_thread' ||
-    sessions.some(
-      (a) =>
-        a.source_kind === 'native_thread' || a.source_kind === 'feishu_thread',
-    );
   const canModify = !!group.can_modify;
   const normalizedQuery = query.trim().toLocaleLowerCase();
   // Lowercased name and preview per session, built once per list while
@@ -125,7 +120,6 @@ export const SessionTreeList = memo(function SessionTreeList({
     : sessions;
   const visible = filtered.slice(0, visibleCount);
   const mainLabel = group.is_my_home ? '直接对话' : '当前对话';
-  const createLabel = isTopicWorkspace ? '新建 Web 会话' : '新建会话';
 
   // Binding lives in ChatView; open the workspace first so it can react.
   const openBinding = (target: string) => {
@@ -133,17 +127,18 @@ export const SessionTreeList = memo(function SessionTreeList({
     requestBinding(group.jid, target);
   };
 
-  const handleCreate = async () => {
-    const agent = await createSession(group.jid);
-    if (agent) openWorkspaceSession(navigate, group, agent.id);
-  };
-
   return (
-    <div ref={containerRef} className="relative pt-0.5 pb-1 pl-4">
-      {/* Tree guide line aligned with the workspace chevron. */}
+    <div
+      ref={containerRef}
+      className={cn('relative pt-0.5 pb-1', depth > 0 ? 'pl-7' : 'pl-3.5')}
+    >
+      {/* Tree guide line under the workspace row's icon. */}
       <span
         aria-hidden="true"
-        className="absolute top-0 bottom-1 left-[1.05rem] w-px bg-surface-border"
+        className={cn(
+          'absolute top-0 bottom-1 w-px bg-surface-border',
+          depth > 0 ? 'left-[1.625rem]' : 'left-3.5',
+        )}
       />
       {sessions.length >= SEARCH_THRESHOLD && (
         <label className="mb-0.5 ml-2 flex h-7 items-center gap-1.5 rounded-md px-2 text-caption text-muted-foreground focus-within:bg-surface-hover">
@@ -244,25 +239,6 @@ export const SessionTreeList = memo(function SessionTreeList({
         <p className="px-4 py-1.5 text-caption text-faint-foreground">
           没有匹配的会话
         </p>
-      )}
-      {canModify && (
-        <button
-          type="button"
-          onClick={() => void handleCreate()}
-          disabled={creatingSession}
-          aria-busy={creatingSession}
-          className={cn(
-            sidebarRowClass,
-            'ml-2 h-7 w-[calc(100%-0.5rem)] text-caption text-faint-foreground',
-          )}
-        >
-          {creatingSession ? (
-            <Spinner className="size-3.5" />
-          ) : (
-            <Plus className="size-3.5" />
-          )}
-          {createLabel}
-        </button>
       )}
       <PromptDialog
         open={renameTarget !== null}

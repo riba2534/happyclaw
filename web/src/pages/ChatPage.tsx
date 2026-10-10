@@ -63,6 +63,7 @@ export function ChatPage() {
     handleClearConfirm,
   } = useClearWorkspace();
   const [createOpen, setCreateOpen] = useState(false);
+  const [createAgentId, setCreateAgentId] = useState<string | null>(null);
   const createMounted = useOpenedOnce(createOpen);
   const [renameState, setRenameState] = useState({
     open: false,
@@ -229,6 +230,15 @@ export function ChatPage() {
                 onClearHistory={openClear}
                 onDelete={openDelete}
                 onTogglePin={(jid) => void togglePin(jid)}
+                onCreateWorkspace={(agentId) => {
+                  setCreateAgentId(agentId);
+                  setCreateOpen(true);
+                }}
+                onOpenAgent={(agentId) =>
+                  navigate(
+                    `/agent-profiles?agent=${encodeURIComponent(agentId)}`,
+                  )
+                }
               />
             </div>
           ) : (
@@ -325,7 +335,11 @@ export function ChatPage() {
       {createMounted && (
         <CreateContainerDialog
           open={createOpen}
-          onClose={() => setCreateOpen(false)}
+          defaultAgentProfileId={createAgentId}
+          onClose={() => {
+            setCreateOpen(false);
+            setCreateAgentId(null);
+          }}
           onCreated={(jid, folder) => {
             selectGroup(jid);
             navigate(`/chat/${folder}?sessions=1`);

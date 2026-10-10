@@ -26,8 +26,9 @@ describe('session sidebar copy', () => {
     const sidebar = read('web/src/components/chat/SessionSidebar.tsx');
     const chatView = read('web/src/components/chat/ChatView.tsx');
     const sessionActions = read('web/src/hooks/useSessionActions.ts');
+    // The desktop tree creates sessions from the "+" on each workspace row.
     const sidebarTree = read(
-      'web/src/components/layout/sidebar/SessionTreeList.tsx',
+      'web/src/components/layout/sidebar/WorkspaceTree.tsx',
     );
     const routes = read('src/routes/agents.ts');
 
@@ -46,7 +47,9 @@ describe('session sidebar copy', () => {
     expect(sessionActions).toContain("'创建 Web 会话失败'");
     expect(chatView).toContain('useSessionActions()');
     expect(sidebarTree).toContain("'新建 Web 会话'");
-    expect(sidebarTree).toContain('{canModify && (');
+    expect(sidebarTree).toContain(
+      '{nested && canModify && actions.onCreateSession && (',
+    );
     expect(routes).not.toContain(
       'Native thread workspaces do not support manual sessions',
     );

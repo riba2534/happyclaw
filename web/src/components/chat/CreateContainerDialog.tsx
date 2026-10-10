@@ -51,6 +51,8 @@ import {
 
 interface CreateContainerDialogProps {
   open: boolean;
+  /** Agent selected when the dialog opens; falls back to the default agent. */
+  defaultAgentProfileId?: string | null;
   onClose: () => void;
   onCreated: (jid: string, folder: string) => void;
 }
@@ -171,6 +173,7 @@ function extractFieldErrors(error: unknown): Record<string, string> {
 
 export function CreateContainerDialog({
   open,
+  defaultAgentProfileId = null,
   onClose,
   onCreated,
 }: CreateContainerDialogProps) {
@@ -218,9 +221,11 @@ export function CreateContainerDialog({
   useEffect(() => {
     if (!open || selectedAgentProfileId || profiles.length === 0) return;
     const defaultProfile =
-      profiles.find((profile) => profile.is_default) ?? profiles[0];
+      profiles.find((profile) => profile.id === defaultAgentProfileId) ??
+      profiles.find((profile) => profile.is_default) ??
+      profiles[0];
     setSelectedAgentProfileId(defaultProfile.id);
-  }, [open, profiles, selectedAgentProfileId]);
+  }, [open, profiles, selectedAgentProfileId, defaultAgentProfileId]);
 
   useEffect(() => {
     if (canHostExec || executionMode === 'container') return;
