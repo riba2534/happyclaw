@@ -332,6 +332,74 @@ function messageSequenceBoundary(
 }
 
 const MAX_THINKING_CACHE_SIZE = 500;
+
+/**
+ * Viewed conversations whose loaded messages stay in memory. Every opened
+ * conversation used to keep its pages for the rest of the visit, so the heap
+ * grew with each one (14MB to 26MB over 80 switches on a real account, flat
+ * when revisiting the same few). Reopening a dropped one loads it again;
+ * sessions repaint from the IndexedDB snapshot first.
+ */
+const RETAINED_CONVERSATIONS = 20;
+/** Viewed conversations by runtime key, least recently viewed first. */
+const viewedConversations = new Map<
+  string,
+  { jid: string; agentId: string | null }
+>();
+
+function noteConversationViewed(jid: string, agentId: string | null) {
+  const key = agentId ? `${jid}#agent:${agentId}` : jid;
+  viewedConversations.delete(key);
+  viewedConversations.set(key, { jid, agentId });
+}
+
+/**
+ * Drop the messages of the least recently viewed conversations beyond
+ * RETAINED_CONVERSATIONS. The open workspace keeps all of its conversations,
+ * because its stream events and new messages are applied to them, and so
+ * does anything still running, streaming, awaiting a reply or clearing.
+ */
+function evictViewedConversations(
+  s: ChatState,
+  openJid: string,
+): Partial<ChatState> {
+  let excess = viewedConversations.size - RETAINED_CONVERSATIONS;
+  if (excess <= 0) return {};
+  let messages: ChatState['messages'] | undefined;
+  let hasMore: ChatState['hasMore'] | undefined;
+  let agentMessages: ChatState['agentMessages'] | undefined;
+  let agentHasMore: ChatState['agentHasMore'] | undefined;
+  for (const [key, { jid, agentId }] of viewedConversations) {
+    if (excess <= 0) break;
+    if (jid === openJid || jid === s.currentGroup) continue;
+    const busy =
+      !!s.activeRuns[key] ||
+      !!s.clearing[jid] ||
+      (agentId
+        ? !!s.agentWaiting[agentId] || !!s.agentStreaming[agentId]
+        : !!s.waiting[jid] || !!s.streaming[jid]);
+    if (busy) continue;
+    viewedConversations.delete(key);
+    excess -= 1;
+    if (agentId) {
+      if (!s.agentMessages[agentId]) continue;
+      agentMessages ??= { ...s.agentMessages };
+      agentHasMore ??= { ...s.agentHasMore };
+      delete agentMessages[agentId];
+      delete agentHasMore[agentId];
+    } else {
+      if (!s.messages[jid]) continue;
+      messages ??= { ...s.messages };
+      hasMore ??= { ...s.hasMore };
+      delete messages[jid];
+      delete hasMore[jid];
+    }
+  }
+  return {
+    ...(messages && { messages, hasMore }),
+    ...(agentMessages && { agentMessages, agentHasMore }),
+  };
+}
 const loadMessagesInFlight = new Map<string, Promise<void>>();
 const loadAgentsInFlight = new Map<string, Promise<void>>();
 let loadGroupsInFlight: Promise<void> | null = null;
@@ -3965,6 +4033,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
   // Agent 会话，都视为已经查看该 Workspace。后台 Workspace 的 URL/tab
   // 同步不得清除其未读。
   setActiveAgentTab: (jid, agentId) => {
+    // ChatView calls this whenever it shows a conversation.
+    noteConversationViewed(jid, agentId);
     set((s) => {
       let nextUnreadReplies = s.unreadReplies;
       if (s.currentGroup === jid && s.unreadReplies[jid]) {
@@ -3974,6 +4044,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       return {
         activeAgentTab: { ...s.activeAgentTab, [jid]: agentId },
         unreadReplies: nextUnreadReplies,
+        ...evictViewedConversations(s, jid),
       };
     });
   },
