@@ -3,6 +3,7 @@ import {
   useEffect,
   useId,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from 'react';
@@ -503,6 +504,19 @@ export function RowMenu({
 }) {
   const [mounted, setMounted] = useState(false);
   const [open, setOpen] = useState(false);
+  // Radix notices keyboard use through a document listener that only exists
+  // once the menu is mounted, so on the first keyboard open it focused the
+  // menu itself instead of its first item. Move focus on once the content has
+  // mounted and Radix has focused it.
+  const openedByKeyboardRef = useRef(false);
+  const [content, setContent] = useState<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!content || !openedByKeyboardRef.current) return;
+    openedByKeyboardRef.current = false;
+    content
+      .querySelector<HTMLElement>('[role="menuitem"]:not([data-disabled])')
+      ?.focus({ preventScroll: true });
+  }, [content]);
   const className = cn(
     'grid size-6 shrink-0 cursor-pointer place-items-center rounded text-muted-foreground outline-none transition-opacity hover:bg-surface-hover hover:text-foreground focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-ring/40 aria-expanded:opacity-100',
     touch
@@ -512,7 +526,8 @@ export function RowMenu({
   const icon = <MoreHorizontal className="size-4" />;
 
   if (!mounted) {
-    const openMenu = () => {
+    const openMenu = (byKeyboard: boolean) => {
+      openedByKeyboardRef.current = byKeyboard;
       setMounted(true);
       setOpen(true);
     };
@@ -526,12 +541,12 @@ export function RowMenu({
         onPointerDown={(event) => {
           if (event.button !== 0 || event.ctrlKey) return;
           event.preventDefault();
-          openMenu();
+          openMenu(false);
         }}
         onKeyDown={(event) => {
           if (['Enter', ' ', 'ArrowDown'].includes(event.key)) {
             event.preventDefault();
-            openMenu();
+            openMenu(true);
           }
         }}
         className={className}
@@ -553,7 +568,7 @@ export function RowMenu({
           {icon}
         </button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="w-40">
+      <DropdownMenuContent ref={setContent} align="end" className="w-40">
         {children}
       </DropdownMenuContent>
     </DropdownMenu>

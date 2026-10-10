@@ -71,3 +71,25 @@ test('a dialog whose chunk fails to load closes with a toast instead of taking t
   await create.click();
   await expect(page.getByRole('dialog')).toBeVisible();
 });
+
+test('opening a row menu from the keyboard focuses its first item', async ({
+  page,
+}) => {
+  await page.goto(HARNESS_PATH);
+  const nav = page.getByRole('navigation', { name: '主导航' });
+  const more = nav.getByRole('button', { name: 'Beta 工作区的更多操作' });
+
+  await more.focus();
+  await page.keyboard.press('Enter');
+  const items = page.getByRole('menuitem');
+  await expect(items.first()).toBeFocused();
+  await page.keyboard.press('ArrowDown');
+  await expect(items.nth(1)).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('menu')).toHaveCount(0);
+
+  // Later opens are Radix's own and land on the first item as well.
+  await more.focus();
+  await page.keyboard.press(' ');
+  await expect(page.getByRole('menuitem').first()).toBeFocused();
+});
