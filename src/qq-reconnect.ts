@@ -17,6 +17,12 @@ const TRANSIENT_ERROR_CODES: ReadonlySet<string> = new Set([
   'UND_ERR_CONNECT_TIMEOUT',
 ]);
 
+// Network-level failures that carry no errno: the ws client's opening
+// handshake timeout (`handshakeTimeout`) is a plain Error with this message.
+const TRANSIENT_ERROR_MESSAGES: readonly string[] = [
+  'Opening handshake has timed out',
+];
+
 export function isTransientError(err: unknown): boolean {
   if (!err || typeof err !== 'object') return false;
 
@@ -31,6 +37,9 @@ export function isTransientError(err: unknown): boolean {
   if (typeof msg === 'string') {
     for (const transientCode of TRANSIENT_ERROR_CODES) {
       if (msg.includes(transientCode)) return true;
+    }
+    for (const transientMessage of TRANSIENT_ERROR_MESSAGES) {
+      if (msg.includes(transientMessage)) return true;
     }
   }
 

@@ -96,6 +96,12 @@ const harness = vi.hoisted(() => {
       this.emitClose(1006);
     }
 
+    /** A socket-level failure: 'error', then 'close', as ws emits them. */
+    fail(err: Error) {
+      this.events.emit('error', err);
+      this.emitClose(1006);
+    }
+
     /** Server-side close, delivered even if a close was already seen. */
     emitClose(code: number, reason = '') {
       this.readyState = FakeWebSocket.CLOSED;
@@ -184,6 +190,15 @@ vi.mock('../src/logger.js', () => ({
 }));
 
 const { createQQConnection } = await import('../src/qq.js');
+const { logger } = await import('../src/logger.js');
+
+/** The flags of the most recent 'QQ scheduling reconnect' log line. */
+function lastScheduledReconnect(): Record<string, unknown> | undefined {
+  const calls = vi
+    .mocked(logger.info)
+    .mock.calls.filter(([, message]) => message === 'QQ scheduling reconnect');
+  return calls.at(-1)?.[0] as Record<string, unknown> | undefined;
+}
 
 const flush = async () => {
   for (let i = 0; i < 20; i += 1) await Promise.resolve();
@@ -386,6 +401,40 @@ describe('QQ reconnect state machine', () => {
       socket.ops().filter((op) => op === 2 || op === 6);
     expect(handshakes(stale)).toEqual([]);
     expect(handshakes(live)).toEqual([6]);
+    expect(connection.isConnected()).toBe(true);
+  });
+
+  test('handshake and READY timeouts retry as transient failures', async () => {
+    connection = await connected();
+    harness.config.autoOpen = false;
+    await harness.sockets[0].receive({ op: 7 });
+    await advance(1_500);
+
+    // ws's handshakeTimeout: a plain Error without an errno code.
+    harness.sockets[1].fail(new Error('Opening handshake has timed out'));
+    await flush();
+    expect(lastScheduledReconnect()).toMatchObject({
+      wasTransient: true,
+      attempt: 1,
+      transientAttempts: 1,
+    });
+
+    // The next socket never reaches READY and hits the session deadline.
+    await advance(5_000);
+    expect(harness.sockets).toHaveLength(3);
+    await advance(31_000, 1_000);
+    expect(harness.sockets[2].readyState).toBe(harness.FakeWebSocket.CLOSED);
+    expect(lastScheduledReconnect()).toMatchObject({
+      wasTransient: true,
+      attempt: 1,
+      transientAttempts: 2,
+    });
+
+    // The retry after that one connects and resumes the session.
+    expect(harness.sockets).toHaveLength(4);
+    await harness.sockets[3].open();
+    await flush();
+    expect(harness.sockets[3].ops()).toContain(6);
     expect(connection.isConnected()).toBe(true);
   });
 });

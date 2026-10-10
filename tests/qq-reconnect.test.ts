@@ -38,6 +38,13 @@ describe('isTransientError', () => {
     expect(isTransientError({ code: 'ENOSPC' })).toBe(false);
   });
 
+  test('treats the ws opening-handshake timeout as transient', () => {
+    // ws rejects with a plain Error, no errno code.
+    expect(isTransientError(new Error('Opening handshake has timed out'))).toBe(
+      true,
+    );
+  });
+
   test('returns false for non-error inputs', () => {
     expect(isTransientError(null)).toBe(false);
     expect(isTransientError(undefined)).toBe(false);
