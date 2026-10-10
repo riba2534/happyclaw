@@ -361,13 +361,17 @@ export const MessageList = memo(function MessageList({
     if (!animationWheelRef.current) {
       const handler = (event: WheelEvent) => {
         if (event.ctrlKey) return;
-        if (Date.now() >= smoothScrollUntilRef.current) {
-          // The animation is over: handle this one like the passive listener.
-          detachAnimationWheel();
-          if (event.deltaY < 0) releasePin(true);
+        if (event.deltaY >= 0) {
+          // Once the window is over, the passive listener takes the wheel back.
+          if (Date.now() >= smoothScrollUntilRef.current) {
+            detachAnimationWheel();
+          }
           return;
         }
-        if (event.deltaY >= 0) return;
+        // Up: always taken over while attached. The scroll handler counts the
+        // animation as landed within 10px of the bottom, but Chrome keeps
+        // animating those last pixels and still ignores the wheel, so a
+        // native scroll here would be lost.
         event.preventDefault();
         const unit =
           event.deltaMode === WheelEvent.DOM_DELTA_LINE
@@ -376,12 +380,21 @@ export const MessageList = memo(function MessageList({
               ? parent.clientHeight
               : 1;
         releasePin(true);
+        // Landed already left releasePin nothing to stop: cancel the pending
+        // catch-up and detach here too.
+        stopSmoothScroll();
+        // An instant scroll also ends whatever is left of the animation.
         parent.scrollTo({ top: parent.scrollTop + event.deltaY * unit });
       };
       animationWheelRef.current = handler;
       parent.addEventListener('wheel', handler, { passive: false });
     }
-  }, [detachAnimationWheel, releasePin, scheduleSmoothCatchUp]);
+  }, [
+    detachAnimationWheel,
+    releasePin,
+    scheduleSmoothCatchUp,
+    stopSmoothScroll,
+  ]);
 
   useEffect(() => {
     return () => {
