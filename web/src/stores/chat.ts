@@ -22,7 +22,10 @@ import type {
   InteractionMode,
   WorkspaceDeleteImpact,
 } from '../types';
-import { applyFollowUpTransition } from '../lib/message-timeline';
+import {
+  applyFollowUpTransition,
+  syncFollowUpContent,
+} from '../lib/message-timeline';
 import {
   currentRouteChatFolder,
   findRouteGroupJid,
@@ -43,6 +46,7 @@ import {
   type ClientActiveRuns,
 } from './run-lifecycle';
 import { extractErrorMessage } from '../utils/error';
+import { markdownTail } from '../lib/markdown-blocks';
 
 export type { GroupInfo, AgentInfo };
 
@@ -75,6 +79,9 @@ export interface Message {
     | 'delivery_uncertain'
     | 'interrupted'
     | 'error'
+    | 'shutdown'
+    | 'crash_recovery'
+    | 'truncated'
     | null;
   delivery_mode?: FollowUpMode | null;
   delivery_status?:
@@ -887,8 +894,45 @@ function resolveStreamingPrev(
   return current || { ...DEFAULT_STREAMING_STATE };
 }
 
-const MAX_STREAMING_TEXT = 16000;
+// The whole streamed reply is rendered (finished blocks are memoized), so
+// this is only a memory guard; past it the tail is kept from a block boundary.
+const MAX_STREAMING_TEXT = 200_000;
 const MAX_THINKING_TEXT = 8000;
+
+function capStreamingText(text: string, max: number): string {
+  return text.length > max ? markdownTail(text, max) : text;
+}
+
+/**
+ * Message-list updates for a follow-up queue change: edited queue content is
+ * copied onto the hidden rows, then the release/cancel transition applies.
+ */
+function patchFollowUpMessages(
+  s: ChatState,
+  chatJid: string,
+  items: QueuedFollowUp[],
+  transition?: FollowUpTransition | null,
+): Partial<ChatState> {
+  const apply = (existing: Message[]) => {
+    const synced = syncFollowUpContent(existing, items);
+    return transition ? applyFollowUpTransition(synced, transition) : synced;
+  };
+  const agentMarker = '#agent:';
+  const markerIndex = chatJid.indexOf(agentMarker);
+  if (markerIndex >= 0) {
+    const agentId = chatJid.slice(markerIndex + agentMarker.length);
+    const existing = s.agentMessages[agentId] || [];
+    const updated = apply(existing);
+    return updated === existing
+      ? {}
+      : { agentMessages: { ...s.agentMessages, [agentId]: updated } };
+  }
+  const existing = s.messages[chatJid] || [];
+  const updated = apply(existing);
+  return updated === existing
+    ? {}
+    : { messages: { ...s.messages, [chatJid]: updated } };
+}
 const MAX_EVENT_LOG = 30;
 const MAX_TRACE_EVENTS = 200;
 const MAX_TASK_TAIL = 4000;
@@ -956,7 +1000,9 @@ function saveStreamingToSession(
             Object.keys(state.taskStates).length > 0)
         ) {
           stored[chatJid] = {
-            partialText: state.partialText.slice(-4000), // cap size
+            // Cap the snapshot at a block boundary so a restored reply
+            // doesn't start inside a code fence or table.
+            partialText: markdownTail(state.partialText, 4000),
             thinkingText: state.thinkingText.slice(-MAX_THINKING_TEXT),
             isThinking: state.isThinking,
             activeTools: state.activeTools,
@@ -1064,10 +1110,7 @@ function flushPendingDelta(
       const next = { ...prev };
       if (mergedText) {
         const combined = prev.partialText + mergedText;
-        next.partialText =
-          combined.length > MAX_STREAMING_TEXT
-            ? combined.slice(-MAX_STREAMING_TEXT)
-            : combined;
+        next.partialText = capStreamingText(combined, MAX_STREAMING_TEXT);
         next.isThinking = false;
         markThinkingEnded(prev, next);
       }
@@ -1099,10 +1142,7 @@ function flushPendingDelta(
       const next = { ...prev };
       if (mergedText) {
         const combined = prev.partialText + mergedText;
-        next.partialText =
-          combined.length > MAX_STREAMING_TEXT
-            ? combined.slice(-MAX_STREAMING_TEXT)
-            : combined;
+        next.partialText = capStreamingText(combined, MAX_STREAMING_TEXT);
         next.isThinking = false;
         markThinkingEnded(prev, next);
       }
@@ -1597,8 +1637,7 @@ function applyStreamEvent(
         break;
       }
       const combined = prev.partialText + (event.text || '');
-      next.partialText =
-        combined.length > maxText ? combined.slice(-maxText) : combined;
+      next.partialText = capStreamingText(combined, maxText);
       next.isThinking = false;
       markThinkingEnded(prev, next);
       break;
@@ -2287,6 +2326,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       );
       set((s) => ({
         followUps: { ...s.followUps, [chatJid]: data.items },
+        ...patchFollowUpMessages(s, chatJid, data.items),
       }));
     } catch (err) {
       console.warn('[follow-ups] failed to load queue', err);
@@ -2294,33 +2334,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   handleFollowUpUpdate: (chatJid, items, transition) => {
-    set((s) => {
-      const next: Partial<ChatState> = {
-        followUps: { ...s.followUps, [chatJid]: items },
-      };
-      if (!transition) return next;
-
-      const agentMarker = '#agent:';
-      const markerIndex = chatJid.indexOf(agentMarker);
-      if (markerIndex >= 0) {
-        const agentId = chatJid.slice(markerIndex + agentMarker.length);
-        const existing = s.agentMessages[agentId] || [];
-        const updated = applyFollowUpTransition(existing, transition);
-        if (updated !== existing) {
-          next.agentMessages = {
-            ...s.agentMessages,
-            [agentId]: updated,
-          };
-        }
-      } else {
-        const existing = s.messages[chatJid] || [];
-        const updated = applyFollowUpTransition(existing, transition);
-        if (updated !== existing) {
-          next.messages = { ...s.messages, [chatJid]: updated };
-        }
-      }
-      return next;
-    });
+    set((s) => ({
+      followUps: { ...s.followUps, [chatJid]: items },
+      ...patchFollowUpMessages(s, chatJid, items, transition),
+    }));
   },
 
   actOnFollowUp: async (chatJid, messageId, action, expectedRunId, content) => {
@@ -2404,7 +2421,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // 中断已发出，后端 status:interrupted 事件会驱动 UI 冻结。
       return true;
     } catch (err) {
-      set({ error: err instanceof Error ? err.message : String(err) });
+      const message = err instanceof Error ? err.message : String(err);
+      set({ error: message });
+      // The run keeps going; say so instead of silently restoring the button.
+      showToast('停止失败', message || '请检查网络后重试');
       return false;
     }
   },

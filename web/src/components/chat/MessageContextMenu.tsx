@@ -10,6 +10,16 @@ import {
 import { useChatStore } from '../../stores/chat';
 import { confirmDialog } from '../../stores/confirm';
 import { mediumTap } from '../../hooks/useHaptic';
+import { copyToClipboard } from '../../utils/clipboard';
+import { markdownToPlainText } from '../../lib/markdown-plain-text';
+import { toast } from 'sonner';
+
+function copyWithFeedback(text: string) {
+  copyToClipboard(text).then(
+    () => toast.success('已复制'),
+    () => toast.error('复制失败，请手动选择文本复制'),
+  );
+}
 
 interface MessageContextMenuProps {
   content: string;
@@ -19,37 +29,6 @@ interface MessageContextMenuProps {
   align?: 'start' | 'end';
   /** The trigger button (rendered via asChild). */
   children: ReactNode;
-}
-
-async function copyToClipboard(text: string) {
-  try {
-    await navigator.clipboard.writeText(text);
-  } catch {
-    const textarea = document.createElement('textarea');
-    textarea.value = text;
-    textarea.style.position = 'fixed';
-    textarea.style.opacity = '0';
-    document.body.appendChild(textarea);
-    textarea.select();
-    document.execCommand('copy');
-    document.body.removeChild(textarea);
-  }
-}
-
-function toPlainText(content: string) {
-  return content
-    .replace(/```[\s\S]*?```/g, (m) =>
-      m.replace(/```\w*\n?/, '').replace(/\n?```$/, ''),
-    )
-    .replace(/`([^`]+)`/g, '$1')
-    .replace(/\*\*([^*]+)\*\*/g, '$1')
-    .replace(/\*([^*]+)\*/g, '$1')
-    .replace(/~~([^~]+)~~/g, '$1')
-    .replace(/^#{1,6}\s+/gm, '')
-    .replace(/^\s*[-*+]\s+/gm, '')
-    .replace(/^\s*\d+\.\s+/gm, '')
-    .replace(/!\[([^\]]*)\]\([^)]+\)/g, '$1')
-    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1');
 }
 
 /** Per-message actions: copy as text / Markdown, share image, delete record. */
@@ -78,16 +57,20 @@ export function MessageContextMenu({
     <DropdownMenu onOpenChange={(open) => open && mediumTap()}>
       <DropdownMenuTrigger asChild>{children}</DropdownMenuTrigger>
       <DropdownMenuContent align={align} className="w-44">
-        <DropdownMenuItem
-          onClick={() => void copyToClipboard(toPlainText(content))}
-        >
-          <Copy />
-          复制文本
-        </DropdownMenuItem>
-        <DropdownMenuItem onClick={() => void copyToClipboard(content)}>
-          <FileText />
-          复制 Markdown
-        </DropdownMenuItem>
+        {content.trim() && (
+          <>
+            <DropdownMenuItem
+              onClick={() => copyWithFeedback(markdownToPlainText(content))}
+            >
+              <Copy />
+              复制文本
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => copyWithFeedback(content)}>
+              <FileText />
+              复制 Markdown
+            </DropdownMenuItem>
+          </>
+        )}
         {onShareImage && (
           <DropdownMenuItem onClick={onShareImage}>
             <ImageDown />
@@ -96,7 +79,7 @@ export function MessageContextMenu({
         )}
         {chatJid && messageId && (
           <>
-            <DropdownMenuSeparator />
+            {(content.trim() || onShareImage) && <DropdownMenuSeparator />}
             <DropdownMenuItem
               variant="destructive"
               onClick={() => void handleDelete()}

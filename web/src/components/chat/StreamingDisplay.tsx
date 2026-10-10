@@ -18,27 +18,32 @@ import { resolveAgentDisplayIdentity } from '../../utils/agent-identity';
 import type { AgentInfo, InteractionMode } from '../../types';
 import { EmojiAvatar } from '../common/EmojiAvatar';
 import { MarkdownRenderer } from './MarkdownRenderer';
+import { StreamingMarkdown } from './StreamingMarkdown';
+import { markdownTail } from '../../lib/markdown-blocks';
 import { TodoProgressPanel } from './TodoProgressPanel';
 import { describeToolActivity, ToolActivityCard } from './ToolActivityCard';
 import { useDisplayMode } from '../../hooks/useDisplayMode';
+import { useConnectionStatus } from '../../hooks/useConnectionStatus';
+import { useShellStore } from '../../stores/shell';
 import { formatThinkingDuration } from '../../utils/thinking-duration';
 import { WorkflowRunCard } from './WorkflowRunCard';
 import { shouldShowStreamingPartialText } from '../../lib/interaction-mode';
 import { useThrottledValue } from '../../hooks/useThrottledValue';
+import { cn } from '@/lib/utils';
 
 /**
- * Streamed Markdown is re-parsed and re-rendered whole on every update, so
- * show it at ~10 Hz instead of at frame rate. Status, tools and thinking stay
- * live.
+ * Streamed Markdown re-parses its open block on every update, so show it at
+ * ~10 Hz instead of at frame rate. Status, tools and thinking stay live.
  */
 const STREAMING_MARKDOWN_INTERVAL_MS = 100;
 
-/** Tail of a long streamed text: only the end is rendered while it streams. */
-function streamingTail(text: string, max: number, keep: number): string {
-  return text.length > max ? '...' + text.slice(-keep) : text;
-}
+/** Sub-agent progress panels preview only the end of their streamed text. */
+const PROGRESS_TAIL_CHARS = 2000;
 
-/** Render AskUserQuestion options as a visual card (read-only). */
+/**
+ * AskUserQuestion options. The runner has no interactive answer channel, so
+ * the reply is the user's next message: an option click fills the composer.
+ */
 function AskUserQuestionCard({
   toolInput,
 }: {
@@ -81,18 +86,26 @@ function AskUserQuestionCard({
           </div>
           {q.options && q.options.length > 0 && (
             <div className="flex flex-wrap gap-1.5">
-              {q.options.map((opt, oi) => (
-                <span
-                  key={oi}
-                  className="inline-flex h-7 items-center rounded-md bg-muted px-2.5 text-caption font-medium text-foreground ring-1 ring-surface-border"
-                >
-                  {opt.label || opt.value || '—'}
-                </span>
-              ))}
+              {q.options.map((opt, oi) => {
+                const label = opt.label || opt.value || '';
+                return (
+                  <button
+                    key={oi}
+                    type="button"
+                    disabled={!label}
+                    onClick={() =>
+                      useShellStore.getState().requestComposerDraft(label)
+                    }
+                    className="inline-flex h-7 cursor-pointer items-center rounded-md bg-muted px-2.5 text-caption font-medium text-foreground ring-1 ring-surface-border transition-colors outline-none hover:bg-surface-hover focus-visible:ring-2 focus-visible:ring-ring/40 disabled:cursor-default pointer-coarse:h-10"
+                  >
+                    {label || '—'}
+                  </button>
+                );
+              })}
             </div>
           )}
           <div className="mt-2 text-caption text-muted-foreground">
-            请在智能体终端中回复
+            点选项填入输入框，或直接输入回复后发送
           </div>
         </div>
       ))}
@@ -108,10 +121,13 @@ const TASK_STATUS_LABELS: Record<string, string> = {
   aborted: '已停止',
 };
 
-function formatSystemStatus(status: string): string {
-  if (status === 'requesting') return '正在处理…';
-  if (status === 'compacting') return '正在整理上下文…';
-  return status;
+function isCompactingStatus(status: string | null | undefined): boolean {
+  return status === 'compacting' || !!status?.startsWith('正在整理上下文');
+}
+
+/** Statuses the run status line already shows as its phase. */
+function isPhaseSystemStatus(status: string): boolean {
+  return status === 'requesting' || isCompactingStatus(status);
 }
 
 /** Collapsible block for a single Task Agent — visually consistent with the Thinking block. */
@@ -122,6 +138,7 @@ function describeRunPhase(streaming: StreamingState | null | undefined) {
   const tool =
     [...tools].reverse().find((t) => !t.isNested) ?? tools[tools.length - 1];
   if (tool) return describeToolActivity(tool.toolName);
+  if (isCompactingStatus(streaming.systemStatus)) return '正在整理上下文';
   if (streaming.isThinking) return '正在思考';
   if (streaming.partialText) return '正在回复';
   return '正在处理';
@@ -141,6 +158,11 @@ const RunStatus = memo(function RunStatus({
   phase: string;
 }) {
   const startedAt = useChatStore((s) => s.activeRuns[runtimeJid]?.startedAt);
+  // Offline, the run may have moved on; don't pretend the phase is live. A
+  // dropped WebSocket alone isn't enough: HTTP polling keeps state fresh.
+  const offline = useConnectionStatus() === 'offline';
+  const shownPhase = offline ? '网络已断开，恢复后同步' : phase;
+  const announced = useThrottledValue(shownPhase, 3000);
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     if (!startedAt) return;
@@ -153,8 +175,13 @@ const RunStatus = memo(function RunStatus({
     : null;
   return (
     <span className="flex min-w-0 items-center gap-1.5 text-caption text-muted-foreground">
-      <span className="shimmer truncate">{phase}</span>
-      {elapsed != null && (
+      <span className={cn('truncate', offline ? 'text-warning' : 'shimmer')}>
+        {shownPhase}
+      </span>
+      <span role="status" aria-live="polite" className="sr-only">
+        {announced}
+      </span>
+      {elapsed != null && !offline && (
         <span className="shrink-0 text-faint-foreground tabular-nums">
           {formatRunElapsed(elapsed)}
         </span>
@@ -173,7 +200,7 @@ function TaskAgentBlock({
   const streaming = useChatStore((s) => s.agentStreaming[agent.id]);
   const isRunning = agent.status === 'running';
   const partialMarkdown = useThrottledValue(
-    streamingTail(streaming?.partialText ?? '', 2000, 1500),
+    markdownTail(streaming?.partialText ?? '', PROGRESS_TAIL_CHARS),
     STREAMING_MARKDOWN_INTERVAL_MS,
   );
   const [expanded, setExpanded] = useState(isRunning);
@@ -313,7 +340,7 @@ const SdkTaskRuntimeBlock = memo(function SdkTaskRuntimeBlock({
   const [expanded, setExpanded] = useState(task.status === 'running');
   const isRunning = task.status === 'running' || task.status === 'backgrounded';
   const textTailMarkdown = useThrottledValue(
-    streamingTail(task.textTail, 2000, 1500),
+    markdownTail(task.textTail, PROGRESS_TAIL_CHARS),
     STREAMING_MARKDOWN_INTERVAL_MS,
   );
   const statusLabel =
@@ -517,29 +544,46 @@ function TraceRow({
   const base = danger ? 'text-error' : 'text-foreground/80';
   return (
     <div className={`text-label ${base} break-words`}>
-      <div
-        className={`flex items-start gap-1${hasDetail ? ' cursor-pointer' : ''}`}
-        onClick={hasDetail ? () => setOpen((o) => !o) : undefined}
-      >
-        {hasDetail &&
-          (open ? (
-            <ChevronUp className="w-3 h-3 mt-0.5 shrink-0 text-muted-foreground" />
+      {hasDetail ? (
+        <button
+          type="button"
+          onClick={() => setOpen((o) => !o)}
+          aria-expanded={open}
+          className="flex w-full cursor-pointer items-start gap-1 rounded-sm text-left outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+        >
+          {open ? (
+            <ChevronUp className="mt-0.5 h-3 w-3 shrink-0 text-muted-foreground" />
           ) : (
-            <ChevronDown className="w-3 h-3 mt-0.5 shrink-0 text-muted-foreground" />
-          ))}
-        <span>
-          <span className="font-medium">{item.title}</span>
-          {item.summary && (
-            <span className="text-muted-foreground"> — {item.summary}</span>
+            <ChevronDown className="mt-0.5 h-3 w-3 shrink-0 text-muted-foreground" />
           )}
-        </span>
-      </div>
+          <TraceRowText item={item} />
+        </button>
+      ) : (
+        <div className="flex items-start gap-1">
+          <TraceRowText item={item} />
+        </div>
+      )}
       {hasDetail && open && (
         <div className="mt-0.5 ml-4 border-l-2 border-surface-border pl-2 text-caption break-all whitespace-pre-wrap text-muted-foreground">
           {item.detail}
         </div>
       )}
     </div>
+  );
+}
+
+function TraceRowText({
+  item,
+}: {
+  item: import('../../stores/chat').StreamingTraceEvent;
+}) {
+  return (
+    <span>
+      <span className="font-medium">{item.title}</span>
+      {item.summary && (
+        <span className="text-muted-foreground"> — {item.summary}</span>
+      )}
+    </span>
   );
 }
 
@@ -600,7 +644,7 @@ function StreamingContent({
   showPartialText: boolean;
 }) {
   const partialMarkdown = useThrottledValue(
-    streamingTail(streaming.partialText, 3000, 2000),
+    streaming.partialText,
     STREAMING_MARKDOWN_INTERVAL_MS,
   );
   // Classify active tools
@@ -615,6 +659,7 @@ function StreamingContent({
   );
   const showSystemStatus =
     streaming.systemStatus &&
+    !isPhaseSystemStatus(streaming.systemStatus) &&
     !(
       hasWorkflowTasks &&
       /后台任务运行中|完成后将继续汇总/u.test(streaming.systemStatus)
@@ -628,7 +673,7 @@ function StreamingContent({
       {showSystemStatus && (
         <div className="mb-2 flex h-7 items-center gap-2 font-sans text-label text-muted-foreground">
           <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
-          <span>{formatSystemStatus(showSystemStatus)}</span>
+          <span>{showSystemStatus}</span>
         </div>
       )}
 
@@ -752,12 +797,11 @@ function StreamingContent({
 
       {/* Partial text */}
       {showPartialText && streaming.partialText && (
-        <div className="max-w-none overflow-hidden [&>div>*:first-child]:!mt-0">
-          <MarkdownRenderer
+        <div className="max-w-none overflow-hidden">
+          <StreamingMarkdown
             content={partialMarkdown}
             groupJid={groupJid}
             variant="chat"
-            streaming
           />
         </div>
       )}
@@ -980,8 +1024,11 @@ export function StreamingDisplay({
     isWaiting && !streaming?.interrupted ? (
       <RunStatus runtimeJid={runtimeJid} phase={describeRunPhase(streaming)} />
     ) : null;
+  // Sticky: a long run pushes the row above the viewport, and it carries the
+  // phase and elapsed time. Same height as MessageBubble's row so the
+  // streaming → final swap doesn't move content.
   const identityRow = (
-    <div className="mb-1.5 flex h-6 items-center gap-2">
+    <div className="sticky top-0 z-10 mb-1.5 flex h-6 items-center gap-2 bg-background">
       <EmojiAvatar
         imageUrl={agentIdentity.imageUrl}
         emoji={agentIdentity.emoji}
@@ -1081,7 +1128,7 @@ export function StreamingDisplay({
     return (
       <div className="mb-2 border-b border-surface-border pb-2">
         {/* Sender line */}
-        <div className="mb-1 flex h-6 items-center gap-1.5">
+        <div className="sticky top-0 z-10 mb-1 flex h-6 items-center gap-1.5 bg-background">
           <span className="text-caption font-medium text-foreground">
             {senderName}
           </span>

@@ -77,8 +77,10 @@ describe('web design-system guard', () => {
     expectWithinAllowance(
       countBy(/fixed inset-0/g, (rel) => !rel.startsWith('components/ui/')),
       {
-        // Full-screen media viewers that stack above dialogs.
-        'components/chat/ImageLightbox.tsx': 1,
+        // Full-screen media viewers that stack above dialogs. The image
+        // viewer is a Radix dialog: its overlay (scroll lock) and its content
+        // both cover the screen.
+        'components/chat/ImageLightbox.tsx': 2,
         'components/chat/PreviewDialog.tsx': 1,
       },
     );

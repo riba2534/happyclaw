@@ -71,6 +71,7 @@ describe('internal context audit visibility contract', () => {
     expect(display).not.toMatch(/AgentContextPanel/);
     expect(display).not.toMatch(/streaming\.contextAudit/);
     expect(display).not.toMatch(/label: 'Agent Context'/);
-    expect(display).toMatch(/status === 'requesting'\) return '正在处理…'/);
+    // Generic request/compaction statuses are folded into the run phase.
+    expect(display).toMatch(/status === 'requesting' \|\| isCompactingStatus/);
   });
 });

@@ -28,7 +28,12 @@ import { ImageLightbox } from './ImageLightbox';
 import { useDisplayMode } from '../../hooks/useDisplayMode';
 import { formatThinkingDuration } from '../../utils/thinking-duration';
 import { resolveAgentDisplayIdentity } from '../../utils/agent-identity';
-import { getPresentedMessageContent } from '../../lib/message-presentation';
+import {
+  getPresentedMessageContent,
+  incompleteReplyNote,
+} from '../../lib/message-presentation';
+import { copyToClipboard } from '../../utils/clipboard';
+import { toast } from 'sonner';
 import { getMessageDisplayTimestamp } from '../../lib/message-timeline';
 import {
   getAuthoritativeTokenBreakdown,
@@ -314,22 +319,28 @@ export const MessageBubble = memo(
 
     const handleCopy = async () => {
       try {
-        await navigator.clipboard.writeText(presentedContent);
+        await copyToClipboard(presentedContent);
         setCopied(true);
         setTimeout(() => setCopied(false), 1500);
       } catch {
-        const textarea = document.createElement('textarea');
-        textarea.value = presentedContent;
-        textarea.style.position = 'fixed';
-        textarea.style.opacity = '0';
-        document.body.appendChild(textarea);
-        textarea.select();
-        document.execCommand('copy');
-        document.body.removeChild(textarea);
-        setCopied(true);
-        setTimeout(() => setCopied(false), 1500);
+        toast.error('复制失败，请手动选择文本复制');
       }
     };
+    const incomplete = incompleteReplyNote(message);
+    const incompleteBadge = incomplete && (
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span
+            tabIndex={0}
+            aria-label={`${incomplete.label}：${incomplete.detail}`}
+            className="inline-flex h-5 shrink-0 items-center rounded-md px-1.5 text-micro font-medium text-muted-foreground ring-1 ring-surface-border outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+          >
+            {incomplete.label}
+          </span>
+        </TooltipTrigger>
+        <TooltipContent>{incomplete.detail}</TooltipContent>
+      </Tooltip>
+    );
 
     // Context overflow system message
     if (
@@ -479,7 +490,7 @@ export const MessageBubble = memo(
         variant="ghost"
         size="icon-xs"
         aria-label="消息菜单"
-        className="text-muted-foreground"
+        className="text-muted-foreground pointer-coarse:size-10"
       >
         <Ellipsis />
       </Button>
@@ -509,25 +520,36 @@ export const MessageBubble = memo(
                 {shortTime}
               </span>
             )}
-            <div className="flex items-center opacity-0 transition-opacity group-hover:opacity-100 pointer-coarse:opacity-100">
-              <IconButton
-                label="复制"
-                size="icon-xs"
-                icon={
-                  copied ? <Check className="text-primary-text" /> : <Copy />
-                }
-                onClick={handleCopy}
-                className="text-muted-foreground"
-              />
+            {incompleteBadge}
+            <div className="flex items-center opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100 has-[[aria-expanded=true]]:opacity-100 pointer-coarse:opacity-100">
+              {!hasOnlyImages && (
+                <IconButton
+                  label="复制"
+                  size="icon-xs"
+                  icon={
+                    copied ? <Check className="text-primary-text" /> : <Copy />
+                  }
+                  onClick={handleCopy}
+                  className="text-muted-foreground pointer-coarse:size-10"
+                />
+              )}
               {isAI && (
                 <IconButton
                   label="导出为长图"
                   size="icon-xs"
                   icon={<ImageDown />}
                   onClick={() => setShowShareDialog(true)}
-                  className="text-muted-foreground"
+                  className="text-muted-foreground pointer-coarse:size-10"
                 />
               )}
+              <MessageContextMenu
+                content={presentedContent}
+                chatJid={message.chat_jid}
+                messageId={message.id}
+                onShareImage={isAI ? () => setShowShareDialog(true) : undefined}
+              >
+                {menuButton}
+              </MessageContextMenu>
             </div>
           </div>
 
@@ -584,29 +606,29 @@ export const MessageBubble = memo(
       return (
         <div className="group mb-5 flex justify-end">
           <div className="flex max-w-[85%] min-w-0 flex-col items-end">
-            {renderImages('justify-end')}
-            {!hasOnlyImages && (
-              <div className="relative">
+            <div className="relative flex flex-col items-end">
+              {renderImages(cn('justify-end', hasOnlyImages && 'mb-0'))}
+              {!hasOnlyImages && (
                 <div className="rounded-[1.25rem] bg-muted px-4 py-2.5 text-foreground">
                   <p className="text-body-lg break-words whitespace-pre-wrap">
                     {presentedContent}
                   </p>
                 </div>
-                <div className="absolute top-1/2 -left-8 -translate-y-1/2 transition-opacity lg:opacity-0 lg:group-hover:opacity-100 lg:has-[[aria-expanded=true]]:opacity-100">
-                  <MessageContextMenu
-                    content={presentedContent}
-                    chatJid={message.chat_jid}
-                    messageId={message.id}
-                    align="end"
-                  >
-                    {menuButton}
-                  </MessageContextMenu>
-                </div>
+              )}
+              <div className="absolute top-1/2 -left-8 -translate-y-1/2 transition-opacity pointer-coarse:-left-11 lg:opacity-0 lg:group-hover:opacity-100 lg:focus-within:opacity-100 lg:has-[[aria-expanded=true]]:opacity-100">
+                <MessageContextMenu
+                  content={presentedContent}
+                  chatJid={message.chat_jid}
+                  messageId={message.id}
+                  align="end"
+                >
+                  {menuButton}
+                </MessageContextMenu>
               </div>
-            )}
+            </div>
             {showTime && (
               <span
-                className="mt-1 mr-1 text-micro text-faint-foreground opacity-0 transition-opacity group-hover:opacity-100 pointer-coarse:opacity-100"
+                className="mt-1 mr-1 text-micro text-faint-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 pointer-coarse:opacity-100"
                 title={time}
               >
                 {shortTime}
@@ -669,20 +691,21 @@ export const MessageBubble = memo(
         </div>
 
         {/* Action row: usage summary always (faint), actions on hover */}
-        <div className="mt-1.5 flex h-7 items-center gap-1.5">
+        <div className="mt-1.5 flex h-7 items-center gap-1.5 pointer-coarse:h-10">
+          {incompleteBadge}
           {message.is_from_me && message.token_usage && (
             <TokenUsageDisplay
               tokenUsageJson={message.token_usage}
               workflowRuns={completedWorkflowRuns}
             />
           )}
-          <div className="flex items-center gap-0.5 transition-opacity lg:opacity-0 lg:group-hover:opacity-100 lg:has-[[aria-expanded=true]]:opacity-100">
+          <div className="flex items-center gap-0.5 transition-opacity lg:opacity-0 lg:group-hover:opacity-100 lg:focus-within:opacity-100 lg:has-[[aria-expanded=true]]:opacity-100">
             <IconButton
               label="复制消息"
               size="icon-xs"
               icon={copied ? <Check className="text-primary-text" /> : <Copy />}
               onClick={handleCopy}
-              className="text-muted-foreground"
+              className="text-muted-foreground pointer-coarse:size-10"
             />
             <IconButton
               label="生成分享图片"
