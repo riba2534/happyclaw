@@ -170,6 +170,29 @@ describe('usage analytics frontend contract', () => {
     });
   });
 
+  test('takes windowed KPIs from the server summary without the row breakdown', async () => {
+    const raw = enhancedResponse(7, 10);
+    const normalized = normalizeUsageResponse(
+      { ...raw, breakdown: [] },
+      DEFAULT_QUERY,
+      new Date('2026-07-16T12:00:00+08:00'),
+    );
+    expect(normalized.summary).toMatchObject({
+      inputTokens: 10,
+      outputTokens: 2,
+      cacheReadTokens: 3,
+      cacheCreationTokens: 4,
+      totalTokens: 19,
+      providerEstimatedCostUSD: 1,
+      activeDays: 1,
+    });
+
+    apiMock.get.mockResolvedValue({ ...raw, breakdown: [] });
+    await useUsageStore.getState().loadStats(DEFAULT_QUERY);
+    expect(apiMock.get.mock.calls[0][0]).toContain('breakdown=none');
+    expect(useUsageStore.getState().summary?.totalTokens).toBe(19);
+  });
+
   test('keeps four token classes mutually exclusive and trusts de-duplicated run totals', () => {
     const raw = enhancedResponse(7, 10);
     raw.summary.runCount = 1;

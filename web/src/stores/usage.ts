@@ -394,34 +394,49 @@ function aggregateSummary(
       : totals.hasBilledCost
         ? totals.billedCost
         : null;
-  const totalTokens =
-    totals.input +
-    totals.output +
-    totals.cacheRead +
-    totals.cacheCreation +
-    totals.reasoning;
+  // Windowed responses carry server-side totals over the same filters, so
+  // the page can request stats without the bulky per-row breakdown.
+  const serverNumber = (value: number | undefined, fallback: number) =>
+    hasExplicitWindow && typeof value === 'number' ? value : fallback;
+  const input = serverNumber(rawSummary.inputTokens, totals.input);
+  const output = serverNumber(rawSummary.outputTokens, totals.output);
+  const cacheRead = serverNumber(rawSummary.cacheReadTokens, totals.cacheRead);
+  const cacheCreation = serverNumber(
+    rawSummary.cacheCreationTokens,
+    totals.cacheCreation,
+  );
+  const reasoning = serverNumber(rawSummary.reasoningTokens, totals.reasoning);
+  const estimatedCost = serverNumber(
+    rawSummary.providerEstimatedCostUSD,
+    totals.estimatedCost,
+  );
+  const activeDays = serverNumber(rawSummary.activeDays, totals.dates.size);
+  const totalTokens = serverNumber(
+    rawSummary.totalTokens,
+    input + output + cacheRead + cacheCreation + reasoning,
+  );
 
   return {
-    inputTokens: totals.input,
-    outputTokens: totals.output,
-    cacheReadTokens: totals.cacheRead,
-    cacheCreationTokens: totals.cacheCreation,
-    reasoningTokens: totals.reasoning,
+    inputTokens: input,
+    outputTokens: output,
+    cacheReadTokens: cacheRead,
+    cacheCreationTokens: cacheCreation,
+    reasoningTokens: reasoning,
     totalTokens,
-    providerEstimatedCostUSD: totals.estimatedCost,
+    providerEstimatedCostUSD: estimatedCost,
     billedCostUSD: billedCost,
     runCount,
     modelCallCount,
-    activeDays: totals.dates.size,
-    averageCostPerRunUSD: runCount > 0 ? totals.estimatedCost / runCount : 0,
-    totalInputTokens: totals.input,
-    totalOutputTokens: totals.output,
-    totalCacheReadTokens: totals.cacheRead,
-    totalCacheCreationTokens: totals.cacheCreation,
-    totalReasoningTokens: totals.reasoning,
-    totalCostUSD: totals.estimatedCost,
+    activeDays,
+    averageCostPerRunUSD: runCount > 0 ? estimatedCost / runCount : 0,
+    totalInputTokens: input,
+    totalOutputTokens: output,
+    totalCacheReadTokens: cacheRead,
+    totalCacheCreationTokens: cacheCreation,
+    totalReasoningTokens: reasoning,
+    totalCostUSD: estimatedCost,
     totalMessages: runCount,
-    totalActiveDays: totals.dates.size,
+    totalActiveDays: activeDays,
   };
 }
 
@@ -657,8 +672,12 @@ export const useUsageStore = create<UsageState>((set, get) => ({
     });
 
     try {
+      // The page renders daily buckets and server attributions; the
+      // per-row breakdown is only needed by pre-window servers.
+      const params = buildUsageQueryParams(query);
+      params.set('breakdown', 'none');
       const raw = await api.get<RawUsageResponse>(
-        `/api/usage/stats?${buildUsageQueryParams(query).toString()}`,
+        `/api/usage/stats?${params.toString()}`,
       );
       if (requestId !== statsRequestId || get().lastQueryKey !== queryKey)
         return;
