@@ -1,12 +1,14 @@
 // Visual harness for the chat canvas: renders ChatView with representative
 // history, streaming and queue states from mocked stores (no backend).
 //   ?scenario=history | streaming | waiting | empty | proactive
+//            | markdown | markdown-streaming (&cut=fence|list|table)
 //   &display=compact   &theme=dark   &scheme=default|neutral
 import { createRoot } from 'react-dom/client';
 import { MemoryRouter } from 'react-router-dom';
 import { ChatView } from '../../src/components/chat/ChatView';
 import { TooltipProvider } from '../../src/components/ui/tooltip';
 import { ConfirmHost } from '../../src/components/common/ConfirmHost';
+import { Toaster } from 'sonner';
 import { MotionProvider } from '../../src/lib/motion';
 import { useAuthStore, type UserPublic } from '../../src/stores/auth';
 import {
@@ -168,7 +170,274 @@ const msg = (
 const usage = (input: number, output: number, durationMs: number) =>
   JSON.stringify({ inputTokens: input, outputTokens: output, durationMs });
 
-const history: Message[] =
+// ── Markdown kitchen sink (scenario=markdown | markdown-streaming) ──
+const FENCE = '```';
+const longCodeLines = Array.from(
+  { length: 150 },
+  (_, i) =>
+    `  const row${String(i + 1).padStart(3, '0')} = compute(${i}, 'value-${i}'); // line ${i + 1}`,
+);
+const wideHeader = Array.from({ length: 12 }, (_, i) => `列 ${i + 1} Column`);
+
+const markdownKitchenSink = `# 一级标题：Markdown 渲染全量样例
+
+这是一段中英文混排的长段落，用来检查正文字号、行高与 CJK 标点间距。HappyClaw 是基于 Claude Agent SDK 的自托管 Agent 工作台，支持 Web 与飞书、Telegram、QQ 等渠道；它在 Host 模式下直接使用 \`customCwd\` 作为工作目录，而 Container 模式则通过只读/读写挂载访问资源。The quick brown fox jumps over the lazy dog, and then keeps running across a very long English sentence to test wrapping behaviour inside the message column.
+
+## 二级标题 Heading 2
+
+### 三级标题 Heading 3
+
+#### 四级标题 Heading 4
+
+普通段落，紧跟在四级标题之后。
+
+**粗体**、*斜体*、~~删除线~~、***粗斜体***，以及 **注意：**中文标点后紧跟正文的粗体，和 **“引号包裹”**的粗体。
+
+行内代码 \`useChatStore\`，以及很长的行内代码 \`useChatStore.getState().streaming[groupJid].partialText.slice(-MAX_STREAMING_TEXT).replace(/\\n$/, '')\` 需要在窄屏换行。返回值类型是 Promise<void>，泛型写作 Array<string>。
+
+链接：裸链接 https://react.dev/learn 自动识别；中文标点紧跟裸链接 https://claw.riba2534.cn/chat，后面是中文。带 title 的链接 [React 官方文档](https://react.dev "React 官方文档")，工作区相对路径文件链接 [report.md](output/report.md)。超长 URL：https://example.com/api/v1/workspaces/render-harness/sessions/0f9c2b7e-1d3a-4c5b-9e8f-7a6b5c4d3e2f/messages?cursor=eyJpZCI6IjEyMzQ1Njc4OTAiLCJ0cyI6MTcwMDAwMDAwMH0&limit=50&include=attachments,usage
+
+中文标点：「引号」、（括号）、——破折号、……省略号；English, punctuation; 混排 iPhone 13 与 390px 宽度。
+
+无空格长单词：Pneumonoultramicroscopicsilicovolcanoconiosis_Pneumonoultramicroscopicsilicovolcanoconiosis_Pneumonoultramicroscopicsilicovolcanoconiosis
+
+长哈希：e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855e3b0c44298fc1c149afbf4c8996fb924
+
+Emoji：🚀 ✅ ⚠️ 🎉 👨‍👩‍👧‍👦 🇨🇳
+
+## 列表
+
+- 一级无序列表
+  - 二级无序列表
+    - 三级无序列表
+- 第二个一级项
+
+1. 第一步
+2. 第二步
+   1. 子步骤 a
+   2. 子步骤 b
+      - 三级无序
+3. 第三步
+
+1. 松散列表项的第一段。
+
+   同一列表项的第二段，应当另起一行。
+
+2. 包含代码块的列表项：
+
+   ${FENCE}bash
+   npm ci && npm run build
+   ${FENCE}
+
+3. 第三项
+
+模型常见输出——编号被代码块打断：
+
+1. 安装依赖
+
+${FENCE}bash
+npm ci
+${FENCE}
+
+2. 启动开发服务
+
+${FENCE}bash
+make dev
+${FENCE}
+
+3. 打开浏览器访问
+
+- [x] 已完成的任务
+- [ ] 未完成的任务
+  - [ ] 嵌套子任务
+- [ ] 一个非常长的任务项，用来检查任务列表在窄屏下的换行与复选框对齐是否正确，文字应该与第一行左侧对齐。
+
+## 引用
+
+> 一级引用，包含 **粗体** 与 \`code\`。
+>
+> > 嵌套引用的内容。
+>
+> - 引用中的列表项 1
+> - 引用中的列表项 2
+
+---
+
+## 代码
+
+${FENCE}ts
+interface StreamingState {
+  partialText: string;
+  isThinking: boolean;
+}
+
+export function streamingTail(text: string, max: number): string {
+  return text.length > max ? '...' + text.slice(-max) : text;
+}
+${FENCE}
+
+${FENCE}python
+def fib(n: int) -> int:
+    """Return the n-th Fibonacci number."""
+    a, b = 0, 1
+    for _ in range(n):
+        a, b = b, a + b
+    return a
+${FENCE}
+
+${FENCE}bash
+#!/usr/bin/env bash
+set -euo pipefail
+lsof -ti:5231 -sTCP:LISTEN | xargs kill
+echo "done: $(date +%s)"
+${FENCE}
+
+${FENCE}json
+{
+  "name": "happyclaw",
+  "private": true,
+  "scripts": { "dev": "vite", "build": "tsc -b && vite build" }
+}
+${FENCE}
+
+${FENCE}diff
+- const store = useChatStore();
++ const groups = useChatStore((s) => s.groups);
+  const theme = useTheme();
+${FENCE}
+
+${FENCE}
+无语言的多行代码块
+second line without language
+${FENCE}
+
+${FENCE}
+npm install --save-dev single-line-without-language
+${FENCE}
+
+${FENCE}ts
+const veryLongSingleLine = { alpha: 'aaaaaaaaaaaaaaaa', beta: 'bbbbbbbbbbbbbbbb', gamma: 'cccccccccccccccc', delta: 'dddddddddddddddd', epsilon: 'eeeeeeeeeeeeeeee', zeta: 'ffffffffffffffff' };
+${FENCE}
+
+${FENCE}ts
+export function generated() {
+${longCodeLines.join('\n')}
+}
+${FENCE}
+
+## 表格
+
+| 方案 | 次数 | 复杂度 |
+| --- | ---: | :---: |
+| 整 store 订阅 | 120 | 低 |
+| 窄 selector | 3 | 低 |
+
+| ${wideHeader.join(' | ')} |
+| ${wideHeader.map(() => '---').join(' | ')} |
+| ${wideHeader.map((_, i) => `值 ${i + 1}`).join(' | ')} |
+| ${wideHeader.map((_, i) => `value-${i + 1}-long`).join(' | ')} |
+
+| 字段 | 说明 |
+| --- | --- |
+| partialText | 流式输出的部分文本。当内容超过阈值时只渲染尾部，这一列故意写得很长，用来检查表格单元格在长文本下是否会换行，而不是把整张表撑成一行超宽的横向滚动条，影响阅读。 |
+| isThinking | 是否处于思考阶段 |
+
+## 图片
+
+![数据 URL 图片](data:image/svg+xml;base64,${swatch})
+
+![本地静态资源](/icons/icon-192.png "HappyClaw 图标")
+
+![工作区相对路径图片](output/chart.png)
+
+## 公式
+
+行内公式 $E = mc^2$（单美元符号），双美元行内 $$\\sqrt{x^2 + 1}$$。
+
+$$
+\\int_0^\\infty e^{-x^2}\\,dx = \\frac{\\sqrt{\\pi}}{2}
+$$
+
+$$
+f(x) = a_0 + a_1 x + a_2 x^2 + a_3 x^3 + a_4 x^4 + a_5 x^5 + a_6 x^6 + a_7 x^7 + a_8 x^8 + a_9 x^9 + a_{10} x^{10} + a_{11} x^{11}
+$$
+
+## Mermaid
+
+${FENCE}mermaid
+flowchart LR
+  A[用户消息] --> B{需要工具?}
+  B -->|是| C[调用工具]
+  B -->|否| D[直接回复]
+  C --> D
+${FENCE}
+
+${FENCE}mermaid
+flowchart LR
+  A --> (((
+${FENCE}
+
+## 脚注
+
+这里有一个脚注引用[^1]，以及第二个脚注[^note]。
+
+[^1]: 第一个脚注的内容。
+[^note]: 第二个脚注，带 [链接](https://example.com)。
+
+## 原始 HTML
+
+<details>
+<summary>点击展开详情</summary>
+
+折叠内容里的 **Markdown**。
+
+</details>
+
+按 <kbd>Ctrl</kbd> + <kbd>C</kbd> 复制。第一行<br>第二行（br 换行）。
+
+<script>window.__xssScript = 1</script>
+<img src="x" onerror="window.__xssImg = 1">
+<a href="javascript:window.__xssLink=1">恶意 HTML 链接</a> 与 [恶意 Markdown 链接](javascript:window.__xssMd=1)
+
+<div style="position:fixed;inset:0;z-index:9999;background:rgba(220,38,38,.35)" data-sanitize-probe="overlay"><a href="https://example.com/phish">全屏覆盖层（style 注入探针）</a></div>
+
+结尾段落。`;
+
+const codeOnlyMessage = `${FENCE}ts
+export const answer = 42;
+console.log(\`answer = \${answer}\`);
+${FENCE}`;
+
+const mathOnlyMessage = `只含公式的消息（走 Math 渲染管线）：$$\\sqrt{x^2 + 1}$$，以及
+
+$$
+\\int_0^\\infty e^{-x^2}\\,dx = \\frac{\\sqrt{\\pi}}{2}
+$$`;
+
+const markdownCuts: Record<string, string> = {
+  list: '      - 三级无序\n3. 第三步',
+  fence: 'export function streamingTail',
+  table: '| value-1-long | value-2-long | value-3-long',
+};
+const cutMarker =
+  markdownCuts[params.get('cut') ?? 'fence'] ?? markdownCuts.fence;
+const markdownPartial = markdownKitchenSink.slice(
+  0,
+  markdownKitchenSink.indexOf(cutMarker) + cutMarker.length,
+);
+
+const markdownHistory: Message[] = [
+  msg('md-u1', 30, false, '把所有 Markdown 元素都渲染一遍给我看看。'),
+  msg('md-a1', 29, true, markdownKitchenSink, {
+    token_usage: usage(9_800, 3_400, 21_000),
+  }),
+  msg('md-u2', 20, false, '只给我代码。'),
+  msg('md-a2', 19, true, codeOnlyMessage),
+  msg('md-u3', 10, false, '再单独给一个公式。'),
+  msg('md-a3', 9, true, mathOnlyMessage),
+];
+
+const chatHistory: Message[] =
   scenario === 'empty'
     ? []
     : [
@@ -188,6 +457,12 @@ const history: Message[] =
                 data: swatch,
                 mimeType: 'image/svg+xml',
                 name: 'layout.svg',
+              },
+              {
+                type: 'image',
+                data: swatch,
+                mimeType: 'image/svg+xml',
+                name: 'layout-2.svg',
               },
             ]),
           },
@@ -231,7 +506,20 @@ const history: Message[] =
             token_usage: usage(2_310, 188, 5_200),
           },
         ),
+        msg('m9', 6, false, '把 1 到 300 逐行列出来。'),
+        // A reply the user stopped part-way.
+        msg('m10', 5, true, '1\n2\n3\n4\n5', {
+          source_kind: 'interrupt_partial',
+          finalization_reason: 'interrupted',
+        }),
       ];
+
+const history: Message[] =
+  scenario === 'markdown'
+    ? markdownHistory
+    : scenario === 'markdown-streaming'
+      ? markdownHistory.slice(0, 1)
+      : chatHistory;
 
 const streaming: StreamingState = {
   partialText:
@@ -312,6 +600,19 @@ const streaming: StreamingState = {
   ],
 };
 
+const markdownStreaming: StreamingState = {
+  partialText: markdownPartial,
+  thinkingText: '',
+  isThinking: false,
+  activeTools: [],
+  activeHook: null,
+  systemStatus: null,
+  recentEvents: [],
+  traceEvents: [],
+  taskStates: {},
+  todos: [],
+};
+
 const followUps: QueuedFollowUp[] =
   scenario === 'streaming'
     ? [
@@ -349,6 +650,7 @@ useAuthStore.setState({
 
 const isRunning =
   scenario === 'streaming' ||
+  scenario === 'markdown-streaming' ||
   scenario === 'waiting' ||
   scenario === 'proactive';
 
@@ -380,7 +682,12 @@ useChatStore.setState({
         },
       }
     : {},
-  streaming: scenario === 'streaming' ? { [groupJid]: streaming } : {},
+  streaming:
+    scenario === 'streaming'
+      ? { [groupJid]: streaming }
+      : scenario === 'markdown-streaming'
+        ? { [groupJid]: markdownStreaming }
+        : {},
   thinkingCache: { m4: '先确认订阅范围，再比较几种方案的复杂度与收益。' },
   thinkingDurationCache: { m4: 12_400 },
   hasMore: { [groupJid]: false },
@@ -408,6 +715,39 @@ useFileStore.setState({
   navigateTo: () => undefined,
 });
 
+// Lets a test drive markdown-streaming: stream more text, then settle the
+// turn into the final message the way a finished run does. `finish(content)`
+// also appends an arbitrary settled reply to the markdown scenario.
+if (scenario === 'markdown' || scenario === 'markdown-streaming') {
+  Object.assign(window, {
+    markdownHarness: {
+      kitchenSink: markdownKitchenSink,
+      setPartial(partialText: string) {
+        useChatStore.setState((s) => ({
+          streaming: {
+            ...s.streaming,
+            [groupJid]: { ...markdownStreaming, partialText },
+          },
+        }));
+      },
+      finish(content = markdownKitchenSink) {
+        useChatStore.setState((s) => ({
+          messages: {
+            ...s.messages,
+            [groupJid]: [
+              ...(s.messages[groupJid] ?? []),
+              msg('md-final', 0, true, content),
+            ],
+          },
+          streaming: {},
+          waiting: {},
+          activeRuns: {},
+        }));
+      },
+    },
+  });
+}
+
 createRoot(document.getElementById('root')!).render(
   <MotionProvider>
     <TooltipProvider>
@@ -417,6 +757,7 @@ createRoot(document.getElementById('root')!).render(
         </main>
       </MemoryRouter>
       <ConfirmHost />
+      <Toaster position="top-center" />
     </TooltipProvider>
   </MotionProvider>,
 );

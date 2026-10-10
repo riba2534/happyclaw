@@ -198,7 +198,9 @@ describe('MarkdownRenderer progressive enhancement', () => {
     expect(html).toContain('class="katex"');
     expect(html).toContain('<strong>保留</strong>');
     expect(html).not.toContain('<script');
-    expect(html).not.toContain('alert(1)');
+    // A tag outside the allowlist stays visible, inert text (like GFM's
+    // tagfilter) instead of vanishing, matching the streaming view.
+    expect(html).toContain('&lt;script&gt;alert(1)&lt;/script&gt;');
   });
 });
 

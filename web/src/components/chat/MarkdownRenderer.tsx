@@ -1,7 +1,7 @@
 import { lazy, memo, Suspense } from 'react';
-import remarkGfm from 'remark-gfm';
-import remarkBreaks from 'remark-breaks';
 import { MarkdownContent, type MarkdownRendererProps } from './MarkdownContent';
+import { REMARK_BASE } from '../../lib/markdown/pipeline';
+import { RAW_HTML_PATTERN } from '../../lib/markdown/html-tags';
 
 const EnhancedMarkdownRenderer = lazy(() =>
   import('./EnhancedMarkdownRenderer').then((module) => ({
@@ -24,10 +24,7 @@ const RawMarkdownRenderer = lazy(() =>
   })),
 );
 
-const BASIC_REMARK_PLUGINS = [remarkGfm, remarkBreaks];
 const BASIC_REHYPE_PLUGINS: [] = [];
-const RAW_HTML_PATTERN =
-  /<(?:!--|!doctype\b|\/?[A-Za-z][A-Za-z0-9:-]*(?:\s|\/?>))/i;
 
 export interface MarkdownFeatures {
   hasMath: boolean;
@@ -39,6 +36,7 @@ export function detectMarkdownFeatures(content: string): MarkdownFeatures {
   return {
     hasMath: content.includes('$$'),
     hasCodeFence: content.includes('```') || content.includes('~~~'),
+    // Only HTML the sanitizer keeps: `Promise<void>` stays literal text.
     hasRawHtml: RAW_HTML_PATTERN.test(content),
   };
 }
@@ -66,7 +64,7 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({
     <MarkdownContent
       {...props}
       streaming={streaming}
-      remarkPlugins={BASIC_REMARK_PLUGINS}
+      remarkPlugins={REMARK_BASE}
       rehypePlugins={BASIC_REHYPE_PLUGINS}
       pipeline="basic"
     />

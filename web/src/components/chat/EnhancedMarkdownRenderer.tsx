@@ -1,14 +1,18 @@
 import { useMemo } from 'react';
-import remarkGfm from 'remark-gfm';
-import remarkBreaks from 'remark-breaks';
 import remarkMath from 'remark-math';
-import { rehypeHighlightShared } from './rehypeHighlightShared';
+import {
+  HIGHLIGHT_OPTIONS,
+  rehypeHighlightShared,
+} from './rehypeHighlightShared';
 import rehypeKatex from 'rehype-katex';
 import rehypeRaw from 'rehype-raw';
 import rehypeSanitize from 'rehype-sanitize';
 import { MarkdownContent, type MarkdownRendererProps } from './MarkdownContent';
 import type { MarkdownFeatures } from './MarkdownRenderer';
 import { markdownSanitizeSchema } from './markdownSanitizeSchema';
+import { KATEX_OPTIONS, REMARK_BASE } from '../../lib/markdown/pipeline';
+import { rehypeEscapeUnknownHtml } from '../../lib/markdown/rehype-escape-unknown-html';
+import { rehypeKatexScroll } from '../../lib/markdown/rehype-katex-scroll';
 import 'highlight.js/styles/github.css';
 import 'katex/dist/katex.min.css';
 
@@ -16,39 +20,47 @@ export interface EnhancedMarkdownRendererProps extends MarkdownRendererProps {
   features: MarkdownFeatures;
 }
 
+/**
+ * Plugin order follows rehype-katex's guidance: sanitize user HTML first,
+ * then let highlight.js and KaTeX add their classes, inline styles and SVG.
+ * Sanitizing last stripped KaTeX's `\sqrt` SVG (a formula silently lost its
+ * root sign whenever the reply also had code) and needed `class`/`style`
+ * exceptions that user HTML could abuse.
+ */
 export function EnhancedMarkdownRenderer({
   features,
   streaming = false,
   ...props
 }: EnhancedMarkdownRendererProps) {
+  const math = features.hasMath && !streaming;
+  const rawHtml = features.hasRawHtml && !streaming;
   const remarkPlugins = useMemo(
     () =>
-      streaming || !features.hasMath
-        ? [remarkGfm, remarkBreaks]
-        : [
-            remarkGfm,
-            remarkBreaks,
+      math
+        ? [
+            ...REMARK_BASE,
             [remarkMath, { singleDollarTextMath: false }] as const,
-          ],
-    [features.hasMath, streaming],
+          ]
+        : REMARK_BASE,
+    [math],
   );
   const rehypePlugins = useMemo(
-    () =>
-      streaming
-        ? features.hasCodeFence
-          ? [[rehypeHighlightShared, { plainText: ['mermaid'] }] as const]
-          : []
-        : [
+    () => [
+      ...(rawHtml
+        ? [
+            rehypeEscapeUnknownHtml,
             rehypeRaw,
-            ...(features.hasCodeFence
-              ? [[rehypeHighlightShared, { plainText: ['mermaid'] }] as const]
-              : []),
-            ...(features.hasMath
-              ? [[rehypeKatex, { throwOnError: false, strict: false }] as const]
-              : []),
             [rehypeSanitize, markdownSanitizeSchema] as const,
-          ],
-    [features.hasCodeFence, features.hasMath, streaming],
+          ]
+        : []),
+      ...(features.hasCodeFence
+        ? [[rehypeHighlightShared, HIGHLIGHT_OPTIONS] as const]
+        : []),
+      ...(math
+        ? [[rehypeKatex, KATEX_OPTIONS] as const, rehypeKatexScroll]
+        : []),
+    ],
+    [features.hasCodeFence, math, rawHtml],
   );
 
   return (
@@ -57,7 +69,7 @@ export function EnhancedMarkdownRenderer({
       streaming={streaming}
       remarkPlugins={remarkPlugins}
       rehypePlugins={rehypePlugins}
-      pipeline={`enhanced:${features.hasMath ? 'math' : ''}:${features.hasCodeFence ? 'code' : ''}`}
+      pipeline={`enhanced:${math ? 'math' : ''}:${features.hasCodeFence ? 'code' : ''}:${rawHtml ? 'raw' : ''}`}
     />
   );
 }

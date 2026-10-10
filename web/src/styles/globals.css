@@ -692,9 +692,78 @@ pre code.hljs {
   background-color: #78191b !important;
 }
 
+/* Diff code blocks: tint whole lines edge to edge. The code element spans
+   the scroll width and carries the block's inline padding (its <pre> has
+   none), so the tint reaches into it without widening the scroll area. */
+pre code.language-diff {
+  display: block;
+  min-width: max-content;
+  padding-inline: 0.875rem !important;
+}
+pre code.language-diff .hljs-addition,
+pre code.language-diff .hljs-deletion {
+  display: inline-block;
+  min-width: calc(100% + 1.75rem);
+  margin-inline: -0.875rem;
+  padding-inline: 0.875rem;
+}
+/* Share images wrap code lines instead of scrolling. */
+.share-card-content pre code.language-diff {
+  min-width: 0;
+}
+
 /* KaTeX dark mode — inherit text color from theme */
 .dark .katex {
   color: inherit;
+}
+
+/* Long display formulas scroll sideways instead of being clipped by the
+   message column. */
+.katex-display {
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  padding-block: 2px;
+}
+
+/* Markdown horizontal scrollers (tables, code): fade the edge that hides
+   more content so it reads as scrollable. Set by MarkdownContent. */
+[data-scroll-fade='end'] {
+  -webkit-mask-image: linear-gradient(
+    to right,
+    #000 calc(100% - 2.5rem),
+    transparent
+  );
+  mask-image: linear-gradient(to right, #000 calc(100% - 2.5rem), transparent);
+}
+[data-scroll-fade='start'] {
+  -webkit-mask-image: linear-gradient(
+    to left,
+    #000 calc(100% - 2.5rem),
+    transparent
+  );
+  mask-image: linear-gradient(to left, #000 calc(100% - 2.5rem), transparent);
+}
+[data-scroll-fade='both'] {
+  -webkit-mask-image: linear-gradient(
+    to right,
+    transparent,
+    #000 2.5rem,
+    #000 calc(100% - 2.5rem),
+    transparent
+  );
+  mask-image: linear-gradient(
+    to right,
+    transparent,
+    #000 2.5rem,
+    #000 calc(100% - 2.5rem),
+    transparent
+  );
+}
+/* Share images show tables and code in full, nothing to hint at. */
+.share-card-content [data-scroll-fade] {
+  -webkit-mask-image: none;
+  mask-image: none;
 }
 
 /* Reduced motion preference */
