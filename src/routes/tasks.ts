@@ -56,6 +56,9 @@ const tasksRoutes = new Hono<{ Variables: Variables }>();
 // live Feishu chat.get per referenced chat on every poll. Names change
 // rarely, so a short-lived per-user cache is enough.
 const FEISHU_CHAT_NAME_TTL_MS = 10 * 60 * 1000;
+// A failed or empty lookup (transient API error, bot not yet in the chat) is
+// retried soon rather than hiding the name for the full TTL.
+const FEISHU_CHAT_NAME_MISS_TTL_MS = 30 * 1000;
 const FEISHU_CHAT_NAME_CACHE_MAX = 1_000;
 const feishuChatNameCache = new Map<
   string,
@@ -70,7 +73,8 @@ function rememberFeishuChatName(
   feishuChatNameCache.delete(key);
   feishuChatNameCache.set(key, {
     name,
-    expiresAt: now + FEISHU_CHAT_NAME_TTL_MS,
+    expiresAt:
+      now + (name ? FEISHU_CHAT_NAME_TTL_MS : FEISHU_CHAT_NAME_MISS_TTL_MS),
   });
   while (feishuChatNameCache.size > FEISHU_CHAT_NAME_CACHE_MAX) {
     const oldest = feishuChatNameCache.keys().next().value as

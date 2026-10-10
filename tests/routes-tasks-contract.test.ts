@@ -1207,4 +1207,45 @@ describe('GET /api/tasks list cost', () => {
       db.deleteRegisteredGroup?.(FEISHU_JID);
     }
   });
+
+  test('retries a missing Feishu chat name after a short negative TTL', async () => {
+    tasksRoutesModule.clearFeishuChatNameCache();
+    db.setRegisteredGroup(FEISHU_JID, {
+      name: 'Persisted Name',
+      folder: GROUP_FOLDER,
+      added_at: new Date().toISOString(),
+      created_by: OWNER_ID,
+      is_home: false,
+    } as any);
+    createTask('list-cost-miss', OWNER_ID, { chat_jid: FEISHU_JID });
+    const getFeishuChatInfo = vi
+      .fn()
+      .mockResolvedValueOnce(null)
+      .mockResolvedValue({ name: 'Live Name' });
+    webContext.setWebDeps({ getFeishuChatInfo } as any);
+    asUser(OWNER_ID);
+    const start = Date.now();
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(start);
+    const poll = async (at: number) => {
+      clock.mockReturnValue(start + at);
+      return (await (await tasksRoutes.request('/')).json()).groupNames[
+        FEISHU_JID
+      ];
+    };
+    try {
+      expect(await poll(0)).toBe('Persisted Name');
+      expect(await poll(10_000)).toBe('Persisted Name');
+      expect(getFeishuChatInfo).toHaveBeenCalledTimes(1);
+      // The miss expires after 30s, not the 10-minute name TTL.
+      expect(await poll(31_000)).toBe('Live Name');
+      expect(getFeishuChatInfo).toHaveBeenCalledTimes(2);
+      // A resolved name is kept for the full TTL.
+      expect(await poll(5 * 60_000)).toBe('Live Name');
+      expect(getFeishuChatInfo).toHaveBeenCalledTimes(2);
+    } finally {
+      clock.mockRestore();
+      db.deleteTask('list-cost-miss');
+      db.deleteRegisteredGroup?.(FEISHU_JID);
+    }
+  });
 });
