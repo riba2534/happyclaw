@@ -27,9 +27,9 @@ Telegram、QQ、钉钉、微信、企业微信、Discord、WhatsApp。
 
 ```text
 Agent Profile（身份、四段 Prompt、能力策略）
-└── Workspace（文件目录、执行模式、环境变量、渠道群聊绑定）
-    ├── Main Session
-    ├── Runtime Session（独立 Claude 上下文，可绑定私聊）
+└── Workspace（文件目录、执行模式、环境变量、话题群绑定）
+    ├── Main Session（可绑定私聊或普通群）
+    ├── Runtime Session（独立 Claude 上下文，可绑定私聊或普通群）
     ├── Native Context Session（飞书话题等原生线程）
     └── Scheduled Run（group 或 isolated）
 ```
@@ -143,8 +143,8 @@ Web UI 约定：
 - Agent loop 运行期间到达的普通消息逐条进入可见、可编辑和可排序的 durable 队列；
   当前 loop 自然结束后，调度器原子快照当时剩余的普通队列，并将其作为一个批次交给
   下一轮 Agent。Web 与飞书等渠道共用这套 Workspace/Session 级语义。
-- 显式“发送”或 `steer` 是单条优先屏障：它可以中断当前 loop，但不会顺带吞并后面的
-  普通排队消息；后续普通消息留到再下一轮合批。
+- 显式“发送”或 `steer` 是优先屏障：它中断当前 loop，与它之前已排队的普通消息按可见
+  顺序一起进入下一轮；之后才到达的普通消息不会被吞并，留到再下一轮合批。
 - 普通消息与定时任务使用明确的队列状态；失败采用有界指数退避。
 - `CONTAINER_TIMEOUT` 控制单次运行上限，`IDLE_TIMEOUT` 控制暖 Runner 的空闲保留时间。
 - Script 任务与其他任务共用 `CONTAINER_TIMEOUT`，不设置独立并发池或超时配置。
@@ -198,11 +198,22 @@ Host 模式没有 `maxConcurrentHostProcesses`。旧客户端提交该字段时�
 
 ### 6.2 绑定边界
 
-- 工作区绑定只接受群聊。
-- Runtime Session 绑定只接受私聊。
-- Web 是控制面和公共入口，不改变已经由原生 IM 首次占有的 Session 渠道身份。
-- 一个逻辑 Session 的首个原生消息渠道通过 `setSessionChannelOwnerOnce()` 持久化；
-  后续从 Web 继续对话仍沿用该原生渠道上下文和交付目标。
+绑定接受规则以 `conversationBindingPolicyError()`（`src/channel-conversation-kind.ts`）
+为准，业务含义见 `docs/BUSINESS-MODEL.md`：
+
+- 工作区绑定只接受原生话题群（飞书话题群、Telegram Forum），路由为 `thread_map`。
+- Runtime Session 绑定接受私聊和普通群，可以绑定 Main Session。
+- 会话类型无法确定时拒绝绑定，不猜测。
+- Session 只能在工作区（`web:*` JID）下创建；`POST /api/groups/:jid/sessions`
+  （及兼容别名 `/agents`）拒绝 IM 聊天 JID。`#agent:` 是逻辑会话地址，不是发送目标，
+  宿主在任何连接器调用前拒绝把它当作 IM 路由。
+
+回复归属按每条输入确定，不存在“首个原生渠道占有 Session”的持久化：
+
+- 每条输入携带自己的来源与 `ChannelTurnContext`；流式卡片、`send_message`、
+  最终答复与延迟回调都回到这条输入的来源。
+- Web 输入只回到 Web，不因 Session 同时绑定 IM 而自动发往 IM；不同来源的输入
+  不合并成只有单一回复目标的批次。
 - 文件和图片投递必须使用当前 Turn 的 `ChannelTurnContext`，不能从“最近一条群消息”
   猜测目标。
 
@@ -218,13 +229,13 @@ Host 模式没有 `maxConcurrentHostProcesses`。旧客户端提交该字段时�
 
 普通飞书群：
 
-- `always` 使用整个群共享的主上下文。
-- `when_mentioned` 中，首次 @ 消息作为根建立飞书话题和独立 Runtime Session；
-  后续在该话题内无需再次 @。
+- 整个群共享已绑定的那一个 Session（可以是 Main Session）。
+- `always` 与 `when_mentioned` 只决定消息是否需要 @ 才激活；提及或激活策略
+  不会为普通群新建话题 Session，也不会把它变成工作区绑定。
 
 飞书话题群：
 
-- 每个原生话题拥有独立 Runtime Session。
+- 绑定到工作区；每个原生话题拥有独立 Runtime Session，同一话题复用其 Session。
 - `always` 与 `when_mentioned` 只决定话题是否需要首次激活，不合并不同话题上下文。
 
 原生上下文映射持久化在 `im_context_bindings`。工作区群聊挂载使用
@@ -243,6 +254,22 @@ Host 模式没有 `maxConcurrentHostProcesses`。旧客户端提交该字段时�
 破坏性命令受 `OWNER_REQUIRED_IM_COMMANDS` 和渠道原生 sender ID 约束。
 响应对象策略不能因服务重启、同步聊天或恢复绑定而回退成默认值。
 
+飞书群聊中的通用斜杠命令必须由结构化真实 `@Bot` 触发并通过响应对象（audience）
+检查，但不受激活闸门（`activation_mode`、`when_mentioned`、`disabled`）约束；
+`/require_mention` 与 `/owner_mention` 还豁免激活与 owner 认领阻断，作为 IM 侧的
+恢复路径。群里不带 `@Bot` 的斜杠文本按普通消息处理。私聊无需 `@`。
+
+只读命令不能越过本会话读取 owner 的数据：
+
+- 群聊中 `/list`、`/ls`、`/recall`、`/rc` 仅限 owner（`/list` 列出 owner 的全部
+  工作区和会话，`/recall` 摘要可能包含 owner 的 Web 输入）；私聊不受限。是否私聊
+  优先采用连接器随消息传入的 `chatType`，并在首次收到私聊时持久化
+  `feishu_chat_mode=p2p`；仍未知时按群聊处理。
+- `/status`、`/where` 只描述本聊天自己的绑定，群成员可用。
+- `/recall` 读取本条消息实际路由到的 Session：普通群/私聊为其绑定的 Session；
+  话题群为当前话题的 Session，缺少话题元数据时拒绝，永远不回退到 Workspace
+  主会话，也不会为此新建话题 Session。
+
 另有精确的 Session 运行时控制命令，由渠道连接器在通用斜杠命令之前解析。
 群聊必须由渠道结构证明真实 `@Bot`，命令大小写敏感；私聊可直接使用。
 飞书支持 `/steer`、`/break`、`/clear` 和 `/fresh`；QQ 支持 `/steer` 和 `/break`，
@@ -255,18 +282,32 @@ QQ 群聊的结构证明来自平台本身 —— 网关只在真实 `@Bot` 时�
   不进入 Agent Prompt，也不额外发送框架确认。可携带图片。
 - `/break`：必须无附件且正文精确匹配；以到达时为截止点取消此前 pending 并中断 active
   Loop，保留 transcript，之后到达的消息继续运行；固定回复 `Current task stopped.` 或
-  `No active task to stop.`。
+  `No active task to stop.`。只受响应对象/激活策略约束，不要求 owner。
 - `/clear`：必须无附件且正文精确匹配；重置当前逻辑 Session 并固定回复
   `Session context cleared.`。
 - `/fresh [备注]`：必须无附件；停 runner、清 session 文件、写入
   `context_fresh_window` divider 和交接 notes（零摘要，不调 LLM）。旧历史留库。
-  飞书按当前话题 / Runtime Session 换窗，与 `/clear` 同一破坏性边界。斜杠命令
-  要求 owner；MCP `fresh_window` 可由当前会话 Agent 自行调用。
+  飞书按当前话题 / Runtime Session 换窗。MCP `fresh_window` 可由当前会话 Agent
+  自行调用。
+- `/clear`、`/fresh` 无论走运行时控制还是通用斜杠命令，都与 `OWNER_REQUIRED_IM_COMMANDS`
+  同一破坏性边界：群聊中 `@Bot /clear`、`@Bot /fresh` 只允许 owner，未认领 owner 的
+  群直接拒绝；私聊首次使用时认领发送者。
+- 运行时控制的目标：群聊由连接器按本条消息的路由（含原生话题）解析；路由失败时
+  回复目标不存在，绝不回退到绑定的 Workspace 主会话（话题群尤其如此）。只有私聊
+  在连接器未给出目标时由绑定解析，`/break`、`/clear`、`/fresh` 相同。
+
+飞书撤回（`im.message.recalled_v1`）经 `onMessageRecalled` 进入宿主：仍在 durable
+队列中的输入被取消并移出可见队列；尚未开始执行的输入被取消；若正在执行的批次只有
+这一条输入，按 `/break` 语义中断且不发送框架回复；批次含其他输入时不中断。回复锚点
+被撤回或机器人已无法在该会话发送（`target_unavailable`）时，Turn 静默以 cancelled
+结束，不向已失效的锚点发送失败通知。
 
 普通消息默认就是 durable queue，不存在显式 `/queue` 控制命令。旧的 `/queue ...`
 按普通 Agent 输入处理。飞书 Reaction 属于真正执行的 batch，而不是入站消息：同一 batch
-最多在最后一条飞书输入上显示一个 `OnIt`，queued 消息不显示；同一 Session 的上一批必须
-完成清理后才能为下一批添加，彼此独立的 Session 可以并发显示。
+最多在最后一条飞书输入上显示一个 `OnIt`，queued 消息不显示；只有真实飞书消息 ID
+（`om_…`）能成为 `OnIt` 目标，定时任务提示等宿主合成的输入不加 Reaction。同一 Session
+的 Reaction 操作在该 Session 的确认链上串行，上一批的删除先于下一批的添加到达飞书，
+但添加和清理都不阻塞 Agent 启动或排队交接；彼此独立的 Session 可以并发显示。
 
 ## 7. 数据与目录
 

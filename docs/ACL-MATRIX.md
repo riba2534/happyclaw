@@ -260,19 +260,33 @@ Owner Claim：
 命令由主进程 `handleCommand()` 处理，不经过 Web Middleware，但使用渠道 sender ID
 执行独立 Owner Gate。
 
-| 命令                                                      | 权限                                              |
-| --------------------------------------------------------- | ------------------------------------------------- |
-| `/list`、`/ls`、`/status`、`/where`                       | 只读                                              |
-| `/recall`、`/rc`                                          | 只读，带节流                                      |
-| `/allowlist`                                              | 只读                                              |
-| `/clear`、`/fresh`、`/bind`、`/unbind`、`/new`            | IM Owner                                          |
-| `/sw`、`/spawn`                                           | IM Owner                                          |
-| `/release_owner`                                          | IM Owner                                          |
-| `/owner_mention`                                          | 未认领群的 bootstrap，不可被 Owner Gate 锁死      |
-| `/allow`、`/disallow`                                     | Handler 内检查 IM Owner                           |
-| `/require_mention`                                        | Handler 内按当前 owner/策略检查                   |
-| 飞书 `/steer <消息>`、`/break`、`/clear`、`/fresh [备注]` | 必须结构化真实 @Bot，并通过当前 audience/激活策略 |
-| MCP `fresh_window`                                        | 当前会话 Agent 可调用；不走斜杠 owner gate        |
+| 命令                                           | 权限                                                                        |
+| ---------------------------------------------- | --------------------------------------------------------------------------- |
+| `/status`、`/where`                            | 只读，只描述本聊天自己的绑定                                                |
+| `/list`、`/ls`                                 | 私聊只读；群聊仅 IM Owner（列出 owner 全部工作区和会话）                    |
+| `/recall`、`/rc`                               | 私聊只读；群聊仅 IM Owner；带节流；只读取本条消息路由到的 Session           |
+| `/allowlist`                                   | 只读                                                                        |
+| `/clear`、`/fresh`、`/bind`、`/unbind`、`/new` | IM Owner                                                                    |
+| `/sw`、`/spawn`                                | IM Owner                                                                    |
+| `/release_owner`                               | IM Owner                                                                    |
+| `/owner_mention`                               | 未认领群的 bootstrap，不可被 Owner Gate 锁死                                |
+| `/allow`、`/disallow`                          | Handler 内检查 IM Owner                                                     |
+| `/require_mention`                             | Handler 内按当前 owner/策略检查                                             |
+| 飞书 `/steer <消息>`、`/break`                 | 群聊必须结构化真实 @Bot，并通过当前 audience/激活策略；不要求 owner         |
+| 飞书 `/clear`、`/fresh [备注]`（运行时控制）   | 群聊必须结构化真实 @Bot 且为 IM Owner（与斜杠 `/clear`、`/fresh` 同一边界） |
+| MCP `fresh_window`                             | 当前会话 Agent 可调用；不走斜杠 owner gate                                  |
+
+飞书群聊中由 `handleCommand()` 处理的通用斜杠命令同样必须结构化真实 @Bot，并通过 audience
+检查；它们不受激活闸门（`activation_mode`、`when_mentioned`、`disabled`）约束，
+`/require_mention`、`/owner_mention` 还豁免激活与 owner 认领阻断，保证 IM 侧可以
+恢复。群里不带 @Bot 的斜杠文本按普通消息处理。
+
+群聊判定：飞书 JID 不编码会话类型。优先采用连接器随消息传入的 `chatType`，首次
+收到私聊时持久化 `feishu_chat_mode=p2p`；否则按持久化的 `feishu_chat_mode` 判断，
+未知时按群聊处理（fail closed）。私聊中的 owner-required 命令在 owner 未知时认领
+发送者；群聊永不自动认领。运行时控制在群聊路由失败时回复目标不存在，只有私聊才由
+绑定解析目标，绝不回退到 Workspace 主会话。`/recall` 在话题群中只读取当前话题的
+Session，缺少话题元数据时拒绝，不回退到 Workspace 主会话。
 
 不同 Provider 的原生 sender ID namespace 不得混用。例如 QQ C2C 与 Group 使用不同
 ID 空间；owner 比对必须使用渠道适配器传入的规范化 ID。

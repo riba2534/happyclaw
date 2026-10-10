@@ -14127,6 +14127,58 @@ export function getMessage(
   return row ?? null;
 }
 
+/**
+ * Every persisted copy of one inbound provider message (a native message id
+ * is stored once per logical Session it was routed to). Used to withdraw an
+ * input the sender recalled on the provider side.
+ */
+export function listInboundMessagesById(messageId: string): Array<{
+  id: string;
+  chat_jid: string;
+  source_jid: string | null;
+  delivery_status: string | null;
+}> {
+  return prepareCached(
+    `SELECT id, chat_jid, source_jid, delivery_status FROM messages
+     WHERE id = ? AND is_from_me = 0`,
+  ).all(messageId) as Array<{
+    id: string;
+    chat_jid: string;
+    source_jid: string | null;
+    delivery_status: string | null;
+  }>;
+}
+
+/**
+ * Record that a Feishu chat is a 1:1 conversation, learned from the
+ * provider's own `chat_type` on an inbound message. Only fills a missing
+ * mode; an explicit group/topic mode is never overwritten.
+ */
+export function learnFeishuDirectChatMode(jid: string): boolean {
+  const result = prepareCached(
+    `UPDATE registered_groups SET feishu_chat_mode = 'p2p'
+     WHERE jid = ? AND jid LIKE 'feishu:%'
+       AND COALESCE(feishu_chat_mode, '') = ''`,
+  ).run(jid);
+  return result.changes === 1;
+}
+
+/** Withdraw an inbound input that has not started executing yet. */
+export function cancelPendingInboundMessage(
+  chatJid: string,
+  messageId: string,
+  updatedAt = new Date().toISOString(),
+): boolean {
+  const result = prepareCached(
+    `UPDATE messages
+     SET delivery_status = 'cancelled', delivery_updated_at = ?
+     WHERE chat_jid = ? AND id = ? AND is_from_me = 0
+       AND COALESCE(delivery_status, '') NOT IN
+         ('cancelled', 'subsumed', 'queued', 'promoting')`,
+  ).run(updatedAt, chatJid, messageId);
+  return result.changes === 1;
+}
+
 /** Read only the durable payload needed to resume post-persist channel effects. */
 export function getMessagePayload(
   chatJid: string,

@@ -85,8 +85,38 @@ export function sanitizeImFilename(raw: string | undefined | null): string {
 }
 
 /**
+ * Agent 视角的工作区根目录解析器。Host 模式配置了 customCwd 时，Runner 的
+ * cwd 是 customCwd 而不是 data/groups/{folder}（与 Web 文件面板
+ * getFileRootOverride 一致）；附件必须落在 Agent 用相对路径能打开的位置。
+ * 由主进程在启动时注册；未注册或返回空值时回落到 GROUPS_DIR/{folder}。
+ */
+type DownloadRootResolver = (groupFolder: string) => string | null | undefined;
+let downloadRootResolver: DownloadRootResolver | null = null;
+
+export function setImDownloadRootResolver(
+  resolver: DownloadRootResolver | null,
+): void {
+  downloadRootResolver = resolver;
+}
+
+/** 当前 folder 的附件根目录（绝对路径）。 */
+export function resolveImDownloadRoot(groupFolder: string): string {
+  let override: string | null | undefined;
+  try {
+    override = downloadRootResolver?.(groupFolder);
+  } catch {
+    override = undefined;
+  }
+  return override && path.isAbsolute(override)
+    ? override
+    : path.join(GROUPS_DIR, groupFolder);
+}
+
+/**
  * 将 Buffer 写入 downloads/{channel}/{YYYY-MM-DD}/ 目录，
- * 返回工作区相对路径（如 downloads/feishu/2026-03-01/report.pdf）。
+ * 返回 Agent 工作目录相对路径（如 downloads/feishu/2026-03-01/report.pdf）。
+ * 工作目录为 resolveImDownloadRoot(groupFolder)：通常是 data/groups/{folder}，
+ * Host 模式配置 customCwd 时为 customCwd。
  * @throws FileTooLargeError 当 buffer.length > MAX_FILE_SIZE
  */
 export async function saveDownloadedFile(
@@ -108,7 +138,7 @@ export async function saveDownloadedFile(
   }
 
   const dateStr = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
-  const groupRoot = path.join(GROUPS_DIR, groupFolder);
+  const groupRoot = resolveImDownloadRoot(groupFolder);
   const dir = path.join(groupRoot, 'downloads', channel, dateStr);
   fs.mkdirSync(dir, { recursive: true });
   assertDownloadDirInsideGroup(groupRoot, dir);

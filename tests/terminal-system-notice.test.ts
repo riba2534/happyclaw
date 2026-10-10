@@ -100,6 +100,11 @@ function createNoticeRuntime(imSend: (...args: unknown[]) => Promise<void>) {
     storeMessageDirect: db.storeMessageDirect,
     broadcastNewMessage: vi.fn(),
     flushAcknowledgedIpcForJid: vi.fn(),
+    FEISHU_UNCERTAIN_REPLAY_DELAY_MS: 0,
+    FEISHU_OUTBOX_LEASE_MS: 120_000,
+    rememberChannelOutboxFailure: () => ({}),
+    hasDeliveredChannelImageWithContentHash:
+      reliability.hasDeliveredChannelImageWithContentHash,
   };
   const harness = createRuntimeSourceHarness(globals);
   for (const name of [
@@ -107,6 +112,9 @@ function createNoticeRuntime(imSend: (...args: unknown[]) => Promise<void>) {
     'resolveDurableChannelRoute',
     'bindChannelOutboxScope',
     'childChannelOutboxRef',
+    'isLogicalSessionSendTarget',
+    'imageAlreadyDeliveredInTurn',
+    'turnInputAnchorOptions',
     'ScopedChannelDeliveryError',
     'deliverScopedChannelOutput',
     'sendImWithRetry',
@@ -208,6 +216,21 @@ describe('processGroupMessages deterministic failure settlement', () => {
     expect(lane.globals.cursorCommittedInputTurns.has(lane.inputTurnId)).toBe(
       true,
     );
+    // The refused notice closes its own Turn: nothing reclaims `retry_wait`.
+    const noticeRunId = `turn_${crypto
+      .createHash('sha256')
+      .update(
+        [
+          'channel-turn-v1',
+          'telegram',
+          'tg-bot',
+          `${lane.inputTurnId}:system-notice:agent-profile-unavailable`,
+          'main',
+        ].join(':'),
+      )
+      .digest('hex')
+      .slice(0, 32)}`;
+    expect(reliability.getChannelTurnRun(noticeRunId)?.status).toBe('failed');
     expect(webSystemMessages(lane.chatJid)).toEqual([
       'system_error:Skill foo is disabled',
     ]);

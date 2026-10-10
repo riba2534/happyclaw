@@ -191,6 +191,8 @@ HTTP 状态为 409；请求不会停止现有 Runner，也不会修改绑定。
 
 约束：
 
+- `POST /api/groups/:jid/sessions`（及 `/agents`）只接受工作区 `web:*` JID；IM 聊天
+  JID 返回 400，IM 聊天应绑定到 Session 而不是在其下创建 Session。
 - 工作区绑定只接受原生话题群（飞书话题群或 Telegram Forum）。
 - Runtime Session 绑定接受私聊和普通群，`sessionId=main` 表示该 Workspace 的主会话。
 - 话题群使用 `thread_map`，每个原生话题映射独立 Session；普通群的 @ 策略不改变绑定层级。

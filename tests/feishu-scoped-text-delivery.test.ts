@@ -40,6 +40,9 @@ const source = ts.createSourceFile(
 );
 const names = new Set([
   'childChannelOutboxRef',
+  'isLogicalSessionSendTarget',
+  'imageAlreadyDeliveredInTurn',
+  'turnInputAnchorOptions',
   'ScopedChannelDeliveryError',
   'ScopedChannelPartialDeliveryError',
   'deliverScopedChannelOutput',
@@ -67,6 +70,7 @@ const compiled = ts.transpileModule(
 function harness(
   name: string,
   provider: (text: string, options: any) => Promise<void> = async () => {},
+  correlationId?: string,
 ) {
   const route = {
     provider: 'feishu',
@@ -79,6 +83,7 @@ function harness(
   const run = store.createChannelTurnRun({
     ...route,
     idempotencyKey: name,
+    correlationId,
   }).run;
   const scope = { ...route, turnRunId: run.id, owner: `owner:${name}` };
   const sent: Array<{ kind: string; text?: string; options?: any }> = [];
@@ -112,7 +117,12 @@ function harness(
     semanticChannelOutboxIdentity: identities.semanticChannelOutboxIdentity,
     stableChannelOutboxOrdinal: identities.stableChannelOutboxOrdinal,
     syntheticChannelProviderAck: identities.syntheticChannelProviderAck,
+    FEISHU_UNCERTAIN_REPLAY_DELAY_MS: 0,
+    FEISHU_OUTBOX_LEASE_MS: 120_000,
     deliverChannelOutboxItem: delivery.deliverChannelOutboxItem,
+    hasDeliveredChannelImageWithContentHash:
+      store.hasDeliveredChannelImageWithContentHash,
+    rememberChannelOutboxFailure: () => ({}),
     buildInteractionTextOutboxPayload,
     deliverFeishuScopedText,
   });
@@ -125,6 +135,16 @@ function harness(
     send: (text: string, failure: any = {}) =>
       context.sendImWithRetry(
         route.sourceJid,
+        text,
+        [],
+        ref,
+        { presentation: 'native' },
+        undefined,
+        failure,
+      ),
+    sendTo: (jid: string, text: string, failure: any = {}) =>
+      context.sendImWithRetry(
+        jid,
         text,
         [],
         ref,
@@ -218,7 +238,9 @@ describe('Feishu native physical pages through Host Outbox', () => {
           throw new delivery.DefinitiveChannelDeliveryError(
             'code=230025 too large',
           );
-        if (++accepted === 2) {
+        // `>= 2`: an uncertain page is replayed once with the same identity
+        // (Feishu uuid); it only stays uncertain when the replay is too.
+        if (++accepted >= 2) {
           if (mode === 'uncertain')
             throw new Error('ACK lost after accept (code=230025)');
           throw new delivery.DefinitiveChannelDeliveryError(
@@ -240,6 +262,58 @@ describe('Feishu native physical pages through Host Outbox', () => {
       expect(h.sent).toHaveLength(sends);
     },
   );
+
+  test("every physical output names the turn's own input as its reply anchor", async () => {
+    const h = harness('anchor', async () => {}, 'om_turn_input');
+    expect(await h.send('reply text')).toBe(true);
+    expect(await h.image('caption')).toBe(true);
+    expect(h.sent.length).toBeGreaterThanOrEqual(3);
+    for (const event of h.sent) {
+      expect(event.options.inputMessageId).toBe('om_turn_input');
+    }
+  });
+
+  test('an ACK-lost page is replayed once with the same delivery identity and converges', async () => {
+    let calls = 0;
+    const h = harness('ack-lost-replay', async () => {
+      if (++calls === 1) throw new Error('socket hang up after write');
+    });
+    expect(await h.send('short reply')).toBe(true);
+    expect(h.sent).toHaveLength(2);
+    expect(h.sent[1].options.deliveryId).toBe(h.sent[0].options.deliveryId);
+    expect(h.sent[1].options.chunkIndex).toBe(h.sent[0].options.chunkIndex);
+    expect(
+      store.getChannelOutboxItem(h.sent[0].options.deliveryId)?.status,
+    ).toBe('delivered');
+    expect(store.getUncertainChannelOutboxForTurn(h.run.id)).toBeUndefined();
+  });
+
+  test('a provider retry-later refusal ends failed, never an orphaned retry_wait', async () => {
+    const h = harness('retry-later', async () => {
+      throw new delivery.DefinitiveChannelDeliveryError('rate limited', {
+        retryAt: new Date(Date.now() + 60_000).toISOString(),
+      });
+    });
+    const failure: any = {};
+    expect(await h.send('short reply', failure)).toBe(false);
+    const row = store.getChannelOutboxItem(h.sent[0].options.deliveryId)!;
+    expect(row.status).toBe('failed');
+    expect(failure.error.status).toBe('failed');
+    expect(failure.error.deliveryPhase).toBe('rejected');
+  });
+
+  test('a logical #agent: session JID is never handed to the connector', async () => {
+    const h = harness('logical-target');
+    const failure: any = {};
+    const delivered = await h.sendTo(
+      'feishu:oc_test#agent:session-1',
+      'hello',
+      failure,
+    );
+    expect(delivered).toBe(false);
+    expect(h.sent).toHaveLength(0);
+    expect(failure.error.status).toBe('failed');
+  });
 
   test('image is delivered before independently paginated native captions and is not replayed', async () => {
     const h = harness('caption');

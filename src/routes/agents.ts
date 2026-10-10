@@ -426,6 +426,20 @@ router.get('/:jid/sessions', authMiddleware, async (c) => {
   });
 });
 
+/**
+ * Sessions live in a Workspace, addressed by its `web:*` JID. A session
+ * created under an IM chat JID would mint a `feishu:oc_…#agent:…` logical
+ * JID that no connector can deliver to (the channel only knows the
+ * transport route), so creation is refused instead of producing a session
+ * whose every reply fails route validation.
+ */
+const NON_WORKSPACE_SESSION_PARENT_ERROR =
+  'Sessions can only be created in a workspace (web:* JID); bind the IM chat to a session instead';
+
+function isWorkspaceSessionParent(jid: string): boolean {
+  return jid.startsWith('web:') && !jid.includes('#');
+}
+
 // POST /api/groups/:jid/agents — create a user conversation
 router.post('/:jid/agents', authMiddleware, async (c) => {
   const jid = decodeURIComponent(c.req.param('jid'));
@@ -447,6 +461,9 @@ router.post('/:jid/agents', authMiddleware, async (c) => {
       { error: 'Only the workspace owner can manage conversations' },
       403,
     );
+  }
+  if (!isWorkspaceSessionParent(jid)) {
+    return c.json({ error: NON_WORKSPACE_SESSION_PARENT_ERROR }, 400);
   }
   const body = await c.req.json().catch(() => ({}));
   let name = typeof body.name === 'string' ? body.name.trim() : '';
@@ -533,6 +550,9 @@ router.post('/:jid/sessions', authMiddleware, async (c) => {
       { error: 'Only the workspace owner can manage sessions' },
       403,
     );
+  }
+  if (!isWorkspaceSessionParent(jid)) {
+    return c.json({ error: NON_WORKSPACE_SESSION_PARENT_ERROR }, 400);
   }
   const body = await c.req.json().catch(() => ({}));
   let name = typeof body.name === 'string' ? body.name.trim() : '';
