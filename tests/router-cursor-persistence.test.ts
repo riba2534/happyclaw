@@ -27,6 +27,7 @@ vi.mock('../src/logger.js', () => ({
 }));
 
 const db = await import('../src/db.js');
+const { logger } = await import('../src/logger.js');
 
 const nextPullBlob = {
   'web:a': { timestamp: '2026-01-01T00:00:00.000Z', id: 'm1', sequence: 4 },
@@ -144,6 +145,43 @@ describe('router cursor migration', () => {
     ).toThrow();
     expect(db.getRouterState('last_timestamp')).toBe(
       '2026-02-01T00:00:00.000Z',
+    );
+  });
+});
+
+describe('router cursor blobs after v76', () => {
+  test('a stray blob key is dropped without overwriting cursor rows', () => {
+    db.persistRouterState({
+      state: [],
+      cursors: [
+        {
+          kind: 'next_pull',
+          chatJid: 'web:a',
+          cursor: '{"timestamp":"new","id":"m9","sequence":9}',
+        },
+      ],
+    });
+    const before = db.getRouterCursorRows();
+    db.closeDatabase();
+    const raw = new Database(databasePath);
+    raw
+      .prepare('INSERT OR REPLACE INTO router_state (key, value) VALUES (?, ?)')
+      .run(
+        'last_agent_timestamp',
+        JSON.stringify({
+          'web:a': { timestamp: 'old', id: 'm1', sequence: 1 },
+          'web:stale-only': { timestamp: 'old', id: 'm1', sequence: 1 },
+        }),
+      );
+    raw.close();
+    vi.mocked(logger.warn).mockClear();
+    db.initDatabase();
+
+    expect(db.getRouterCursorRows()).toEqual(before);
+    expect(db.getRouterState('last_agent_timestamp')).toBeUndefined();
+    expect(logger.warn).toHaveBeenCalledWith(
+      { key: 'last_agent_timestamp' },
+      expect.stringContaining('dropped without touching router_cursors'),
     );
   });
 });

@@ -2739,7 +2739,18 @@ export function initDatabase(
       PRIMARY KEY (kind, chat_jid)
     ) WITHOUT ROWID;
   `);
-  migrateRouterCursorBlobs();
+  // Only the step up from v75 (or an unversioned database) moves the blobs.
+  // From v76 on router_cursors is authoritative, so a blob key that shows up
+  // later (a restored router_state, a stray writer) is stale and must never
+  // overwrite the newer rows.
+  if (
+    rawSchemaVersionBeforeInit === null ||
+    Number(rawSchemaVersionBeforeInit) < 76
+  ) {
+    migrateRouterCursorBlobs();
+  } else {
+    dropStrayRouterCursorBlobs();
+  }
 
   prepareCached(
     'INSERT OR REPLACE INTO router_state (key, value) VALUES (?, ?)',
@@ -2787,6 +2798,17 @@ function migrateRouterCursorBlobs(): void {
       prepareCached('DELETE FROM router_state WHERE key = ?').run(key);
     })();
     logger.info({ key, moved }, 'Moved router cursors into router_cursors');
+  }
+}
+
+function dropStrayRouterCursorBlobs(): void {
+  for (const [key] of LEGACY_ROUTER_CURSOR_BLOBS) {
+    if (getRouterStateInternal(key) === undefined) continue;
+    logger.warn(
+      { key },
+      'Legacy router cursor blob found after the v76 migration; dropped without touching router_cursors',
+    );
+    prepareCached('DELETE FROM router_state WHERE key = ?').run(key);
   }
 }
 
