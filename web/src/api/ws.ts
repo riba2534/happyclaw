@@ -141,4 +141,6 @@ class WsManager {
 }
 
 export const wsManager = new WsManager();
-wsManager.setupNetworkListeners();
+// Stores import the manager (auth disconnects on logout), and their unit
+// tests load it outside a browser.
+if (typeof window !== 'undefined') wsManager.setupNetworkListeners();
