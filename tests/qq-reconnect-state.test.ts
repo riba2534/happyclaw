@@ -28,9 +28,15 @@ const harness = vi.hoisted(() => {
     failGateway: false,
     /** The gateway answers each heartbeat with op 11. */
     ackHeartbeats: true,
+    /** Token responses wait for releaseTokens(). */
+    holdToken: false,
   };
   const sockets: FakeWebSocket[] = [];
   const gatewayRequests: number[] = [];
+  const heldTokenResponses: Array<() => void> = [];
+  const releaseTokens = () => {
+    for (const respond of heldTokenResponses.splice(0)) respond();
+  };
 
   class FakeWebSocket {
     static CONNECTING = 0;
@@ -123,18 +129,22 @@ const harness = vi.hoisted(() => {
             );
             return;
           }
-          const responseEvents = emitter();
-          callback({
-            statusCode: 200,
-            on: (event: string, listener: Listener) =>
-              responseEvents.on(event, listener),
-            destroy: vi.fn(),
-          });
-          const payload = isToken
-            ? { access_token: 'token', expires_in: 7200 }
-            : { url: 'wss://api.sgroup.qq.com/websocket' };
-          responseEvents.emit('data', Buffer.from(JSON.stringify(payload)));
-          responseEvents.emit('end');
+          const respond = () => {
+            const responseEvents = emitter();
+            callback({
+              statusCode: 200,
+              on: (event: string, listener: Listener) =>
+                responseEvents.on(event, listener),
+              destroy: vi.fn(),
+            });
+            const payload = isToken
+              ? { access_token: 'token', expires_in: 7200 }
+              : { url: 'wss://api.sgroup.qq.com/websocket' };
+            responseEvents.emit('data', Buffer.from(JSON.stringify(payload)));
+            responseEvents.emit('end');
+          };
+          if (isToken && config.holdToken) heldTokenResponses.push(respond);
+          else respond();
         });
       },
       destroy(error?: Error) {
@@ -143,7 +153,15 @@ const harness = vi.hoisted(() => {
     };
   });
 
-  return { FakeWebSocket, sockets, gatewayRequests, httpsRequest, config };
+  return {
+    FakeWebSocket,
+    sockets,
+    gatewayRequests,
+    heldTokenResponses,
+    releaseTokens,
+    httpsRequest,
+    config,
+  };
 });
 
 vi.mock('ws', () => ({ default: harness.FakeWebSocket }));
@@ -203,6 +221,8 @@ describe('QQ reconnect state machine', () => {
     harness.config.answerResume = true;
     harness.config.failGateway = false;
     harness.config.ackHeartbeats = true;
+    harness.config.holdToken = false;
+    harness.heldTokenResponses.length = 0;
   });
 
   afterEach(async () => {
@@ -215,6 +235,7 @@ describe('QQ reconnect state machine', () => {
   test('the watchdog does not start a second attempt while one is connecting', async () => {
     connection = await connected();
     const first = harness.sockets[0];
+    await advance(50_000, 1_000);
     harness.config.autoOpen = false;
 
     await first.receive({ op: 7 }); // server-requested reconnect
@@ -223,8 +244,8 @@ describe('QQ reconnect state machine', () => {
     const pending = harness.sockets[1];
     expect(pending.readyState).toBe(harness.FakeWebSocket.CONNECTING);
 
-    // Two watchdog periods pass while the attempt is still in flight.
-    await advance(125_000, 5_000);
+    // The 60s watchdog tick passes while the attempt is still in flight.
+    await advance(20_000, 1_000);
     expect(harness.sockets).toHaveLength(2);
 
     await pending.open();
@@ -307,6 +328,64 @@ describe('QQ reconnect state machine', () => {
     expect(harness.sockets[1].ops()).toContain(6);
     harness.config.ackHeartbeats = true;
     await advance(5_000);
+    expect(connection.isConnected()).toBe(true);
+  });
+
+  test('drops a socket the gateway never opens and retries', async () => {
+    connection = await connected();
+    harness.config.autoOpen = false;
+    await harness.sockets[0].receive({ op: 7 });
+    await advance(1_500);
+    const silent = harness.sockets[1];
+    expect(silent.readyState).toBe(harness.FakeWebSocket.CONNECTING);
+
+    await advance(35_000, 1_000);
+    expect(silent.readyState).toBe(harness.FakeWebSocket.CLOSED);
+    expect(harness.sockets).toHaveLength(3);
+    harness.config.autoOpen = true;
+    await harness.sockets[2].open();
+    await flush();
+    expect(harness.sockets[2].ops()).toContain(6);
+    expect(connection.isConnected()).toBe(true);
+  });
+
+  test('a RESUME the gateway never confirms times out and the retry identifies', async () => {
+    connection = await connected();
+    harness.config.answerResume = false;
+    await harness.sockets[0].receive({ op: 7 });
+    await advance(1_500);
+    const unconfirmed = harness.sockets[1];
+    expect(unconfirmed.ops()).toContain(6);
+
+    await advance(35_000, 1_000);
+    expect(unconfirmed.readyState).toBe(harness.FakeWebSocket.CLOSED);
+    const retry = harness.sockets[2];
+    expect(retry.ops()).toContain(2);
+    expect(retry.ops()).not.toContain(6);
+    expect(connection.isConnected()).toBe(true);
+  });
+
+  test('a HELLO answered after its socket was superseded stays on that socket', async () => {
+    connection = await connected();
+    // The cached token is past its expiry, so the next HELLO waits on a
+    // refresh that outlasts the socket.
+    vi.setSystemTime(Date.now() + 3 * 60 * 60 * 1000);
+    harness.config.holdToken = true;
+    await harness.sockets[0].receive({ op: 7 });
+    await advance(1_500);
+    const stale = harness.sockets[1];
+    await stale.receive({ op: 7 }); // superseded before it could answer
+    await advance(3_000);
+    const live = harness.sockets[2];
+    expect(live).toBeDefined();
+
+    harness.config.holdToken = false;
+    harness.releaseTokens();
+    await flush();
+    const handshakes = (socket: typeof live) =>
+      socket.ops().filter((op) => op === 2 || op === 6);
+    expect(handshakes(stale)).toEqual([]);
+    expect(handshakes(live)).toEqual([6]);
     expect(connection.isConnected()).toBe(true);
   });
 });
