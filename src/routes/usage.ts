@@ -104,10 +104,19 @@ function queryContext(
 // and filter change); each run of the aggregates took 0.1-0.5s of
 // synchronous SQLite work at 50k records. Results are keyed by the effective
 // filters, which already carry the member's own userId, and are reused only
-// while usage_records is unchanged.
+// while usage_records is unchanged. Breakdown rows dominate the size (a
+// 90-day window can be ~30k rows, ~9MB), so the cache holds at most
+// MAX_CACHED_BREAKDOWN_ROWS of them in total; larger results are recomputed.
+const MAX_CACHED_BREAKDOWN_ROWS = 20_000;
 const analyticsCache = new VersionedTtlCache<
   ReturnType<typeof getUsageAnalytics>
->({ maxEntries: 16, maxAgeMs: 60_000, staleGraceMs: 0 });
+>({
+  maxEntries: 16,
+  maxAgeMs: 60_000,
+  staleGraceMs: 0,
+  maxWeight: MAX_CACHED_BREAKDOWN_ROWS,
+  weigh: (data) => data.breakdown.length,
+});
 const attributionsCache = new VersionedTtlCache<
   ReturnType<typeof getUsageAttributions>
 >({ maxEntries: 32, maxAgeMs: 60_000, staleGraceMs: 0 });

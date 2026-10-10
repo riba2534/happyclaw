@@ -42,4 +42,32 @@ describe('VersionedTtlCache', () => {
     expect(cache.get('c', 1, 3)).toBe(3);
     expect(cache.size).toBe(2);
   });
+
+  test('keeps the summed weight within the budget', () => {
+    const cache = new VersionedTtlCache<number[]>({
+      maxEntries: 8,
+      maxAgeMs: 1_000,
+      staleGraceMs: 0,
+      maxWeight: 10,
+      weigh: (rows) => rows.length,
+    });
+    cache.set('a', 1, new Array(4).fill(0), 0);
+    cache.set('b', 1, new Array(4).fill(0), 0);
+    expect(cache.size).toBe(2);
+    // 4 + 4 + 4 > 10: the least recently used entry goes.
+    cache.set('c', 1, new Array(4).fill(0), 0);
+    expect(cache.get('a', 1, 1)).toBeUndefined();
+    expect(cache.size).toBe(2);
+    // A value heavier than the whole budget is not cached and evicts nothing.
+    cache.set('huge', 1, new Array(11).fill(0), 0);
+    expect(cache.get('huge', 1, 1)).toBeUndefined();
+    expect(cache.size).toBe(2);
+    // Replacing a key releases its old weight.
+    cache.set('b', 1, [], 0);
+    cache.set('d', 1, new Array(6).fill(0), 0);
+    expect(cache.size).toBe(3);
+    cache.clear();
+    cache.set('e', 1, new Array(10).fill(0), 0);
+    expect(cache.get('e', 1, 1)).toHaveLength(10);
+  });
 });
