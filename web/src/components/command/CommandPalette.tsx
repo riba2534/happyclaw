@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   CommandDialog,
@@ -27,6 +27,9 @@ import {
 } from '../../lib/command-items';
 import { openWorkspaceSession } from '../../lib/chat-navigation';
 
+const EMPTY_QUERY_LIMIT = 12;
+const SEARCH_LIMIT = 30;
+
 /** ⌘K palette: jump to pages, workspaces, sessions and settings, or run actions. */
 export function CommandPalette({
   open,
@@ -46,6 +49,10 @@ export function CommandPalette({
   const toggleSidebar = useShellStore((s) => s.toggleSidebar);
   const setCreateWorkspaceOpen = useShellStore((s) => s.setCreateWorkspaceOpen);
   const { theme, colorScheme, setTheme, setColorScheme } = useTheme();
+  const [search, setSearch] = useState('');
+  useEffect(() => {
+    if (!open) setSearch('');
+  }, [open]);
   const { startNewConversation } = useNewConversation();
 
   // Sessions load lazily per workspace; make sure the likely targets
@@ -84,6 +91,42 @@ export function CommandPalette({
     theme,
     user?.role,
   ]);
+
+  // The palette ranks items itself and hands cmdk only what is shown: cmdk
+  // mounts and scores every item it is given, and opening with 200
+  // workspaces took ~700ms at 4x CPU throttle. Before a query, workspaces and
+  // sessions are a short slice; with one, each group keeps its best matches,
+  // ordered as cmdk would (by score, best group first).
+  const shownGroups = useMemo(() => {
+    const query = search.trim();
+    if (!query) {
+      return commandGroups.map((group) =>
+        group.heading === '工作区' || group.heading === '会话'
+          ? { ...group, items: group.items.slice(0, EMPTY_QUERY_LIMIT) }
+          : group,
+      );
+    }
+    return commandGroups
+      .map((group) => {
+        const matches = group.items
+          .map((item) => ({
+            item,
+            score: defaultFilter(
+              [item.label, ...item.keywords].join(' '),
+              query,
+            ),
+          }))
+          .filter((match) => match.score > 0)
+          .sort((a, b) => b.score - a.score);
+        return {
+          heading: group.heading,
+          best: matches[0]?.score ?? 0,
+          items: matches.slice(0, SEARCH_LIMIT).map((match) => match.item),
+        };
+      })
+      .filter((group) => group.items.length > 0)
+      .sort((a, b) => b.best - a.best);
+  }, [commandGroups, search]);
 
   const run = (action: CommandAction) => {
     onOpenChange(false);
@@ -124,20 +167,17 @@ export function CommandPalette({
 
   return (
     <CommandDialog open={open} onOpenChange={onOpenChange}>
-      {/* Match on labels and keywords only, never on the internal ids. */}
-      <Command
-        loop
-        filter={(_value, search, keywords) =>
-          defaultFilter(keywords?.join(' ') ?? '', search)
-        }
-      >
+      {/* shownGroups matches on labels and keywords only, never on ids. */}
+      <Command loop shouldFilter={false}>
         <CommandInput
+          value={search}
+          onValueChange={setSearch}
           placeholder="搜索页面、工作区、会话或操作…"
           trailing={<Kbd>Esc</Kbd>}
         />
         <CommandList>
           <CommandEmpty>没有找到匹配的结果</CommandEmpty>
-          {commandGroups.map((group) => (
+          {shownGroups.map((group) => (
             <CommandGroup key={group.heading} heading={group.heading}>
               {group.items.map((item) => (
                 <CommandItem
