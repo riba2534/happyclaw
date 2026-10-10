@@ -93,6 +93,19 @@ describe('startup foreign-key check cadence', () => {
     ).toBeLessThan(60_000);
   });
 
+  test('scans again when the clean result is dated in the future', () => {
+    plantOrphan('future-marker');
+    db.setRouterState(
+      MARKER,
+      new Date(Date.now() + 2 * 24 * 60 * 60 * 1000).toISOString(),
+    );
+    reopen();
+    expect(orphanCount()).toBe(0);
+    const age = Date.now() - Date.parse(db.getRouterState(MARKER) ?? '');
+    expect(age).toBeGreaterThanOrEqual(0);
+    expect(age).toBeLessThan(60_000);
+  });
+
   test('scans after a schema change and when no clean result is recorded', () => {
     plantOrphan('after-schema-change');
     db.closeDatabase();

@@ -650,10 +650,16 @@ export function initDatabase(
   const lastCleanCheck = tableExists('router_state')
     ? getRouterStateInternal(FK_CHECK_CLEAN_AT_KEY)
     : undefined;
+  // A marker in the future (clock stepped back, or copied from a host with a
+  // skewed clock) would otherwise skip the check until the clock caught up.
+  const lastCleanCheckAge =
+    lastCleanCheck === undefined
+      ? NaN
+      : Date.now() - Date.parse(lastCleanCheck);
   const fkCheckFresh =
     rawSchemaVersionBeforeInit === String(CURRENT_SCHEMA_VERSION) &&
-    lastCleanCheck !== undefined &&
-    Date.now() - Date.parse(lastCleanCheck) < FK_CHECK_MAX_AGE_MS;
+    lastCleanCheckAge >= 0 &&
+    lastCleanCheckAge < FK_CHECK_MAX_AGE_MS;
   try {
     db.exec('PRAGMA foreign_keys = ON');
     if (!fkCheckFresh) {
