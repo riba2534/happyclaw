@@ -53,7 +53,6 @@ import {
   clearedSessionCookieHeaders,
   sessionExpiresAt,
   checkLoginRateLimit,
-  recordLoginAttempt,
   reserveLoginAttempt,
   settleLoginAttempt,
   validateUsername,
@@ -61,6 +60,10 @@ import {
   generateUserId,
 } from '../auth.js';
 import { PasswordHashBusyError } from '../password-hash-worker.js';
+import {
+  onPasswordHashBusy,
+  passwordHashBusyResponse,
+} from '../password-hash-busy.js';
 import type { AuthUser, User, UserPublic } from '../types.js';
 import { logger } from '../logger.js';
 import {
@@ -75,6 +78,7 @@ import {
 } from '../avatar-image.js';
 
 const authRoutes = new Hono<{ Variables: Variables }>();
+authRoutes.onError(onPasswordHashBusy);
 
 // The unauthenticated JSON endpoints (setup / login / register) buffer the
 // whole request body before any auth or login rate limit runs. Cap them per
@@ -300,11 +304,7 @@ authRoutes.post('/login', authJsonBodyLimit, async (c) => {
     if (err instanceof PasswordHashBusyError) {
       // Not evaluated: refund the reservation and ask the client to retry.
       settleLoginAttempt(username, ip, 'not_evaluated');
-      c.header('Retry-After', '1');
-      return c.json(
-        { error: 'Login is temporarily busy. Try again shortly' },
-        503,
-      );
+      return passwordHashBusyResponse(c);
     }
     // 如果 hash 格式异常，视为不匹配，不泄漏内部错误
     passwordMatch = false;
@@ -435,8 +435,9 @@ authRoutes.post('/register', authJsonBodyLimit, async (c) => {
     maxLoginAttempts: regMaxAttempts,
     loginLockoutMinutes: regLockoutMin,
   } = getSystemSettings();
+  const registerKey = `register:${ip}`;
   const rateCheck = checkLoginRateLimit(
-    `register:${ip}`,
+    registerKey,
     ip,
     regMaxAttempts,
     regLockoutMin,
@@ -458,9 +459,35 @@ authRoutes.post('/register', authJsonBodyLimit, async (c) => {
   const passwordError = validatePassword(password);
   if (passwordError) return c.json({ error: passwordError }, 400);
 
+  // Count the attempt (success or failure alike) before the bcrypt await:
+  // counting after it let concurrent sign-ups all pass the check above.
+  const reservation = reserveLoginAttempt(
+    registerKey,
+    ip,
+    regMaxAttempts,
+    regLockoutMin,
+    { perIp: false },
+  );
+  if (!reservation.allowed) {
+    return c.json(
+      {
+        error: `Too many registration attempts. Try again in ${reservation.retryAfterSeconds}s`,
+      },
+      429,
+    );
+  }
+
   const now = new Date().toISOString();
   const userId = generateUserId();
-  const passwordHash = await hashPassword(password);
+  let passwordHash: string;
+  try {
+    passwordHash = await hashPassword(password);
+  } catch (err) {
+    if (err instanceof PasswordHashBusyError) {
+      settleLoginAttempt(registerKey, ip, 'not_evaluated', { perIp: false });
+    }
+    throw err;
+  }
 
   // Branch: with invite code or without
   const withInvite = !!invite_code;
@@ -484,7 +511,6 @@ authRoutes.post('/register', authJsonBodyLimit, async (c) => {
       });
 
   if (!result.ok) {
-    recordLoginAttempt(`register:${ip}`, ip, { perIp: false });
     if (result.reason === 'username_taken') {
       return c.json(
         { error: 'Registration failed. Username may already be taken.' },
@@ -510,10 +536,9 @@ authRoutes.post('/register', authJsonBodyLimit, async (c) => {
     user_agent: ua,
     details: { role: result.role, with_invite: withInvite },
   });
-  // 计入注册成功次数：registerLimit 仅记录失败时，攻击者可用同 IP 不停换合法
-  // username 无限创建账号（auto-create home group / IM channel 槽位 / 数据库
-  // 行）。把成功也计入同一个 bucket，让 maxLoginAttempts 同时约束失败 + 成功。
-  recordLoginAttempt(`register:${ip}`, ip, { perIp: false });
+  // 注册成功同样计数（上面的 reservation 已计入、不退还）：registerLimit 仅记录
+  // 失败时，攻击者可用同 IP 不停换合法 username 无限创建账号（auto-create home
+  // group / IM channel 槽位 / 数据库行）。让 maxLoginAttempts 同时约束失败 + 成功。
 
   // Create home group for new user
   try {

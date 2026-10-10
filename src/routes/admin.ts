@@ -85,8 +85,12 @@ import {
 } from '../admin-host-only-runtime.js';
 import { getSystemSettings } from '../runtime-config.js';
 import { notifyTaskSchedulerChanged } from '../task-scheduler.js';
+import { onPasswordHashBusy } from '../password-hash-busy.js';
 
 const adminRoutes = new Hono<{ Variables: Variables }>();
+// Creating a user or resetting a password hashes on the bounded bcrypt pool.
+adminRoutes.onError(onPasswordHashBusy);
+
 function getUserWorkspaceRuntimeTargets(userId: string) {
   const seenFolders = new Set<string>();
   return Object.entries(getAllRegisteredGroups())

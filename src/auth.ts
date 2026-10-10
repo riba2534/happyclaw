@@ -455,9 +455,16 @@ export function reserveLoginAttempt(
   ip: string,
   maxAttempts: number,
   lockoutMinutes: number,
+  options: LoginRateLimitOptions = {},
 ): { allowed: boolean; retryAfterSeconds?: number } {
-  const check = checkLoginRateLimit(username, ip, maxAttempts, lockoutMinutes);
-  if (check.allowed) recordLoginAttempt(username, ip);
+  const check = checkLoginRateLimit(
+    username,
+    ip,
+    maxAttempts,
+    lockoutMinutes,
+    options,
+  );
+  if (check.allowed) recordLoginAttempt(username, ip, options);
   return check;
 }
 
@@ -471,9 +478,10 @@ export function settleLoginAttempt(
   username: string,
   ip: string,
   outcome: 'failure' | 'success' | 'not_evaluated',
+  options: LoginRateLimitOptions = {},
 ): void {
   if (outcome === 'failure') return;
-  const { ipKey, pairKey, userKey } = attemptKeys(username, ip, {});
+  const { ipKey, pairKey, userKey } = attemptKeys(username, ip, options);
   if (ipKey) decrementAttempt(ipKey);
   decrementAttempt(userKey);
   if (outcome === 'success') clientAttempts.delete(pairKey);
