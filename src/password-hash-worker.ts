@@ -47,6 +47,21 @@ parentPort.on('message', (msg) => {
 const DEFAULT_TASK_TIMEOUT_MS = 15_000;
 /** Workers that die before completing a single task count as start failures. */
 const MAX_CONSECUTIVE_START_FAILURES = 3;
+/**
+ * Hash/compare tasks allowed to wait or run at once. At ~350 ms each on one
+ * or two workers, a deeper queue only makes every caller wait longer, and an
+ * unbounded one lets a distributed login flood pile up work (and, in-thread
+ * fallback, main-thread stalls) without limit.
+ */
+export const MAX_PENDING_HASH_TASKS = 32;
+
+/** Thrown instead of queueing when MAX_PENDING_HASH_TASKS are pending. */
+export class PasswordHashBusyError extends Error {
+  constructor() {
+    super('password hashing is overloaded');
+    this.name = 'PasswordHashBusyError';
+  }
+}
 
 function defaultPoolSize(): number {
   // Keep at least one core for the main thread; never more than two workers,
@@ -95,6 +110,9 @@ let nextTaskId = 1;
 let consecutiveStartFailures = 0;
 let disabled = false;
 let fallbackCount = 0;
+/** Tasks accepted and not yet settled (queued, on a worker or in-thread). */
+let pendingTasks = 0;
+let maxPendingTasks = MAX_PENDING_HASH_TASKS;
 
 function resolveBcryptPath(): string | null {
   if (bcryptPath !== undefined) return bcryptPath;
@@ -260,6 +278,33 @@ function dispatch(): void {
 }
 
 function enqueue(task: Task): void {
+  if (pendingTasks >= maxPendingTasks) {
+    task.reject(new PasswordHashBusyError());
+    return;
+  }
+  pendingTasks += 1;
+  // Settle accounting exactly once, whichever path (worker reply, timeout
+  // fallback, crash fallback) finishes the task.
+  let accounted = false;
+  const release = (): void => {
+    if (accounted) return;
+    accounted = true;
+    pendingTasks -= 1;
+  };
+  const mutable = task as {
+    resolve: (value: unknown) => void;
+    reject: (err: Error) => void;
+  };
+  const resolve = mutable.resolve;
+  const reject = mutable.reject;
+  mutable.resolve = (value) => {
+    release();
+    resolve(value);
+  };
+  mutable.reject = (err) => {
+    release();
+    reject(err);
+  };
   queue.push(task);
   dispatch();
 }
@@ -324,6 +369,7 @@ export interface PasswordHashPoolStats {
   workers: number;
   busy: number;
   queued: number;
+  pending: number;
   fallbacks: number;
   disabled: boolean;
   poolSize: number;
@@ -334,6 +380,7 @@ export function getPasswordHashPoolStats(): PasswordHashPoolStats {
     workers: slots.length,
     busy: slots.filter((s) => s.task).length,
     queued: queue.length,
+    pending: pendingTasks,
     fallbacks: fallbackCount,
     disabled,
     poolSize,
@@ -350,10 +397,13 @@ export const passwordHashPoolForTest = {
       poolSize?: number;
       taskTimeoutMs?: number;
       workerSource?: string;
+      maxPendingTasks?: number;
     } = {},
   ): Promise<void> {
     await shutdownPasswordHashPool();
     queue.splice(0);
+    pendingTasks = 0;
+    maxPendingTasks = options.maxPendingTasks ?? MAX_PENDING_HASH_TASKS;
     poolSize = options.poolSize ?? defaultPoolSize();
     taskTimeoutMs = options.taskTimeoutMs ?? DEFAULT_TASK_TIMEOUT_MS;
     workerSource = options.workerSource ?? WORKER_SOURCE;

@@ -45,8 +45,14 @@ const {
   recordLoginAttempt,
   loginAttemptStats,
   resetLoginAttemptsForTest,
+  reserveLoginAttempt,
+  settleLoginAttempt,
   LOGIN_ATTEMPTS_MAX_ENTRIES,
+  LOGIN_LOCKOUT_MAX_ENTRIES,
 } = auth;
+const { getSystemSettings } = await import('../src/runtime-config.js');
+const { passwordHashPoolForTest } =
+  await import('../src/password-hash-worker.js');
 
 // Production defaults: 5 attempts / 15 minutes.
 const MAX = 5;
@@ -170,7 +176,7 @@ describe('existing username buckets are unchanged', () => {
 });
 
 describe('limiter memory bounds', () => {
-  test('the map is capped with oldest-first eviction', () => {
+  test('both maps are capped and fresh lockouts still enforce at the cap', () => {
     const extra = 2_000;
     for (let i = 0; i < LOGIN_ATTEMPTS_MAX_ENTRIES + extra; i++) {
       recordLoginAttempt(
@@ -178,12 +184,36 @@ describe('limiter memory bounds', () => {
         `10.${(i >> 16) & 255}.${(i >> 8) & 255}.${i & 255}`,
       );
     }
-    expect(loginAttemptStats().entries).toBe(LOGIN_ATTEMPTS_MAX_ENTRIES);
+    expect(loginAttemptStats().clientEntries).toBe(LOGIN_ATTEMPTS_MAX_ENTRIES);
+    expect(loginAttemptStats().userEntries).toBe(LOGIN_LOCKOUT_MAX_ENTRIES);
 
-    // Fresh records are kept and still enforce lockouts at the cap.
     for (let i = 0; i < MAX; i++) recordLoginAttempt('victim', '192.0.2.200');
     expect(check('victim', '192.0.2.200').allowed).toBe(false);
-    expect(loginAttemptStats().entries).toBe(LOGIN_ATTEMPTS_MAX_ENTRIES);
+    expect(loginAttemptStats().clientEntries).toBe(LOGIN_ATTEMPTS_MAX_ENTRIES);
+  });
+
+  test('a flood of client records cannot evict a per-username lockout', () => {
+    // Lock the account out via the per-username bucket from many addresses.
+    for (let i = 0; i < MAX * 4; i++) {
+      recordLoginAttempt('target', `198.51.100.${i + 1}`);
+    }
+    expect(check('target', '192.0.2.77').allowed).toBe(false);
+    // Spray far more client keys than the client cap from fresh addresses
+    // with one reused username (so the user map gains one entry only).
+    for (let i = 0; i < LOGIN_ATTEMPTS_MAX_ENTRIES + 1_000; i++) {
+      recordLoginAttempt('sprayer', `10.9.${(i >> 8) & 255}.${i & 255}`);
+    }
+    expect(check('target', '192.0.2.77').allowed).toBe(false);
+  });
+
+  test('eviction drops one-attempt records before an enforcing lockout', () => {
+    for (let i = 0; i < MAX; i++) recordLoginAttempt('held', '192.0.2.10');
+    expect(check('held', '192.0.2.10').allowed).toBe(false);
+    // The held pair record is now the oldest client record; fill past cap.
+    for (let i = 0; i < LOGIN_ATTEMPTS_MAX_ENTRIES; i++) {
+      recordLoginAttempt('x', `10.8.${(i >> 8) & 255}.${i & 255}`);
+    }
+    expect(check('held', '192.0.2.10').allowed).toBe(false);
   });
 
   test('oversized usernames or forwarded IPs cannot create oversized keys', () => {
@@ -266,6 +296,65 @@ describe('login route', () => {
     expect(locked.status).toBe(429);
     const ok = await login('admin', PASSWORD, '192.0.2.200, 203.0.113.71');
     expect(ok.status).toBe(200);
+  });
+
+  test('concurrent failures from one IP are counted before bcrypt runs', async () => {
+    resetLoginAttemptsForTest();
+    const ipLimit = getSystemSettings().maxLoginAttempts * 6;
+    const statuses = await Promise.all(
+      Array.from({ length: ipLimit + 30 }, (_, i) =>
+        login(`parallel_${i}`, 'not-the-password', '203.0.113.90').then(
+          (res) => res.status,
+        ),
+      ),
+    );
+    const count = (status: number) =>
+      statuses.filter((value) => value === status).length;
+    // Exactly the bucket's worth reach the compare; the rest get 429 at once.
+    expect(count(401) + count(503)).toBe(ipLimit);
+    expect(count(429)).toBe(30);
+  });
+
+  test('a success refunds its own reservation; earlier failures stay counted', () => {
+    resetLoginAttemptsForTest();
+    for (let i = 0; i < 2; i++) {
+      expect(
+        reserveLoginAttempt('member', '192.0.2.40', MAX, LOCKOUT_MIN).allowed,
+      ).toBe(true);
+    }
+    const afterFailures = loginAttemptStats();
+    expect(
+      reserveLoginAttempt('member', '192.0.2.40', MAX, LOCKOUT_MIN).allowed,
+    ).toBe(true);
+    settleLoginAttempt('member', '192.0.2.40', 'success');
+    const after = loginAttemptStats();
+    // The pair record is cleared; IP and username buckets keep the 2 failures.
+    expect(after.clientEntries).toBe(afterFailures.clientEntries - 1);
+    expect(after.userEntries).toBe(afterFailures.userEntries);
+    for (let i = 0; i < IP_LIMIT - 2; i++) {
+      reserveLoginAttempt(`other_${i}`, '192.0.2.40', MAX, LOCKOUT_MIN);
+    }
+    expect(check('fresh', '192.0.2.40').allowed).toBe(false);
+  });
+
+  test('a full hashing queue answers 503 and refunds the attempt', async () => {
+    resetLoginAttemptsForTest();
+    await passwordHashPoolForTest.reset({ maxPendingTasks: 1 });
+    try {
+      const statuses = await Promise.all(
+        Array.from({ length: 4 }, (_, i) =>
+          login(`busy_${i}`, 'not-the-password', '203.0.113.95').then(
+            (res) => res.status,
+          ),
+        ),
+      );
+      expect(statuses.filter((s) => s === 503).length).toBe(3);
+      expect(statuses.filter((s) => s === 401).length).toBe(1);
+      // Only the evaluated attempt stays counted in the IP bucket.
+      expect(loginAttemptStats().entries).toBe(3);
+    } finally {
+      await passwordHashPoolForTest.reset();
+    }
   });
 
   test('over-long usernames are rejected like other invalid input and leave no limiter state', async () => {

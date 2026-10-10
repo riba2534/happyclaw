@@ -437,9 +437,11 @@ location /ws {
 上传大文件时另需放宽 `client_max_body_size`（不小于 `MAX_FILE_SIZE_MB`，并预留
 multipart 开销）与 `client_body_timeout`。
 
-开启 `TRUST_PROXY=true` 后，客户端 IP（登录限流与审计日志使用）取自
-`X-Forwarded-For` 中由可信代理追加的那一项：右数第 `TRUST_PROXY_HOPS` 个（默认 1，
-即 Caddy 或 nginx 直接面向用户时）。更靠左的条目由客户端提供，不被信任。
+位于反向代理之后必须设置 `TRUST_PROXY=true`，否则所有请求都显示为代理自身的地址：
+代理在另一台主机时，全部用户共用同一个按 IP 的登录限流桶，几十次失败即可锁住所有人；
+代理在本机（loopback）时，按 IP 的限流不生效。开启后，客户端 IP（登录限流与审计日志
+使用）取自 `X-Forwarded-For` 中由可信代理追加的那一项：右数第 `TRUST_PROXY_HOPS` 个
+（默认 1，即 Caddy 或 nginx 直接面向用户时）。更靠左的条目由客户端提供，不被信任。
 
 ## 开发与测试
 

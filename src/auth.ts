@@ -186,9 +186,15 @@ interface AttemptRecord {
 }
 
 // Insertion order == firstAttempt order: records are mutated in place and only
-// re-inserted after their window expired, so the first key is always the
-// oldest. That makes oldest-first eviction a single iterator step.
-const loginAttempts = new Map<string, AttemptRecord>();
+// re-inserted after their window expired, so the first keys are the oldest.
+// Per-username lockouts live in their own map so a flood of per-IP / pair
+// records (one per sprayed address) can never evict them.
+const clientAttempts = new Map<string, AttemptRecord>();
+const userAttempts = new Map<string, AttemptRecord>();
+
+function attemptMapFor(key: string): Map<string, AttemptRecord> {
+  return key.startsWith('user:') ? userAttempts : clientAttempts;
+}
 
 // Per-username global rate limit (防分布式暴力破解)
 // 阈值为 per-ip 限制的 4 倍，窗口为 1 小时
@@ -209,6 +215,10 @@ const PER_IP_MULTIPLIER = 6;
 // ~2 × 30 + 1 keys per window, so filling the cap takes hundreds of addresses
 // each paying a full bcrypt compare per key.
 export const LOGIN_ATTEMPTS_MAX_ENTRIES = 10_000;
+/** Cap of the separate per-username lockout map. */
+export const LOGIN_LOCKOUT_MAX_ENTRIES = 10_000;
+/** Eviction inspects this many of the oldest records and drops the weakest. */
+const EVICTION_SCAN = 256;
 
 // Memory reclamation only. The authoritative expiry check is in
 // checkAttemptRecord (based on firstAttempt + the relevant window). This TTL
@@ -224,9 +234,11 @@ const ATTEMPT_RECORD_RECLAIM_MS = Math.max(
 const loginAttemptsCleanupTimer = setInterval(
   () => {
     const now = Date.now();
-    for (const [key, record] of loginAttempts) {
-      if (now - record.firstAttempt > ATTEMPT_RECORD_RECLAIM_MS) {
-        loginAttempts.delete(key);
+    for (const map of [clientAttempts, userAttempts]) {
+      for (const [key, record] of map) {
+        if (now - record.firstAttempt > ATTEMPT_RECORD_RECLAIM_MS) {
+          map.delete(key);
+        }
       }
     }
   },
@@ -242,11 +254,12 @@ function checkAttemptRecord(
   windowMs: number,
 ): { allowed: boolean; retryAfterSeconds?: number } {
   const now = Date.now();
-  const record = loginAttempts.get(key);
+  const map = attemptMapFor(key);
+  const record = map.get(key);
   if (!record) return { allowed: true };
 
   if (now - record.firstAttempt > windowMs) {
-    loginAttempts.delete(key);
+    map.delete(key);
     return { allowed: true };
   }
 
@@ -258,10 +271,10 @@ function checkAttemptRecord(
   return { allowed: true };
 }
 
-// Usernames are capped by LoginSchema, but with TRUST_PROXY the client IP is
-// the first X-Forwarded-For entry — client-supplied and up to the header size
-// limit. Over-long key parts are replaced by a digest so a single key stays
-// small; real IPs and usernames are far below the bound and stay verbatim.
+// Usernames are capped by LoginSchema, and the client IP comes from the
+// trusted proxy hop, but either can still be long or client-influenced.
+// Over-long key parts are replaced by a digest so a single key stays small;
+// real IPs and usernames are far below the bound and stay verbatim.
 const MAX_KEY_PART_LENGTH = 64;
 
 function boundedKeyPart(value: string): string {
@@ -321,7 +334,9 @@ function attemptKeys(
   const user = boundedKeyPart(username);
   return {
     ipKey: options.perIp === false ? null : ipBucketKey(ip),
-    pairKey: `${user}:${boundedKeyPart(ip)}`,
+    // Distinct prefixes and a NUL separator: a username can contain ':' and
+    // must never alias another bucket's key.
+    pairKey: `pair:${user}\0${boundedKeyPart(ip)}`,
     userKey: `user:${user}`,
   };
 }
@@ -362,21 +377,48 @@ export function checkLoginRateLimit(
   return { allowed: true };
 }
 
+/**
+ * Make room for one record: among the oldest EVICTION_SCAN records drop the
+ * one with the fewest failures (ties: the oldest), so records that enforce a
+ * lockout outlive throwaway one-attempt records.
+ */
+function evictOne(map: Map<string, AttemptRecord>): void {
+  let victim: string | undefined;
+  let victimCount = Infinity;
+  let scanned = 0;
+  for (const [key, record] of map) {
+    if (record.count < victimCount) {
+      victim = key;
+      victimCount = record.count;
+      if (victimCount <= 1) break;
+    }
+    if (++scanned >= EVICTION_SCAN) break;
+  }
+  if (victim !== undefined) map.delete(victim);
+}
+
 function incrementAttempt(key: string, now: number): void {
-  const record = loginAttempts.get(key);
+  const map = attemptMapFor(key);
+  const record = map.get(key);
   if (record) {
     record.count += 1;
     record.lastAttempt = now;
     return;
   }
-  // Oldest-first eviction: the front of the map is the record closest to (or
-  // past) expiry. TTL reclamation below still runs for everything else.
-  while (loginAttempts.size >= LOGIN_ATTEMPTS_MAX_ENTRIES) {
-    const oldest = loginAttempts.keys().next().value;
-    if (oldest === undefined) break;
-    loginAttempts.delete(oldest);
-  }
-  loginAttempts.set(key, { count: 1, firstAttempt: now, lastAttempt: now });
+  const cap =
+    map === userAttempts
+      ? LOGIN_LOCKOUT_MAX_ENTRIES
+      : LOGIN_ATTEMPTS_MAX_ENTRIES;
+  while (map.size >= cap) evictOne(map);
+  map.set(key, { count: 1, firstAttempt: now, lastAttempt: now });
+}
+
+function decrementAttempt(key: string): void {
+  const map = attemptMapFor(key);
+  const record = map.get(key);
+  if (!record) return;
+  record.count -= 1;
+  if (record.count <= 0) map.delete(key);
 }
 
 export function recordLoginAttempt(
@@ -397,21 +439,72 @@ export function clearLoginAttempts(username: string, ip: string): void {
   // preventing an attacker from resetting the global rate limit by
   // successfully logging in from a known IP. The per-client-IP bucket is
   // likewise left alone, or one valid account would reset spraying limits.
-  loginAttempts.delete(attemptKeys(username, ip, {}).pairKey);
+  clientAttempts.delete(attemptKeys(username, ip, {}).pairKey);
+}
+
+/**
+ * Check every bucket and, when allowed, count the attempt in all of them in
+ * the same synchronous step. Counting only after the awaited bcrypt compare
+ * let N concurrent attempts all pass the check before any was recorded (60
+ * parallel failures from one IP all reached bcrypt and none got 429).
+ * Settle the reservation with {@link settleLoginAttempt} once the outcome is
+ * known.
+ */
+export function reserveLoginAttempt(
+  username: string,
+  ip: string,
+  maxAttempts: number,
+  lockoutMinutes: number,
+): { allowed: boolean; retryAfterSeconds?: number } {
+  const check = checkLoginRateLimit(username, ip, maxAttempts, lockoutMinutes);
+  if (check.allowed) recordLoginAttempt(username, ip);
+  return check;
+}
+
+/**
+ * Settle a reserved attempt. A failure keeps the counts. A success refunds
+ * this attempt's per-IP and per-username increments (earlier failures stay
+ * counted, as before) and clears the username+IP pair. An attempt that was
+ * never evaluated (password hashing overloaded) refunds all three.
+ */
+export function settleLoginAttempt(
+  username: string,
+  ip: string,
+  outcome: 'failure' | 'success' | 'not_evaluated',
+): void {
+  if (outcome === 'failure') return;
+  const { ipKey, pairKey, userKey } = attemptKeys(username, ip, {});
+  if (ipKey) decrementAttempt(ipKey);
+  decrementAttempt(userKey);
+  if (outcome === 'success') clientAttempts.delete(pairKey);
+  else decrementAttempt(pairKey);
 }
 
 /** Tracked rate-limit keys, for tests and diagnostics. */
-export function loginAttemptStats(): { entries: number; maxKeyLength: number } {
+export function loginAttemptStats(): {
+  entries: number;
+  clientEntries: number;
+  userEntries: number;
+  maxKeyLength: number;
+} {
   let maxKeyLength = 0;
-  for (const key of loginAttempts.keys()) {
-    maxKeyLength = Math.max(maxKeyLength, key.length);
+  for (const map of [clientAttempts, userAttempts]) {
+    for (const key of map.keys()) {
+      maxKeyLength = Math.max(maxKeyLength, key.length);
+    }
   }
-  return { entries: loginAttempts.size, maxKeyLength };
+  return {
+    entries: clientAttempts.size + userAttempts.size,
+    clientEntries: clientAttempts.size,
+    userEntries: userAttempts.size,
+    maxKeyLength,
+  };
 }
 
 /** Test-only: forget all rate-limit state. */
 export function resetLoginAttemptsForTest(): void {
-  loginAttempts.clear();
+  clientAttempts.clear();
+  userAttempts.clear();
 }
 
 // --- Session expiry ---

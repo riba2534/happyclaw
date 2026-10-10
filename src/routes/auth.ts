@@ -54,11 +54,13 @@ import {
   sessionExpiresAt,
   checkLoginRateLimit,
   recordLoginAttempt,
-  clearLoginAttempts,
+  reserveLoginAttempt,
+  settleLoginAttempt,
   validateUsername,
   validatePassword,
   generateUserId,
 } from '../auth.js';
+import { PasswordHashBusyError } from '../password-hash-worker.js';
 import type { AuthUser, User, UserPublic } from '../types.js';
 import { logger } from '../logger.js';
 import {
@@ -257,9 +259,10 @@ authRoutes.post('/login', authJsonBodyLimit, async (c) => {
   const ip = getClientIp(c);
   const ua = c.req.header('user-agent') || null;
 
-  // Rate limiting
+  // Rate limiting: check and count in one synchronous step, before the
+  // awaited compare, so concurrent attempts cannot all pass the check.
   const { maxLoginAttempts, loginLockoutMinutes } = getSystemSettings();
-  const rateCheck = checkLoginRateLimit(
+  const rateCheck = reserveLoginAttempt(
     username,
     ip,
     maxLoginAttempts,
@@ -293,13 +296,22 @@ authRoutes.post('/login', authJsonBodyLimit, async (c) => {
       password,
       user ? user.password_hash : DUMMY_HASH,
     );
-  } catch {
+  } catch (err) {
+    if (err instanceof PasswordHashBusyError) {
+      // Not evaluated: refund the reservation and ask the client to retry.
+      settleLoginAttempt(username, ip, 'not_evaluated');
+      c.header('Retry-After', '1');
+      return c.json(
+        { error: 'Login is temporarily busy. Try again shortly' },
+        503,
+      );
+    }
     // 如果 hash 格式异常，视为不匹配，不泄漏内部错误
     passwordMatch = false;
   }
 
   if (!user || user.status !== 'active' || !passwordMatch) {
-    recordLoginAttempt(username, ip);
+    // Already counted by reserveLoginAttempt.
     logAuthEvent({
       event_type: 'login_failed',
       username,
@@ -329,7 +341,7 @@ authRoutes.post('/login', authJsonBodyLimit, async (c) => {
     last_active_at: now,
   });
 
-  clearLoginAttempts(username, ip);
+  settleLoginAttempt(username, ip, 'success');
   updateUserFields(user.id, { last_login_at: now });
 
   // Ensure user has a home group (backfill for existing users)
