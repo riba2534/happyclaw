@@ -145,18 +145,18 @@ describe('AssistantUsageCollector transcript backfill', () => {
     expect(loader).toHaveBeenCalledOnce();
   });
 
-  // The reconciler keeps a call that may still be running pending across a
-  // baseline reset, so only proof that the call ended marks it final.
-  test('marks a flush final only when a stop_reason proves the call ended', () => {
+  // The reconciler drops only final calls at a baseline reset; a call that
+  // may not be in modelUsage yet stays pending.
+  test('only a message_delta with a stop_reason makes a flush final', () => {
     const usage = { input_tokens: 100, output_tokens: 20 };
     const file = writeTranscript([
       // One line per content block: only the last carries the stop_reason,
       // and an equal snapshot must not hide it.
-      assistantLine('msg-done', usage),
+      assistantLine('msg-ended', usage),
       {
-        ...assistantLine('msg-done', usage),
+        ...assistantLine('msg-ended', usage),
         message: {
-          ...assistantLine('msg-done', usage).message,
+          ...assistantLine('msg-ended', usage).message,
           stop_reason: 'tool_use',
         },
       },
@@ -164,11 +164,42 @@ describe('AssistantUsageCollector transcript backfill', () => {
     ]);
     const loader = createTranscriptUsageLoader(() => file);
     const collector = new AssistantUsageCollector();
+    // Main thread: message_delta with a stop_reason precedes the flush.
+    collector.observeStreamEvent({
+      type: 'stream_event',
+      parent_tool_use_id: null,
+      event: {
+        type: 'message_start',
+        message: { id: 'msg-streamed', usage: { input_tokens: 50 } },
+      },
+    });
     collector.ingest(
-      assistantLine('msg-done', {
-        input_tokens: 100,
+      assistantLine('msg-streamed', {
+        input_tokens: 50,
         output_tokens: 1,
       }) as never,
+    );
+    collector.observeStreamEvent({
+      type: 'stream_event',
+      parent_tool_use_id: null,
+      event: {
+        type: 'message_delta',
+        delta: { stop_reason: 'end_turn' },
+        usage: { output_tokens: 5 },
+      },
+    });
+    // Non-streaming fallback: the live message carries a stop_reason but is
+    // yielded before Claude Code counts the call.
+    collector.ingest({
+      ...assistantLine('msg-fallback', { input_tokens: 70, output_tokens: 7 }),
+      message: {
+        ...assistantLine('msg-fallback', {}).message,
+        usage: { input_tokens: 70, output_tokens: 7 },
+        stop_reason: 'end_turn',
+      },
+    } as never);
+    collector.ingest(
+      assistantLine('msg-ended', { ...usage, output_tokens: 1 }) as never,
     );
     collector.ingest(
       assistantLine('msg-running', {
@@ -176,14 +207,19 @@ describe('AssistantUsageCollector transcript backfill', () => {
         output_tokens: 1,
       }) as never,
     );
-    expect(collector.drain('s', loader)).toMatchObject({
-      eventId: 'claude-code:msg-done',
-      tokens: { outputTokens: 20 },
-      final: true,
-    });
-    expect(collector.drain('s', loader)).toMatchObject({
-      eventId: 'claude-code:msg-running',
-      final: false,
+    const batches = new Map<string, { final: boolean; completed: boolean }>();
+    for (let batch = collector.drain('s', loader); batch; ) {
+      batches.set(batch.eventId, {
+        final: batch.final,
+        completed: batch.completed,
+      });
+      batch = collector.drain('s', loader);
+    }
+    expect(Object.fromEntries(batches)).toEqual({
+      'claude-code:msg-streamed': { final: true, completed: true },
+      'claude-code:msg-fallback': { final: false, completed: false },
+      'claude-code:msg-ended': { final: false, completed: true },
+      'claude-code:msg-running': { final: false, completed: false },
     });
   });
 });

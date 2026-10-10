@@ -15,10 +15,12 @@ export interface CollectedAssistantUsage extends TokenSnapshot {
   /** Subagent task ID (SDK 0.3.292+); selects the sidechain transcript. */
   agentId?: string;
   /**
-   * The snapshot carries a stop_reason: Claude Code sets it on the message
-   * in the same step that adds the call to modelUsage.
+   * The snapshot carries a stop_reason. On a transcript line the call has
+   * ended. Claude Code 2.1.296 sets one on a live message only on its
+   * non-streaming fallback, which yields the message before counting the
+   * call, so it proves nothing about modelUsage there.
    */
-  final?: boolean;
+  stopped?: boolean;
 }
 
 /**
@@ -163,13 +165,13 @@ export function parseAssistantUsage(
       : typeof sdkMessage.agentId === 'string' && sdkMessage.agentId.trim()
         ? sdkMessage.agentId.trim()
         : undefined;
-  const final =
+  const stopped =
     typeof message.stop_reason === 'string' && message.stop_reason !== '';
   return {
     ...value,
     total: snapshotTotal(value),
     ...(agentId ? { agentId } : {}),
-    ...(final ? { final } : {}),
+    ...(stopped ? { stopped } : {}),
   };
 }
 
@@ -185,11 +187,18 @@ export interface AssistantUsageBatch {
     | 'modelUsage'
   >;
   /**
-   * The call's final usage was known when it was flushed (message_delta, or
-   * a stop_reason on the live or transcript message), so Claude Code has
-   * already counted it. Otherwise it may still be running.
+   * A message_delta with a stop_reason arrived before the flush. Claude
+   * Code 2.1.296 adds the call to modelUsage before it yields that event,
+   * so every later result includes it.
    */
   final: boolean;
+  /**
+   * The call has ended (final, or its transcript line has a stop_reason).
+   * A transcript line can reach disk before Claude Code counts the call
+   * (non-streaming fallback) or after it emitted the result being
+   * reconciled, so only `final` holds for that result.
+   */
+  completed: boolean;
 }
 
 /**
@@ -212,7 +221,7 @@ export class AssistantUsageCollector {
   private readonly streamFinalById = new Map<string, TokenSnapshot>();
   /** Open streamed message per `parent_tool_use_id` scope. */
   private readonly streamIdByScope = new Map<string, string>();
-  /** Message IDs whose API call was seen ending before they were flushed. */
+  /** Message IDs whose message_delta with a stop_reason was observed. */
   private readonly finalIds = new Set<string>();
   private readonly contentById = new Map<string, TurnContentFootprint>();
 
@@ -269,7 +278,6 @@ export class AssistantUsageCollector {
     this.collectContent(sdkMessage);
     const current = parseAssistantUsage(sdkMessage);
     if (!current || this.flushedIds.has(current.id)) return;
-    if (current.final) this.finalIds.add(current.id);
     const previous = this.bestById.get(current.id);
     if (!previous || current.total > previous.total) {
       this.bestById.set(current.id, current);
@@ -345,7 +353,8 @@ export class AssistantUsageCollector {
       ...merged,
       total: snapshotTotal(merged),
     };
-    const final = this.finalIds.has(entry.id) || transcriptHit?.final === true;
+    const final = this.finalIds.has(entry.id);
+    const completed = final || transcriptHit?.stopped === true;
     // One stable Anthropic message ID must remain one ledger event. Aggregating
     // several IDs behind the last ID would make resume/fork transcript replays
     // charge the earlier IDs again when a later new message arrives.
@@ -404,6 +413,7 @@ export class AssistantUsageCollector {
       eventId: `claude-code:${entry.id}`,
       tokens: { ...root, modelUsage },
       final,
+      completed,
     };
   }
 }

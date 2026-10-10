@@ -140,6 +140,7 @@ import {
 } from './sdk-control.js';
 import {
   MAX_PENDING_IDLE_RESULTS,
+  MAX_RUNNING_PENDING_MS,
   ResultUsageReconciler,
   type SdkModelUsage,
   type SdkResultUsage,
@@ -2175,6 +2176,7 @@ async function runQueryAttempt(
       assistantBatches.push(batch);
       usageReconciler.recordAccounted(batch.tokens.modelUsage, {
         final: batch.final,
+        completed: batch.completed,
       });
     }
     const isResult = resultMessage.type === 'result';
@@ -2215,7 +2217,7 @@ async function runQueryAttempt(
     }
     if (reconciled.droppedPending) {
       logWarn(
-        `Dropped per-message usage that no modelUsage covered for ${MAX_PENDING_IDLE_RESULTS} results: ${JSON.stringify(reconciled.droppedPending)}`,
+        `Dropped per-message usage no modelUsage covered (completed calls after ${MAX_PENDING_IDLE_RESULTS} results, running ones after ${MAX_RUNNING_PENDING_MS / 60_000} min): ${JSON.stringify(reconciled.droppedPending)}`,
       );
     }
     const resultUuid =

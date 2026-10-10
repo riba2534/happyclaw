@@ -108,9 +108,9 @@ function ingestTranscriptLine(
   const previous = usageById.get(usage.id);
   // Any line with a stop_reason proves the call ended, whichever line
   // carries the largest snapshot.
-  const final = usage.final || previous?.final;
+  const stopped = usage.stopped || previous?.stopped;
   const best = !previous || usage.total > previous.total ? usage : previous;
-  usageById.set(usage.id, final ? { ...best, final } : best);
+  usageById.set(usage.id, stopped ? { ...best, stopped } : best);
 }
 
 /**

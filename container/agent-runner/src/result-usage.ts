@@ -105,19 +105,26 @@ export interface ReconciledResultUsage {
   /** Why no modelUsage delta was trusted for this result, if so. */
   baselineReset?: 'initial_resume' | 'decrease';
   /**
-   * Pending per-message usage given up after MAX_PENDING_IDLE_RESULTS
-   * results without coverage (a call Claude Code never counted, or a
-   * gateway labelling it under a model modelUsage never reports).
+   * Pending per-message usage given up without coverage: a completed call
+   * after MAX_PENDING_IDLE_RESULTS results (Claude Code never counted it,
+   * or a gateway labels it under a model modelUsage never reports), a
+   * running one after MAX_RUNNING_PENDING_MS.
    */
   droppedPending?: Record<string, ModelUsageTotals>;
 }
 
 /**
- * Consecutive results a pending entry may go uncovered before it is
- * dropped. A legitimately running call is covered by the first result after
- * it ends; sixteen results is far beyond one API call's lifetime.
+ * Consecutive results a completed call's pending entry may go uncovered
+ * before it is dropped. Claude Code counts such a call by the next result.
  */
 export const MAX_PENDING_IDLE_RESULTS = 16;
+
+/**
+ * How long a possibly running call stays pending. A background subagent
+ * call can span any number of main results, so it is aged by time: one API
+ * call (10 minute default request timeout) never lasts an hour.
+ */
+export const MAX_RUNNING_PENDING_MS = 60 * 60 * 1000;
 
 const TOKEN_FIELDS = [
   'inputTokens',
@@ -233,27 +240,43 @@ interface PendingUsage {
   model: string;
   tokens: ModelUsageTotals;
   /**
-   * The call's final usage was known when it was flushed, so Claude Code had
-   * already counted it: the next result's modelUsage includes it. A call
-   * flushed with only its placeholder output may still be running (a
-   * background subagent) and reach modelUsage in a later result.
+   * Claude Code counted the call before it emitted the next result, so a
+   * reset baseline already holds it.
    */
   final: boolean;
-  /** Consecutive results that covered none of it. */
+  /**
+   * The call has ended, so Claude Code has counted it or is about to; only
+   * the result being reconciled may predate that. A call flushed with only
+   * its placeholder output may still be running (a background subagent)
+   * and reach modelUsage in any later result.
+   */
+  completed: boolean;
+  /** Consecutive results that covered none of it (completed calls). */
   idleResults: number;
+  /** When it was recorded (running calls age by time). */
+  recordedAt: number;
   /** Recorded since the previous result. */
   fresh: boolean;
 }
 
-/** Merge entries that behave identically from here on. */
+/**
+ * Merge entries that behave identically from here on. Running entries are
+ * bucketed per minute and keep their earliest time, so a merge brings an
+ * expiry forward by at most a minute.
+ */
 function coalesce(entries: PendingUsage[]): PendingUsage[] {
   const merged = new Map<string, PendingUsage>();
   for (const entry of entries) {
     if (!hasTokens(entry.tokens)) continue;
-    const key = `${entry.final}\0${entry.idleResults}\0${entry.fresh}\0${entry.model}`;
+    const age = entry.completed
+      ? `c${entry.idleResults}`
+      : `r${Math.floor(entry.recordedAt / 60_000)}`;
+    const key = `${entry.final}\0${age}\0${entry.fresh}\0${entry.model}`;
     const existing = merged.get(key);
-    if (existing) addTokens(existing.tokens, entry.tokens);
-    else merged.set(key, { ...entry, tokens: { ...entry.tokens } });
+    if (existing) {
+      addTokens(existing.tokens, entry.tokens);
+      existing.recordedAt = Math.min(existing.recordedAt, entry.recordedAt);
+    } else merged.set(key, { ...entry, tokens: { ...entry.tokens } });
   }
   return [...merged.values()];
 }
@@ -272,6 +295,7 @@ export class ResultUsageReconciler {
    * (and persisted), never silently dropped.
    */
   private pending: PendingUsage[] = [];
+  private readonly now: () => number;
 
   /**
    * @param options.baseline the persisted totals of the session being
@@ -279,11 +303,14 @@ export class ResultUsageReconciler {
    * @param options.resumed whether this query resumes a session. A resumed
    *   query without a baseline cannot tell restored history from new spend,
    *   so its first result only establishes the baseline.
+   * @param options.now clock for aging running calls (tests).
    */
   constructor(options?: {
     baseline?: PersistedUsageBaseline | null;
     resumed?: boolean;
+    now?: () => number;
   }) {
+    this.now = options?.now ?? Date.now;
     const baseline = options?.baseline;
     if (baseline) {
       for (const [model, value] of Object.entries(baseline.modelUsage)) {
@@ -300,10 +327,12 @@ export class ResultUsageReconciler {
           model: entry.model,
           tokens,
           final: true,
+          completed: true,
           idleResults: Math.min(
             Math.floor(nonNegative(entry.idleResults)),
             MAX_PENDING_IDLE_RESULTS,
           ),
+          recordedAt: this.now(),
           fresh: false,
         });
       }
@@ -313,21 +342,25 @@ export class ResultUsageReconciler {
 
   /**
    * Record a per-message usage event that was (or will be) emitted.
-   * `final` says its final usage was known at flush time (message_delta or
-   * a completed transcript entry); unknown is treated as still running.
+   * `final`: Claude Code counted the call before its next result (a
+   * message_delta with a stop_reason was seen). `completed`: the call has
+   * ended (implied by `final`). Unknown is treated as still running.
    */
   recordAccounted(
     modelUsage: ResultUsagePayload['modelUsage'],
-    options?: { final?: boolean },
+    options?: { final?: boolean; completed?: boolean },
   ): void {
+    const final = options?.final ?? false;
     for (const [model, value] of Object.entries(modelUsage ?? {})) {
       const tokens = tokensOnly(value);
       if (!hasTokens(tokens)) continue;
       this.pending.push({
         model,
         tokens,
-        final: options?.final ?? false,
+        final,
+        completed: final || (options?.completed ?? false),
         idleResults: 0,
+        recordedAt: this.now(),
         fresh: true,
       });
     }
@@ -380,9 +413,10 @@ export class ResultUsageReconciler {
     let residual: ResidualUsage | undefined;
     const covered = new Set<PendingUsage>();
     if (baselineReset) {
-      // The new baseline already holds every call that was final when it
-      // was flushed. A call still running reaches modelUsage only after this
-      // result, so it stays pending or its completion would be billed again.
+      // The new baseline already holds every final call. Any other call may
+      // reach modelUsage only after this result, so it stays pending or its
+      // accounting would be billed again; a call the baseline did hold costs
+      // at most its own size in later under-billing.
       this.pending = this.pending.filter((entry) => !entry.final);
     } else {
       residual = this.consumePending(currentByModel, covered);
@@ -455,10 +489,18 @@ export class ResultUsageReconciler {
 
   /**
    * Take pending usage out of this result's modelUsage delta and return the
-   * remainder. Final entries go first: Claude Code has counted them, so if
-   * their own model's delta cannot hold them a gateway reported them under
-   * another model ID, and they are taken from the other models instead of
-   * being billed again there. Running entries stay with their own model.
+   * remainder. Completed calls have been counted by Claude Code, so if
+   * their own model's delta cannot hold them a gateway most likely
+   * reported them under another model ID, and they are taken from the other
+   * models instead of being billed again there.
+   *
+   * Running entries stay with their own model. For them an uncovered
+   * remainder is the normal straddle; taking it from another model would
+   * leave that model's internal usage unbilled and bill the same tokens
+   * under this model, at its price, once the call lands. The cost: a
+   * running call that a gateway relabels (Haiku requested, Opus reported)
+   * is billed under both names, minus whatever later Opus usage its pending
+   * entry absorbs before it expires.
    */
   private consumePending(
     currentByModel: Map<string, ModelUsageTotals>,
@@ -479,10 +521,14 @@ export class ResultUsageReconciler {
     for (const model of remaining.keys()) {
       byMatchKey.set(modelMatchKey(model), model);
     }
-    const ordered = [
-      ...this.pending.filter((entry) => entry.final),
-      ...this.pending.filter((entry) => !entry.final),
-    ];
+    // This result surely holds the final calls flushed for it; carried
+    // entries follow oldest first, and calls that may still run come last,
+    // so what stays pending (and ages) is what is least likely covered.
+    const rank = (entry: PendingUsage) =>
+      entry.final && entry.fresh ? 0 : entry.completed ? 1 : 2;
+    const ordered = [...this.pending].sort(
+      (left, right) => rank(left) - rank(right),
+    );
     const elsewhere: PendingUsage[] = [];
     for (const entry of ordered) {
       const target =
@@ -494,7 +540,7 @@ export class ResultUsageReconciler {
         continue;
       }
       if (consume(target, entry.tokens)) covered.add(entry);
-      if (entry.final && hasTokens(entry.tokens)) elsewhere.push(entry);
+      if (entry.completed && hasTokens(entry.tokens)) elsewhere.push(entry);
     }
     // Never bill those tokens twice: take them out of the largest remaining
     // buckets.
@@ -535,16 +581,29 @@ export class ResultUsageReconciler {
     return Object.keys(residual.modelUsage).length > 0 ? residual : undefined;
   }
 
-  /** Count one more result against every entry it did not cover. */
+  /**
+   * Age pending entries after a result. Completed calls count results that
+   * did not cover them (only when `covered` comes from a cumulative
+   * modelUsage); running calls expire by time.
+   */
   private agePending(
-    covered: Set<PendingUsage>,
+    covered: Set<PendingUsage> | undefined,
   ): Record<string, ModelUsageTotals> | undefined {
+    const now = this.now();
     const dropped: Record<string, ModelUsageTotals> = {};
     const survivors: PendingUsage[] = [];
     for (const entry of this.pending) {
       entry.fresh = false;
-      entry.idleResults = covered.has(entry) ? 0 : entry.idleResults + 1;
-      if (entry.idleResults < MAX_PENDING_IDLE_RESULTS) {
+      let expired: boolean;
+      if (entry.completed) {
+        if (covered) {
+          entry.idleResults = covered.has(entry) ? 0 : entry.idleResults + 1;
+        }
+        expired = entry.idleResults >= MAX_PENDING_IDLE_RESULTS;
+      } else {
+        expired = now - entry.recordedAt >= MAX_RUNNING_PENDING_MS;
+      }
+      if (!expired) {
         survivors.push(entry);
         continue;
       }
@@ -599,18 +658,20 @@ export class ResultUsageReconciler {
     }
     // Root usage is no cumulative total and covers nothing pending, while a
     // later result's modelUsage includes these calls and the remainder
-    // billed here. Everything stays pending, without aging.
-    for (const entry of this.pending) entry.fresh = false;
+    // billed here. Everything stays pending; only running calls expire, and
+    // silently: without modelUsage nothing can bill them a second time.
     if (residual) {
       this.pending.push({
         model,
         tokens: { ...residual.modelUsage[model] },
         final: true,
+        completed: true,
         idleResults: 0,
+        recordedAt: this.now(),
         fresh: false,
       });
     }
-    this.pending = coalesce(this.pending);
+    this.agePending(undefined);
     return { ...(residual ? { residual } : {}), costUSD: 0 };
   }
 }

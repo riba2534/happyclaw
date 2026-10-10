@@ -13,6 +13,7 @@ import { join } from 'node:path';
 
 import {
   MAX_PENDING_IDLE_RESULTS,
+  MAX_RUNNING_PENDING_MS,
   ResultUsageReconciler,
 } from '../container/agent-runner/src/result-usage.js';
 import { AssistantUsageCollector } from '../container/agent-runner/src/assistant-usage.js';
@@ -520,6 +521,7 @@ function replayStraddle(
     ) {
       reconciler.recordAccounted(batch.tokens.modelUsage, {
         final: batch.final,
+        completed: batch.completed,
       });
       finality[batch.eventId] = batch.final;
       events.push(batch.tokens);
@@ -732,10 +734,15 @@ describe('per-message usage that modelUsage covers only later', () => {
     }
   });
 
-  test('a running call stays pending until the result that covers it', () => {
-    const reconciler = new ResultUsageReconciler();
+  test('a running call spanning more results than the idle limit is billed once', () => {
+    // A background subagent call stays open while the main thread finishes
+    // three times the idle limit of turns, one minute apart.
+    let now = 0;
+    const reconciler = new ResultUsageReconciler({ now: () => now });
     reconciler.recordAccounted(accounted(2_000, 1));
-    for (let turn = 1; turn < MAX_PENDING_IDLE_RESULTS; turn++) {
+    const turns = 3 * MAX_PENDING_IDLE_RESULTS;
+    for (let turn = 1; turn <= turns; turn++) {
+      now += 60_000;
       reconciler.recordAccounted(accounted(10, 1), FINAL);
       const reconciled = reconciler.applyResult(
         result({ [MODEL]: tokens(10 * turn, turn) }),
@@ -744,22 +751,35 @@ describe('per-message usage that modelUsage covers only later', () => {
       expect(reconciled.droppedPending).toBeUndefined();
     }
     const landed = reconciler.applyResult(
-      result({
-        [MODEL]: tokens(
-          10 * (MAX_PENDING_IDLE_RESULTS - 1) + 2_000,
-          MAX_PENDING_IDLE_RESULTS - 1 + 300,
-        ),
-      }),
+      result({ [MODEL]: tokens(10 * turns + 2_000, turns + 300) }),
     );
     expect(landed.residual?.modelUsage).toEqual({ [MODEL]: tokens(0, 299) });
     expect(reconciler.pendingAccounted).toEqual({});
   });
 
-  test('pending usage no result ever covers is dropped after the idle limit', () => {
-    // E.g. a call flushed with its placeholder output and never counted by
-    // Claude Code, or a gateway label no modelUsage key will ever cover.
-    const reconciler = new ResultUsageReconciler();
+  test('a running call no result covers expires after an hour', () => {
+    let now = 0;
+    const reconciler = new ResultUsageReconciler({ now: () => now });
+    // E.g. a call aborted mid-stream that Claude Code never counted.
     reconciler.recordAccounted(accounted(700, 1));
+    const dropped: unknown[] = [];
+    for (let turn = 1; now < MAX_RUNNING_PENDING_MS; turn++) {
+      now += 10 * 60_000;
+      reconciler.recordAccounted(accounted(10, 1), FINAL);
+      const reconciled = reconciler.applyResult(
+        result({ [MODEL]: tokens(10 * turn, turn) }),
+      );
+      expect(reconciled.residual).toBeUndefined();
+      if (reconciled.droppedPending) dropped.push(reconciled.droppedPending);
+    }
+    expect(dropped).toEqual([{ [MODEL]: tokens(700, 1) }]);
+    expect(reconciler.pendingAccounted).toEqual({});
+  });
+
+  test('a completed call no result covers is dropped after the idle limit', () => {
+    // E.g. a gateway label no modelUsage key will ever cover.
+    const reconciler = new ResultUsageReconciler();
+    reconciler.recordAccounted(accounted(700, 1), { completed: true });
     const dropped: unknown[] = [];
     for (let turn = 1; turn <= MAX_PENDING_IDLE_RESULTS; turn++) {
       reconciler.recordAccounted(accounted(10, 1), FINAL);
@@ -770,6 +790,25 @@ describe('per-message usage that modelUsage covers only later', () => {
       if (reconciled.droppedPending) dropped.push(reconciled.droppedPending);
     }
     expect(dropped).toEqual([{ [MODEL]: tokens(700, 1) }]);
+    expect(reconciler.pendingAccounted).toEqual({});
+  });
+
+  test('a call only its transcript shows as ended stays pending across a reset', () => {
+    // Claude Code's non-streaming fallback (and a result emitted just before
+    // a subagent call is counted) can put the stop_reason on disk before
+    // the call reaches modelUsage.
+    const reconciler = new ResultUsageReconciler({ resumed: true });
+    reconciler.recordAccounted(accounted(100, 10), FINAL);
+    reconciler.recordAccounted(accounted(2_000, 50), { completed: true });
+    const first = reconciler.applyResult(
+      result({ [MODEL]: tokens(5_000 + 100, 900 + 10) }),
+    );
+    expect(first.baselineReset).toBe('initial_resume');
+    reconciler.recordAccounted(accounted(50, 5), FINAL);
+    const second = reconciler.applyResult(
+      result({ [MODEL]: tokens(5_000 + 2_150, 900 + 65) }),
+    );
+    expect(second.residual).toBeUndefined();
     expect(reconciler.pendingAccounted).toEqual({});
   });
 
@@ -863,7 +902,7 @@ describe('usage baseline sidecar', () => {
   test('pending usage round-trips with its age', () => {
     const dir = sidecarDir();
     const a = new ResultUsageReconciler();
-    a.recordAccounted(accounted(700, 1));
+    a.recordAccounted(accounted(700, 1), { completed: true });
     a.recordAccounted(accounted(10, 1), FINAL);
     a.applyResult(result({ [MODEL]: tokens(10, 1) }));
     writeUsageBaseline(dir, a.toBaseline('s'));
