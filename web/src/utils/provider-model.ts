@@ -34,23 +34,11 @@ export function buildProviderModel(
 
 /**
  * Mirrors `isOneMillionContextModel` in src/runtime-config.ts (parity is
- * tested): since Claude Code 2.1.285 a gateway keeps the window a recognised
- * model has on the Anthropic API, so Fable, Sonnet 5+, Haiku 5.5+ and
- * Opus 4.7+ are 1M without the `[1m]` suffix.
+ * tested): a third-party provider defaults to a 1M compact window only for an
+ * explicit `[1m]` model, since a gateway capped at 200K cannot be detected.
  */
 export function isOneMillionContextModel(model: string): boolean {
-  const id = model.trim().toLowerCase();
-  if (/\[1m\]$/.test(id)) return true;
-  const match =
-    /claude-(opus|sonnet|haiku|fable)-(\d+)(?:-(\d{1,2})(?!\d))?/.exec(id);
-  if (!match) return false;
-  const family = match[1];
-  const major = Number(match[2]);
-  const minor = match[3] === undefined ? 0 : Number(match[3]);
-  if (family === 'fable') return true;
-  if (family === 'sonnet') return major >= 5;
-  if (family === 'haiku') return major > 5 || (major === 5 && minor >= 5);
-  return major > 4 || (major === 4 && minor >= 7);
+  return /\[1m\]$/i.test(model.trim());
 }
 
 /** Build the editable defaults prefilled for third-party providers. */

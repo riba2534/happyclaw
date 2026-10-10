@@ -142,26 +142,16 @@ const THIRD_PARTY_RUNTIME_DEFAULTS = {
 } as const;
 
 /**
- * Whether Claude Code gives this model a 1M window behind a gateway.
+ * Whether a third-party provider defaults to a 1M auto-compact window.
  *
- * Since Claude Code 2.1.285 a custom ANTHROPIC_BASE_URL keeps the window a
- * recognised model has on the Anthropic API: Fable, Sonnet 5+, Haiku 5.5+
- * and Opus 4.7+ are 1M without a `[1m]` suffix. Other IDs keep the 200K
- * default, which a provider can still override for a capped gateway.
+ * Only an explicit `[1m]` model ID does. Claude Code 2.1.285+ gives 1M-native
+ * Claude models (Sonnet 5+, Opus 4.7+, Fable) a 1M window behind a gateway
+ * too, but it cannot see a gateway capped at 200K, which then fails with
+ * "Prompt is too long" instead of compacting; a provider that serves 1M sets
+ * the `[1m]` suffix or its own CLAUDE_CODE_AUTO_COMPACT_WINDOW.
  */
 export function isOneMillionContextModel(model: string): boolean {
-  const id = model.trim().toLowerCase();
-  if (/\[1m\]$/.test(id)) return true;
-  const match =
-    /claude-(opus|sonnet|haiku|fable)-(\d+)(?:-(\d{1,2})(?!\d))?/.exec(id);
-  if (!match) return false;
-  const family = match[1];
-  const major = Number(match[2]);
-  const minor = match[3] === undefined ? 0 : Number(match[3]);
-  if (family === 'fable') return true;
-  if (family === 'sonnet') return major >= 5;
-  if (family === 'haiku') return major > 5 || (major === 5 && minor >= 5);
-  return major > 4 || (major === 4 && minor >= 7);
+  return /\[1m\]$/i.test(model.trim());
 }
 const DANGEROUS_ENV_VARS = new Set([
   // Code execution / preload attacks

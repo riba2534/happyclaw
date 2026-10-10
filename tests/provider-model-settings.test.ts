@@ -62,12 +62,15 @@ describe('third-party provider model settings', () => {
     ).toBe('200000');
   });
 
-  test('prefills the 1M compact window for 1M-native Claude models like the backend', () => {
-    const window = (model: string) =>
-      buildDefaultProviderEnv(model, false).find(
+  test('prefills the 1M compact window only for an explicit [1m] model, like the backend', () => {
+    const window = (model: string, oneMillionContext = false) =>
+      buildDefaultProviderEnv(model, oneMillionContext).find(
         (row) => row.key === 'CLAUDE_CODE_AUTO_COMPACT_WINDOW',
       )?.value;
-    expect(window('claude-sonnet-5-5')).toBe('1000000');
+    // A gateway capped at 200K cannot be detected, so 1M-native Claude IDs
+    // keep the conservative default unless the provider opts into [1m].
+    expect(window('claude-sonnet-5-5')).toBe('200000');
+    expect(window('claude-sonnet-5-5', true)).toBe('1000000');
     expect(window('claude-haiku-4-5')).toBe('200000');
     expect(window('glm-5.2')).toBe('200000');
 
