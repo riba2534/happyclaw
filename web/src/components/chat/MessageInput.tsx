@@ -231,13 +231,21 @@ export const MessageInput = memo(function MessageInput({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [groupJid]);
 
-  // Cleanup debounce timer on unmount, save current draft
+  // On unmount, flush a draft save that is still waiting on its debounce,
+  // so the last keystrokes before leaving the conversation are kept.
+  const latestContentRef = useRef(content);
+  latestContentRef.current = content;
   useEffect(() => {
     return () => {
       if (draftTimerRef.current) {
         clearTimeout(draftTimerRef.current);
+        draftTimerRef.current = undefined;
+        if (groupJidRef.current) {
+          saveDraft(groupJidRef.current, latestContentRef.current.trim());
+        }
       }
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Debounced draft save

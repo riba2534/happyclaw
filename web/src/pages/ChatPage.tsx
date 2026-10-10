@@ -31,7 +31,6 @@ import { useClearWorkspace } from '../hooks/useClearWorkspace';
 import type { GroupEntry } from '../utils/group-utils';
 import { useDeleteWorkspace } from '../hooks/useDeleteWorkspace';
 import { useWorkspaceTree } from '../hooks/useWorkspaceTree';
-import { useMediaQuery } from '../hooks/useMediaQuery';
 import { useNewConversation } from '../hooks/useNewConversation';
 import { useShellStore } from '../stores/shell';
 import { Button } from '@/components/ui/button';
@@ -82,7 +81,6 @@ export function ChatPage() {
   const user = useAuthStore((s) => s.user);
   const appearance = useAuthStore((s) => s.appearance);
   const appName = appearance?.appName || 'HappyClaw';
-  const isDesktop = useMediaQuery('(min-width: 1024px)');
   const [showBugReport, setShowBugReport] = useState(false);
   const bugReportMounted = useOpenedOnce(showBugReport);
   const userInitial = (user?.display_name ||
@@ -255,11 +253,10 @@ export function ChatPage() {
           ref={chatViewRef}
           className={`${groupFolder ? 'flex-1 min-w-0 h-full overflow-hidden' : 'hidden lg:block flex-1 min-w-0 h-full overflow-hidden'}`}
         >
-          {/* The phone list view hides this pane; skip mounting it there so
-              its message polling and subscriptions don't run unseen. */}
-          {(groupFolder || isDesktop) && (
-            <ChatView groupJid={activeGroupJid} onBack={handleBackToList} />
-          )}
+          {/* Stays mounted behind the phone list so the composer draft,
+              pending attachments and scroll position survive going back;
+              with the WebSocket up it only polls every 30s. */}
+          <ChatView groupJid={activeGroupJid} onBack={handleBackToList} />
         </div>
       ) : (
         <Empty className="hidden flex-1 lg:flex">
