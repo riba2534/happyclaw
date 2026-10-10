@@ -47,7 +47,7 @@ describe('stale routes are rejected before connector side effects', () => {
   test('Feishu resolves before registration, downloads, and persistence', () => {
     expectRouteBeforeSideEffects(source('feishu.ts'), 'const admittedRoute =', [
       'await enrichFeishuInboundContent(',
-      'onNewChat?.(chatJid, resolvedChatName)',
+      'onNewChat?.(chatJid, knownChatName)',
       'await downloadFeishuImage(',
       'storeMessageDirect(',
     ]);

@@ -21,6 +21,8 @@ export interface FeishuRichContentClient {
 export interface FeishuParsedContent {
   text: string;
   imageKeys?: string[];
+  /** File attachments the parser recognized (not downloaded here). */
+  fileInfos?: Array<{ fileKey: string; filename: string }>;
   /** Internal completeness signal used when the parsed content is quoted. */
   materialComplete?: boolean;
 }
@@ -149,6 +151,46 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
   });
 }
 
+function isHighSurrogate(code: number): boolean {
+  return code >= 0xd800 && code <= 0xdbff;
+}
+
+/** Cut to at most `maxUnits` UTF-16 units without splitting a code point. */
+export function sliceFeishuText(text: string, maxUnits: number): string {
+  if (text.length <= maxUnits) return text;
+  let end = Math.max(0, maxUnits);
+  if (end > 0 && isHighSurrogate(text.charCodeAt(end - 1))) end--;
+  return text.slice(0, end);
+}
+
+function codePointLength(text: string): number {
+  let count = 0;
+  for (const _ of text) count++;
+  return count;
+}
+
+function truncationMarker(droppedChars: number): string {
+  return `\n[…已截断 ${droppedChars} 字符]`;
+}
+
+/**
+ * Bound enriched material (never the user's own text) with an explicit
+ * marker, so the Agent can tell the material is incomplete. The marker fits
+ * inside `maxUnits` whenever the budget can hold it.
+ */
+export function clipFeishuMaterial(
+  text: string,
+  maxUnits: number,
+): { text: string; truncated: boolean } {
+  if (text.length <= maxUnits) return { text, truncated: false };
+  const reserve = truncationMarker(codePointLength(text)).length;
+  const kept = sliceFeishuText(text, Math.max(0, maxUnits - reserve));
+  return {
+    text: `${kept}${truncationMarker(codePointLength(text.slice(kept.length)))}`,
+    truncated: true,
+  };
+}
+
 function responseItems(response: unknown): FeishuMessageItem[] {
   if (!response || typeof response !== 'object') return [];
   const result = response as {
@@ -221,6 +263,7 @@ function normalizeFeishuInteractiveCardWithCompleteness(
   const imageKeys = new Set<string>();
   let visited = 0;
   let textChars = 0;
+  let droppedChars = 0;
   let materialComplete = true;
   const seenObjects = new Set<object>();
 
@@ -229,11 +272,15 @@ function normalizeFeishuInteractiveCardWithCompleteness(
     if (!normalized || lines[lines.length - 1] === normalized) return;
     if (textChars >= limits.maxTextChars) {
       materialComplete = false;
+      droppedChars += codePointLength(normalized);
       return;
     }
     const remaining = limits.maxTextChars - textChars;
-    const clipped = normalized.slice(0, remaining);
-    if (clipped.length < normalized.length) materialComplete = false;
+    const clipped = sliceFeishuText(normalized, remaining);
+    if (clipped.length < normalized.length) {
+      materialComplete = false;
+      droppedChars += codePointLength(normalized.slice(clipped.length));
+    }
     if (lines[lines.length - 1] !== clipped) {
       lines.push(clipped);
       textChars += clipped.length + 1;
@@ -302,8 +349,14 @@ function normalizeFeishuInteractiveCardWithCompleteness(
   };
   visit(root, 0);
 
+  let text = lines.join('\n').trim();
+  if (droppedChars > 0) {
+    // Say the card was cut instead of silently ending mid-content.
+    const marker = truncationMarker(droppedChars);
+    text = `${sliceFeishuText(text, Math.max(0, limits.maxTextChars - marker.length))}${marker}`;
+  }
   return {
-    text: lines.join('\n').trim() || '[飞书卡片消息]',
+    text: text || '[飞书卡片消息]',
     imageKeys: imageKeys.size > 0 ? [...imageKeys] : undefined,
     materialComplete,
   };
@@ -336,9 +389,15 @@ function normalizeItem(
   if (!parsed.text.trim() && !parsed.imageKeys?.length) return undefined;
   const messageId = item.message_id ?? '';
   const imageKeys = parsed.imageKeys ?? [];
+  // Files and videos inside quoted/forwarded messages are never downloaded.
+  // Say so explicitly instead of letting `[文件: x]` read like an attachment.
+  const notDownloaded =
+    Boolean(parsed.fileInfos?.length) || messageType === 'media';
   return {
     messageId,
-    text: parsed.text.trim(),
+    text: notDownloaded
+      ? `${parsed.text.trim()}（未下载）`
+      : parsed.text.trim(),
     imageKeys,
     imageRefs: imageKeys.map((imageKey) => ({ messageId, imageKey })),
     materialComplete:
@@ -352,6 +411,64 @@ function normalizeItem(
       ? { senderLabel: item.sender.name || item.sender.id }
       : {}),
   };
+}
+
+/**
+ * A recalled/deleted or empty child is part of the forward the user sent;
+ * keep its slot as a placeholder so the bundle stays complete.
+ */
+function placeholderItem(item: FeishuMessageItem): NormalizedItem {
+  const messageId = item.message_id ?? '';
+  return {
+    messageId,
+    text: item.deleted ? '[已撤回]' : '[空消息]',
+    imageKeys: [],
+    imageRefs: [],
+    materialComplete: true,
+    ...(item.sender?.name || item.sender?.id
+      ? { senderLabel: item.sender.name || item.sender.id }
+      : {}),
+  };
+}
+
+/**
+ * Merged-forward children. Only a transient read can make the material
+ * incomplete: deleted children become placeholders and an over-cap forward
+ * is cut with an explicit "共 N 条" note, both counted as resolved.
+ */
+function normalizeForwardChildren(
+  candidates: FeishuMessageItem[],
+  parseContent: EnrichFeishuInboundContentInput['parseContent'],
+  limits: FeishuRichContentLimits,
+): { children: NormalizedItem[]; overflowNote?: string; complete: boolean } {
+  const bounded = candidates.slice(0, limits.maxForwardItems);
+  const children = bounded.map(
+    (item) =>
+      normalizeItem(item, parseContent, limits) ?? placeholderItem(item),
+  );
+  return {
+    children,
+    ...(candidates.length > bounded.length
+      ? {
+          overflowNote: `（共 ${candidates.length} 条，仅展示前 ${bounded.length} 条）`,
+        }
+      : {}),
+    complete: children.every((child) => child.materialComplete),
+  };
+}
+
+function forwardLines(
+  children: NormalizedItem[],
+  overflowNote: string | undefined,
+): string {
+  return [
+    '[合并转发消息]',
+    ...children.map((child) => {
+      const sender = child.senderLabel ? `${child.senderLabel}: ` : '';
+      return `- ${sender}${child.text}`;
+    }),
+    ...(overflowNote ? [overflowNote] : []),
+  ].join('\n');
 }
 
 function normalizeFetchedMessage(
@@ -379,31 +496,22 @@ function normalizeFetchedMessage(
       item !== exact &&
       (item.upper_message_id === requestedId || !!item.upper_message_id),
   );
-  const boundedCandidates = childCandidates.slice(0, limits.maxForwardItems);
-  const children = boundedCandidates
-    .map((item) => normalizeItem(item, parseContent, limits))
-    .filter((item): item is NormalizedItem => !!item);
-  if (children.length === 0) {
+  if (childCandidates.length === 0) {
     return {
       item: exact,
       normalized: normalizeItem(exact, parseContent, limits),
     };
   }
-  const forwardMaterialResolved =
-    childCandidates.length <= limits.maxForwardItems &&
-    children.length === boundedCandidates.length &&
-    children.every((child) => child.materialComplete);
+  const {
+    children,
+    overflowNote,
+    complete: forwardMaterialResolved,
+  } = normalizeForwardChildren(childCandidates, parseContent, limits);
   return {
     item: exact,
     normalized: {
       messageId: requestedId,
-      text: [
-        '[合并转发消息]',
-        ...children.map((child) => {
-          const sender = child.senderLabel ? `${child.senderLabel}: ` : '';
-          return `- ${sender}${child.text}`;
-        }),
-      ].join('\n'),
+      text: forwardLines(children, overflowNote),
       imageKeys: children.flatMap((child) => child.imageKeys),
       imageRefs: children.flatMap((child) =>
         child.imageKeys.map((imageKey) => ({
@@ -453,10 +561,25 @@ async function resolveCurrentRichMessage(
     input.messageType === 'merge_forward' ||
     items.some((item) => !!item.upper_message_id);
   const candidates = items.filter((item) => item.msg_type !== 'merge_forward');
-  const boundedCandidates = candidates.slice(0, limits.maxForwardItems);
-  const normalized = boundedCandidates
-    .map((item) => normalizeItem(item, input.parseContent, limits))
-    .filter((item): item is NormalizedItem => !!item);
+  let normalized: NormalizedItem[];
+  let overflowNote: string | undefined;
+  let forwardComplete = false;
+  if (forward) {
+    if (candidates.length === 0) return undefined;
+    const forwardChildren = normalizeForwardChildren(
+      candidates,
+      input.parseContent,
+      limits,
+    );
+    normalized = forwardChildren.children;
+    overflowNote = forwardChildren.overflowNote;
+    forwardComplete = forwardChildren.complete;
+  } else {
+    normalized = candidates
+      .slice(0, limits.maxForwardItems)
+      .map((item) => normalizeItem(item, input.parseContent, limits))
+      .filter((item): item is NormalizedItem => !!item);
+  }
   if (normalized.length === 0) return undefined;
 
   const imageRefs: Array<{ messageId: string; imageKey: string }> = [];
@@ -477,22 +600,14 @@ async function resolveCurrentRichMessage(
     }
   }
   const text = forward
-    ? [
-        '[合并转发消息]',
-        ...normalized.map((item) => {
-          const sender = item.senderLabel ? `${item.senderLabel}: ` : '';
-          return `- ${sender}${item.text}`;
-        }),
-      ].join('\n')
+    ? forwardLines(normalized, overflowNote)
     : normalized.map((item) => item.text).join('\n');
+  // A deterministic length cut is final material: retrying cannot recover
+  // it, so it stays resolved but carries an explicit truncation marker.
   return {
-    text: text.slice(0, limits.maxTextChars),
+    text: clipFeishuMaterial(text, limits.maxTextChars).text,
     imageRefs,
-    materialResolved:
-      forward &&
-      candidates.length <= limits.maxForwardItems &&
-      normalized.length === boundedCandidates.length &&
-      normalized.every((item) => item.materialComplete),
+    materialResolved: forward && forwardComplete,
   };
 }
 
@@ -558,7 +673,10 @@ export async function enrichFeishuInboundContent(
     ...DEFAULT_FEISHU_RICH_CONTENT_LIMITS,
     ...input.limits,
   };
-  const fallbackImages = input.fallbackImageKeys ?? [];
+  const fallbackImages = [...new Set(input.fallbackImageKeys ?? [])].slice(
+    0,
+    limits.maxImageKeys,
+  );
   try {
     return await withTimeout(
       (async () => {
@@ -566,6 +684,8 @@ export async function enrichFeishuInboundContent(
           resolveCurrentRichMessage(input, limits).catch(() => undefined),
           resolveReferencedChain(input, limits).catch(() => []),
         ]);
+        // Rich material is already bounded with an explicit marker; the
+        // user's own text/post body is never cut.
         const currentText = rich?.text || input.fallbackText;
         const candidateCurrentImageRefs = rich?.imageRefs?.length
           ? rich.imageRefs
@@ -628,13 +748,14 @@ export async function enrichFeishuInboundContent(
           }
           const markerText = markers.length > 0 ? `${markers.join(' ')} ` : '';
           const rawText = `${markerText}${item.text || '[仅包含附件]'}`;
-          const boundedText = rawText.slice(0, textBudget);
+          const bounded = clipFeishuMaterial(rawText, textBudget);
+          const boundedText = bounded.text;
           normalizedReferences.push({
             id: item.messageId,
             ...(item.senderLabel ? { sender: item.senderLabel } : {}),
             text: boundedText,
             ...(item.forwardMaterialResolved &&
-            boundedText.length === rawText.length &&
+            !bounded.truncated &&
             candidateImageRefs.length === item.imageRefs.length
               ? { materialResolved: true }
               : {}),
@@ -649,9 +770,8 @@ export async function enrichFeishuInboundContent(
 
         // The canonical message remains exactly the current user-visible turn.
         // Quoted ancestors are prompt-only metadata and cannot displace it.
-        const text = currentText.slice(0, limits.maxTextChars);
         return {
-          text,
+          text: currentText,
           imageKeys: currentImages.length > 0 ? currentImages : undefined,
           ...(currentImageRefs.length > 0 ? { currentImageRefs } : {}),
           ...(referencedImageRefs.length > 0 ? { referencedImageRefs } : {}),

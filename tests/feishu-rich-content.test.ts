@@ -189,7 +189,7 @@ describe('Feishu rich inbound normalization', () => {
     expect(result.references?.[0]?.materialResolved).toBeUndefined();
   });
 
-  test('does not mark an item-capped merged-forward reference as complete', async () => {
+  test('marks an item-capped merged-forward reference complete with an explicit note', async () => {
     const rootId = 'om_forward_over_item_limit';
     const client = clientWith(() => ({
       data: {
@@ -222,7 +222,10 @@ describe('Feishu rich inbound normalization', () => {
     expect(result.references?.[0]?.text).toContain('第一条');
     expect(result.references?.[0]?.text).toContain('第二条');
     expect(result.references?.[0]?.text).not.toContain('第三条');
-    expect(result.references?.[0]?.materialResolved).toBeUndefined();
+    // The cap is deterministic: retrying cannot recover the rest, so the
+    // material is final and says so instead of being retried forever.
+    expect(result.references?.[0]?.text).toContain('共 3 条，仅展示前 2 条');
+    expect(result.references?.[0]?.materialResolved).toBe(true);
   });
 
   test('does not mark an internally truncated card child as complete', async () => {
