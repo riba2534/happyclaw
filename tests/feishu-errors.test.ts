@@ -2,6 +2,7 @@ import { describe, expect, test } from 'vitest';
 import {
   classifyFeishuError,
   feishuErrorCode,
+  isFeishuMissingScopeError,
   neutralizeFeishuMentions,
 } from '../src/feishu-errors';
 
@@ -22,6 +23,17 @@ describe('feishuErrorCode', () => {
   test('reads top-level codes from resolved envelopes', () => {
     expect(feishuErrorCode({ code: 230020, msg: 'limit' })).toBe(230020);
     expect(feishuErrorCode({ data: { code: '200850' } })).toBe(200850);
+  });
+});
+
+describe('isFeishuMissingScopeError', () => {
+  test('recognizes an ungranted app scope in either error shape', () => {
+    expect(isFeishuMissingScopeError(axios(400, 99991672))).toBe(true);
+    expect(isFeishuMissingScopeError({ code: 99991672 })).toBe(true);
+  });
+  test('does not treat other refusals as a missing scope', () => {
+    expect(isFeishuMissingScopeError(axios(400, 41050))).toBe(false);
+    expect(isFeishuMissingScopeError(new Error('timeout'))).toBe(false);
   });
 });
 

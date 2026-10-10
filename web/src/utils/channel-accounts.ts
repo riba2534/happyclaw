@@ -69,6 +69,7 @@ export const CHANNEL_PROVIDER_OPTIONS: ChannelProviderOption[] = [
         '在飞书开放平台创建企业自建应用，并启用“机器人”能力。',
         '在“凭证与基础信息”复制 App ID 和 App Secret。',
         '事件订阅选择长连接，添加 im.message.receive_v1，申请消息与资源权限后发布应用。',
+        '可选：开通“查看群成员”或“获取用户基本信息”权限，消息会显示发送人名字而不是 open_id。',
       ],
       action: {
         label: '打开飞书开放平台',

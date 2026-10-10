@@ -58,7 +58,12 @@ import {
   parseChannelAddress,
   scopeChannelJid,
 } from './channel-address.js';
-import { neutralizeFeishuMentions } from './feishu-errors.js';
+import {
+  classifyFeishuError,
+  feishuErrorCode,
+  isFeishuMissingScopeError,
+  neutralizeFeishuMentions,
+} from './feishu-errors.js';
 import {
   classifyFeishuCardError,
   feishuMessageUuid,
@@ -95,6 +100,7 @@ import {
 } from './im-delivery-progress.js';
 import { preAcceptImDeliveryError } from './im-send-retry-policy.js';
 import { enrichFeishuInboundContent } from './feishu-rich-content.js';
+import { createFeishuSenderNameResolver } from './feishu-sender-name.js';
 import {
   FeishuForwardBundleResolver,
   type FeishuForwardCandidate,
@@ -1422,7 +1428,6 @@ export function createFeishuConnection(
   const reliabilityAccountId =
     config.channelAccountId?.trim() || `app:${config.appId}`;
   const inboxOwner = `feishu:${reliabilityAccountId}:${randomUUID()}`;
-  const senderNameCache = new Map<string, string>();
   const lastMessageIdByChat = new Map<string, string>();
   // Inbound message → chat, so a reply anchor named by the host is only used
   // when it really is a message of the target chat. Bounded insertion order.
@@ -2225,8 +2230,95 @@ export function createFeishuConnection(
     }
   }
 
-  function getSenderName(openId: string): string {
-    return senderNameCache.get(openId) || openId;
+  function feishuApiFailure(
+    operation: string,
+    response: { code?: number; msg?: string },
+  ): Error {
+    // Keep the business code readable by feishuErrorCode/classifyFeishuError.
+    return Object.assign(
+      new Error(`${operation} failed: ${response.code} ${response.msg ?? ''}`),
+      { code: response.code },
+    );
+  }
+
+  function feishuErrorMessage(err: unknown): string | undefined {
+    const body = (err as { response?: { data?: { msg?: unknown } } })?.response
+      ?.data;
+    if (typeof body?.msg === 'string') return body.msg;
+    return err instanceof Error ? err.message : undefined;
+  }
+
+  const senderNames = createFeishuSenderNameResolver({
+    lookup: async (openId) => {
+      if (!client) throw new Error('Feishu client is not connected');
+      const response = await client.contact.v3.user.get({
+        path: { user_id: openId },
+        params: { user_id_type: 'open_id' },
+      });
+      if (response.code !== undefined && response.code !== 0) {
+        throw feishuApiFailure('contact.v3.user.get', response);
+      }
+      return response.data?.user?.name;
+    },
+    listChatMembers: async (chatId, pageToken) => {
+      if (!client) throw new Error('Feishu client is not connected');
+      const response = await client.im.v1.chatMembers.get({
+        path: { chat_id: chatId },
+        params: {
+          member_id_type: 'open_id',
+          page_size: 100,
+          ...(pageToken ? { page_token: pageToken } : {}),
+        },
+      });
+      if (response.code !== undefined && response.code !== 0) {
+        throw feishuApiFailure('im.v1.chatMembers.get', response);
+      }
+      return {
+        members: (response.data?.items ?? []).map((member) => ({
+          openId: member.member_id ?? '',
+          name: member.name,
+        })),
+        hasMore: response.data?.has_more === true,
+        pageToken: response.data?.page_token,
+      };
+    },
+    classifyError: (err) => {
+      if (isFeishuMissingScopeError(err)) return 'missing_scope';
+      const { kind } = classifyFeishuError(err);
+      return kind === 'transient' || kind === 'rate_limited'
+        ? 'transient'
+        : 'definitive';
+    },
+    onMissingScope: (source, err) => {
+      // Feishu's msg names the scopes to grant and links to the console.
+      logger.warn(
+        { source, code: feishuErrorCode(err), msg: feishuErrorMessage(err) },
+        source === 'contact'
+          ? 'Feishu app lacks a contact scope (e.g. contact:user.base:readonly); senders outside group member lists show their open_id'
+          : 'Feishu app lacks a chat member scope (e.g. im:chat.members:read); group senders are named through the contact directory only',
+      );
+    },
+    onLookupError: (source, target, err) => {
+      logger.debug(
+        { source, target, code: feishuErrorCode(err), err },
+        'Feishu sender name lookup failed; falling back to open_id',
+      );
+    },
+  });
+
+  async function resolveSenderName(
+    openId: string,
+    eventName: string | undefined,
+    senderType: string | undefined,
+    groupChatId: string | undefined,
+  ): Promise<string> {
+    if (eventName) return eventName;
+    if (!openId) return openId;
+    // App/bot senders are neither group members nor contact-directory users.
+    if (senderType && senderType !== 'user') {
+      return senderNames.peek(openId) || openId;
+    }
+    return (await senderNames.resolve(openId, groupChatId)) || openId;
   }
 
   function withAckReactionTimeout<T>(
@@ -3163,7 +3255,6 @@ export function createFeishuConnection(
         threadId,
         deliveryRootMessageId,
       );
-      const resolvedSenderName = senderName || getSenderName(senderOpenId);
       const cachedChatInfo = chatInfoById.get(chatId);
       // A placeholder name is only for first registration. Passing it for an
       // already registered chat would rename it (e.g. every P2P chat back to
@@ -3207,6 +3298,15 @@ export function createFeishuConnection(
         }
       }
       failureNoticeTarget = messageRouteTarget.raw;
+
+      // Resolve the display name only for messages that passed the audience
+      // and binding gates, so dropped traffic never triggers contact lookups.
+      const resolvedSenderName = await resolveSenderName(
+        senderOpenId,
+        senderName,
+        senderType,
+        chatType === 'group' ? chatId : undefined,
+      );
 
       // ── 斜杠指令：拦截已知 /xxx 命令，不进入消息流 ──
       // 只有飞书结构化 mentions 证明了真实 Bot 点名，才移除开头的展示名。
