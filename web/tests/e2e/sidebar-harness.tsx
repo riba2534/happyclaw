@@ -5,6 +5,7 @@
 import { createRoot } from 'react-dom/client';
 import { MemoryRouter, useLocation } from 'react-router-dom';
 import { UnifiedSidebar } from '../../src/components/layout/UnifiedSidebar';
+import { ConfirmHost } from '../../src/components/common/ConfirmHost';
 import { Toaster } from '../../src/components/ui/sonner';
 import { TooltipProvider } from '../../src/components/ui/tooltip';
 import { MotionProvider } from '../../src/lib/motion';
@@ -171,6 +172,16 @@ useChatStore.setState({
     });
     return session;
   },
+  deleteAgentAction: async (jid: string, agentId: string) => {
+    const state = useChatStore.getState();
+    useChatStore.setState({
+      agents: {
+        ...state.agents,
+        [jid]: (state.agents[jid] ?? []).filter((a) => a.id !== agentId),
+      },
+    });
+    return true;
+  },
 });
 
 function RouteProbe() {
@@ -192,6 +203,7 @@ createRoot(document.getElementById('root')!).render(
         </div>
       </MemoryRouter>
       <Toaster />
+      <ConfirmHost />
     </TooltipProvider>
   </MotionProvider>,
 );

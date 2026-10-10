@@ -759,10 +759,10 @@ const WorkspaceRow = memo(function WorkspaceRow({
   );
 });
 
-/** Hover-revealed icon buttons at the end of a row (+ and ⋯). */
-const rowIconButtonClass =
+/** Hover-revealed icon buttons at the end of a row (+, delete and ⋯). */
+export const rowIconButtonClass =
   'grid size-6 shrink-0 cursor-pointer place-items-center rounded text-muted-foreground outline-none transition-opacity hover:bg-surface-hover hover:text-foreground focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-ring/40 aria-expanded:opacity-100 disabled:cursor-default';
-const revealOnRowHover =
+export const revealOnRowHover =
   'pointer-fine:opacity-0 pointer-fine:group-hover/sidebar-row:opacity-100';
 
 /** "+" at the end of a workspace row: a new session, opened right away. */

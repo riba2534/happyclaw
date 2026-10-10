@@ -48,7 +48,9 @@ test('marks the opened workspace and its main conversation as current', async ({
     betaItem.locator('[aria-current="page"]', { hasText: '当前对话' }),
   ).toHaveCount(1);
 
-  await betaItem.getByRole('button', { name: 'beta 会话 1' }).click();
+  await betaItem
+    .getByRole('button', { name: 'beta 会话 1', exact: true })
+    .click();
   await expect(page.getByTestId('route')).toHaveText(
     '/chat/beta?agent=beta-s1',
   );
@@ -132,7 +134,7 @@ test('shows each agent with its avatar; a single workspace is the agent row itse
     has: page.getByRole('button', { name: '地址证明助手', exact: true }),
   });
   await expect(
-    postItem.getByRole('button', { name: 'post 会话 1' }),
+    postItem.getByRole('button', { name: 'post 会话 1', exact: true }),
   ).toBeVisible();
 
   // Several workspaces nest under the agent, which only expands/collapses.
@@ -190,4 +192,25 @@ test('an agent menu creates a workspace with that agent preselected', async ({
   await expect(
     page.getByRole('dialog').locator('#workspace-agent-profile'),
   ).toContainText('HappyClaw');
+});
+
+test('a session row deletes from its hover button after confirmation', async ({
+  page,
+}) => {
+  await page.goto(HARNESS_PATH);
+  const nav = page.getByRole('navigation', { name: '主导航' });
+  const session = nav.getByRole('button', {
+    name: 'alpha 会话 2',
+    exact: true,
+  });
+
+  await session.hover();
+  await nav.getByRole('button', { name: '删除alpha 会话 2' }).click();
+  const dialog = page.getByRole('alertdialog');
+  await expect(dialog).toContainText('alpha 会话 2');
+  await dialog.getByRole('button', { name: '删除' }).click();
+  await expect(session).toHaveCount(0);
+  await expect(
+    nav.getByRole('button', { name: 'alpha 会话 1', exact: true }),
+  ).toBeVisible();
 });

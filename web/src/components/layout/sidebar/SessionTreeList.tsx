@@ -23,7 +23,7 @@ import {
 import type { AgentInfo } from '../../../types';
 import type { GroupEntry } from '../../../utils/group-utils';
 import { sidebarRowClass } from './SidebarItem';
-import { RowMenu } from './WorkspaceTree';
+import { RowMenu, revealOnRowHover, rowIconButtonClass } from './WorkspaceTree';
 
 const EMPTY_AGENTS: AgentInfo[] = [];
 const INITIAL_VISIBLE = 8;
@@ -192,6 +192,12 @@ export const SessionTreeList = memo(function SessionTreeList({
                   onSelect={() =>
                     openWorkspaceSession(navigate, group, session.id)
                   }
+                  onDelete={
+                    canModify && !nativeManaged
+                      ? () => deleteSession(group.jid, session.id, openBinding)
+                      : undefined
+                  }
+                  deleteLabel={`删除${session.name || '新会话'}`}
                   menuLabel={`${session.name}的更多操作`}
                   menu={
                     canModify && !nativeManaged ? (
@@ -264,6 +270,8 @@ function SessionRow({
   linked = false,
   time,
   onSelect,
+  onDelete,
+  deleteLabel,
   menu,
   menuLabel,
   asListItem = true,
@@ -275,10 +283,14 @@ function SessionRow({
   linked?: boolean;
   time?: string;
   onSelect: () => void;
+  /** Shown next to the menu on hover; the handler asks for confirmation. */
+  onDelete?: () => void;
+  deleteLabel?: string;
   menu?: React.ReactNode;
   menuLabel: string;
   asListItem?: boolean;
 }) {
+  const hasActions = !!menu || !!onDelete;
   const row = (
     <div
       data-active={active || undefined}
@@ -311,23 +323,42 @@ function SessionRow({
           <span
             className={cn(
               'shrink-0 text-micro text-faint-foreground tabular-nums',
-              menu &&
-                'pointer-fine:group-hover/sidebar-row:hidden pointer-fine:group-has-[[aria-expanded=true]]/sidebar-row:hidden',
+              hasActions &&
+                'pointer-fine:group-hover/sidebar-row:hidden pointer-fine:group-has-[:focus-visible]/sidebar-row:hidden pointer-fine:group-has-[[aria-expanded=true]]/sidebar-row:hidden',
             )}
           >
             {time}
           </span>
         )
       )}
-      {menu && (
+      {hasActions && (
+        // The time gives way to the actions on hover, keyboard focus, or
+        // while the menu is open.
         <span
           className={cn(
-            'shrink-0',
+            'flex shrink-0 items-center',
             time &&
-              'pointer-fine:hidden pointer-fine:group-hover/sidebar-row:block pointer-fine:has-[[aria-expanded=true]]:block',
+              'pointer-fine:hidden pointer-fine:group-hover/sidebar-row:flex pointer-fine:group-has-[:focus-visible]/sidebar-row:flex pointer-fine:has-[[aria-expanded=true]]:flex',
           )}
         >
-          <RowMenu label={menuLabel}>{menu}</RowMenu>
+          {onDelete && (
+            <button
+              type="button"
+              aria-label={deleteLabel}
+              onClick={(event) => {
+                event.stopPropagation();
+                onDelete();
+              }}
+              className={cn(
+                rowIconButtonClass,
+                revealOnRowHover,
+                'hover:text-destructive',
+              )}
+            >
+              <Trash2 className="size-3.5" />
+            </button>
+          )}
+          {menu && <RowMenu label={menuLabel}>{menu}</RowMenu>}
         </span>
       )}
     </div>
