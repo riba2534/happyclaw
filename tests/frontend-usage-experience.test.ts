@@ -349,6 +349,9 @@ describe('usage page product and accessibility surface', () => {
     expect(page).toContain('账单扣费：不适用（未启用计费）');
     expect(page).toMatch(/visibleBilling\?\.applicable \?\? billingEnabled/);
     expect(page).toMatch(/exportError\.status === 404/);
+    // Stats come without the row breakdown; export availability must not
+    // depend on it.
+    expect(page).toContain('disabled={exporting || !hasExportableUsage}');
     expect(page).toMatch(/exportError\.status === 413/);
     expect(page).toMatch(
       /Promise\.all\(\[loadStats\(query\), loadFilters\(query\)\]\)/,

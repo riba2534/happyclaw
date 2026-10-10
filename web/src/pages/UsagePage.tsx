@@ -507,8 +507,16 @@ export function UsagePage() {
   const billingApplicable = visibleBilling?.applicable ?? billingEnabled;
   const billingFeatureEnabled = visibleBilling?.enabled ?? billingEnabled;
 
+  // Stats are requested without the row breakdown, so whether there is
+  // anything to export comes from the summary (the CSV endpoint reads the
+  // records itself); the breakdown only exists on pre-window servers.
+  const hasExportableUsage =
+    visibleBreakdown.length > 0 ||
+    (visibleSummary?.runCount ?? 0) > 0 ||
+    (visibleSummary?.totalTokens ?? 0) > 0;
+
   const handleExport = async () => {
-    if (!visibleWindow || visibleBreakdown.length === 0) return;
+    if (!visibleWindow || !hasExportableUsage) return;
     setExporting(true);
     const filename = `happyclaw-usage-${visibleWindow.from}-${visibleWindow.to}.csv`;
     try {
@@ -646,7 +654,7 @@ export function UsagePage() {
                 variant="outline"
                 className="flex-1 pointer-coarse:min-h-11 sm:flex-none"
                 onClick={() => void handleExport()}
-                disabled={exporting || visibleBreakdown.length === 0}
+                disabled={exporting || !hasExportableUsage}
               >
                 <Download />
                 {exporting ? '正在导出' : '导出 CSV'}
