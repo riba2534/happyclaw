@@ -173,7 +173,10 @@ Host 模式没有 `maxConcurrentHostProcesses`。旧客户端提交该字段时�
 
 规则：
 
-- Agent 工具权限保持开放；不要虚构只读或受限工具模式。
+- Agent 工具权限保持开放；不要虚构只读或受限工具模式。唯一例外是 Claude Code
+  内置、依赖 CLI 进程常驻的会话级工具（`CronCreate`/`CronDelete`/`CronList`、
+  `ScheduleWakeup`、`EnterWorktree`/`ExitWorktree`）：Runner 每轮结束会关闭 CLI，
+  这些承诺会静默丢失，因此默认禁用，定时需求走 HappyClaw 的 `schedule_task`。
 - 宿主机 Skills 由 `runtime_policy.skills.host` 独立选择，不能通过
   `host_claude` 开关隐式获得。
 - 工作区 `CLAUDE.md`、项目 `.claude/skills` 和项目 MCP 属于项目上下文层。
