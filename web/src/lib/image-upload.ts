@@ -40,7 +40,7 @@ function canvasToBlob(
 async function downscale(file: File): Promise<Blob | null> {
   let bitmap: ImageBitmap;
   try {
-    bitmap = await createImageBitmap(file);
+    bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' });
   } catch {
     return null; // Unsupported format (e.g. HEIC on some browsers).
   }

@@ -133,7 +133,7 @@ export default function AdminBillingSettings() {
       setDraft(next);
       setSubmitted(false);
       setTouched({});
-      await loadBillingStatus();
+      await loadBillingStatus({ force: true });
       toast.success('计费设置已保存');
     } catch (error) {
       toast.error(

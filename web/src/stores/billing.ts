@@ -2,12 +2,19 @@ import { create } from 'zustand';
 import { api } from '../api/client';
 
 // Several billing cards mount together and each asks for the same data;
-// concurrent calls share one request.
+// concurrent calls share one request. A refresh after a mutation passes
+// `force`: a request already in flight may predate the change.
 const inFlight = new Map<string, Promise<void>>();
-function shared(key: string, load: () => Promise<void>): Promise<void> {
+function shared(
+  key: string,
+  load: () => Promise<void>,
+  force = false,
+): Promise<void> {
   const pending = inFlight.get(key);
-  if (pending) return pending;
-  const request = load().finally(() => inFlight.delete(key));
+  if (pending && !force) return pending;
+  const request = load().finally(() => {
+    if (inFlight.get(key) === request) inFlight.delete(key);
+  });
   inFlight.set(key, request);
   return request;
 }
@@ -257,10 +264,10 @@ interface BillingState {
   revenueTrend: RevenueTrendItem[];
 
   // User actions
-  loadBillingStatus: () => Promise<void>;
+  loadBillingStatus: (opts?: { force?: boolean }) => Promise<void>;
   loadMySubscription: () => Promise<void>;
   loadMyBalance: () => Promise<void>;
-  loadMyAccess: () => Promise<void>;
+  loadMyAccess: (opts?: { force?: boolean }) => Promise<void>;
   loadMyUsage: () => Promise<void>;
   loadMyTransactions: (limit?: number, offset?: number) => Promise<void>;
   loadMyQuota: () => Promise<void>;
@@ -362,35 +369,39 @@ export const useBillingStore = create<BillingState>((set, get) => ({
 
   // --- User actions ---
 
-  loadBillingStatus: () =>
-    shared('status', async () => {
-      try {
-        const data = await api.get<{
-          enabled: boolean;
-          mode?: 'wallet_first';
-          minStartBalanceUsd?: number;
-          currency?: string;
-          currencyRate?: number;
-        }>('/api/billing/status');
-        set({
-          billingEnabled: data.enabled,
-          billingStatusLoaded: true,
-          billingMode: data.mode ?? 'wallet_first',
-          billingMinStartBalanceUsd: data.minStartBalanceUsd ?? 0.01,
-          billingCurrency: data.currency ?? 'USD',
-          billingCurrencyRate: data.currencyRate ?? 1,
-        });
-      } catch {
-        set({
-          billingEnabled: false,
-          billingStatusLoaded: true,
-          billingMode: 'wallet_first',
-          billingMinStartBalanceUsd: 0.01,
-          billingCurrency: 'USD',
-          billingCurrencyRate: 1,
-        });
-      }
-    }),
+  loadBillingStatus: (opts) =>
+    shared(
+      'status',
+      async () => {
+        try {
+          const data = await api.get<{
+            enabled: boolean;
+            mode?: 'wallet_first';
+            minStartBalanceUsd?: number;
+            currency?: string;
+            currencyRate?: number;
+          }>('/api/billing/status');
+          set({
+            billingEnabled: data.enabled,
+            billingStatusLoaded: true,
+            billingMode: data.mode ?? 'wallet_first',
+            billingMinStartBalanceUsd: data.minStartBalanceUsd ?? 0.01,
+            billingCurrency: data.currency ?? 'USD',
+            billingCurrencyRate: data.currencyRate ?? 1,
+          });
+        } catch {
+          set({
+            billingEnabled: false,
+            billingStatusLoaded: true,
+            billingMode: 'wallet_first',
+            billingMinStartBalanceUsd: 0.01,
+            billingCurrency: 'USD',
+            billingCurrencyRate: 1,
+          });
+        }
+      },
+      opts?.force,
+    ),
 
   loadMySubscription: async () => {
     set({ loading: true });
@@ -422,36 +433,40 @@ export const useBillingStore = create<BillingState>((set, get) => ({
     }
   },
 
-  loadMyAccess: () =>
-    shared('access', async () => {
-      try {
-        const data = await api.get<BillingAccessResult>(
-          '/api/billing/my/access',
-        );
-        set((state) => ({
-          access: data,
-          balance: state.balance
-            ? {
-                ...state.balance,
-                balance_usd: data.balanceUsd,
-                updated_at: new Date().toISOString(),
-              }
-            : state.balance,
-          quota: data.usage
-            ? {
-                allowed: data.allowed,
-                reason: data.reason,
-                exceededWindow: data.exceededWindow,
-                resetAt: data.resetAt,
-                warningPercent: data.warningPercent,
-                usage: data.usage,
-              }
-            : null,
-        }));
-      } catch (err) {
-        set({ error: err instanceof Error ? err.message : String(err) });
-      }
-    }),
+  loadMyAccess: (opts) =>
+    shared(
+      'access',
+      async () => {
+        try {
+          const data = await api.get<BillingAccessResult>(
+            '/api/billing/my/access',
+          );
+          set((state) => ({
+            access: data,
+            balance: state.balance
+              ? {
+                  ...state.balance,
+                  balance_usd: data.balanceUsd,
+                  updated_at: new Date().toISOString(),
+                }
+              : state.balance,
+            quota: data.usage
+              ? {
+                  allowed: data.allowed,
+                  reason: data.reason,
+                  exceededWindow: data.exceededWindow,
+                  resetAt: data.resetAt,
+                  warningPercent: data.warningPercent,
+                  usage: data.usage,
+                }
+              : null,
+          }));
+        } catch (err) {
+          set({ error: err instanceof Error ? err.message : String(err) });
+        }
+      },
+      opts?.force,
+    ),
 
   loadMyUsage: async () => {
     try {
@@ -500,7 +515,7 @@ export const useBillingStore = create<BillingState>((set, get) => ({
       );
       // Refresh all billing state after redeem
       get().loadMyBalance();
-      get().loadMyAccess();
+      get().loadMyAccess({ force: true });
       get().loadMySubscription();
       get().loadMyQuota();
       get().loadMyUsage();
