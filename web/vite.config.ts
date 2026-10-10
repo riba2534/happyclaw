@@ -51,6 +51,11 @@ function lucideDirectImports(): Plugin {
 
   return {
     name: 'happyclaw-lucide-direct-imports',
+    // Build only. In dev every rewritten icon path is a dependency the
+    // optimizer only meets on first use, and each discovery re-bundles and
+    // reloads every open page (mid-test in e2e runs on a cold cache). The
+    // dev server pre-bundles the lucide-react barrel once instead.
+    apply: 'build',
     enforce: 'pre',
     transform(source, id) {
       if (!id.includes('/src/') || !/\.[jt]sx?(?:\?|$)/.test(id)) return null;
@@ -97,6 +102,11 @@ export default defineConfig({
         ws: true,
       },
     },
+  },
+  optimizeDeps: {
+    // Crawl the e2e harness pages too, so a dependency only they import is
+    // pre-bundled at startup instead of reloading pages when first requested.
+    entries: ['index.html', 'tests/e2e/*.html'],
   },
   resolve: {
     alias: {
