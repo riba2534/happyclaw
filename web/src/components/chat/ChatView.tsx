@@ -441,7 +441,11 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
     const offDisconnected = wsManager.on('disconnected', reschedule);
 
     document.addEventListener('visibilitychange', handleVisibility);
-    schedulePoll();
+    // Returning to a workspace whose messages are cached: catch up at once.
+    // Its WS events were ignored while another workspace was open, and the
+    // connected cadence would otherwise wait 30s for the first refresh.
+    if (useChatStore.getState().messages[groupJid]) void poll();
+    else schedulePoll();
 
     return () => {
       active = false;

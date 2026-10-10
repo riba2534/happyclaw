@@ -10,6 +10,7 @@ class WsManager {
   private maxReconnectDelay = 30000;
   /** Whether a socket of this page has opened before (later opens are reconnects). */
   private openedBefore = false;
+  private failedBeforeOpen = false;
 
   connect() {
     if (
@@ -34,7 +35,9 @@ class WsManager {
       this.reconnectDelay = 1000;
       // Listeners reconcile state missed while the socket was down; the
       // page's first open follows the initial HTTP loads, so it says so.
-      const reconnect = this.openedBefore;
+      // A failed attempt before the first open (e.g. the server was
+      // restarting during page load) means events may already be missing.
+      const reconnect = this.openedBefore || this.failedBeforeOpen;
       this.openedBefore = true;
       this.emit('connected', { reconnect });
     };
@@ -49,6 +52,7 @@ class WsManager {
 
     ws.onclose = (event: CloseEvent) => {
       if (this.ws !== ws) return;
+      if (!this.openedBefore) this.failedBeforeOpen = true;
       this.emit('disconnected', {});
       // 1008 = Policy Violation (backend auth failure), 4001 = custom auth error
       if (event.code === 1008 || event.code === 4001) {
