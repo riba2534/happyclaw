@@ -74,6 +74,34 @@ describe('command palette items', () => {
     ]);
   });
 
+  test('orders workspaces like the sidebar: home, pinned, then recent', () => {
+    const workspaces = buildCommandGroups({
+      ...base,
+      groups: {
+        'web:old': group({
+          name: '旧工作区',
+          lastMessageTime: '2026-01-02T00:00:00.000Z',
+        }),
+        'web:pinned': group({
+          name: '置顶工作区',
+          pinned_at: '2026-01-01T00:00:00.000Z',
+          lastMessageTime: '2026-01-01T00:00:00.000Z',
+        }),
+        'web:recent': group({
+          name: '最近工作区',
+          lastMessageTime: '2026-03-01T00:00:00.000Z',
+        }),
+        'web:main': base.groups['web:main'],
+      },
+    }).find((g) => g.heading === '工作区')!;
+    expect(workspaces.items.map((item) => item.label)).toEqual([
+      'HappyClaw',
+      '置顶工作区',
+      '最近工作区',
+      '旧工作区',
+    ]);
+  });
+
   test('lists conversation sessions newest first and labels the home workspace', () => {
     const sessions = buildCommandGroups(base).find(
       (g) => g.heading === '会话',

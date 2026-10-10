@@ -18,6 +18,7 @@ import type { ColorScheme, Theme } from '../hooks/useTheme';
 import { SHORTCUTS } from './shortcuts';
 import { sessionActivityAt } from './session-presentation';
 import { getAgentProfileDisplayName } from '../utils/agent-product';
+import { compareWorkspaces, type GroupEntry } from '../utils/group-utils';
 
 export type CommandAction =
   | { type: 'navigate'; to: string }
@@ -150,19 +151,24 @@ export function buildCommandGroups(
   }
 
   const groupEntries = Object.entries(input.groups);
-  const workspaces: CommandItemSpec[] = groupEntries.map(([jid, group]) => ({
-    id: `workspace:${jid}`,
-    label: workspaceLabel(group),
-    hint: group.agent_profile_name || undefined,
-    keywords: [group.folder, group.name, group.agent_profile_name || ''],
-    icon: LayoutGrid,
-    action: {
-      type: 'openSession',
-      jid,
-      folder: group.folder,
-      sessionId: null,
-    },
-  }));
+  // Same order as the sidebar, so the first workspaces listed before typing
+  // are the ones the user works in.
+  const workspaces: CommandItemSpec[] = groupEntries
+    .map(([jid, group]): GroupEntry => ({ ...group, jid }))
+    .sort(compareWorkspaces)
+    .map((group) => ({
+      id: `workspace:${group.jid}`,
+      label: workspaceLabel(group),
+      hint: group.agent_profile_name || undefined,
+      keywords: [group.folder, group.name, group.agent_profile_name || ''],
+      icon: LayoutGrid,
+      action: {
+        type: 'openSession',
+        jid: group.jid,
+        folder: group.folder,
+        sessionId: null,
+      },
+    }));
 
   const sessions = groupEntries
     .flatMap(([jid, group]) =>

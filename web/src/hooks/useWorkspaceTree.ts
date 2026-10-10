@@ -1,6 +1,10 @@
 import { useMemo } from 'react';
 import { useChatStore } from '../stores/chat';
-import { type GroupEntry, compareByLastActivity } from '../utils/group-utils';
+import {
+  type GroupEntry,
+  compareByLastActivity,
+  compareWorkspaces,
+} from '../utils/group-utils';
 import {
   groupWorkspacesByAgent,
   partitionAgentWorkspaceSections,
@@ -21,11 +25,7 @@ export function useWorkspaceTree() {
     entries.sort(compareByLastActivity);
     const homeGroup = entries.find((entry) => entry.is_my_home) ?? null;
     const defaultAgentId = homeGroup?.agent_profile_id || '__default__';
-    const prioritized = [...entries].sort((a, b) => {
-      if (a.is_my_home) return -1;
-      if (b.is_my_home) return 1;
-      return Number(!!b.pinned_at) - Number(!!a.pinned_at);
-    });
+    const prioritized = [...entries].sort(compareWorkspaces);
     const agentSections = groupWorkspacesByAgent(prioritized, defaultAgentId);
     return {
       allGroups: entries,
