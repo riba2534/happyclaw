@@ -286,11 +286,9 @@ const BACKFILL_PAGE_SIZE = 50;
 const BACKFILL_MAX_PAGES_PER_CHAT = 5;
 // Backfill runs after onReady with a few chats in flight; a sequential pass
 // over every chat ever seen held all Feishu inbound for its whole duration.
+// Every known chat is still covered: a long-silent chat or DM can receive
+// the message sent during downtime.
 const BACKFILL_CONCURRENCY = 4;
-// Durable cursors are never deleted, so only chats with traffic in this
-// window seed the backfill set. Current group membership (chat.list) and
-// live traffic still add chats regardless of age.
-const BACKFILL_ACTIVE_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 const FEISHU_INBOX_LEASE_MS = 5 * 60 * 1000;
 const FEISHU_INBOX_HEARTBEAT_MS = 60 * 1000;
 const FEISHU_INBOX_RETRY_DELAY_MS = 5_000;
@@ -1451,18 +1449,12 @@ export function createFeishuConnection(
 
   function restoreDurableChatProgress(): void {
     try {
-      const activeSince = Date.now() - BACKFILL_ACTIVE_WINDOW_MS;
       for (const cursor of listChannelCursors({
         provider: 'feishu',
         accountId: reliabilityAccountId,
         limit: 10_000,
       })) {
         if (cursor.scope !== FEISHU_CURSOR_SCOPE || !cursor.chatId) continue;
-        const lastActivity = Math.max(
-          cursor.position,
-          Date.parse(cursor.updatedAt) || 0,
-        );
-        if (lastActivity < activeSince) continue;
         rememberChatProgress(cursor.chatId, cursor.position);
       }
     } catch (err) {
@@ -2059,7 +2051,23 @@ export function createFeishuConnection(
     source: 'ws' | 'backfill',
     claim: ClaimedChannelInboxItem,
   ): Promise<void> {
-    if (connectOptions?.shouldDeferInbound?.()) {
+    if (!connectOptions) {
+      // stop() cleared the admission callbacks (owner_only, @ activation,
+      // allowlists). Processing now would fail open; keep the message queued
+      // for the next connection instead.
+      failClaimedInbound(
+        claim,
+        payload,
+        new Error('Feishu connection stopped before the message was admitted'),
+        true,
+      );
+      logger.debug(
+        { inboxId: claim.id, messageId: payload.messageId, source },
+        'Kept Feishu Inbox item queued: connection is stopped',
+      );
+      return;
+    }
+    if (connectOptions.shouldDeferInbound?.()) {
       failClaimedInbound(
         claim,
         payload,
@@ -3539,6 +3547,7 @@ export function createFeishuConnection(
   async function backfillChatMessages(
     chatId: string,
     sinceMs: number,
+    generation: number,
   ): Promise<void> {
     if (!client) return;
     const nowSec = Math.floor(Date.now() / 1000);
@@ -3644,6 +3653,9 @@ export function createFeishuConnection(
       return byTime || a.messageId.localeCompare(b.messageId);
     });
     for (const message of pendingMessages) {
+      // stop() or a reconnect retired this pass while pages were in flight;
+      // the next connection's backfill covers these messages again.
+      if (generation !== wsConnectionGeneration || !connectOptions) return;
       await handleIncomingMessage(message, 'backfill');
     }
   }
@@ -3752,7 +3764,7 @@ export function createFeishuConnection(
             const sinceMs = cursor
               ? Math.max(0, cursor.position - BACKFILL_LOOKBACK_MS)
               : Math.max(0, Date.now() - BACKFILL_LOOKBACK_MS);
-            await backfillChatMessages(chatId, sinceMs);
+            await backfillChatMessages(chatId, sinceMs, generation);
           } catch (err) {
             logger.warn({ err, chatId, reason }, 'Feishu chat backfill failed');
           }

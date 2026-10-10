@@ -1936,7 +1936,7 @@ describe('Feishu durable Inbox and cursor integration', () => {
     expect(maxInFlight).toBeGreaterThan(1);
   });
 
-  test('dormant durable cursors no longer seed the startup backfill', async () => {
+  test('long-silent chats are still backfilled after a restart', async () => {
     const accountId = `account-dormant-${Date.now()}`;
     const executed = vi.fn();
     const recentTime = Date.now() - 60_000;
@@ -1944,7 +1944,7 @@ describe('Feishu durable Inbox and cursor integration', () => {
     await first.handler(event('om_recent', recentTime, 'recent'));
     await first.connection.stop();
     openConnections.splice(openConnections.indexOf(first.connection), 1);
-    // A second chat whose last traffic is far outside the active window.
+    // A second chat (e.g. a DM) whose last traffic was a month ago.
     advanceChannelCursor({
       provider: 'feishu',
       accountId,
@@ -1964,7 +1964,50 @@ describe('Feishu durable Inbox and cursor integration', () => {
       ([request]: any[]) => request.params.container_id,
     );
     expect(listedChats).toContain('ou_durable_user');
-    expect(listedChats).not.toContain('ou_dormant_user');
+    expect(listedChats).toContain('ou_dormant_user');
+  });
+
+  test('a backfill pass stops at stop() and never admits without connect options', async () => {
+    const accountId = `account-stop-${Date.now()}`;
+    const createTime = Date.now() - 10_000;
+    let stopConnection: (() => Promise<void>) | null = null;
+    const executed = vi.fn(async (messageId: string) => {
+      // The first backfilled message stops the connection mid-pass.
+      if (messageId === 'om_stop_1') await stopConnection?.();
+    });
+    controls.chatList.mockResolvedValue({
+      data: {
+        items: [{ chat_id: 'oc_stop_group', name: 'G', chat_type: 'group' }],
+        has_more: false,
+      },
+    });
+    controls.backfillItems = ['om_stop_1', 'om_stop_2', 'om_stop_3'].map(
+      (id, index) => ({
+        ...backfillItem(id, createTime + index, id),
+        chat_type: 'group',
+      }),
+    );
+    const connected = await connect(accountId, executed);
+    stopConnection = () => connected.connection.stop();
+    await vi.waitFor(() => expect(executed).toHaveBeenCalledWith('om_stop_1'));
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(executed).toHaveBeenCalledTimes(1);
+    openConnections.splice(openConnections.indexOf(connected.connection), 1);
+
+    // A late event delivered after stop() is recorded but stays queued: the
+    // owner/activation checks are gone, so it must not be processed.
+    await connected.handler(event('om_after_stop', Date.now(), 'late'));
+    expect(executed).toHaveBeenCalledTimes(1);
+    expect(
+      recordChannelInbox({
+        provider: 'feishu',
+        accountId,
+        externalMessageId: 'om_after_stop',
+        sourceJid: 'feishu:ou_durable_user',
+        chatId: 'ou_durable_user',
+        status: 'queued',
+      }).item.status,
+    ).toBe('queued');
   });
 
   test('an intake exception stays queued and is automatically retried', async () => {
