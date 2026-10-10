@@ -693,13 +693,18 @@ interface StreamingDisplayProps {
   interactionMode?: InteractionMode;
   /** The status line mentions Esc: this view's composer stops the run. */
   stopHint?: boolean;
+  /**
+   * Show the finished run's settled card (frozen until its final message
+   * replaces it) instead of the live projection.
+   */
+  settled?: boolean;
 }
 
 const EMPTY_AGENTS: AgentInfo[] = [];
 
 export function StreamingDisplay({
   groupJid,
-  isWaiting,
+  isWaiting: isWaitingProp,
   senderName: senderNameProp = 'AI',
   agentId,
   agentAvatarUrl,
@@ -707,10 +712,20 @@ export function StreamingDisplay({
   agentAvatarColor,
   interactionMode = 'assistant',
   stopHint = false,
+  settled = false,
 }: StreamingDisplayProps) {
-  const mainStreaming = useChatStore((s) => s.streaming[groupJid]);
+  // A settled card belongs to a finished run: nothing about it is waiting.
+  const isWaiting = settled ? false : isWaitingProp;
+  const mainStreaming = useChatStore((s) =>
+    settled ? undefined : s.streaming[groupJid],
+  );
   const agentStreamingState = useChatStore((s) =>
-    agentId ? s.agentStreaming[agentId] : undefined,
+    agentId && !settled ? s.agentStreaming[agentId] : undefined,
+  );
+  const settledState = useChatStore((s) =>
+    settled
+      ? s.settledStreaming[agentId ? `${groupJid}#agent:${agentId}` : groupJid]
+      : undefined,
   );
   const runtimeAgentKind = useChatStore((s) =>
     agentId
@@ -718,11 +733,17 @@ export function StreamingDisplay({
       : undefined,
   );
   const runtimeJid = agentId ? `${groupJid}#agent:${agentId}` : groupJid;
-  const streaming = agentId ? agentStreamingState : mainStreaming;
-  const stopping = useChatStore((s) => !!s.stopRequests[runtimeJid]);
+  const streaming = settled
+    ? settledState
+    : agentId
+      ? agentStreamingState
+      : mainStreaming;
+  const stopping = useChatStore(
+    (s) => !settled && !!s.stopRequests[runtimeJid],
+  );
   // Task agents — only shown in main conversation (not inside agent tabs)
   const allAgents = useChatStore((s) =>
-    !agentId ? (s.agents[groupJid] ?? EMPTY_AGENTS) : EMPTY_AGENTS,
+    !agentId && !settled ? (s.agents[groupJid] ?? EMPTY_AGENTS) : EMPTY_AGENTS,
   );
   const taskAgents = useMemo(
     () => allAgents.filter((a) => a.kind === 'task' && a.status === 'running'),

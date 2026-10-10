@@ -222,6 +222,32 @@ test.describe('desktop composer', () => {
     });
   });
 
+  test('switching away and back during a send does not offer it again', async ({
+    page,
+  }) => {
+    await openHarness(page);
+    await page.evaluate(() => {
+      (
+        window as unknown as { composerHarness: { sendDelayMs: number } }
+      ).composerHarness.sendDelayMs = 1500;
+    });
+    await composer(page).fill('hello main');
+    // Let the debounced draft save land before sending.
+    await page.waitForTimeout(400);
+    await composer(page).press('Enter');
+    await switchTo(page, 'a1');
+    await switchTo(page, null);
+    await expect(composer(page)).toHaveValue('');
+
+    await page.waitForTimeout(1700);
+    await expect(composer(page)).toHaveValue('');
+    await composer(page).press('Enter');
+    await page.waitForTimeout(200);
+    expect((await harnessState(page)).sent).toEqual([
+      { to: 'main', content: 'hello main', images: 0 },
+    ]);
+  });
+
   test('Enter sends in a narrow desktop window and the steer shortcut works', async ({
     page,
   }) => {
@@ -423,7 +449,9 @@ test.describe('desktop composer', () => {
 });
 
 test.describe('touch composer', () => {
-  test('Enter inserts a newline on touch input', async ({ page }) => {
+  test('a phone types a newline on Enter; mod+Enter sends', async ({
+    page,
+  }) => {
     await openHarness(page);
     expect(
       await page.evaluate(
@@ -434,6 +462,12 @@ test.describe('touch composer', () => {
     await composer(page).press('Enter');
     await expect(composer(page)).toHaveValue('第一行\n');
     expect((await harnessState(page)).sent).toEqual([]);
+
+    await composer(page).press('Control+Enter');
+    await expect(composer(page)).toHaveValue('');
+    expect((await harnessState(page)).sent).toEqual([
+      { to: 'main', content: '第一行', images: 0 },
+    ]);
   });
 
   test('a running queue collapses to one line and keeps the conversation visible', async ({
@@ -533,5 +567,39 @@ test.describe('touch composer', () => {
       .getByRole('button', { name: '停止当前运行' })
       .boundingBox();
     expect(send!.width).toBeGreaterThanOrEqual(40);
+  });
+});
+
+test.describe('tablet composer', () => {
+  // iPad in landscape: touch-only, wide, typing on a hardware keyboard.
+  test.use({
+    viewport: { width: 1180, height: 820 },
+    isMobile: true,
+    hasTouch: true,
+  });
+
+  test('Enter sends on a hardware keyboard, not with the software keyboard up', async ({
+    page,
+  }) => {
+    await openHarness(page);
+    expect(
+      await page.evaluate(
+        () => matchMedia('(pointer: coarse) and (hover: none)').matches,
+      ),
+    ).toBe(true);
+    await composer(page).fill('硬件键盘');
+    await composer(page).press('Enter');
+    await expect(composer(page)).toHaveValue('');
+
+    await simulateKeyboard(page, 360);
+    await composer(page).fill('软键盘');
+    await composer(page).press('Enter');
+    await expect(composer(page)).toHaveValue('软键盘\n');
+    await composer(page).press('Meta+Enter');
+    await expect(composer(page)).toHaveValue('');
+    expect((await harnessState(page)).sent).toEqual([
+      { to: 'main', content: '硬件键盘', images: 0 },
+      { to: 'main', content: '软键盘', images: 0 },
+    ]);
   });
 });

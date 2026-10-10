@@ -10,6 +10,7 @@ import {
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { toast } from 'sonner';
 import {
+  isLiveStream,
   useChatStore,
   type FollowUpMode,
   type FollowUpQueueAction,
@@ -316,9 +317,12 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
   const loadAgents = useChatStore((s) => s.loadAgents);
   // Session ids with an active query, joined: streaming deltas of any session
   // must not re-render the whole view, only a start or stop does.
+  // A card frozen by a stop is not a running query.
   const activeQueryIds = useChatStore((s) =>
     (s.agents[groupJid] ?? EMPTY_AGENTS)
-      .filter((a) => s.agentWaiting[a.id] || s.agentStreaming[a.id])
+      .filter(
+        (a) => s.agentWaiting[a.id] || isLiveStream(s.agentStreaming[a.id]),
+      )
       .map((a) => a.id)
       .join(','),
   );
@@ -336,7 +340,8 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
   );
   const activeAgentWaiting = useChatStore((s) =>
     activeAgentTab
-      ? !!s.agentWaiting[activeAgentTab] || !!s.agentStreaming[activeAgentTab]
+      ? !!s.agentWaiting[activeAgentTab] ||
+        isLiveStream(s.agentStreaming[activeAgentTab])
       : false,
   );
   const activeAgentInterrupted = useChatStore((s) =>

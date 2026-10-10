@@ -14,12 +14,23 @@ import { MARKDOWN_HTML_TAG_NAMES } from '../../lib/markdown/html-tags';
  * `code` keeps only the classes the Markdown pipeline itself relies on:
  * `language-*` for highlighting and Mermaid, `math-inline`/`math-display`
  * for remark-math output that KaTeX renders after sanitizing.
+ *
+ * `accesskey` and `tabindex` are dropped from GitHub's global list: a reply
+ * could bind Alt+<key> to an outbound link or take over the Tab order.
  */
+const DROPPED_GLOBAL_ATTRIBUTES = new Set(['accessKey', 'tabIndex']);
+
 export const markdownSanitizeSchema: Options = {
   ...defaultSchema,
   tagNames: [...MARKDOWN_HTML_TAG_NAMES],
   attributes: {
     ...defaultSchema.attributes,
+    '*': (defaultSchema.attributes?.['*'] ?? []).filter(
+      (attribute) =>
+        !DROPPED_GLOBAL_ATTRIBUTES.has(
+          typeof attribute === 'string' ? attribute : attribute[0],
+        ),
+    ),
     code: [['className', /^language-./, 'math-inline', 'math-display']],
   },
   protocols: {

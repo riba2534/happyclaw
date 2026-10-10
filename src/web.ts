@@ -2865,8 +2865,34 @@ export function capSnapshotText(
   const minStart = text.length - max;
   const start = markdownBlockStarts(text).find((index) => index >= minStart);
   if (start !== undefined) return `…\n\n${text.slice(start)}`;
+  // One block longer than the budget: keep its last lines, re-opening the
+  // code fence the cut landed in so the tail doesn't render as prose.
   const cut = text.indexOf('\n', minStart);
-  return `…\n\n${cut >= 0 ? text.slice(cut + 1) : text.slice(minStart)}`;
+  const tailStart = cut >= 0 ? cut + 1 : minStart;
+  const opener = openFenceLineAt(text, tailStart);
+  return `…\n\n${opener ? `${opener}\n` : ''}${text.slice(tailStart)}`;
+}
+
+/** The opening line of the code fence `index` lies inside, if any. */
+function openFenceLineAt(text: string, index: number): string | null {
+  let fence: { char: string; length: number; line: string } | null = null;
+  let offset = 0;
+  for (const line of text.split('\n')) {
+    if (offset >= index) break;
+    offset += line.length + 1;
+    const marker = SNAPSHOT_FENCE_PATTERN.exec(line)?.[1];
+    if (!marker) continue;
+    if (!fence) {
+      fence = { char: marker[0], length: marker.length, line };
+    } else if (
+      marker[0] === fence.char &&
+      marker.length >= fence.length &&
+      line.trim() === marker
+    ) {
+      fence = null;
+    }
+  }
+  return fence?.line ?? null;
 }
 const MAX_SNAPSHOT_THINKING = 8000;
 const MAX_SNAPSHOT_EVENTS = 20;

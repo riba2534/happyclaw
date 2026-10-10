@@ -6,6 +6,7 @@ import {
   useCallback,
   useId,
   useImperativeHandle,
+  useMemo,
   memo,
   type Ref,
 } from 'react';
@@ -142,6 +143,9 @@ interface MessageInputProps {
 // switch still reaches the new composer, an old one is not replayed on every
 // switch, and a caret in the composer follows the user into the next one.
 const FOCUS_HANDOFF_MS = 1000;
+// A visual viewport at least this much shorter than the layout viewport means
+// a software keyboard is up (a hardware keyboard's shortcut bar is smaller).
+const SOFT_KEYBOARD_MIN_PX = 150;
 let focusHandoffAt = Number.NEGATIVE_INFINITY;
 let handledFocusRequest = { nonce: 0, at: Number.NEGATIVE_INFINITY };
 let handledDraftRequestNonce = 0;
@@ -224,6 +228,14 @@ export const MessageInput = memo(function MessageInput({
   draftTargetRef.current = draftTarget;
   const latestContentRef = useRef(content);
   latestContentRef.current = content;
+  // The send in flight. Its text leaves the stored draft as soon as it starts
+  // and stays out of every draft written meanwhile, so a composer remounted
+  // for this conversation mid-send never offers it for sending again.
+  const inFlightSendRef = useRef<{ key: string; text: string } | null>(null);
+  // The stored draft as this instance last wrote or adopted it, and the
+  // composer text at the last adoption (see the adoption effect).
+  const knownDraftRef = useRef(storedDraft ?? '');
+  const adoptedContentRef = useRef(storedDraft ?? '');
   const pendingImagesRef = useRef(pendingImages);
   pendingImagesRef.current = pendingImages;
   // The conversation async attachment work may still stage into. Cleared on
@@ -245,16 +257,35 @@ export const MessageInput = memo(function MessageInput({
   const uploading = useFileStore((s) => s.uploading);
   const uploadProgress = useFileStore((s) => s.uploadProgress);
   const saveDraft = useChatStore((s) => s.saveDraft);
-  const clearDraft = useChatStore((s) => s.clearDraft);
+  /** Store `text` as the draft of `key`, minus a send still in flight. */
+  const persistDraft = useCallback(
+    (key: string | undefined, text: string) => {
+      if (!key) return;
+      const inFlight = inFlightSendRef.current;
+      const value = (
+        inFlight?.key === key
+          ? composerTextAfterSend(text, inFlight.text)
+          : text
+      ).trim();
+      if (key === draftTargetRef.current) knownDraftRef.current = value;
+      saveDraft(key, value);
+    },
+    [saveDraft],
+  );
   const { mode: displayMode } = useDisplayMode();
   const isCompact = displayMode === 'compact';
-  // Input capability, not viewport width: a narrow desktop window still has
-  // a hardware keyboard, so Enter sends and the steer shortcut works there.
   const isTouchInput = useMediaQuery('(pointer: coarse) and (hover: none)');
   const isPhoneWidth = useMediaQuery('(max-width: 639px)');
+  const isWideViewport = useMediaQuery('(min-width: 1024px)');
 
   // iOS keyboard adaptation
-  const { isKeyboardVisible } = useKeyboardHeight();
+  const { keyboardHeight, isKeyboardVisible } = useKeyboardHeight();
+  // Enter types a newline where a software keyboard is the input: phones, and
+  // any touch screen while one is up. Desktops (narrow windows included) and
+  // wide touch screens without one (a tablet on a hardware keyboard) send on
+  // Enter. Mod+Enter sends everywhere.
+  const enterInsertsNewline =
+    isTouchInput && (!isWideViewport || keyboardHeight >= SOFT_KEYBOARD_MIN_PX);
 
   useEffect(() => {
     const handlePreferenceChange = (event: Event) => {
@@ -288,11 +319,9 @@ export const MessageInput = memo(function MessageInput({
     const previous = prevDraftTargetRef.current;
     if (previous === draftTarget) return;
     prevDraftTargetRef.current = draftTarget;
-    if (previous) {
-      const currentText = latestContentRef.current.trim();
-      if (currentText) saveDraft(previous, currentText);
-      else clearDraft(previous);
-    }
+    persistDraft(previous, latestContentRef.current);
+    knownDraftRef.current = storedDraft ?? '';
+    adoptedContentRef.current = storedDraft ?? '';
     setContent(storedDraft ?? '');
     // Pending attachments were staged for the previous conversation and must
     // not leak into this one (会话隔离). Release their preview URLs.
@@ -309,6 +338,18 @@ export const MessageInput = memo(function MessageInput({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [draftTarget]);
 
+  // A composer that unmounted mid-send settles this conversation's draft when
+  // its send resolves (the text comes back after a failure). Follow such a
+  // change while nothing has been typed here since.
+  useEffect(() => {
+    const next = storedDraft ?? '';
+    if (next === knownDraftRef.current) return;
+    knownDraftRef.current = next;
+    if (latestContentRef.current !== adoptedContentRef.current) return;
+    adoptedContentRef.current = next;
+    setContent(next);
+  }, [storedDraft]);
+
   // On unmount, flush a draft save that is still waiting on its debounce,
   // so the last keystrokes before leaving the conversation are kept, and
   // release the previews of attachments that were never sent.
@@ -317,9 +358,7 @@ export const MessageInput = memo(function MessageInput({
       if (draftTimerRef.current) {
         clearTimeout(draftTimerRef.current);
         draftTimerRef.current = undefined;
-        if (draftTargetRef.current) {
-          saveDraft(draftTargetRef.current, latestContentRef.current.trim());
-        }
+        persistDraft(draftTargetRef.current, latestContentRef.current);
       }
       pendingImagesRef.current.forEach((img) =>
         URL.revokeObjectURL(img.preview),
@@ -336,12 +375,10 @@ export const MessageInput = memo(function MessageInput({
       }
       draftTimerRef.current = setTimeout(() => {
         draftTimerRef.current = undefined;
-        if (draftTarget) {
-          saveDraft(draftTarget, text.trim());
-        }
+        persistDraft(draftTarget, text);
       }, 300);
     },
-    [draftTarget, saveDraft],
+    [draftTarget, persistDraft],
   );
 
   // Starter prompts fill the composer so the user can edit before sending.
@@ -417,19 +454,20 @@ export const MessageInput = memo(function MessageInput({
       }
       return;
     }
-    if (e.key !== 'Enter' || isTouchInput) return;
+    if (e.key !== 'Enter') return;
     if (Date.now() - compositionEndTimeRef.current < 100) return;
-    if (e.shiftKey && (e.metaKey || e.ctrlKey)) {
+    const withMod = e.metaKey || e.ctrlKey;
+    if (e.shiftKey) {
+      if (!withMod) return;
       e.preventDefault();
       void handleSend(
         isRunning ? alternateFollowUpMode(followUpMode) : undefined,
       );
       return;
     }
-    if (!e.shiftKey) {
-      e.preventDefault();
-      void handleSend();
-    }
+    if (enterInsertsNewline && !withMod) return;
+    e.preventDefault();
+    void handleSend();
   };
 
   const handleSend = async (modeOverride?: FollowUpMode) => {
@@ -446,6 +484,10 @@ export const MessageInput = memo(function MessageInput({
 
     setSending(true);
     setSendError(null);
+    if (target) {
+      inFlightSendRef.current = { key: target, text: sentText };
+      persistDraft(target, sentText);
+    }
 
     // 先组装 message 但不立刻清空 pendingFiles/pendingImages，
     // 让 onSend 失败时用户的附件也能保留、可以重试。
@@ -474,20 +516,17 @@ export const MessageInput = memo(function MessageInput({
     // Switched away mid-flight: this instance's state is gone or belongs to
     // another conversation; only the stored draft of `target` is fixed up.
     const stillHere = isCurrentTarget(target);
+    inFlightSendRef.current = null;
     if (ok) {
       successTap();
       if (draftTimerRef.current) {
         clearTimeout(draftTimerRef.current);
         draftTimerRef.current = undefined;
       }
-      const remaining = composerTextAfterSend(
-        latestContentRef.current,
-        sentText,
-      ).trim();
-      if (target) {
-        if (remaining) saveDraft(target, remaining);
-        else clearDraft(target);
-      }
+      persistDraft(
+        target,
+        composerTextAfterSend(latestContentRef.current, sentText),
+      );
       sentImages.forEach((img) => URL.revokeObjectURL(img.preview));
       if (stillHere) {
         setContent((current) => composerTextAfterSend(current, sentText));
@@ -505,11 +544,12 @@ export const MessageInput = memo(function MessageInput({
       }
     } else {
       // 失败：保留输入、保留附件；同步保存草稿，切换会话后也能恢复。
-      const currentText = latestContentRef.current.trim();
-      if (target && currentText) saveDraft(target, currentText);
+      persistDraft(target, latestContentRef.current);
       if (stillHere) {
         setSendError('发送失败，输入已保留，请重试');
         setTimeout(() => setSendError(null), 4000);
+      } else {
+        toast.error('发送失败，内容已放回该会话的输入框');
       }
     }
     setSending(false);
@@ -642,7 +682,12 @@ export const MessageInput = memo(function MessageInput({
   };
   const stageFiles = (target: string | undefined, files: PendingFile[]) => {
     if (files.length === 0) return;
-    if (!isCurrentTarget(target)) return;
+    if (!isCurrentTarget(target)) {
+      toast.info(
+        `${files.length} 个文件已上传到工作区，会话已切换，未附加到消息`,
+      );
+      return;
+    }
     setPendingFiles((prev) => [...prev, ...files]);
   };
 
@@ -810,7 +855,11 @@ export const MessageInput = memo(function MessageInput({
   const acceptDrop = useStableCallback((dataTransfer: DataTransfer) => {
     // Guard: respect disabled/uploading state. Sending is fine: only the
     // attachments of the in-flight message leave the composer.
-    if (!groupJid || disabled || uploading) return;
+    if (!groupJid || disabled) return;
+    if (uploading) {
+      toast.info('正在上传，请等当前上传完成后再拖入文件');
+      return;
+    }
 
     // Capture the targets at drop time to prevent stale-chat attachment
     const targetGroupJid = groupJid;
@@ -1221,7 +1270,7 @@ export const MessageInput = memo(function MessageInput({
                         : 'bg-muted text-faint-foreground'
                   } focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:outline-none`}
                 >
-                  {sending || stopping ? (
+                  {sending || (showStop && stopping) ? (
                     <Loader2 className="size-4 animate-spin" />
                   ) : showStop ? (
                     <Square className="size-3.5 fill-current" />
@@ -1452,7 +1501,10 @@ function QueuedFollowUpRow({
 }: QueuedFollowUpRowProps) {
   const steering = item.delivery_mode === 'steer';
   const locked = steering || item.delivery_status === 'promoting';
-  const images = parseQueuedImageAttachments(item.attachments);
+  const images = useMemo(
+    () => parseQueuedImageAttachments(item.attachments),
+    [item.attachments],
+  );
   const label = queuedFollowUpLabel(item.content, images.length);
 
   const sendNow = (

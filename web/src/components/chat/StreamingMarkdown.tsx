@@ -1,8 +1,9 @@
-import { memo, useMemo } from 'react';
-import { detectMarkdownFeatures, MarkdownRenderer } from './MarkdownRenderer';
+import { memo, useMemo, useRef } from 'react';
+import { MarkdownRenderer } from './MarkdownRenderer';
 import {
   canRenderBlockwise,
   endsInOpenFence,
+  extendMarkdownBlocks,
   findMarkdownDefinitions,
   splitMarkdownBlocks,
 } from '../../lib/markdown-blocks';
@@ -100,8 +101,14 @@ function MarkdownBlocks({
   streaming: boolean;
   caret?: boolean;
 }) {
+  // Streamed text only grows: extend the previous split instead of
+  // re-scanning a long reply on every render.
+  const splitRef = useRef<{ text: string; blocks: string[] } | null>(null);
   const blocks = useMemo(() => {
-    const split = splitMarkdownBlocks(content);
+    const split = streaming
+      ? extendMarkdownBlocks(splitRef.current, content)
+      : splitMarkdownBlocks(content);
+    if (streaming) splitRef.current = { text: content, blocks: split.slice() };
     if (!streaming) return split;
     if (split.length > 0) {
       split[split.length - 1] = stableOpenTable(split[split.length - 1]);
@@ -174,11 +181,7 @@ export const FinalMarkdown = memo(function FinalMarkdown({
   groupJid?: string;
   variant?: 'chat' | 'docs';
 }) {
-  const blockwise = useMemo(
-    () =>
-      canRenderBlockwise(content, detectMarkdownFeatures(content).hasRawHtml),
-    [content],
-  );
+  const blockwise = useMemo(() => canRenderBlockwise(content), [content]);
   if (!blockwise) {
     return (
       <MarkdownRenderer

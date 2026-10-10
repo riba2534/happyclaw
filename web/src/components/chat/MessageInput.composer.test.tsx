@@ -7,7 +7,9 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 const env = vi.hoisted(() => ({
   touch: false,
   phoneWidth: false,
-  keyboardVisible: false,
+  /** `(min-width: 1024px)`: tablets in landscape, desktops. */
+  wide: false,
+  keyboardHeight: 0,
   /** Pending image encodes, resolved by the test. */
   encodes: [] as Array<() => void>,
   deferEncode: false,
@@ -44,13 +46,17 @@ vi.mock('../../hooks/useDisplayMode', () => ({
 
 vi.mock('../../hooks/useMediaQuery', () => ({
   useMediaQuery: (query: string) =>
-    query.includes('pointer') ? env.touch : env.phoneWidth,
+    query.includes('pointer')
+      ? env.touch
+      : query.includes('min-width: 1024px')
+        ? env.wide
+        : env.phoneWidth,
 }));
 
 vi.mock('@/hooks/useKeyboardHeight', () => ({
   useKeyboardHeight: () => ({
-    keyboardHeight: env.keyboardVisible ? 300 : 0,
-    isKeyboardVisible: env.keyboardVisible,
+    keyboardHeight: env.keyboardHeight,
+    isKeyboardVisible: env.keyboardHeight > 0,
   }),
 }));
 
@@ -88,7 +94,8 @@ const revoked: string[] = [];
 beforeEach(() => {
   env.touch = false;
   env.phoneWidth = false;
-  env.keyboardVisible = false;
+  env.wide = false;
+  env.keyboardHeight = 0;
   env.deferEncode = false;
   env.encodes = [];
   revoked.length = 0;
@@ -209,6 +216,76 @@ describe('conversation isolation', () => {
     expect(textarea().value).toBe('只属于 A');
   });
 
+  test('a send in flight is not offered again by a composer remounted for it', async () => {
+    const pending = deferred<boolean>();
+    const onSend = vi.fn(() => pending.promise);
+    const view = (key: string) => (
+      <MessageInput
+        key={key}
+        groupJid="web:g1"
+        draftKey={key}
+        onSend={onSend}
+      />
+    );
+    await render(view('web:g1'));
+    await type('hello main');
+    await act(() => new Promise((resolve) => setTimeout(resolve, 350)));
+    expect(useChatStore.getState().drafts).toEqual({ 'web:g1': 'hello main' });
+
+    await keyDown('Enter');
+    await render(view('web:g1#agent:a1'));
+    await render(view('web:g1'));
+    expect(textarea().value).toBe('');
+
+    await act(async () => pending.resolve(true));
+    expect(textarea().value).toBe('');
+    expect(useChatStore.getState().drafts).toEqual({});
+    await keyDown('Enter');
+    expect(onSend).toHaveBeenCalledTimes(1);
+  });
+
+  test('what was typed after a send in flight follows a remount', async () => {
+    const pending = deferred<boolean>();
+    const view = (key: string) => (
+      <MessageInput
+        key={key}
+        groupJid="web:g1"
+        draftKey={key}
+        onSend={() => pending.promise}
+      />
+    );
+    await render(view('web:g1'));
+    await type('hello');
+    await keyDown('Enter');
+    await type('hello more');
+    // Unmount flushes the pending draft save, minus the in-flight text.
+    await render(view('web:g1#agent:a1'));
+    await render(view('web:g1'));
+    expect(textarea().value).toBe('more');
+    await act(async () => pending.resolve(true));
+    expect(textarea().value).toBe('more');
+  });
+
+  test('a send that fails after a remount puts its text back', async () => {
+    const pending = deferred<boolean>();
+    const view = (key: string) => (
+      <MessageInput
+        key={key}
+        groupJid="web:g1"
+        draftKey={key}
+        onSend={() => pending.promise}
+      />
+    );
+    await render(view('web:g1'));
+    await type('will fail');
+    await keyDown('Enter');
+    await render(view('web:g1#agent:a1'));
+    await render(view('web:g1'));
+    expect(textarea().value).toBe('');
+    await act(async () => pending.resolve(false));
+    expect(textarea().value).toBe('will fail');
+  });
+
   test('an image that finishes encoding after a switch is dropped', async () => {
     env.deferEncode = true;
     const view = (key: string) => (
@@ -261,7 +338,7 @@ describe('sending', () => {
     );
   });
 
-  test('Enter follows input capability, not width, and respects IME 229', async () => {
+  test('a narrow desktop window sends on Enter and ignores IME 229', async () => {
     const onSend = vi.fn(() => true);
     env.phoneWidth = true;
     await render(<MessageInput groupJid="web:g1" onSend={onSend} />);
@@ -273,13 +350,41 @@ describe('sending', () => {
 
     await keyDown('Enter');
     expect(onSend).toHaveBeenCalledTimes(1);
+  });
 
+  test('a phone types a newline on Enter; mod+Enter still sends', async () => {
+    const onSend = vi.fn(() => true);
     env.touch = true;
-    await render(<MessageInput groupJid="web:g1" onSend={onSend} />);
+    env.phoneWidth = true;
+    await render(<MessageInput groupJid="web:g1" onSend={onSend} isRunning />);
     await type('换行');
-    const touchEnter = await keyDown('Enter');
-    expect(touchEnter.defaultPrevented).toBe(false);
+    expect((await keyDown('Enter')).defaultPrevented).toBe(false);
+    expect(onSend).not.toHaveBeenCalled();
+
+    await keyDown('Enter', { ctrlKey: true });
+    expect(onSend).toHaveBeenLastCalledWith('换行', undefined, 'queue');
+    await type('引导');
+    await keyDown('Enter', { metaKey: true, shiftKey: true });
+    expect(onSend).toHaveBeenLastCalledWith('引导', undefined, 'steer');
+  });
+
+  test('a tablet on a hardware keyboard sends on Enter, not with the software keyboard up', async () => {
+    const onSend = vi.fn(() => true);
+    env.touch = true;
+    env.wide = true;
+    const view = () => <MessageInput groupJid="web:g1" onSend={onSend} />;
+    await render(view());
+    await type('硬件键盘');
+    expect((await keyDown('Enter')).defaultPrevented).toBe(true);
     expect(onSend).toHaveBeenCalledTimes(1);
+
+    env.keyboardHeight = 360;
+    await render(view());
+    await type('软键盘');
+    expect((await keyDown('Enter')).defaultPrevented).toBe(false);
+    expect(onSend).toHaveBeenCalledTimes(1);
+    await keyDown('Enter', { metaKey: true });
+    expect(onSend).toHaveBeenCalledTimes(2);
   });
 
   test('Esc in an empty composer stops the run', async () => {
@@ -345,7 +450,7 @@ describe('queue on phones', () => {
       panel().querySelectorAll('button[aria-label^="删除排队消息"]'),
     ).toHaveLength(0);
 
-    env.keyboardVisible = true;
+    env.keyboardHeight = 300;
     await render(view());
     expect(panel().getAttribute('data-state')).toBe('closed');
   });

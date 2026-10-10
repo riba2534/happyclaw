@@ -244,10 +244,13 @@ export interface StreamingState {
   /** A tool returned and the model has not produced anything since. */
   awaitingModel?: boolean;
   /**
-   * The run ended (run_finished) and this frozen projection waits for the
-   * turn's final message, which replaces it in the same store update.
+   * The run ended (run_finished) and this frozen projection waits, in
+   * `settledStreaming`, for the turn's final message, which replaces it in
+   * the same store update.
    */
   settling?: boolean;
+  /** The finished run a settled projection belongs to. */
+  runId?: string;
   activeTools: Array<{
     toolName: string;
     toolUseId: string;
@@ -394,6 +397,7 @@ function evictViewedConversations(
     if (jid === openJid || jid === s.currentGroup) continue;
     const busy =
       !!s.activeRuns[key] ||
+      !!s.settledStreaming[key] ||
       !!s.clearing[jid] ||
       (agentId
         ? !!s.agentWaiting[agentId] || !!s.agentStreaming[agentId]
@@ -686,6 +690,12 @@ interface ChatState {
   traceCache: Record<string, StreamingTraceEvent[]>;
   /** Stop requested for a runtime JID (ms); the run shows "正在停止…". */
   stopRequests: Record<string, number>;
+  /**
+   * A finished run's frozen card by runtime JID, kept apart from the live
+   * projection (`streaming` / `agentStreaming`) so the next queued run can
+   * start streaming while the previous reply still waits for its final.
+   */
+  settledStreaming: Record<string, StreamingState>;
   pendingThinking: Record<string, string>;
   pendingThinkingDuration: Record<string, number>;
   /** Per-group lock: true while clearHistory is in-flight, prevents race re-injection */
@@ -988,9 +998,9 @@ function freezeStreamingState(
  */
 function settleStreamingState(
   state: StreamingState | undefined,
+  runId: string | undefined,
 ): StreamingState | null {
   if (!state) return null;
-  if (state.settling) return state;
   if (!state.partialText && !state.thinkingText) return null;
   return {
     ...state,
@@ -1002,7 +1012,25 @@ function settleStreamingState(
     thinkingDurationMs: totalThinkingMs(state),
     thinkingStartedAt: undefined,
     settling: true,
+    runId,
   };
+}
+
+/**
+ * A live projection that is really producing output: not a card frozen by a
+ * stop. Session "running" indicators follow this, not the mere presence of
+ * a card.
+ */
+export function isLiveStream(state: StreamingState | undefined): boolean {
+  return !!state && !state.interrupted && !state.settling;
+}
+
+/** A final reply of `turnId` belongs to this settled card. */
+function settledTurnMatches(
+  settled: StreamingState,
+  turnId: string | null | undefined,
+): boolean {
+  return !settled.turnId || !turnId || settled.turnId === turnId;
 }
 
 /** How long a settled card waits for its final message before re-syncing. */
@@ -1053,9 +1081,9 @@ function finalizedReplyCaches(
   };
 }
 
-/** The projection is a previous run's leftover, not the live run's. */
+/** A live projection frozen by a stop: it belongs to the stopped reply. */
 function isFrozenProjection(state: StreamingState | undefined): boolean {
-  return !!state && (!!state.settling || !!state.interrupted);
+  return !!state?.interrupted;
 }
 
 /**
@@ -1065,12 +1093,7 @@ function resolveStreamingPrev(
   current: StreamingState | undefined,
   event: StreamEvent,
 ): StreamingState {
-  // A settled card belongs to the finished run; events that pass the run
-  // fence afterwards come from a new run and start a fresh projection.
-  if (
-    current?.settling ||
-    (current?.turnId && event.turnId && current.turnId !== event.turnId)
-  ) {
+  if (current?.turnId && event.turnId && current.turnId !== event.turnId) {
     return {
       ...DEFAULT_STREAMING_STATE,
       turnId: event.turnId,
@@ -1085,8 +1108,14 @@ function resolveStreamingPrev(
 const MAX_STREAMING_TEXT = 200_000;
 const MAX_THINKING_TEXT = 8000;
 
+/**
+ * Past the cap, keep a block-bounded tail with headroom: cutting to exactly
+ * `max` (plus the "…" marker) put every following delta over the cap again,
+ * re-splitting ~200k characters on each frame. Now a cut happens once per
+ * tenth of the cap.
+ */
 function capStreamingText(text: string, max: number): string {
-  return text.length > max ? markdownTail(text, max) : text;
+  return text.length > max ? markdownTail(text, Math.floor(max * 0.9)) : text;
 }
 
 /**
@@ -1220,17 +1249,13 @@ function flushPendingDeltaForRuntime(
 
 /**
  * The state a batch of deltas extends: the live projection of the same turn,
- * or a fresh one for a new run (after a settled card) or a new turn.
+ * or a fresh one for a new turn.
  */
 function deltaBase(
   current: StreamingState | undefined,
   turnId: string | undefined,
 ): StreamingState {
-  if (
-    !current ||
-    current.settling ||
-    (current.turnId && turnId && current.turnId !== turnId)
-  ) {
+  if (!current || (current.turnId && turnId && current.turnId !== turnId)) {
     return { ...DEFAULT_STREAMING_STATE, turnId };
   }
   return turnId && !current.turnId ? { ...current, turnId } : current;
@@ -1260,7 +1285,7 @@ function flushPendingDelta(
       const current = s.agentStreaming[agentId];
       if (!current && s.agentWaiting[agentId] === false) return s;
       // A stopped card is frozen until its terminal message replaces it.
-      if (current?.interrupted && !current.settling) return s;
+      if (current?.interrupted) return s;
       const prev = deltaBase(current, entry.turnId);
       const next = applyDeltaChunks(
         prev,
@@ -1283,7 +1308,7 @@ function flushPendingDelta(
       }
       const current = s.streaming[chatJid];
       if (!current && s.waiting[chatJid] === false) return s;
-      if (current?.interrupted && !current.settling) return s;
+      if (current?.interrupted) return s;
       const prev = deltaBase(current, entry.turnId);
       const next = applyDeltaChunks(
         prev,
@@ -1309,6 +1334,21 @@ function withoutKey<V>(
   return next;
 }
 
+/** Settled cards of a workspace's main conversation and all its sessions. */
+function withoutWorkspaceSettled(
+  settled: Record<string, StreamingState>,
+  jid: string,
+): Record<string, StreamingState> {
+  const prefix = `${jid}#agent:`;
+  const keys = Object.keys(settled).filter(
+    (key) => key === jid || key.startsWith(prefix),
+  );
+  if (keys.length === 0) return settled;
+  const next = { ...settled };
+  for (const key of keys) delete next[key];
+  return next;
+}
+
 /**
  * A settled card normally gives way to its final message within ~60ms. If
  * none arrives (a missed WebSocket frame, a reply persisted only in the DB),
@@ -1326,8 +1366,7 @@ function scheduleSettleFallback(
     markerIndex >= 0 ? runtimeJid.slice(markerIndex + marker.length) : null;
   const chatJid =
     markerIndex >= 0 ? runtimeJid.slice(0, markerIndex) : runtimeJid;
-  const current = () =>
-    agentId ? get().agentStreaming[agentId] : get().streaming[chatJid];
+  const current = () => get().settledStreaming[runtimeJid];
   setTimeout(async () => {
     if (current() !== settled) return;
     try {
@@ -1342,33 +1381,13 @@ function scheduleSettleFallback(
       /* fall through to dropping the card */
     }
     if (current() !== settled) return;
-    set((s) => {
-      if (agentId) {
-        if (s.agentStreaming[agentId] !== settled) return s;
-        return { agentStreaming: withoutKey(s.agentStreaming, agentId) };
-      }
-      if (s.streaming[chatJid] !== settled) return s;
-      // Keep its thinking for the final message a later sync brings in.
-      return {
-        streaming: withoutKey(s.streaming, chatJid),
-        ...(settled.thinkingText
-          ? {
-              pendingThinking: {
-                ...s.pendingThinking,
-                [chatJid]: settled.thinkingText,
-              },
-              ...(settled.thinkingDurationMs != null
-                ? {
-                    pendingThinkingDuration: {
-                      ...s.pendingThinkingDuration,
-                      [chatJid]: settled.thinkingDurationMs,
-                    },
-                  }
-                : {}),
-            }
-          : {}),
-      };
-    });
+    // Its thinking is not kept for "the next reply": a later, unrelated
+    // final must not pick it up.
+    set((s) =>
+      s.settledStreaming[runtimeJid] === settled
+        ? { settledStreaming: withoutKey(s.settledStreaming, runtimeJid) }
+        : s,
+    );
   }, SETTLE_FALLBACK_MS);
 }
 
@@ -2182,6 +2201,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   thinkingDurationCache: {},
   traceCache: {},
   stopRequests: {},
+  settledStreaming: {},
   pendingThinking: {},
   pendingThinkingDuration: {},
   clearing: {},
@@ -2369,8 +2389,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
           // interrupt_partial 到达时若流式卡片已冻结（运行仍在），不视为"agent 已回复"，
           // 避免清除冻结的富内容。消息仍添加到列表，10s 兜底计时器做最终清理。
           const streamState = s.streaming[jid];
+          const settledState = s.settledStreaming[jid];
           const exactRunActive = !!s.activeRuns[jid];
-          const isFrozen = !!streamState?.interrupted && !streamState.settling;
+          const isFrozen = !!streamState?.interrupted;
           const agentReplied = data.messages.some(
             (m) =>
               m.is_from_me &&
@@ -2398,16 +2419,22 @@ export const useChatStore = create<ChatState>((set, get) => ({
                     m.source_kind !== 'sdk_send_message',
                 )
             : undefined;
-          const replyCaches =
-            finalizes && lastAiMsg
-              ? finalizedReplyCaches(
-                  s,
-                  streamState,
-                  lastAiMsg.id,
-                  s.pendingThinking[jid],
-                  s.pendingThinkingDuration[jid],
-                )
-              : {};
+          // A settled card always belongs to a finished run: any new reply
+          // replaces it, whatever the live projection of a newer run does.
+          const replacesSettled = !!settledState && agentReplied;
+          const replyCaches = !lastAiMsg
+            ? {}
+            : replacesSettled
+              ? finalizedReplyCaches(s, settledState, lastAiMsg.id)
+              : finalizes
+                ? finalizedReplyCaches(
+                    s,
+                    streamState,
+                    lastAiMsg.id,
+                    s.pendingThinking[jid],
+                    s.pendingThinkingDuration[jid],
+                  )
+                : {};
           let nextPendingThinking = s.pendingThinking;
           let nextPendingThinkingDuration = s.pendingThinkingDuration;
           if (finalizes && lastAiMsg) {
@@ -2419,6 +2446,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
           return {
             ...replyCaches,
+            ...(replacesSettled || (settledState && hasSystemError)
+              ? { settledStreaming: withoutKey(s.settledStreaming, jid) }
+              : {}),
             pendingMessageUsage: mergedUsage.pending,
             messages: { ...s.messages, [jid]: merged },
             waiting:
@@ -2806,6 +2836,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           waiting: { ...s.waiting, [jid]: false },
           hasMore: { ...s.hasMore, [jid]: false },
           streaming: nextStreaming,
+          settledStreaming: withoutWorkspaceSettled(s.settledStreaming, jid),
           pendingThinking: nextPendingThinking,
           clearing: nextClearing,
           thinkingCache: retainThinkingCacheForMessages(
@@ -3102,6 +3133,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           waiting: nextWaiting,
           hasMore: nextHasMore,
           streaming: nextStreaming,
+          settledStreaming: withoutWorkspaceSettled(s.settledStreaming, jid),
           pendingThinking: nextPendingThinking,
           thinkingCache: retainThinkingCacheForMessages(
             { ...s.agentMessages, ...nextMessages },
@@ -3367,7 +3399,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         }
         // A stopped card stays frozen until its terminal message arrives.
         const current = s.agentStreaming[agentId];
-        if (current?.interrupted && !current.settling) return s;
+        if (current?.interrupted) return s;
         const prev = resolveStreamingPrev(current, event);
         const next = { ...prev };
         applyStreamEvent(event, prev, next, MAX_STREAMING_TEXT);
@@ -3544,7 +3576,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
       set((s) => {
         const current = s.streaming[chatJid];
-        if (!current || current.interrupted || current.settling) return s;
+        if (!current || current.interrupted) return s;
         const prev = resolveStreamingPrev(current, event);
         const next = { ...prev };
         applyStreamEvent(event, prev, next, MAX_STREAMING_TEXT);
@@ -3666,10 +3698,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
       if (!s.streaming[chatJid] && s.waiting[chatJid] === false) {
         return s;
       }
-      // 冻结的中断状态不接收新事件（如 usage），防止 waiting 被改回 true。
-      // 已结束运行的 settling 卡片由新运行的事件替换。
+      // 冻结的中断状态不接收新事件（如 usage），防止 waiting 被改回 true
       const current = s.streaming[chatJid];
-      if (current?.interrupted && !current.settling) {
+      if (current?.interrupted) {
         return s;
       }
       const prev = resolveStreamingPrev(current, event);
@@ -3764,10 +3795,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
         // update, carrying its thinking and execution details over. A live
         // projection under an active run belongs to the next attempt.
         const agentState = s.agentStreaming[agentId];
+        const runtimeJid = `${chatJid}#agent:${agentId}`;
+        const settledState = isAgentReply
+          ? s.settledStreaming[runtimeJid]
+          : undefined;
         const replacesProjection =
           isAgentReply && (!exactRunActive || isFrozenProjection(agentState));
-        const replyCaches =
-          replacesProjection && agentState
+        const replyCaches = settledState
+          ? finalizedReplyCaches(s, settledState, msg.id)
+          : replacesProjection && agentState
             ? finalizedReplyCaches(s, agentState, msg.id)
             : {};
 
@@ -3825,6 +3861,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
         return {
           ...replyCaches,
+          ...(settledState
+            ? { settledStreaming: withoutKey(s.settledStreaming, runtimeJid) }
+            : {}),
           agentMessages: { ...s.agentMessages, [agentId]: updated },
           pendingMessageUsage: mergedUsage.pending,
           agentWaiting: nextAgentWaiting,
@@ -3901,22 +3940,27 @@ export const useChatStore = create<ChatState>((set, get) => ({
         if (shouldFinalizeAssistant && !holdsRunningWorkflow)
           didFinalizeAssistant = true;
 
-        // Agent 回复或系统错误：在同一次更新里用定稿替换流式卡片（settling
-        // 或已中断冻结的卡片），并把 thinking 与执行详情转存到该消息。
+        // Agent 回复或系统错误：在同一次更新里用定稿替换流式卡片（已结束
+        // 运行的 settled 卡片，或已中断冻结的卡片），并把 thinking 与执行
+        // 详情转存到该消息。下一轮的 live 卡片不受影响。
         const exactRunActive = !!s.activeRuns[chatJid];
         const streamState = s.streaming[chatJid];
+        const settledState = s.settledStreaming[chatJid];
         const replacesProjection =
           !exactRunActive || isFrozenProjection(streamState);
-        const replyCaches =
-          isAgentReply && replacesProjection
-            ? finalizedReplyCaches(
-                s,
-                streamState,
-                msg.id,
-                s.pendingThinking[chatJid],
-                s.pendingThinkingDuration[chatJid],
-              )
-            : {};
+        const replyCaches = isAgentReply
+          ? settledState
+            ? finalizedReplyCaches(s, settledState, msg.id)
+            : replacesProjection
+              ? finalizedReplyCaches(
+                  s,
+                  streamState,
+                  msg.id,
+                  s.pendingThinking[chatJid],
+                  s.pendingThinkingDuration[chatJid],
+                )
+              : {}
+          : {};
         const nextStreaming = { ...s.streaming };
         if (!replacesProjection) {
           // The exact terminal for the previous reply has already started a
@@ -3956,11 +4000,24 @@ export const useChatStore = create<ChatState>((set, get) => ({
             [chatJid]: exactRunActive || holdsRunningWorkflow,
           },
           streaming: nextStreaming,
+          settledStreaming: withoutKey(s.settledStreaming, chatJid),
           pendingThinking: nextPending,
           pendingThinkingDuration: nextPendingDur,
           unreadReplies: nextUnread,
         };
       }
+
+      // A group-mode scheduled task streams in the main runner and posts its
+      // result as a scheduled_task message: it is that run's final, and
+      // replaces the settled card of the same turn in this same update.
+      const settledForTask = s.settledStreaming[chatJid];
+      const replacesSettledTask =
+        (source === 'scheduled_task' ||
+          msg.source_kind === 'scheduled_task_result') &&
+        msg.is_from_me &&
+        msg.sender !== '__system__' &&
+        !!settledForTask &&
+        settledTurnMatches(settledForTask, msg.turn_id);
 
       // A direct human message is also the earliest cross-tab/IM signal that a
       // new logical run is about to start. Do not wait for the first Claude
@@ -3983,6 +4040,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
             }
           : s.unreadReplies;
       return {
+        ...(replacesSettledTask && settledForTask
+          ? {
+              ...finalizedReplyCaches(s, settledForTask, msg.id),
+              settledStreaming: withoutKey(s.settledStreaming, chatJid),
+            }
+          : {}),
         messages: { ...s.messages, [chatJid]: updated },
         pendingMessageUsage: mergedUsage.pending,
         unreadReplies: nextUnread,
@@ -4052,6 +4115,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
         const filtered = existing.filter((a) => a.id !== agentId);
         const nextAgentStreaming = { ...s.agentStreaming };
         delete nextAgentStreaming[agentId];
+        const nextSettled = withoutKey(
+          s.settledStreaming,
+          `${chatJid}#agent:${agentId}`,
+        );
         const nextActiveTab = { ...s.activeAgentTab };
         if (nextActiveTab[chatJid] === agentId) nextActiveTab[chatJid] = null;
         const nextSdkTasks = { ...s.sdkTasks };
@@ -4076,6 +4143,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
             false,
           ),
           agentStreaming: nextAgentStreaming,
+          settledStreaming: nextSettled,
           activeAgentTab: nextActiveTab,
           sdkTasks: nextSdkTasks,
           sdkTaskAliases: nextSdkTaskAliases,
@@ -4599,7 +4667,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 m.source_kind !== 'sdk_send_message',
             );
           const agentState = s.agentStreaming[agentId];
-          const exactRunActive = !!s.activeRuns[`${jid}#agent:${agentId}`];
+          const runtimeJid = `${jid}#agent:${agentId}`;
+          const settledState = lastAiMsg
+            ? s.settledStreaming[runtimeJid]
+            : undefined;
+          const exactRunActive = !!s.activeRuns[runtimeJid];
           // Same rule as a live final message: it replaces a settled or
           // stopped card, never the projection of a newer active run.
           const finalizes =
@@ -4613,9 +4685,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
             : s.agentStreaming;
 
           return {
-            ...(finalizes && lastAiMsg && agentState
-              ? finalizedReplyCaches(s, agentState, lastAiMsg.id)
-              : {}),
+            ...(lastAiMsg && settledState
+              ? {
+                  ...finalizedReplyCaches(s, settledState, lastAiMsg.id),
+                  settledStreaming: withoutKey(s.settledStreaming, runtimeJid),
+                }
+              : finalizes && lastAiMsg && agentState
+                ? finalizedReplyCaches(s, agentState, lastAiMsg.id)
+                : {}),
             agentMessages: { ...s.agentMessages, [agentId]: merged },
             pendingMessageUsage: mergedUsage.pending,
             agentWaiting:
@@ -4891,7 +4968,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // with it. A shorter local text missed deltas and takes the snapshot.
       const sameTurn =
         !!local &&
-        !local.settling &&
         (!local.turnId || !snapshot.turnId || local.turnId === snapshot.turnId);
       if (local && sameTurn) {
         if (local.partialText.length > restored.partialText.length) {
@@ -4981,35 +5057,40 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const stopRequests = replacingAttempt
         ? withoutKey(s.stopRequests, chatJid)
         : s.stopRequests;
-      // The previous attempt's card waits (settled) for its final message,
-      // which often arrives after the next queued run has started; the new
-      // run's first event replaces it if the final is later still.
-      const settle = (prev: StreamingState | undefined) => {
-        const next = replacingAttempt ? settleStreamingState(prev) : prev;
-        if (next && next !== prev) settled.state = next;
-        return next;
-      };
+      // A replaced attempt's card (no run_finished seen for it) waits,
+      // settled, for its final message like a finished run's; the new run
+      // streams into a fresh live projection next to it.
+      const previous = agentId
+        ? s.agentStreaming[agentId]
+        : s.streaming[chatJid];
+      if (replacingAttempt) {
+        settled.state = settleStreamingState(
+          previous,
+          s.activeRuns[chatJid]?.runId,
+        );
+      }
+      const settledStreaming = settled.state
+        ? { ...s.settledStreaming, [chatJid]: settled.state }
+        : s.settledStreaming;
       if (agentId) {
-        const nextStreaming = { ...s.agentStreaming };
-        const kept = settle(nextStreaming[agentId]);
-        if (kept) nextStreaming[agentId] = kept;
-        else delete nextStreaming[agentId];
         return {
           activeRuns,
           stopRequests,
+          settledStreaming,
           agentWaiting: { ...s.agentWaiting, [agentId]: true },
-          agentStreaming: nextStreaming,
+          agentStreaming: replacingAttempt
+            ? withoutKey(s.agentStreaming, agentId)
+            : s.agentStreaming,
         };
       }
-      const nextStreaming = { ...s.streaming };
-      const kept = settle(nextStreaming[chatJid]);
-      if (kept) nextStreaming[chatJid] = kept;
-      else delete nextStreaming[chatJid];
       return {
         activeRuns,
         stopRequests,
+        settledStreaming,
         waiting: { ...s.waiting, [chatJid]: true },
-        streaming: nextStreaming,
+        streaming: replacingAttempt
+          ? withoutKey(s.streaming, chatJid)
+          : s.streaming,
       };
     });
     if (settled.state) scheduleSettleFallback(chatJid, settled.state, set, get);
@@ -5033,23 +5114,25 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const stopRequests = withoutKey(s.stopRequests, chatJid);
       // The server announces run_finished before it broadcasts the final
       // message. Freeze the card (settled) so the final replaces it in one
-      // update instead of leaving a blank frame in between.
+      // update instead of leaving a blank frame in between; the next queued
+      // run streams into a separate live projection meanwhile.
+      settled.state = settleStreamingState(
+        agentId ? s.agentStreaming[agentId] : s.streaming[chatJid],
+        runId,
+      );
+      const settledStreaming = settled.state
+        ? { ...s.settledStreaming, [chatJid]: settled.state }
+        : s.settledStreaming;
       if (agentId) {
-        const nextStreaming = { ...s.agentStreaming };
-        settled.state = settleStreamingState(nextStreaming[agentId]);
-        if (settled.state) nextStreaming[agentId] = settled.state;
-        else delete nextStreaming[agentId];
         return {
           activeRuns: finished.runs,
           stopRequests,
+          settledStreaming,
           agentWaiting: { ...s.agentWaiting, [agentId]: false },
-          agentStreaming: nextStreaming,
+          agentStreaming: withoutKey(s.agentStreaming, agentId),
         };
       }
-      const nextStreaming = { ...s.streaming };
-      settled.state = settleStreamingState(nextStreaming[chatJid]);
-      if (settled.state) nextStreaming[chatJid] = settled.state;
-      else delete nextStreaming[chatJid];
+      const nextStreaming = withoutKey(s.streaming, chatJid);
       const nextPendingThinking = { ...s.pendingThinking };
       delete nextPendingThinking[chatJid];
       const nextPendingThinkingDuration = {
@@ -5059,6 +5142,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       return {
         activeRuns: finished.runs,
         stopRequests,
+        settledStreaming,
         waiting: { ...s.waiting, [chatJid]: false },
         streaming: nextStreaming,
         pendingThinking: nextPendingThinking,
@@ -5090,9 +5174,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
       };
 
       for (const jid of Object.keys(nextStreaming)) {
-        // A settled card belongs to a finished run and still waits for its
-        // final message (with its own re-sync fallback).
-        if (nextStreaming[jid]?.settling) continue;
         if (
           shouldDiscardStreamForAuthoritativeRun(previous, authoritative, jid)
         ) {
@@ -5107,7 +5188,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
         const authoritativeJid = Object.keys(authoritative).find((jid) =>
           jid.endsWith(suffix),
         );
-        if (nextAgentStreaming[agentId]?.settling) continue;
         if (
           !authoritativeJid ||
           !previousJid ||

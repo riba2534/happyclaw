@@ -1,9 +1,26 @@
-import { unified } from 'unified';
+import { unified, type PluggableList } from 'unified';
 import remarkParse from 'remark-parse';
-import remarkGfm from 'remark-gfm';
-import type { ListItem, Nodes, Parents, RootContent, Table } from 'mdast';
+import type { ListItem, Nodes, Parents, Root, RootContent, Table } from 'mdast';
+import { REMARK_BASE } from './markdown/pipeline';
+import { HTML_TAG_PATTERN, isMarkdownHtmlTag } from './markdown/html-tags';
 
-const parser = unified().use(remarkParse).use(remarkGfm);
+// The renderer's parser, so copied text reads the way the reply rendered:
+// CJK-friendly emphasis, and `<word>` that is not HTML kept as text.
+const parser = unified()
+  .use(remarkParse)
+  .use(REMARK_BASE as unknown as PluggableList);
+
+/**
+ * Text of raw HTML the renderer kept: allowlisted tags go (`<br>` becomes a
+ * line break), comments go, anything else stays as written, as it renders.
+ */
+function htmlText(value: string): string {
+  return value
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(HTML_TAG_PATTERN, (tag, name: string) =>
+      isMarkdownHtmlTag(name) ? (name.toLowerCase() === 'br' ? '\n' : '') : tag,
+    );
+}
 
 function inlineText(node: Nodes): string {
   switch (node.type) {
@@ -12,7 +29,7 @@ function inlineText(node: Nodes): string {
     case 'code':
       return node.value;
     case 'html':
-      return node.value.replace(/<[^>]+>/g, '');
+      return htmlText(node.value);
     case 'break':
       return '\n';
     case 'image':
@@ -75,6 +92,10 @@ function blockText(node: RootContent): string {
         .join('\n')}`;
     case 'definition':
       return '';
+    case 'html':
+      return htmlText(node.value)
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
     default:
       return inlineText(node);
   }
@@ -86,7 +107,7 @@ function blockText(node: RootContent): string {
  * copied verbatim (a regex strip used to turn `*args` into `args`).
  */
 export function markdownToPlainText(markdown: string): string {
-  const tree = parser.parse(markdown);
+  const tree = parser.runSync(parser.parse(markdown)) as Root;
   return tree.children
     .map(blockText)
     .filter((text) => text !== '')

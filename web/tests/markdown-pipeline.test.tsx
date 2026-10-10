@@ -11,6 +11,11 @@ import { MathMarkdownRenderer } from '../src/components/chat/MathMarkdownRendere
 import { MarkdownContent } from '../src/components/chat/MarkdownContent';
 import { REMARK_BASE } from '../src/lib/markdown/pipeline';
 import { resolveMarkdownLinkHref } from '../src/utils/markdownImageSrc';
+import {
+  RENDERED_CACHE_BUDGET,
+  clearRenderedCache,
+  renderedCacheStats,
+} from '../src/lib/markdown/rendered-cache';
 
 /** Render `content` the way a settled reply picks its pipeline. */
 function settled(content: string, groupJid?: string): string {
@@ -64,6 +69,15 @@ describe('sanitizing raw HTML (P0-1)', () => {
       expect(html).not.toContain('z-index');
     },
   );
+
+  it('drops accesskey and tabindex', () => {
+    const html = settled(
+      '<a href="https://evil.example" accesskey="s" tabindex="1">x</a> <kbd tabindex="0">K</kbd>',
+    );
+    expect(html).toContain('href="https://evil.example"');
+    expect(html).not.toMatch(/accesskey/i);
+    expect(html).not.toMatch(/tabindex/i);
+  });
 
   it('keeps only pipeline classes on code', () => {
     const html = settled(OVERLAY_PROBE);
@@ -122,6 +136,16 @@ describe('KaTeX after sanitizing (P0-2)', () => {
     expect(html).toMatch(
       /class="katex-display"[^>]*data-swipe-back-ignore="true"|data-swipe-back-ignore="true"[^>]*class="katex-display"/,
     );
+  });
+
+  it('clips what paints outside the Markdown root (negative KaTeX sizes)', () => {
+    const html = settled('a $$\\kern{-500em}x\\raisebox{-300em}{y}$$ b');
+    expect(html).toMatch(/data-markdown-root="" class="[^"]*\boverflow-clip\b/);
+    expect(
+      renderToStaticMarkup(
+        <RawMarkdownRenderer content="<kbd>K</kbd>" variant="docs" />,
+      ),
+    ).toMatch(/data-markdown-root="" class="[^"]*\boverflow-clip\b/);
   });
 
   it('caps user-specified sizes', () => {
@@ -316,5 +340,33 @@ describe('resolveMarkdownLinkHref', () => {
 
   it('leaves relative links unchanged without a workspace', () => {
     expect(resolveMarkdownLinkHref('docs/a.md')).toBe('docs/a.md');
+  });
+});
+
+describe('rendered-tree cache', () => {
+  it('stays within its character budget and reuses settled content', () => {
+    clearRenderedCache();
+    const prose = (i: number) =>
+      `第 ${i} 段：${'这是一段用于填充缓存的正文。'.repeat(700)}`;
+    for (let i = 0; i < 40; i++) {
+      renderToStaticMarkup(<MarkdownRenderer content={prose(i)} />);
+    }
+    const full = renderedCacheStats();
+    expect(full.cost).toBeLessThanOrEqual(RENDERED_CACHE_BUDGET);
+    expect(full.entries).toBeLessThan(40);
+
+    // Settled content renders once; showing it again is a cache hit.
+    renderToStaticMarkup(<MarkdownRenderer content={prose(39)} />);
+    expect(renderedCacheStats()).toEqual(full);
+    // Streaming text is never cached.
+    renderToStaticMarkup(<MarkdownRenderer content="流式中的文字" streaming />);
+    expect(renderedCacheStats()).toEqual(full);
+  });
+
+  it('weighs highlighted code double', () => {
+    clearRenderedCache();
+    const code = '```ts\nconst value = 1;\n```';
+    renderToStaticMarkup(<CodeMarkdownRenderer content={code} />);
+    expect(renderedCacheStats().cost).toBe(code.length * 2);
   });
 });

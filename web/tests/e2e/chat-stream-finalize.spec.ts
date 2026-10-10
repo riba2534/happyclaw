@@ -245,6 +245,56 @@ test('a reader scrolled into the reply keeps their place through the finish', as
   await expect(page.getByRole('button', { name: '回到底部' })).toBeVisible();
 });
 
+test("the next queued run streams next to the previous reply until that reply's final lands", async ({
+  page,
+}) => {
+  await openHarness(page);
+  await streamReply(page, 'run-a');
+  // Remember A's DOM: settling keeps it, it is not rebuilt.
+  await page.evaluate(() => {
+    const p = [
+      ...document.querySelectorAll('[data-hc-streaming-block] p'),
+    ].find((el) => el.textContent?.startsWith('Paragraph 59:'));
+    (window as unknown as { __markA: Element | undefined }).__markA = p;
+  });
+  await startSampling(page, 'Paragraph 59:');
+
+  await page.evaluate(() => {
+    window.__chatScroll.runFinished('run-a');
+    window.__chatScroll.runStarted('run-b');
+  });
+  // B opens its request and streams before A's final arrives.
+  await streamEvent(page, 'run-b', {
+    eventType: 'status',
+    statusText: 'requesting',
+    turnId: 'turn-2',
+  });
+  await streamEvent(page, 'run-b', {
+    eventType: 'text_delta',
+    text: '第二轮的回答正在输出。',
+    turnId: 'turn-2',
+  });
+  const live = page.locator('[data-hc-stream-card="live"]');
+  const settled = page.locator('[data-hc-stream-card="settled"]');
+  await expect(live.getByText('第二轮的回答正在输出。')).toBeVisible();
+  await expect(settled.getByText('Paragraph 59:')).toBeVisible();
+  expect(
+    await page.evaluate(() => {
+      const mark = (window as unknown as { __markA?: Element }).__markA;
+      return !!mark?.isConnected;
+    }),
+  ).toBe(true);
+
+  const frames = await finishLikeServer(page, 'run-a');
+  expect(frames.filter((f) => !f.whole)).toEqual([]);
+  await expect(settled).toHaveCount(0);
+  await expect(live.getByText('第二轮的回答正在输出。')).toBeVisible();
+  const reply = page
+    .locator('[data-message-id="final-run-a"]')
+    .filter({ hasText: 'Paragraph 59:' });
+  await expect(reply.getByRole('button', { name: /已思考 \d/ })).toBeVisible();
+});
+
 test('a reconnect snapshot never cuts the reply this tab already shows', async ({
   page,
 }) => {

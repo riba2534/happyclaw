@@ -455,9 +455,22 @@ export const MessageList = memo(function MessageList({
   // seeded with the block's measured height instead of the length estimate,
   // which overshot by 1.2–1.6x and rolled a pinned reader back a screen; a
   // reader scrolled into the reply keeps the row where the block was.
-  const hasStreaming = useChatStore((s) =>
+  const runtimeJid = agentId
+    ? `${groupJid}#agent:${agentId}`
+    : (groupJid ?? '');
+  const hasLive = useChatStore((s) =>
     agentId ? !!s.agentStreaming[agentId] : !!s.streaming[groupJid ?? ''],
   );
+  // The previous run's settled card is keyed by its run, and the live card
+  // by the active run: the card that settles keeps its element (and DOM)
+  // while the next queued run streams into a card of its own below it.
+  const settledRunKey = useChatStore((s) => {
+    const settled = s.settledStreaming[runtimeJid];
+    return settled ? (settled.runId ?? 'settled') : null;
+  });
+  const liveRunKey = useChatStore((s) => s.activeRuns[runtimeJid]?.runId);
+  const hasSettled = settledRunKey !== null;
+  const hasStreaming = hasLive || hasSettled;
   const streamingBlockRef = useRef<HTMLDivElement>(null);
   const seedSizesRef = useRef(new Map<string, number>());
   const pendingSwapRef = useRef<{
@@ -490,14 +503,22 @@ export const MessageList = memo(function MessageList({
     parent.scrollTop += delta;
   }, []);
   const committedStreamRef = useRef({
-    hasStreaming,
+    hasLive,
+    hasSettled,
     messages: timelineMessages,
   });
   {
     const committed = committedStreamRef.current;
+    // The card a final replaces: the settled one, or a live one finalized
+    // without run_finished first.
+    const replaced =
+      committed.hasSettled && !hasSettled
+        ? 'settled'
+        : committed.hasLive && !hasLive
+          ? 'live'
+          : null;
     if (
-      committed.hasStreaming &&
-      !hasStreaming &&
+      replaced &&
       committed.messages !== timelineMessages &&
       !pendingSwapRef.current
     ) {
@@ -510,7 +531,9 @@ export const MessageList = memo(function MessageList({
           break;
         }
       }
-      const block = streamingBlockRef.current;
+      const block = streamingBlockRef.current?.querySelector<HTMLElement>(
+        `[data-hc-stream-card="${replaced}"]`,
+      );
       const parent = parentRef.current;
       if (reply && block && parent) {
         // Still the committed DOM: the block is on screen until this commits.
@@ -534,7 +557,11 @@ export const MessageList = memo(function MessageList({
     }
   }
   useLayoutEffect(() => {
-    committedStreamRef.current = { hasStreaming, messages: timelineMessages };
+    committedStreamRef.current = {
+      hasLive,
+      hasSettled,
+      messages: timelineMessages,
+    };
   });
 
   // Chat always starts at bottom — no scroll position restoration.
@@ -1313,18 +1340,42 @@ export const MessageList = memo(function MessageList({
           )}
 
           <div ref={streamingBlockRef} data-hc-streaming-block="">
+            {groupJid && settledRunKey !== null && (
+              <div key={`run:${settledRunKey}`} data-hc-stream-card="settled">
+                <StreamingDisplay
+                  groupJid={groupJid}
+                  isWaiting={false}
+                  agentId={agentId}
+                  senderName={agentIdentity.name}
+                  agentAvatarUrl={agentAvatarUrl}
+                  agentAvatarEmoji={agentAvatarEmoji}
+                  agentAvatarColor={agentAvatarColor}
+                  interactionMode={interactionMode}
+                  settled
+                />
+              </div>
+            )}
             {groupJid && (
-              <StreamingDisplay
-                groupJid={groupJid}
-                isWaiting={!!isWaiting}
-                agentId={agentId}
-                senderName={agentIdentity.name}
-                agentAvatarUrl={agentAvatarUrl}
-                agentAvatarEmoji={agentAvatarEmoji}
-                agentAvatarColor={agentAvatarColor}
-                interactionMode={interactionMode}
-                stopHint
-              />
+              <div
+                key={
+                  liveRunKey && liveRunKey !== settledRunKey
+                    ? `run:${liveRunKey}`
+                    : 'live'
+                }
+                data-hc-stream-card="live"
+              >
+                <StreamingDisplay
+                  groupJid={groupJid}
+                  isWaiting={!!isWaiting}
+                  agentId={agentId}
+                  senderName={agentIdentity.name}
+                  agentAvatarUrl={agentAvatarUrl}
+                  agentAvatarEmoji={agentAvatarEmoji}
+                  agentAvatarColor={agentAvatarColor}
+                  interactionMode={interactionMode}
+                  stopHint
+                />
+              </div>
             )}
           </div>
 

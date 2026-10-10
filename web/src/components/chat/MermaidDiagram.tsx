@@ -6,20 +6,14 @@ import {
   useSyncExternalStore,
 } from 'react';
 import { Copy, Check, Maximize2, X } from 'lucide-react';
-import DOMPurify from 'dompurify';
 import { PreviewDialog } from './PreviewDialog';
 import { Button } from '@/components/ui/button';
 import { IconButton } from '@/components/common/IconButton';
 import { useCopyFeedback } from '../../lib/markdown/use-copy-feedback';
-
-/** 对 mermaid 渲染的 SVG 进行消毒，防止 XSS */
-function sanitizeSvg(raw: string): string {
-  return DOMPurify.sanitize(raw, {
-    USE_PROFILES: { svg: true, svgFilters: true },
-    ADD_TAGS: ['foreignObject'],
-    FORBID_TAGS: ['script', 'iframe', 'object', 'embed'],
-  });
-}
+import {
+  openMermaidLink,
+  sanitizeMermaidSvg,
+} from '../../lib/markdown/mermaid-svg';
 
 type MermaidTheme = 'default' | 'dark';
 
@@ -228,7 +222,7 @@ export function MermaidDiagram({
     renderedCodeRef.current = code;
     debounceRef.current = setTimeout(async () => {
       try {
-        const rendered = sanitizeSvg(await renderWithRetry(code, 0));
+        const rendered = sanitizeMermaidSvg(await renderWithRetry(code, 0));
         cacheResult(key, { svg: rendered, error: null });
         if (!disposed && renderKeyRef.current === key) {
           setSvg(rendered);
@@ -335,7 +329,9 @@ export function MermaidDiagram({
         <div
           className="flex cursor-zoom-in justify-center overflow-x-auto p-4 [&>svg]:!h-auto [&>svg]:!max-w-full"
           data-swipe-back-ignore="true"
-          onClick={() => setExpanded(true)}
+          onClick={(event) => {
+            if (!openMermaidLink(event)) setExpanded(true);
+          }}
           dangerouslySetInnerHTML={{ __html: svg! }}
         />
       </div>
@@ -356,6 +352,7 @@ export function MermaidDiagram({
           />
           <div
             className="flex h-full w-full items-center justify-center overflow-auto [touch-action:pan-x_pan-y_pinch-zoom] [&>svg]:!h-auto [&>svg]:!max-h-[90vh] [&>svg]:!w-[90vw] [&>svg]:!max-w-none"
+            onClick={openMermaidLink}
             dangerouslySetInnerHTML={{ __html: svg! }}
           />
         </PreviewDialog>

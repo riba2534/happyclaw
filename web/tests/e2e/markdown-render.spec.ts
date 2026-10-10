@@ -142,6 +142,28 @@ test.describe('chat Markdown rendering', () => {
     await expect(sink.locator('section[data-footnotes] h2')).toHaveClass(
       /sr-only/,
     );
+
+    // An in-page link stays inside its own message: neither another
+    // message's footnote nor the app's own elements (`#root`) are targets.
+    await appendReply(
+      page,
+      '见 [别处的脚注](#user-content-fn-1) 与 [顶部](#root)。',
+    );
+    const elsewhere = page.getByRole('link', { name: '别处的脚注' });
+    const toRoot = page.getByRole('link', { name: '顶部' });
+    await toRoot.scrollIntoViewIfNeeded();
+    const scrollTops = () =>
+      page.evaluate(() =>
+        [...document.querySelectorAll('*')]
+          .filter((element) => element.scrollTop > 0)
+          .map((element) => element.scrollTop),
+      );
+    const before = await scrollTops();
+    await elsewhere.click();
+    await toRoot.click();
+    await page.waitForTimeout(600);
+    expect(await scrollTops()).toEqual(before);
+    expect(page.url()).toBe(url);
   });
 
   test('code copy reports failure instead of claiming success', async ({
@@ -200,5 +222,60 @@ test.describe('chat Markdown rendering', () => {
     const [r, g, b] = stroke.match(/\d+/g)!.map(Number);
     // Edges must stand out on the dark canvas.
     expect((r + g + b) / 3).toBeGreaterThan(150);
+  });
+
+  test('Mermaid click links open in a new tab, never in place', async ({
+    page,
+  }) => {
+    await openMarkdown(page);
+    const url = page.url();
+    await page.evaluate(() => {
+      const opened: unknown[][] = [];
+      Object.assign(window, { __opened: opened });
+      window.open = (...args: unknown[]) => {
+        opened.push(args);
+        return null;
+      };
+    });
+    await appendReply(
+      page,
+      [
+        '```mermaid',
+        'flowchart LR',
+        '  A[文档] --> B[其他]',
+        '  C[脚本] --> B',
+        '  click A href "https://example.com/mermaid-doc" "说明" _self',
+        '  click C href "javascript:alert(1)"',
+        '```',
+      ].join('\n'),
+    );
+    const diagram = page
+      .locator('svg[id^="mermaid-"]', { hasText: '文档' })
+      .last();
+    await diagram.scrollIntoViewIfNeeded();
+    const link = diagram.locator('a', { hasText: '文档' });
+    await expect(link).toHaveAttribute('target', '_blank');
+    await expect(link).toHaveAttribute('rel', 'noopener noreferrer');
+    expect(
+      await diagram.evaluate((svg) =>
+        [...svg.querySelectorAll('a')].map(
+          (a) =>
+            a.getAttribute('href') ??
+            a.getAttributeNS('http://www.w3.org/1999/xlink', 'href'),
+        ),
+      ),
+    ).not.toContain('javascript:alert(1)');
+
+    await link.click();
+    expect(
+      await page.evaluate(
+        () => (window as unknown as { __opened: unknown[][] }).__opened,
+      ),
+    ).toEqual([
+      ['https://example.com/mermaid-doc', '_blank', 'noopener,noreferrer'],
+    ]);
+    expect(page.url()).toBe(url);
+    // The click opened the link, not the enlarged preview.
+    await expect(page.getByRole('dialog')).toHaveCount(0);
   });
 });

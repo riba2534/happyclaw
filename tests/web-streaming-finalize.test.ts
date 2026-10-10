@@ -77,6 +77,7 @@ function reset(): void {
       thinkingDurationCache: {},
       traceCache: {},
       stopRequests: {},
+      settledStreaming: {},
       pendingThinking: {},
       pendingThinkingDuration: {},
       clearing: {},
@@ -172,17 +173,20 @@ describe('run_finished before the final message', () => {
     useChatStore.getState().handleRunFinished(JID, 'run-a');
 
     let state = useChatStore.getState();
-    const settled = state.streaming[JID];
+    const settled = state.settledStreaming[JID];
     expect(settled?.settling).toBe(true);
+    expect(settled?.runId).toBe('run-a');
     // The frame buffered for rAF was applied, not dropped.
     expect(settled?.partialText).toBe('最终答案。');
     expect(settled?.activeTools).toEqual([]);
+    // The live slot is free for the next run.
+    expect(state.streaming[JID]).toBeUndefined();
     expect(state.waiting[JID]).toBe(false);
 
-    const updates: Array<{ streaming: boolean; messages: number }> = [];
+    const updates: Array<{ settled: boolean; messages: number }> = [];
     const unsubscribe = useChatStore.subscribe((s) =>
       updates.push({
-        streaming: !!s.streaming[JID],
+        settled: !!s.settledStreaming[JID],
         messages: s.messages[JID]?.length ?? 0,
       }),
     );
@@ -192,7 +196,7 @@ describe('run_finished before the final message', () => {
     unsubscribe();
 
     // Never a state with neither the card nor the final message.
-    expect(updates).toEqual([{ streaming: false, messages: 1 }]);
+    expect(updates).toEqual([{ settled: false, messages: 1 }]);
     state = useChatStore.getState();
     expect(state.thinkingCache['final-1']).toBe('先想一想。');
     expect(state.thinkingDurationCache['final-1']).toBeGreaterThanOrEqual(0);
@@ -207,8 +211,8 @@ describe('run_finished before the final message', () => {
     useChatStore.getState().handleRunFinished(AGENT_JID, 'run-a');
 
     let state = useChatStore.getState();
-    expect(state.agentStreaming[AGENT]?.settling).toBe(true);
-    expect(state.agentStreaming[AGENT]?.partialText).toBe('最终答案。');
+    expect(state.settledStreaming[AGENT_JID]?.partialText).toBe('最终答案。');
+    expect(state.agentStreaming[AGENT]).toBeUndefined();
 
     useChatStore
       .getState()
@@ -218,7 +222,7 @@ describe('run_finished before the final message', () => {
         AGENT,
       );
     state = useChatStore.getState();
-    expect(state.agentStreaming[AGENT]).toBeUndefined();
+    expect(state.settledStreaming[AGENT_JID]).toBeUndefined();
     expect(state.agentMessages[AGENT].map((m) => m.id)).toEqual([
       'agent-final',
     ]);
@@ -238,7 +242,7 @@ describe('run_finished before the final message', () => {
 
     expect(apiGetMock).toHaveBeenCalledTimes(1);
     const state = useChatStore.getState();
-    expect(state.streaming[JID]).toBeUndefined();
+    expect(state.settledStreaming[JID]).toBeUndefined();
     expect(state.messages[JID].map((m) => m.id)).toEqual(['final-rest']);
     expect(state.thinkingCache['final-rest']).toBe('先想一想。');
   });
@@ -252,8 +256,9 @@ describe('run_finished before the final message', () => {
     await vi.advanceTimersByTimeAsync(1600);
 
     const state = useChatStore.getState();
-    expect(state.streaming[JID]).toBeUndefined();
-    expect(state.pendingThinking[JID]).toBe('先想一想。');
+    expect(state.settledStreaming[JID]).toBeUndefined();
+    // Not left for a later, unrelated reply to pick up.
+    expect(state.pendingThinking[JID]).toBeUndefined();
   });
 
   it('keeps the settled card across the next queued run until the final lands', () => {
@@ -262,7 +267,7 @@ describe('run_finished before the final message', () => {
     useChatStore.getState().handleRunStarted(JID, 'run-b');
 
     let state = useChatStore.getState();
-    expect(state.streaming[JID]?.settling).toBe(true);
+    expect(state.settledStreaming[JID]?.partialText).toBe('最终答案。');
     expect(state.waiting[JID]).toBe(true);
 
     useChatStore
@@ -270,27 +275,120 @@ describe('run_finished before the final message', () => {
       .handleWsNewMessage(JID, finalMessage('final-a', '最终答案。'));
     state = useChatStore.getState();
     // A's card became A's reply; B (still preparing) has no projection yet.
+    expect(state.settledStreaming[JID]).toBeUndefined();
     expect(state.streaming[JID]).toBeUndefined();
     expect(state.thinkingCache['final-a']).toBe('先想一想。');
     expect(state.waiting[JID]).toBe(true);
   });
 
-  it("starts B fresh when B's first event beats A's final", () => {
+  it("keeps A's settled card while B streams before A's final, then swaps only A", () => {
     streamAReply(JID);
     useChatStore.getState().handleRunFinished(JID, 'run-a');
     useChatStore.getState().handleRunStarted(JID, 'run-b');
-    emit({ eventType: 'text_delta', text: 'B 的回答' }, 'run-b');
+    // The SDK opens every request with a status; B then streams text.
+    emit(
+      { eventType: 'status', statusText: 'requesting', turnId: 'turn-2' },
+      'run-b',
+    );
+    emit(
+      { eventType: 'text_delta', text: 'B 的回答', turnId: 'turn-2' },
+      'run-b',
+    );
     flushRaf();
 
-    const stream = useChatStore.getState().streaming[JID];
-    expect(stream?.settling).toBeUndefined();
-    expect(stream?.partialText).toBe('B 的回答');
+    let state = useChatStore.getState();
+    expect(state.settledStreaming[JID]?.partialText).toBe('最终答案。');
+    expect(state.streaming[JID]?.partialText).toBe('B 的回答');
+
+    // A reconnect snapshot for B leaves A alone too.
+    useChatStore.getState().handleStreamSnapshot(
+      JID,
+      {
+        partialText: 'B 的回答，更多',
+        activeTools: [],
+        recentEvents: [],
+        systemStatus: null,
+        turnId: 'turn-2',
+      },
+      undefined,
+      'run-b',
+    );
+    expect(useChatStore.getState().settledStreaming[JID]?.partialText).toBe(
+      '最终答案。',
+    );
+
+    useChatStore
+      .getState()
+      .handleWsNewMessage(JID, finalMessage('final-a', '最终答案。'));
+    state = useChatStore.getState();
+    expect(state.settledStreaming[JID]).toBeUndefined();
+    expect(state.thinkingCache['final-a']).toBe('先想一想。');
+    expect(state.traceCache['final-a']?.length).toBeGreaterThan(0);
+    expect(state.streaming[JID]?.partialText).toBe('B 的回答，更多');
+    expect(state.waiting[JID]).toBe(true);
+  });
+
+  it("settles a replaced attempt's card when the next run starts without run_finished", () => {
+    streamAReply(JID);
+    useChatStore.getState().handleRunStarted(JID, 'run-b');
+    const state = useChatStore.getState();
+    expect(state.settledStreaming[JID]?.runId).toBe('run-a');
+    expect(state.streaming[JID]).toBeUndefined();
+  });
+
+  it('replaces the settled card of a group-mode scheduled task with its result', () => {
+    streamAReply(JID);
+    useChatStore.getState().handleRunFinished(JID, 'run-a');
+
+    const updates: Array<{ settled: boolean; ids: string[] }> = [];
+    const unsubscribe = useChatStore.subscribe((s) =>
+      updates.push({
+        settled: !!s.settledStreaming[JID],
+        ids: (s.messages[JID] ?? []).map((m) => m.id),
+      }),
+    );
+    useChatStore.getState().handleWsNewMessage(
+      JID,
+      finalMessage('sched-1', '## 定时任务结果\n\n最终答案。', {
+        source_kind: 'scheduled_task_result',
+      }),
+      undefined,
+      'scheduled_task',
+    );
+    unsubscribe();
+
+    // One update: the result in, the card out. Never both on screen.
+    expect(updates).toEqual([{ settled: false, ids: ['sched-1'] }]);
+    const state = useChatStore.getState();
+    expect(state.thinkingCache['sched-1']).toBe('先想一想。');
+    expect(state.pendingThinking[JID]).toBeUndefined();
+  });
+
+  it("leaves another turn's settled card for its own final", () => {
+    streamAReply(JID);
+    useChatStore.getState().handleRunFinished(JID, 'run-a');
+    useChatStore.getState().handleWsNewMessage(
+      JID,
+      finalMessage('sched-other', '另一个任务', {
+        source_kind: 'scheduled_task_result',
+        turn_id: 'turn-other',
+      }),
+      undefined,
+      'scheduled_task',
+    );
+    const state = useChatStore.getState();
+    expect(state.settledStreaming[JID]?.partialText).toBe('最终答案。');
+    expect(state.thinkingCache['sched-other']).toBeUndefined();
   });
 
   it('ignores a run_finished for another attempt', () => {
     streamAReply(JID);
     useChatStore.getState().handleRunFinished(JID, 'run-other');
-    expect(useChatStore.getState().streaming[JID]?.settling).toBeUndefined();
+    flushRaf();
+    expect(useChatStore.getState().settledStreaming[JID]).toBeUndefined();
+    expect(useChatStore.getState().streaming[JID]?.partialText).toBe(
+      '最终答案。',
+    );
     expect(useChatStore.getState().waiting[JID]).toBe(true);
   });
 });
@@ -457,5 +555,48 @@ describe('dead streaming persistence', () => {
       'utf8',
     );
     expect(store).not.toMatch(/hc_streaming|sessionStorage/);
+  });
+});
+
+describe('session running state', () => {
+  it('does not count a settled or stopped session card as running', async () => {
+    const { isLiveStream } = await import('../web/src/stores/chat');
+    useChatStore.setState({ agentWaiting: { [AGENT]: true } });
+    useChatStore.getState().handleRunStarted(AGENT_JID, 'run-a');
+    emit({ eventType: 'text_delta', text: '输出中' }, 'run-a', AGENT);
+    flushRaf();
+    expect(isLiveStream(useChatStore.getState().agentStreaming[AGENT])).toBe(
+      true,
+    );
+
+    emit({ eventType: 'status', statusText: 'interrupted' }, 'run-a', AGENT);
+    expect(isLiveStream(useChatStore.getState().agentStreaming[AGENT])).toBe(
+      false,
+    );
+
+    useChatStore.getState().handleRunFinished(AGENT_JID, 'run-a');
+    const state = useChatStore.getState();
+    // The frozen card moved out of the live slot: no stop button, no spinner.
+    expect(state.agentStreaming[AGENT]).toBeUndefined();
+    expect(state.agentWaiting[AGENT]).toBe(false);
+    expect(state.settledStreaming[AGENT_JID]?.interrupted).toBe(true);
+  });
+});
+
+describe('streaming text cap', () => {
+  it('cuts past the cap once with headroom instead of on every frame', () => {
+    useChatStore.getState().handleRunStarted(JID, 'run-a');
+    const paragraph = `${'长回复内容。'.repeat(80)}\n\n`;
+    emit({ eventType: 'text_delta', text: paragraph.repeat(420) }, 'run-a');
+    flushRaf();
+    const cut = useChatStore.getState().streaming[JID]!.partialText;
+    expect(cut.startsWith('…\n\n')).toBe(true);
+    expect(cut.length).toBeLessThanOrEqual(200_000 * 0.9 + 3);
+
+    // The next deltas append without another cut.
+    emit({ eventType: 'text_delta', text: '继续' }, 'run-a');
+    flushRaf();
+    const next = useChatStore.getState().streaming[JID]!.partialText;
+    expect(next).toBe(`${cut}继续`);
   });
 });

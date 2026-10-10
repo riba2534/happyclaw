@@ -56,4 +56,13 @@ describe('reconnect snapshot text', () => {
     expect(blocks.some((block) => body.startsWith(block))).toBe(true);
     expect(body.split(FENCE).length % 2).toBe(1);
   });
+
+  test('re-opens the code fence when one block is longer than the budget', () => {
+    const code = Array.from({ length: 400 }, (_, i) => `line ${i}`).join('\n');
+    const text = `intro\n\n${FENCE}ts\n${code}\n${FENCE}\n`;
+    const cut = capSnapshotText(text, 600);
+    expect(cut.startsWith(`…\n\n${FENCE}ts\n`)).toBe(true);
+    expect(cut.endsWith(`${FENCE}\n`)).toBe(true);
+    expect(cut.split(FENCE).length % 2).toBe(1);
+  });
 });

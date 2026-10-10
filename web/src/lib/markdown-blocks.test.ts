@@ -2,7 +2,9 @@ import { describe, expect, test } from 'vitest';
 import {
   canRenderBlockwise,
   endsInOpenFence,
+  extendMarkdownBlocks,
   findMarkdownDefinitions,
+  hasRawHtmlOutsideCode,
   markdownTail,
   splitMarkdownBlocks,
 } from './markdown-blocks';
@@ -102,6 +104,15 @@ describe('markdownTail', () => {
     expect(tail.startsWith('…\n\n```')).toBe(true);
     expect(tail.endsWith('end')).toBe(true);
   });
+
+  test('keeps the opening fence of a code block longer than the budget', () => {
+    const lines = Array.from({ length: 50 }, (_, i) => `const v${i} = ${i};`);
+    const text = `intro\n\n\`\`\`ts\n${lines.join('\n')}`;
+    const tail = markdownTail(text, 120);
+    expect(tail.startsWith('…\n\n```ts\n')).toBe(true);
+    expect(tail.endsWith('const v49 = 49;')).toBe(true);
+    expect(tail).not.toContain('const v0 =');
+  });
 });
 
 describe('endsInOpenFence', () => {
@@ -140,11 +151,67 @@ describe('findMarkdownDefinitions', () => {
 
 describe('canRenderBlockwise', () => {
   test('falls back to one document for cross-block meaning', () => {
-    expect(canRenderBlockwise('# A\n\nB', false)).toBe(true);
-    expect(canRenderBlockwise('[a][r]\n\n[r]: https://x', false)).toBe(false);
-    expect(canRenderBlockwise('a[^1]\n\n[^1]: b', false)).toBe(false);
-    expect(canRenderBlockwise('<details>\n\nx\n\n</details>', true)).toBe(
-      false,
+    expect(canRenderBlockwise('# A\n\nB')).toBe(true);
+    expect(canRenderBlockwise('[a][r]\n\n[r]: https://x')).toBe(false);
+    expect(canRenderBlockwise('a[^1]\n\n[^1]: b')).toBe(false);
+    expect(canRenderBlockwise('<details>\n\nx\n\n</details>')).toBe(false);
+    expect(canRenderBlockwise('第一行<br>第二行')).toBe(false);
+  });
+
+  test('HTML written as code does not force one document', () => {
+    expect(
+      canRenderBlockwise(
+        '组件：\n\n```tsx\nreturn <div className="a"><br /></div>;\n```\n\n换行用 `<br>`，折叠用 ``<details>``。',
+      ),
+    ).toBe(true);
+    expect(hasRawHtmlOutsideCode('用 `<div>` 包一层')).toBe(false);
+    expect(hasRawHtmlOutsideCode('`code` 然后 <kbd>Ctrl</kbd>')).toBe(true);
+  });
+});
+
+describe('extendMarkdownBlocks', () => {
+  test('matches a full split at every point of a growing reply', () => {
+    const text = [
+      '# 标题',
+      '',
+      '- a',
+      '',
+      '- b',
+      '  continued',
+      '',
+      '```ts',
+      'const a = 1;',
+      '',
+      'const b = 2;',
+      '```',
+      '',
+      '$$',
+      'x',
+      '',
+      'y',
+      '$$',
+      '',
+      '| a | b |',
+      '| - | - |',
+      '| 1 | 2 |',
+      '',
+      '    indented',
+      '',
+      '结尾。',
+    ].join('\n');
+    let previous: { text: string; blocks: string[] } | null = null;
+    for (let end = 0; end <= text.length; end += 3) {
+      const prefix = text.slice(0, end);
+      const blocks = extendMarkdownBlocks(previous, prefix);
+      expect(blocks).toEqual(splitMarkdownBlocks(prefix));
+      previous = { text: prefix, blocks };
+    }
+  });
+
+  test('falls back to a full split when the text was replaced', () => {
+    const previous = { text: 'old text', blocks: ['old text'] };
+    expect(extendMarkdownBlocks(previous, '…\n\nnew')).toEqual(
+      splitMarkdownBlocks('…\n\nnew'),
     );
   });
 });

@@ -5,7 +5,7 @@ import { DropdownMenuItem } from '@/components/ui/dropdown-menu';
 import { Spinner } from '@/components/ui/spinner';
 import { PromptDialog } from '@/components/common/PromptDialog';
 import { cn } from '@/lib/utils';
-import { useChatStore } from '../../../stores/chat';
+import { isLiveStream, useChatStore } from '../../../stores/chat';
 import { useShellStore } from '../../../stores/shell';
 import { useSessionActions } from '../../../hooks/useSessionActions';
 import {
@@ -58,9 +58,12 @@ export const SessionTreeList = memo(function SessionTreeList({
   const agents = useChatStore((s) => s.agents[group.jid] ?? EMPTY_AGENTS);
   // A joined id string keeps streaming deltas from re-rendering the tree:
   // it only changes when a session starts or stops answering.
+  // A card frozen by a stop is not a running query.
   const activeQueryIds = useChatStore((s) =>
     (s.agents[group.jid] ?? EMPTY_AGENTS)
-      .filter((a) => s.agentWaiting[a.id] || s.agentStreaming[a.id])
+      .filter(
+        (a) => s.agentWaiting[a.id] || isLiveStream(s.agentStreaming[a.id]),
+      )
       .map((a) => a.id)
       .join(','),
   );

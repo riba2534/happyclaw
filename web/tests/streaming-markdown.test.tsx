@@ -4,6 +4,7 @@ import {
   FinalMarkdown,
   StreamingMarkdown,
 } from '../src/components/chat/StreamingMarkdown';
+import { MarkdownRenderer } from '../src/components/chat/MarkdownRenderer';
 
 const streamed = (content: string) =>
   renderToStaticMarkup(<StreamingMarkdown content={content} />);
@@ -58,5 +59,102 @@ describe('FinalMarkdown', () => {
     const html = finished('参见[文档][ref]。\n\n[ref]: https://example.com');
     expect(html.match(/data-markdown-root=""/g)).toHaveLength(1);
     expect(html).toContain('href="https://example.com"');
+  });
+});
+
+/**
+ * The rendered Markdown without what differs by construction and not in
+ * layout: one `data-markdown-root` per block (and Suspense fallback
+ * wrappers) versus one for the document, and the whitespace-only text
+ * between top-level blocks.
+ */
+function withoutRenderRoots(html: string): string {
+  const stack: boolean[] = [];
+  let out = '';
+  let inPre = 0;
+  for (const token of html.match(/<\/?[a-zA-Z][^>]*>|[^<]+/g) ?? []) {
+    if (/^<pre[\s>]/.test(token)) inPre += 1;
+    else if (token === '</pre>') inPre -= 1;
+    if (/^<div[\s>]/.test(token)) {
+      const drop =
+        token.includes('data-markdown-root') ||
+        token.includes('data-markdown-pending');
+      stack.push(drop);
+      if (!drop) out += token;
+    } else if (token === '</div>') {
+      if (!stack.pop()) out += token;
+    } else if (inPre > 0 || token.trim() || token.startsWith('<')) {
+      out += token;
+    }
+  }
+  return out;
+}
+
+const KITCHEN_SINK = [
+  '# 一级标题',
+  '',
+  '段落里有 **粗体**、*斜体*、`<br>` 这样的行内代码和 [链接](https://example.com)。',
+  '',
+  'Setext 标题',
+  '----------',
+  '',
+  '- 第一项',
+  '  - 嵌套项',
+  '- 第二项',
+  '',
+  '- 松散列表第一段。',
+  '',
+  '  同一项的第二段。',
+  '',
+  '1. 安装依赖',
+  '',
+  '```bash',
+  'npm ci',
+  '',
+  'echo "<div>not html</div>"',
+  '```',
+  '',
+  '2. 启动服务',
+  '',
+  '> 引用里的 **重点**',
+  '>',
+  '> - 引用中的列表',
+  '',
+  '| 方案 | 次数 |',
+  '| --- | ---: |',
+  '| 整 store | 120 |',
+  '| 窄 selector | 3 |',
+  '',
+  '---',
+  '',
+  '- [x] 已完成',
+  '- [ ] 未完成',
+  '',
+  '```tsx',
+  'export function A() {',
+  '  return <div className="row"><br /></div>;',
+  '}',
+  '```',
+  '',
+  '$$',
+  'a + b',
+  '',
+  '= c',
+  '$$',
+  '',
+  '结尾段落。',
+].join('\n');
+
+describe('block-wise final rendering', () => {
+  it('renders the same Markdown as the whole document', () => {
+    const blockwise = finished(KITCHEN_SINK);
+    // HTML in code is not raw HTML: the reply really renders block-wise.
+    expect(blockwise.match(/data-markdown-root=""/g)!.length).toBeGreaterThan(
+      10,
+    );
+    const whole = renderToStaticMarkup(
+      <MarkdownRenderer content={KITCHEN_SINK} />,
+    );
+    expect(withoutRenderRoots(blockwise)).toBe(withoutRenderRoots(whole));
   });
 });

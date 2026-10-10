@@ -114,3 +114,32 @@ test('a long streamed reply renders in full with the run status in view', async 
   expect(state.rawFence).toBe(false);
   expect(state.statusInView).toBe(true);
 });
+
+test('copy from a menu works without the async clipboard API (plain HTTP)', async ({
+  page,
+  context,
+}) => {
+  await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+  await page.goto(`${HARNESS}?scenario=markdown`);
+  await page.getByRole('button', { name: '消息菜单' }).nth(3).waitFor();
+  await page.evaluate(async () => {
+    // Keep the real API for reading back, then hide it like a non-secure
+    // origin does; the copy must go through the execCommand fallback.
+    const win = window as unknown as { realClipboard: Clipboard };
+    win.realClipboard = navigator.clipboard;
+    await navigator.clipboard.writeText('SENTINEL');
+    Object.defineProperty(Navigator.prototype, 'clipboard', {
+      get: () => undefined,
+      configurable: true,
+    });
+  });
+  await page.getByRole('button', { name: '消息菜单' }).nth(3).click();
+  await page.getByRole('menuitem', { name: '复制 Markdown' }).click();
+  await expect(page.getByText('已复制')).toBeVisible();
+  const copied = await page.evaluate(() =>
+    (
+      window as unknown as { realClipboard: Clipboard }
+    ).realClipboard.readText(),
+  );
+  expect(copied).toContain('export const answer = 42;');
+});

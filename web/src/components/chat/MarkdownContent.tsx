@@ -22,6 +22,11 @@ import {
 import { cn } from '@/lib/utils';
 import { REMARK_REHYPE_OPTIONS } from '../../lib/markdown/pipeline';
 import { useCopyFeedback } from '../../lib/markdown/use-copy-feedback';
+import {
+  RENDERED_CACHE_MAX_CHARS,
+  rememberRendered,
+  renderedCost,
+} from '../../lib/markdown/rendered-cache';
 
 const MermaidDiagram = lazy(() =>
   import('./MermaidDiagram').then((module) => ({
@@ -74,52 +79,6 @@ function rememberRecent<V>(
 
 const COMPONENTS_CACHE_LIMIT = 50;
 const componentsCache = new Map<string, MarkdownComponents>();
-
-/**
- * Rendered Markdown of finished content, shared across mounts. Switching
- * sessions remounts the transcript, and every visible reply went through
- * micromark, mdast, hast and highlight.js again although its text had not
- * changed; reopening a recently viewed session now reuses those trees.
- * Streamed text changes on every update and is never cached. Replies render
- * block by block, so a finished reply reuses the trees of the blocks its
- * stream already rendered; the cache is bounded by entries and total text.
- */
-const RENDERED_CACHE_LIMIT = 600;
-/** Total characters of cached content (trees keep their hast nodes). */
-const RENDERED_CACHE_BUDGET_CHARS = 1_000_000;
-/** Trees keep their hast nodes; very long documents are re-rendered instead. */
-const RENDERED_CACHE_MAX_CHARS = 20_000;
-const renderedCache = new Map<
-  string,
-  { element: React.ReactElement; size: number }
->();
-let renderedCacheChars = 0;
-
-function rememberRendered(
-  key: string,
-  size: number,
-  render: () => React.ReactElement,
-): React.ReactElement {
-  const hit = renderedCache.get(key);
-  if (hit) {
-    renderedCache.delete(key);
-    renderedCache.set(key, hit);
-    return hit.element;
-  }
-  const element = render();
-  renderedCache.set(key, { element, size });
-  renderedCacheChars += size;
-  while (
-    renderedCache.size > RENDERED_CACHE_LIMIT ||
-    renderedCacheChars > RENDERED_CACHE_BUDGET_CHARS
-  ) {
-    const oldest = renderedCache.keys().next();
-    if (oldest.done) break;
-    renderedCacheChars -= renderedCache.get(oldest.value)?.size ?? 0;
-    renderedCache.delete(oldest.value);
-  }
-  return element;
-}
 
 /**
  * Whether the surrounding Markdown is still streaming. Read through context
@@ -393,11 +352,14 @@ function codeElementProps(children: React.ReactNode): CodeElementProps | null {
 }
 
 /**
- * Jump to an in-page target (footnotes) inside the same message instead of
- * navigating: footnote ids repeat across messages, and sanitized HTML gains
- * a `user-content-` prefix that the link lacks.
+ * Jump to an in-page target (footnotes) inside the same Markdown root
+ * instead of navigating: footnote ids repeat across messages, sanitized HTML
+ * gains a `user-content-` prefix that the link lacks, and a link such as
+ * `#root` must never reach the app's own elements. Content that uses
+ * footnotes renders as one root.
  */
 function scrollToMarkdownAnchor(event: React.MouseEvent<HTMLAnchorElement>) {
+  event.preventDefault();
   const href = event.currentTarget.getAttribute('href') ?? '';
   let id: string;
   try {
@@ -405,14 +367,11 @@ function scrollToMarkdownAnchor(event: React.MouseEvent<HTMLAnchorElement>) {
   } catch {
     id = href.slice(1);
   }
-  if (!id) return;
   const scope = event.currentTarget.closest('[data-markdown-root]');
+  if (!id || !scope) return;
   for (const candidate of [id, `user-content-${id}`]) {
-    const selector = `[id="${CSS.escape(candidate)}"]`;
-    const target =
-      scope?.querySelector(selector) ?? document.querySelector(selector);
+    const target = scope.querySelector(`[id="${CSS.escape(candidate)}"]`);
     if (!target) continue;
-    event.preventDefault();
     const reduceMotion = window.matchMedia?.(
       '(prefers-reduced-motion: reduce)',
     ).matches;
@@ -706,7 +665,7 @@ export function MarkdownContent({
     if (streaming || content.length > RENDERED_CACHE_MAX_CHARS) return render();
     return rememberRendered(
       [pipeline, variant, groupJid ?? '', eagerImages, content].join('\0'),
-      content.length,
+      renderedCost(content, pipeline.includes('code')),
       render,
     );
   }, [
@@ -730,6 +689,11 @@ export function MarkdownContent({
         // layouts; the bubble layout is narrower than this already.
         variant === 'chat' &&
           'max-w-[46rem] [.share-card-content_&]:max-w-none',
+        // Contain whatever paints outside the flow, such as a KaTeX
+        // `\kern{-500em}` or `\raisebox`, without a new formatting context
+        // (margins between block-rendered parts still collapse). The share
+        // card lets wide tables overflow so it can grow to fit them.
+        'overflow-clip [overflow-clip-margin:0.25rem] [.share-card-content_&]:overflow-visible',
         trimEdges && '[&>*:first-child]:mt-0 [&>*:last-child]:mb-0',
       )}
     >
