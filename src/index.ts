@@ -378,6 +378,7 @@ import {
   formatWorkspaceList,
   formatSystemStatus,
   resolveBoundChatTarget,
+  resolveSessionControlTargetJid,
   resolveLocationInfo,
   checkImOwnerCommand,
   isDirectMessageJid,
@@ -20625,6 +20626,25 @@ function handleCardInterrupt(
 }
 
 /**
+ * Resolve the chat target for a Feishu session runtime command (`/break`,
+ * `/clear`, `/fresh`). Group routes arrive with a target from the connector;
+ * P2P routes deliberately arrive without one (see feishu.ts) and resolve
+ * through the registered chat binding here instead.
+ */
+function resolveSessionControlTarget(input: {
+  sourceJid: string;
+  targetJid?: string;
+}): string | undefined {
+  return resolveSessionControlTargetJid(
+    { sourceChatJid: input.sourceJid, targetChatJid: input.targetJid },
+    (jid) => registeredGroups[jid] ?? getRegisteredGroup(jid),
+    getAgent,
+    findGroupNameByFolder,
+    resolveWorkspaceJid,
+  );
+}
+
+/**
  * Feishu `/break` is a session cutoff, not a message for the Agent. Cancel
  * everything that was already durably queued, then interrupt the exact active
  * query. Messages admitted after this synchronous cutoff remain runnable.
@@ -20634,21 +20654,7 @@ async function handleSessionBreak(input: {
   targetJid?: string;
   senderImId: string;
 }): Promise<string> {
-  let targetJid = input.targetJid;
-  if (!targetJid) {
-    const group =
-      registeredGroups[input.sourceJid] ?? getRegisteredGroup(input.sourceJid);
-    if (group) {
-      targetJid = resolveBoundChatTarget(
-        input.sourceJid,
-        group,
-        (jid) => registeredGroups[jid] ?? getRegisteredGroup(jid),
-        getAgent,
-        findGroupNameByFolder,
-        resolveWorkspaceJid,
-      )?.targetChatJid;
-    }
-  }
+  const targetJid = resolveSessionControlTarget(input);
   if (!targetJid) return '当前绑定目标不存在，无法执行 /break。';
 
   const deliveryUpdatedAt = new Date().toISOString();
@@ -20709,7 +20715,7 @@ async function handleFeishuSessionClear(input: {
   targetJid?: string;
   senderImId: string;
 }): Promise<string> {
-  const targetJid = input.targetJid;
+  const targetJid = resolveSessionControlTarget(input);
   const runtime = targetJid ? resolveFollowUpRuntime(targetJid) : null;
   if (!targetJid || !runtime) {
     return '当前绑定目标不存在，无法执行 /clear。';
@@ -20750,7 +20756,7 @@ async function handleFeishuSessionFresh(input: {
   senderImId: string;
   notes: string;
 }): Promise<string> {
-  const targetJid = input.targetJid;
+  const targetJid = resolveSessionControlTarget(input);
   const runtime = targetJid ? resolveFollowUpRuntime(targetJid) : null;
   if (!targetJid || !runtime) {
     return '当前绑定目标不存在，无法执行 /fresh。';

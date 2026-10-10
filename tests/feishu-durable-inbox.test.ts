@@ -689,6 +689,27 @@ describe('Feishu durable Inbox and cursor integration', () => {
     expect(controls.messageReply).not.toHaveBeenCalled();
   });
 
+  test('p2p /clear defers target resolution to the host binding fallback', async () => {
+    const accountId = `account-p2p-clear-${Date.now()}`;
+    const onSessionClear = vi
+      .fn()
+      .mockResolvedValue('Session context cleared.');
+    const executed = vi.fn();
+    const connected = await connect(accountId, executed, {
+      isSenderAllowedInGroup: () => true,
+      onSessionClear,
+    });
+
+    await connected.handler(event('om_p2p_clear', Date.now(), '/clear'));
+
+    expect(onSessionClear).toHaveBeenCalledTimes(1);
+    const invocation = onSessionClear.mock.calls[0]![0];
+    expect(invocation.sourceJid).toBe('feishu:ou_durable_user');
+    expect(invocation.targetJid).toBeUndefined();
+    expect(invocation.senderImId).toBe('ou_durable_user');
+    expect(executed).not.toHaveBeenCalledWith('om_p2p_clear');
+  });
+
   test.each(['p2p', 'group'] as const)(
     'an unbound %s stays silent before commands, reactions and routing',
     async (chatType) => {

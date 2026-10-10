@@ -2,6 +2,7 @@ import { describe, expect, test } from 'vitest';
 
 import {
   resolveBoundChatTarget,
+  resolveSessionControlTargetJid,
   type RegisteredGroupLike,
   type AgentLike,
 } from '../src/im-command-utils.js';
@@ -169,5 +170,94 @@ describe('resolveBoundChatTarget', () => {
       agentId: null,
       locationLine: 'legacy / 主会话',
     });
+  });
+});
+
+describe('resolveSessionControlTargetJid', () => {
+  const registeredGroups = new Map<string, RegisteredGroupLike>([
+    [
+      'web:main',
+      {
+        name: 'Main',
+        folder: 'home-u1',
+      },
+    ],
+    [
+      'feishu:oc-p2p-chat',
+      {
+        name: 'Feishu P2P',
+        folder: 'home-u1',
+        target_main_jid: 'web:main',
+      },
+    ],
+    [
+      'feishu:oc-agent-chat',
+      {
+        name: 'Feishu Agent P2P',
+        folder: 'home-u1',
+        target_agent_id: 'agent-1234',
+      },
+    ],
+  ]);
+
+  const agents = new Map<string, AgentLike>([
+    [
+      'agent-1234',
+      {
+        name: 'Thesis Agent',
+        chat_jid: 'web:main',
+      },
+    ],
+  ]);
+
+  const getRegisteredGroup = (jid: string) => registeredGroups.get(jid);
+  const getAgent = (id: string) => agents.get(id);
+  const findGroupNameByFolder = (folder: string) => folder;
+
+  test('prefers the connector-resolved target when present', () => {
+    const jid = resolveSessionControlTargetJid(
+      {
+        sourceChatJid: 'feishu:oc-unregistered',
+        targetChatJid: 'web:target#agent:agent-9',
+      },
+      getRegisteredGroup,
+      getAgent,
+      findGroupNameByFolder,
+    );
+
+    expect(jid).toBe('web:target#agent:agent-9');
+  });
+
+  test('resolves a P2P route without a connector target through its registered binding', () => {
+    const jid = resolveSessionControlTargetJid(
+      { sourceChatJid: 'feishu:oc-p2p-chat' },
+      getRegisteredGroup,
+      getAgent,
+      findGroupNameByFolder,
+    );
+
+    expect(jid).toBe('web:main');
+  });
+
+  test('resolves an agent-bound route to the agent session target', () => {
+    const jid = resolveSessionControlTargetJid(
+      { sourceChatJid: 'feishu:oc-agent-chat' },
+      getRegisteredGroup,
+      getAgent,
+      findGroupNameByFolder,
+    );
+
+    expect(jid).toBe('web:main#agent:agent-1234');
+  });
+
+  test('returns undefined when the source chat has no registered binding', () => {
+    const jid = resolveSessionControlTargetJid(
+      { sourceChatJid: 'feishu:oc-unknown' },
+      getRegisteredGroup,
+      getAgent,
+      findGroupNameByFolder,
+    );
+
+    expect(jid).toBeUndefined();
   });
 });

@@ -216,6 +216,35 @@ export function resolveBoundChatTarget(
   };
 }
 
+/**
+ * Resolve the real chat target for a Feishu session runtime command
+ * (`/break`, `/clear`, `/fresh`).
+ *
+ * Group routes arrive with an already-resolved target from the connector.
+ * P2P routes deliberately arrive without one (see the connector comment in
+ * feishu.ts) and must resolve through the registered chat binding here,
+ * mirroring the normal P2P bootstrap instead of bypassing it.
+ */
+export function resolveSessionControlTargetJid(
+  input: { sourceChatJid: string; targetChatJid?: string },
+  getRegisteredGroup: (jid: string) => RegisteredGroupLike | undefined,
+  getAgent: (id: string) => AgentLike | undefined,
+  findGroupNameByFolder: (folder: string) => string,
+  resolveWorkspaceJid?: (jid: string) => string | null,
+): string | undefined {
+  if (input.targetChatJid) return input.targetChatJid;
+  const group = getRegisteredGroup(input.sourceChatJid);
+  if (!group) return undefined;
+  return resolveBoundChatTarget(
+    input.sourceChatJid,
+    group,
+    getRegisteredGroup,
+    getAgent,
+    findGroupNameByFolder,
+    resolveWorkspaceJid,
+  )?.targetChatJid;
+}
+
 // ─── System Status Formatting ─────────────────────────────────
 
 export interface QueueStatusInfo {
