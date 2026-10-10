@@ -167,6 +167,7 @@ import {
   getMessage,
   listInboundMessagesById,
   cancelPendingInboundMessage,
+  getMessageCursor,
   learnFeishuDirectChatMode,
   getUserById,
   getMessagesSince,
@@ -325,8 +326,12 @@ import {
   type ActiveChannelOutboxScope,
 } from './channel-outbox-runtime-scope.js';
 import {
+  cancelChannelTurnRunById,
   cancelRetryWaitChannelTurnsForInputs,
   cancelStaleRetryWaitChannelTurns,
+  getChannelInboxByExternalMessage,
+  getPrimaryStreamingCardForTurn,
+  listNonterminalChannelTurnRuns,
   cleanupChannelReliability,
   hasDeliveredChannelImageWithContentHash,
   getDeliveredChannelOutboxForTurn,
@@ -398,6 +403,7 @@ import {
   registerMessageIdMapping,
   getStreamingSession,
   StreamingCardController,
+  streamingCardSnapshotText,
 } from './feishu-streaming-card.js';
 import {
   formatContextMessages,
@@ -8666,6 +8672,52 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     if (channelOutboxScope) {
       channelOutboxScopesByInput.set(lastProcessed.id, channelOutboxScope);
     }
+    // Recall stop: suppress the interrupted query's trailing stream output.
+    let mainRecallSuppression = false;
+    const settleMainRecalledInput = async (
+      messageId: string,
+    ): Promise<void> => {
+      let inputId = lastProcessed.id;
+      for (const [key, runtime] of channelTurnRuntimes) {
+        if (runtime.inputTurnId === messageId) inputId = key;
+      }
+      // Never touch a settled card: it may be an earlier input's answer.
+      const projection =
+        channelStreamingSessionsByInput.get(inputId) ??
+        (streamingSession && !isStreamingSessionSettled(streamingSession)
+          ? { session: streamingSession, jid: streamingSessionJid }
+          : undefined);
+      if (projection) {
+        await discardRecalledStreamingCard({
+          session: projection.session,
+          transportJid: projection.jid,
+          logicalJid: chatJid,
+          recalledMessageId: messageId,
+        });
+        unregisterStreamingSession(projection.jid, projection.session);
+        channelStreamingSessionsByInput.delete(inputId);
+        if (projection.session === streamingSession) {
+          streamingSession = undefined;
+          activeDurableCardLifecycle = undefined;
+        }
+      }
+      streamingAccumulatedText = '';
+      streamingAccumulatedThinking = '';
+      clearStreamingSnapshot(chatJid);
+      // Nothing more is published for the withdrawn input.
+      sentReply = true;
+      commitCursor(inputId);
+      settleInterruptedChannelTurn(
+        channelTurnRuntimes,
+        inputId,
+        'Input recalled by sender',
+      );
+      await clearProcessingIndicatorForInput(inputId);
+      logger.info(
+        { chatJid, inputTurnId: inputId, messageId },
+        'Settled a recalled input: card removed, turn cancelled, cursor committed',
+      );
+    };
     output = await runAgent(
       effectiveGroup,
       prompt,
@@ -8697,12 +8749,35 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
             );
             return;
           }
+          // The only input of this run was recalled: settle it first, then
+          // drop the interrupted query's trailing stream output until it ends
+          // so no card is created after the stop.
+          const recallStop = takeRecallStop(
+            chatJid,
+            (messageId) =>
+              messageId === lastProcessed.id ||
+              missedMessages.some((message) => message.id === messageId) ||
+              [...channelTurnRuntimes.values()].some(
+                (runtime) => runtime.inputTurnId === messageId,
+              ),
+          );
+          if (recallStop) {
+            mainRecallSuppression = true;
+            await settleMainRecalledInput(recallStop.messageId);
+          }
+          const recallQueryEnding =
+            mainRecallSuppression &&
+            (isInterruptStatus ||
+              result.queryIdle === true ||
+              result.status !== 'stream');
+          if (mainRecallSuppression && !recallQueryEnding) return;
+          if (recallQueryEnding) mainRecallSuppression = false;
           // Warm runners may report the exact covered scheduled prompt only on
           // an earlier IPC receipt. Remember it before lifecycle/provider
           // callbacks return so the later genuine final can settle the same
           // durable run without guessing from ordinary conversation history.
           rememberScheduledGroupRuns(result);
-          if (!suppressSupersededOutput) {
+          if (!suppressSupersededOutput && !recallQueryEnding) {
             await activateMainProjectionForInput(result.inputTurnId);
           }
           if (result.newSessionId && result.status !== 'error') {
@@ -9001,9 +9076,24 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
                   clearStreamingSnapshot(chatJid);
                   streamingAccumulatedText = '';
                   streamingAccumulatedThinking = '';
-                  commitCursor(
-                    resolveContainerOutputInputTurnId(result, lastProcessed.id),
+                  const interruptedInputId = resolveContainerOutputInputTurnId(
+                    result,
+                    lastProcessed.id,
                   );
+                  commitCursor(interruptedInputId);
+                  // The consumed input's Turn closes now, not when the warm
+                  // runner eventually exits.
+                  if (
+                    settleInterruptedChannelTurn(
+                      channelTurnRuntimes,
+                      interruptedInputId,
+                      steered
+                        ? 'Input superseded by explicit steer'
+                        : 'Input interrupted by explicit stop',
+                    )
+                  ) {
+                    await clearProcessingIndicatorForInput(interruptedInputId);
+                  }
                 } catch (err) {
                   logger.warn(
                     { err, chatJid },
@@ -10249,6 +10339,8 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   } finally {
     runEnded = true;
     if (idleTimer) clearTimeout(idleTimer);
+    // A recall stop this run never observed must not outlive it.
+    recallStoppedSessions.delete(chatJid);
     activeRouteUpdaters.delete(effectiveGroup.folder);
     activeRouteAdmissions.delete(mainAdmissionKey);
     if (
@@ -17526,6 +17618,53 @@ async function processAgentConversation(
     await clearAgentProcessingIndicatorForInput(inputTurnId);
   };
 
+  // Recall stop: suppress the interrupted query's trailing stream output.
+  let agentRecallSuppression = false;
+  const settleAgentRecalledInput = async (messageId: string): Promise<void> => {
+    let inputId = lastProcessed.id;
+    for (const [key, runtime] of agentChannelTurnRuntimes) {
+      if (runtime.inputTurnId === messageId) inputId = key;
+    }
+    // Never touch a settled card: it may be an earlier input's answer.
+    const projection =
+      agentStreamingSessionsByInput.get(inputId) ??
+      (agentStreamingSession &&
+      streamingSessionJid &&
+      !isStreamingSessionSettled(agentStreamingSession)
+        ? { session: agentStreamingSession, jid: streamingSessionJid }
+        : undefined);
+    if (projection) {
+      await discardRecalledStreamingCard({
+        session: projection.session,
+        // The agent registry key carries `#agent:`; delete through the
+        // transport route of the recalled input.
+        transportJid: replySourceImJid,
+        logicalJid: virtualChatJid,
+        recalledMessageId: messageId,
+      });
+      unregisterStreamingSession(projection.jid, projection.session);
+      agentStreamingSessionsByInput.delete(inputId);
+      if (projection.session === agentStreamingSession) {
+        agentStreamingSession = undefined;
+        activeAgentDurableCardLifecycle = undefined;
+      }
+    }
+    agentStreamingAccText = '';
+    clearStreamingSnapshot(virtualChatJid);
+    agentInterruptFinalized = true;
+    commitCursor(inputId);
+    settleInterruptedChannelTurn(
+      agentChannelTurnRuntimes,
+      inputId,
+      'Input recalled by sender',
+    );
+    await clearAgentProcessingIndicatorForInput(inputId);
+    logger.info(
+      { chatJid, agentId, inputTurnId: inputId, messageId },
+      'Settled a recalled input: card removed, turn cancelled, cursor committed',
+    );
+  };
+
   const handleAgentOutput = async (output: ContainerOutput) => {
     // #547: warm-lifecycle bookkeeping — mark activity, and flag query-idle on
     // a substantive result / interruption so the runner can be kept warm.
@@ -17564,7 +17703,30 @@ async function processAgentConversation(
       );
       return;
     }
-    if (!suppressSupersededOutput) {
+    // The only input of this run was recalled: settle it first, then drop
+    // the interrupted query's trailing stream output until it ends so no
+    // card is created after the stop.
+    const recallStop = takeRecallStop(
+      virtualChatJid,
+      (messageId) =>
+        messageId === lastProcessed.id ||
+        missedMessages.some((message) => message.id === messageId) ||
+        [...agentChannelTurnRuntimes.values()].some(
+          (runtime) => runtime.inputTurnId === messageId,
+        ),
+    );
+    if (recallStop) {
+      agentRecallSuppression = true;
+      await settleAgentRecalledInput(recallStop.messageId);
+    }
+    const recallQueryEnding =
+      agentRecallSuppression &&
+      (isInterruptStatus ||
+        output.queryIdle === true ||
+        output.status !== 'stream');
+    if (agentRecallSuppression && !recallQueryEnding) return;
+    if (recallQueryEnding) agentRecallSuppression = false;
+    if (!suppressSupersededOutput && !recallQueryEnding) {
       await activateAgentProjectionForInput(output.inputTurnId);
     }
     if (
@@ -17892,7 +18054,22 @@ async function processAgentConversation(
             agentStreamingAccText = '';
             // A deliberate stop/steer owns the superseded input: it must not
             // be rediscovered from DB history after the warm runner settles.
-            commitCursor(output.inputTurnId ?? activeAgentInputTurnId);
+            const interruptedInputId =
+              output.inputTurnId ?? activeAgentInputTurnId;
+            commitCursor(interruptedInputId);
+            // The consumed input's Turn closes now, not when the warm runner
+            // eventually exits.
+            if (
+              settleInterruptedChannelTurn(
+                agentChannelTurnRuntimes,
+                interruptedInputId,
+                steered
+                  ? 'Input superseded by explicit steer'
+                  : 'Input interrupted by explicit stop',
+              )
+            ) {
+              await clearAgentProcessingIndicatorForInput(interruptedInputId);
+            }
           } catch (err) {
             logger.warn(
               { err, chatJid, agentId },
@@ -18993,6 +19170,8 @@ async function processAgentConversation(
     }
   } finally {
     if (idleTimer) clearTimeout(idleTimer);
+    // A recall stop this run never observed must not outlive it.
+    recallStoppedSessions.delete(virtualChatJid);
 
     // A committed cursor means the input was already settled by a reply, a
     // stop or a terminal failure. The clean steer close is the exception: it
@@ -21367,14 +21546,136 @@ function handleCardInterrupt(
 }
 
 /**
+ * Sessions whose active run was stopped because its only input was recalled
+ * (prod P2-4). The run consumes the entry on its next output: it settles the
+ * withdrawn input (Turn cancelled, cursor committed), removes any provider
+ * card it created, and drops the interrupted query's trailing stream output
+ * so no card is created after the stop.
+ */
+const recallStoppedSessions = new Map<
+  string,
+  { messageId: string; at: number }
+>();
+const RECALL_STOP_TTL_MS = 10 * 60 * 1000;
+
+/**
+ * Consume the recall stop of `logicalJid`. Only a stop for an input of the
+ * calling run applies: a stale entry (its run ended without another output)
+ * must never settle a later run's unrelated input.
+ */
+function takeRecallStop(
+  logicalJid: string,
+  ownsInput: (messageId: string) => boolean,
+): { messageId: string; at: number } | undefined {
+  const stop = recallStoppedSessions.get(logicalJid);
+  if (!stop) return undefined;
+  recallStoppedSessions.delete(logicalJid);
+  if (Date.now() - stop.at > RECALL_STOP_TTL_MS) return undefined;
+  return ownsInput(stop.messageId) ? stop : undefined;
+}
+
+/**
+ * Close a Turn whose input an explicit interrupt (`/break`, stop button,
+ * recall, steer) already consumed. Without this the Turn stayed `running`
+ * with heartbeats for as long as the warm runner lived, and a restart could
+ * fence or replay the consumed input. Uncertain/refused deliveries keep the
+ * normal settlement path, which owns their notices.
+ */
+function settleInterruptedChannelTurn(
+  runtimes: Map<string, ChannelTurnRuntime>,
+  inputTurnId: string,
+  reason: string,
+): boolean {
+  const runtime = runtimes.get(inputTurnId);
+  if (!runtime) return false;
+  if (
+    getUncertainChannelOutboxForTurn(runtime.runId) ||
+    getFailedChannelOutboxForTurn(runtime.runId)
+  ) {
+    return false;
+  }
+  const settled = runtime.cancel(reason);
+  if (settled) {
+    runtime.dispose();
+    runtimes.delete(inputTurnId);
+  } else {
+    logger.warn(
+      { runId: runtime.runId, inputTurnId, reason },
+      'Interrupted channel turn could not be settled',
+    );
+  }
+  return settled;
+}
+
+/**
+ * A recall stop leaves no framework artifact: terminalize the card without
+ * a "已停止" note (awaiting an in-flight creation, so a card created in the
+ * race is included), then delete every card message it published through
+ * the Bot's own Feishu `recall_message` capability.
+ */
+async function discardRecalledStreamingCard(input: {
+  session: StreamingSession;
+  transportJid: string | null | undefined;
+  logicalJid: string;
+  recalledMessageId: string;
+}): Promise<void> {
+  try {
+    await input.session.abort();
+  } catch (err) {
+    logger.debug(
+      { err, logicalJid: input.logicalJid },
+      'Recalled-input streaming card abort failed',
+    );
+  }
+  input.session.dispose();
+  const messageIds =
+    (
+      input.session as { getAllMessageIds?: () => string[] }
+    ).getAllMessageIds?.() ?? [];
+  if (
+    messageIds.length === 0 ||
+    !input.transportJid ||
+    getChannelType(input.transportJid) !== 'feishu'
+  ) {
+    return;
+  }
+  const context = getMessageChannelTurnContext(
+    input.logicalJid,
+    input.recalledMessageId,
+  );
+  if (!context) {
+    logger.warn(
+      { logicalJid: input.logicalJid, messageIds },
+      'Recalled-input card left in place: no channel context to delete it',
+    );
+    return;
+  }
+  for (const messageId of messageIds) {
+    try {
+      await imManager.executeFeishuCapability(input.transportJid, context, {
+        operation: 'recall_message',
+        params: { messageId },
+      });
+    } catch (err) {
+      logger.warn(
+        { err, logicalJid: input.logicalJid, messageId },
+        'Failed to delete the card of a recalled input',
+      );
+    }
+  }
+}
+
+/**
  * Stop the exact active query of a Session the way `/break` does: interrupt
  * the runner, release its processing indicators and terminalize the live
  * card. The interrupted input is consumed (its cursor commits) and its Turn
- * closes as cancelled; nothing is replied by the framework here.
+ * closes as cancelled; nothing is replied by the framework here. A recall
+ * stop terminalizes the card silently (no "已停止" note).
  */
 function interruptActiveSessionRun(
   targetJid: string,
   label: string,
+  options: { silentCard?: boolean } = {},
 ): { activeRunId: string | null; interrupted: boolean } {
   const activeRunId = queue.getActiveQueryId(targetJid) ?? null;
   const interrupted = activeRunId
@@ -21384,12 +21685,14 @@ function interruptActiveSessionRun(
     void clearTrackedProcessingIndicators(targetJid);
     const session = getStreamingSession(targetJid);
     if (session?.isActive()) {
-      void session.abort('已停止').catch((err) => {
-        logger.debug(
-          { err, targetJid, label },
-          'Failed to abort streaming card after session interrupt',
-        );
-      });
+      void session
+        .abort(options.silentCard ? undefined : '已停止')
+        .catch((err) => {
+          logger.debug(
+            { err, targetJid, label },
+            'Failed to abort streaming card after session interrupt',
+          );
+        });
     }
   }
   return { activeRunId, interrupted };
@@ -21546,8 +21849,15 @@ function handleChannelMessageRecalled(
       withdrawBeforeExecution(row);
       continue;
     }
+    // The input is part of the executing prompt. Record the withdrawal
+    // durably so no restart or recovery path ever re-runs it.
+    cancelPendingInboundMessage(logicalJid, messageId);
     if (pending.length === 1) {
-      const { interrupted } = interruptActiveSessionRun(logicalJid, 'recall');
+      recallStoppedSessions.set(logicalJid, { messageId, at: Date.now() });
+      const { interrupted } = interruptActiveSessionRun(logicalJid, 'recall', {
+        silentCard: true,
+      });
+      if (!interrupted) recallStoppedSessions.delete(logicalJid);
       logger.info(
         { chatJid, logicalJid, messageId, activeRunId, interrupted },
         'Recalled message was the only executing input; stopped its run',
@@ -21619,6 +21929,90 @@ function checkRuntimeControlOwner(
   }
   const ownerCheck = checkImOwnerCommand(cmd, group, senderImId);
   return ownerCheck.ok ? null : `⚠️ ${ownerCheck.reason}`;
+}
+
+/**
+ * The explicit-stop note a card shows after `/break`, the stop button or an
+ * interrupted run (`abort('已停止')`).
+ */
+const EXPLICIT_STOP_CARD_MARKER = /\*已停止\*\s*$/;
+
+/**
+ * Startup repair for Turns whose input was withdrawn while their run was
+ * alive, before recovery can fence or replay them:
+ *  - the input was recalled (Inbox `ignored/recalled`) or withdrawn
+ *    (message `cancelled`): the Turn is cancelled and the message stays
+ *    excluded from replay;
+ *  - the run was explicitly stopped (its card ended `aborted` with the stop
+ *    note) without any delivered or uncertain output: the stop consumed the
+ *    batch, so the Turn is cancelled and the Session cursor is advanced past
+ *    the input.
+ * Runs once, before startup reconciliation and message recovery; no Runner
+ * exists yet, so a still-valid lease belongs to the dead process.
+ */
+function repairWithdrawnChannelTurnsOnStartup(): number {
+  let repaired = 0;
+  for (const turn of listNonterminalChannelTurnRuns()) {
+    const inputId = turn.correlationId;
+    if (!inputId) continue;
+    try {
+      const conversationJid = channelConversationJid(turn.sourceJid);
+      const rows = listInboundMessagesById(inputId).filter(
+        (row) =>
+          !!row.source_jid &&
+          channelConversationJid(row.source_jid) === conversationJid,
+      );
+      const inbox = getChannelInboxByExternalMessage({
+        provider: turn.provider,
+        accountId: turn.accountId,
+        externalMessageId: inputId,
+      });
+      const recalled =
+        inbox?.status === 'ignored' && inbox.error === 'recalled';
+      const withdrawn = rows.some((row) => row.delivery_status === 'cancelled');
+      if (getUncertainChannelOutboxForTurn(turn.id)) continue;
+      const card = getPrimaryStreamingCardForTurn(turn.id);
+      const explicitlyStopped =
+        card?.status === 'aborted' &&
+        EXPLICIT_STOP_CARD_MARKER.test(
+          streamingCardSnapshotText(card.snapshot),
+        ) &&
+        !getDeliveredChannelOutboxForTurn(turn.id);
+      if (!recalled && !withdrawn && !explicitlyStopped) continue;
+      const reason =
+        recalled || withdrawn
+          ? 'Startup repair: input recalled by sender'
+          : 'Startup repair: input consumed by an explicit stop';
+      if (!cancelChannelTurnRunById(turn.id, reason)) continue;
+      repaired += 1;
+      for (const row of rows) {
+        if (recalled || withdrawn) {
+          cancelPendingInboundMessage(row.chat_jid, inputId);
+          continue;
+        }
+        const cursor = getMessageCursor(row.chat_jid, inputId);
+        if (cursor) advanceCursors(row.chat_jid, cursor);
+      }
+      logger.info(
+        {
+          runId: turn.id,
+          inputId,
+          status: turn.status,
+          recalled,
+          withdrawn,
+          explicitlyStopped,
+          logicalJids: rows.map((row) => row.chat_jid),
+        },
+        'Repaired a channel turn whose input was withdrawn before restart',
+      );
+    } catch (err) {
+      logger.warn(
+        { err, runId: turn.id },
+        'Startup repair of a withdrawn channel turn failed',
+      );
+    }
+  }
+  return repaired;
 }
 
 /**
@@ -24391,6 +24785,7 @@ async function main(): Promise<void> {
   // invalidate expired execution fences -> only then resume Agent work.
   // Starting the message loop earlier can create a second active card for the
   // same logical turn while the provider still shows the old one as running.
+  repairWithdrawnChannelTurnsOnStartup();
   await reconcileChannelReliabilityOnStartup(imManager);
   const outboxRecovery = reconcileChannelOutboxDeliveries();
   if (outboxRecovery.uncertain > 0) {

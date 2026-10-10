@@ -125,6 +125,7 @@ function agentRunEnd(streamedText: string) {
     activeChannelTurnActivators: new Map(),
     activateAgentChannelTurn: vi.fn(),
     ipcWatcherManager: undefined,
+    recallStoppedSessions: new Map(),
   };
   const harness = createRuntimeSourceHarness(globals);
   harness.install('isCursorCommitted', 'processAgentConversation');

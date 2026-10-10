@@ -554,6 +554,7 @@ function recalledLane(
   };
   const harness = createRuntimeSourceHarness(globals);
   for (const name of [
+    'recallStoppedSessions',
     'interruptActiveSessionRun',
     'channelTurnScopeForInput',
     'closeRetryWaitTurnsForWithdrawnInputs',
@@ -599,7 +600,17 @@ describe('a recalled Feishu message is withdrawn (prod P2-4)', () => {
       'web:ws#agent:s1',
       'run-1',
     );
-    expect(l.session.abort).toHaveBeenCalled();
+    // The run is told it was a recall stop (it settles the input and leaves
+    // no card), the card is closed without a "已停止" note, and the input is
+    // durably withdrawn so a restart never re-runs it.
+    expect(
+      l.globals.recallStoppedSessions.get('web:ws#agent:s1')?.messageId,
+    ).toBe('om_recalled');
+    expect(l.session.abort).toHaveBeenCalledWith(undefined);
+    expect(l.globals.cancelPendingInboundMessage).toHaveBeenCalledWith(
+      'web:ws#agent:s1',
+      'om_recalled',
+    );
   });
 
   test('one input of a larger executing batch is left running', () => {
@@ -609,6 +620,12 @@ describe('a recalled Feishu message is withdrawn (prod P2-4)', () => {
     });
     l.recalled(chat, 'om_recalled');
     expect(l.queue.interruptQuery).not.toHaveBeenCalled();
+    expect(l.globals.recallStoppedSessions.size).toBe(0);
+    // Still withdrawn durably: a restart must not replay it.
+    expect(l.globals.cancelPendingInboundMessage).toHaveBeenCalledWith(
+      'web:ws#agent:s1',
+      'om_recalled',
+    );
   });
 
   test('an input not picked up yet is cancelled before it runs', () => {

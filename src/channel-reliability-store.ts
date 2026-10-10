@@ -1276,6 +1276,75 @@ export function cancelRetryWaitChannelTurnsForInputs(input: {
   })();
 }
 
+/** Every Turn that is not terminal yet, oldest first (startup repair). */
+export function listNonterminalChannelTurnRuns(
+  limit = 5_000,
+): ChannelTurnRun[] {
+  const bounded = Math.min(Math.max(Math.trunc(limit) || 0, 1), 50_000);
+  const rows = requireDatabase()
+    .prepare(
+      `SELECT * FROM turn_runs
+       WHERE status IN ('queued','running','finalizing','waiting_user','retry_wait')
+       ORDER BY created_at, id LIMIT ?`,
+    )
+    .all(bounded) as TurnRow[];
+  return rows.map(mapTurn);
+}
+
+/**
+ * Close a Turn whose input was withdrawn (recalled, or consumed by an
+ * explicit stop) without holding its lease. The lease token is bumped so a
+ * live owner, if any, loses its fence instead of publishing for it.
+ */
+export function cancelChannelTurnRunById(
+  id: string,
+  reason: string,
+  nowInput?: Date | string,
+): boolean {
+  const now = isoNow(nowInput);
+  const changed = requireDatabase()
+    .prepare(
+      `UPDATE turn_runs
+       SET status = 'cancelled', completed_at = ?, updated_at = ?, error = ?,
+           lease_owner = NULL, lease_expires_at = NULL,
+           lease_token = lease_token + 1, revision = revision + 1
+       WHERE id = ?
+         AND status IN ('queued','running','finalizing','waiting_user','retry_wait')`,
+    )
+    .run(now, now, reason, id);
+  return changed.changes === 1;
+}
+
+/** The Turn's primary (first reserved) streaming card, if any. */
+export function getPrimaryStreamingCardForTurn(
+  turnRunId: string,
+): StreamingCardRecord | undefined {
+  const row = requireDatabase()
+    .prepare(
+      `SELECT * FROM streaming_cards WHERE turn_run_id = ?
+       ORDER BY created_at, id LIMIT 1`,
+    )
+    .get(turnRunId) as CardRow | undefined;
+  return row ? mapCard(row) : undefined;
+}
+
+/** The durable Inbox receipt of one provider message. */
+export function getChannelInboxByExternalMessage(input: {
+  provider: string;
+  accountId: string;
+  externalMessageId: string;
+}): ChannelInboxItem | undefined {
+  const row = requireDatabase()
+    .prepare(
+      `SELECT * FROM channel_inbox
+       WHERE provider = ? AND account_id = ? AND external_message_id = ?`,
+    )
+    .get(input.provider, input.accountId, input.externalMessageId) as
+    | InboxRow
+    | undefined;
+  return row ? mapInbox(row) : undefined;
+}
+
 /**
  * Note on a card record that its refused body was delivered as static
  * messages, so crash recovery writes only a notice instead of the body.

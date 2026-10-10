@@ -176,6 +176,10 @@ function makeOutputRuntime(lane: 'main' | 'session') {
     completeChannelRuntimesForOutput: async () => true,
     completeAgentChannelRuntimesForOutput: async () => true,
     commitCursor,
+    // No recall stop in these routing fixtures.
+    takeRecallStop: () => undefined,
+    mainRecallSuppression: false,
+    agentRecallSuppression: false,
   };
   const harness = createRuntimeSourceHarness(globals);
   harness.install('sendMessageWithOutcome');
