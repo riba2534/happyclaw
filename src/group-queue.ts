@@ -1288,6 +1288,10 @@ export class GroupQueue {
     ) {
       return false;
     }
+    // A reservation released before announceReservedQuery was never shown
+    // to clients: publishing its terminal only sends a run_finished for a
+    // runId no client knows.
+    const wasAnnounced = state.announcedQueryId === expectedQueryId;
     state.queryInFlight = false;
     state.ipcOwedSinceAt = null;
     state.queryId = null;
@@ -1295,11 +1299,13 @@ export class GroupQueue {
     state.announcedQueryId = null;
     state.pendingInterruptQueryId = null;
     state.currentQueryCoveredMessageIds = new Set();
-    this.announceQueryFinish(
-      groupJid,
-      expectedQueryId,
-      notifyIdle ? 'completed' : 'released',
-    );
+    if (wasAnnounced) {
+      this.announceQueryFinish(
+        groupJid,
+        expectedQueryId,
+        notifyIdle ? 'completed' : 'released',
+      );
+    }
     if (notifyIdle) {
       try {
         this.onQueryIdleFn?.(groupJid, expectedQueryId);

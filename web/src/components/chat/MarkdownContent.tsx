@@ -1,6 +1,8 @@
 import React, {
+  createContext,
   lazy,
   Suspense,
+  useContext,
   useEffect,
   useMemo,
   useRef,
@@ -78,12 +80,53 @@ const componentsCache = new Map<string, MarkdownComponents>();
  * sessions remounts the transcript, and every visible reply went through
  * micromark, mdast, hast and highlight.js again although its text had not
  * changed; reopening a recently viewed session now reuses those trees.
- * Streamed text changes on every update and is never cached.
+ * Streamed text changes on every update and is never cached. Replies render
+ * block by block, so a finished reply reuses the trees of the blocks its
+ * stream already rendered; the cache is bounded by entries and total text.
  */
-const RENDERED_CACHE_LIMIT = 100;
-/** Trees keep their hast nodes; very long replies are re-rendered instead. */
+const RENDERED_CACHE_LIMIT = 600;
+/** Total characters of cached content (trees keep their hast nodes). */
+const RENDERED_CACHE_BUDGET_CHARS = 1_000_000;
+/** Trees keep their hast nodes; very long documents are re-rendered instead. */
 const RENDERED_CACHE_MAX_CHARS = 20_000;
-const renderedCache = new Map<string, React.ReactElement>();
+const renderedCache = new Map<
+  string,
+  { element: React.ReactElement; size: number }
+>();
+let renderedCacheChars = 0;
+
+function rememberRendered(
+  key: string,
+  size: number,
+  render: () => React.ReactElement,
+): React.ReactElement {
+  const hit = renderedCache.get(key);
+  if (hit) {
+    renderedCache.delete(key);
+    renderedCache.set(key, hit);
+    return hit.element;
+  }
+  const element = render();
+  renderedCache.set(key, { element, size });
+  renderedCacheChars += size;
+  while (
+    renderedCache.size > RENDERED_CACHE_LIMIT ||
+    renderedCacheChars > RENDERED_CACHE_BUDGET_CHARS
+  ) {
+    const oldest = renderedCache.keys().next();
+    if (oldest.done) break;
+    renderedCacheChars -= renderedCache.get(oldest.value)?.size ?? 0;
+    renderedCache.delete(oldest.value);
+  }
+  return element;
+}
+
+/**
+ * Whether the surrounding Markdown is still streaming. Read through context
+ * so element renderers don't depend on it: a block closing kept its DOM (and
+ * the reader's selection and copy-button state) instead of rebuilding it.
+ */
+const MarkdownStreamingContext = createContext(false);
 
 /** Inline raster and SVG images; SVG in `<img>` cannot run script. */
 const DATA_IMAGE_URL =
@@ -285,12 +328,11 @@ const CODE_LANGUAGE = /language-([\w+#.-]+)/;
 function CodeBlock({
   className,
   children,
-  streaming,
 }: {
   className?: string;
   children?: React.ReactNode;
-  streaming: boolean;
 }) {
+  const streaming = useContext(MarkdownStreamingContext);
   const { copied, copy } = useCopyFeedback();
   const lang = CODE_LANGUAGE.exec(className || '')?.[1];
   const codeString = extractText(children).replace(/\n$/, '');
@@ -397,13 +439,12 @@ function sharedMarkdownComponents(
   variant: 'chat' | 'docs',
   groupJid: string | undefined,
   eagerImages: boolean,
-  streaming: boolean,
 ): MarkdownComponents {
   return rememberRecent(
     componentsCache,
     COMPONENTS_CACHE_LIMIT,
-    [variant, groupJid ?? '', eagerImages, streaming].join('\0'),
-    () => markdownComponents(variant, groupJid, eagerImages, streaming),
+    [variant, groupJid ?? '', eagerImages].join('\0'),
+    () => markdownComponents(variant, groupJid, eagerImages),
   );
 }
 
@@ -418,7 +459,6 @@ function markdownComponents(
   variant: 'chat' | 'docs',
   groupJid: string | undefined,
   eagerImages: boolean,
-  streaming: boolean,
 ): MarkdownComponents {
   const tableTextClass = variant === 'chat' ? 'text-[0.95em]' : 'text-sm';
   const inlineCodeClass =
@@ -431,7 +471,7 @@ function markdownComponents(
     pre: ({ children }) => {
       const code = codeElementProps(children);
       return (
-        <CodeBlock className={code?.className} streaming={streaming}>
+        <CodeBlock className={code?.className}>
           {code ? code.children : children}
         </CodeBlock>
       );
@@ -649,8 +689,8 @@ export function MarkdownContent({
       ? 'text-body-lg leading-[1.7] text-foreground'
       : 'text-sm leading-6 text-foreground';
   const components = useMemo(
-    () => sharedMarkdownComponents(variant, groupJid, eagerImages, streaming),
-    [variant, groupJid, eagerImages, streaming],
+    () => sharedMarkdownComponents(variant, groupJid, eagerImages),
+    [variant, groupJid, eagerImages],
   );
   const rendered = useMemo(() => {
     // react-markdown's sync renderer is a plain function of its options.
@@ -664,10 +704,9 @@ export function MarkdownContent({
         children: content,
       });
     if (streaming || content.length > RENDERED_CACHE_MAX_CHARS) return render();
-    return rememberRecent(
-      renderedCache,
-      RENDERED_CACHE_LIMIT,
+    return rememberRendered(
       [pipeline, variant, groupJid ?? '', eagerImages, content].join('\0'),
+      content.length,
       render,
     );
   }, [
@@ -694,7 +733,9 @@ export function MarkdownContent({
         trimEdges && '[&>*:first-child]:mt-0 [&>*:last-child]:mb-0',
       )}
     >
-      {rendered}
+      <MarkdownStreamingContext.Provider value={streaming}>
+        {rendered}
+      </MarkdownStreamingContext.Provider>
     </div>
   );
 }

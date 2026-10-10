@@ -18,6 +18,7 @@ import { SHORTCUTS, useShortcut } from '@/lib/shortcuts';
 import { useShellStore } from '../../stores/shell';
 import { useNewConversation } from '../../hooks/useNewConversation';
 import { CommandPaletteHost } from '../command/CommandPaletteHost';
+import { useGlobalStreamSubscriptions } from '../../hooks/useStreamSubscriptions';
 
 export function AppLayout() {
   const location = useLocation();
@@ -105,6 +106,10 @@ export function AppLayout() {
       unsubSnapshot();
     };
   }, []);
+
+  // Stream deltas and reconnect snapshots for every workspace, so switching
+  // away mid-reply and back never leaves a gap in the streamed text.
+  useGlobalStreamSubscriptions();
 
   // Message deletion is a durable server mutation. Apply it globally so a
   // second tab/device cannot retain a deleted main or Runtime Session bubble.

@@ -32,7 +32,8 @@ describe('dynamic Workflow product contract', () => {
     );
 
     expect(bubble).toContain('<WorkflowRunCard');
-    expect(bubble).toContain('<MarkdownRenderer');
+    // Replies render through FinalMarkdown (block-wise, MarkdownRenderer per block).
+    expect(bubble).toContain('<FinalMarkdown');
     expect(card).toContain('动态工作流');
     expect(card).toContain('工具调用');
     expect(card).toContain('任务摘要');

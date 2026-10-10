@@ -19,10 +19,11 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { IconButton } from '../common/IconButton';
 import { cn } from '@/lib/utils';
-import { Message } from '../../stores/chat';
+import type { Message, StreamingTraceEvent } from '../../stores/chat';
 import { useAuthStore } from '../../stores/auth';
 import { EmojiAvatar } from '../common/EmojiAvatar';
-import { MarkdownRenderer } from './MarkdownRenderer';
+import { FinalMarkdown } from './StreamingMarkdown';
+import { PermissionAlert, TracePanel } from './ExecutionTrace';
 import { MessageContextMenu } from './MessageContextMenu';
 import { ImageLightbox } from './ImageLightbox';
 import { useDisplayMode } from '../../hooks/useDisplayMode';
@@ -53,6 +54,8 @@ interface MessageBubbleProps {
   showTime: boolean;
   thinkingContent?: string;
   thinkingDurationMs?: number;
+  /** Tools and other steps the reply streamed, kept collapsed. */
+  traceEvents?: StreamingTraceEvent[];
   agentName?: string;
   agentAvatarUrl?: string | null;
   agentAvatarEmoji?: string | null;
@@ -113,8 +116,9 @@ function ReasoningBlock({
   durationMs?: number;
 }) {
   const [expanded, setExpanded] = useState(false);
+  // Under a second reads as noise ("已思考 0.2 秒").
   const label =
-    durationMs != null && durationMs > 0
+    durationMs != null && durationMs >= 1000
       ? formatThinkingDuration(durationMs)
       : '思考过程';
 
@@ -244,6 +248,7 @@ export const MessageBubble = memo(
     showTime,
     thinkingContent,
     thinkingDurationMs,
+    traceEvents,
     agentName,
     agentAvatarUrl,
     agentAvatarEmoji,
@@ -316,6 +321,15 @@ export const MessageBubble = memo(
 
     // Check if content is empty (only whitespace) and we have images
     const hasOnlyImages = !presentedContent.trim() && images.length > 0;
+    // Same base JID the stream rendered with, so its blocks' rendered trees
+    // are reused (links resolve against the workspace either way).
+    const markdownJid = message.chat_jid.replace(/#agent:.*$/, '');
+    const executionTrace = traceEvents && traceEvents.length > 0 && (
+      <>
+        <PermissionAlert traceEvents={traceEvents} />
+        <TracePanel traceEvents={traceEvents} taskCount={0} />
+      </>
+    );
 
     const handleCopy = async () => {
       try {
@@ -561,6 +575,8 @@ export const MessageBubble = memo(
             />
           )}
 
+          {isAI && executionTrace}
+
           {/* Dynamic Workflow */}
           {completedWorkflowRuns?.map((run) => (
             <WorkflowRunCard key={run.taskId} run={run} />
@@ -572,9 +588,9 @@ export const MessageBubble = memo(
           {!hasOnlyImages && (
             <div className="min-w-0 overflow-hidden [&>div>*:first-child]:!mt-0">
               {isAI ? (
-                <MarkdownRenderer
+                <FinalMarkdown
                   content={presentedContent}
-                  groupJid={message.chat_jid}
+                  groupJid={markdownJid}
                   variant="chat"
                 />
               ) : (
@@ -673,6 +689,8 @@ export const MessageBubble = memo(
             />
           )}
 
+          {executionTrace}
+
           {completedWorkflowRuns?.map((run) => (
             <WorkflowRunCard key={run.taskId} run={run} />
           ))}
@@ -681,9 +699,9 @@ export const MessageBubble = memo(
 
           {!hasOnlyImages && (
             <div className="max-w-none overflow-hidden">
-              <MarkdownRenderer
+              <FinalMarkdown
                 content={presentedContent}
-                groupJid={message.chat_jid}
+                groupJid={markdownJid}
                 variant="chat"
               />
             </div>
@@ -745,6 +763,7 @@ export const MessageBubble = memo(
     prev.showTime === next.showTime &&
     prev.thinkingContent === next.thinkingContent &&
     prev.thinkingDurationMs === next.thinkingDurationMs &&
+    prev.traceEvents === next.traceEvents &&
     prev.agentName === next.agentName &&
     prev.agentAvatarUrl === next.agentAvatarUrl &&
     prev.agentAvatarEmoji === next.agentAvatarEmoji &&

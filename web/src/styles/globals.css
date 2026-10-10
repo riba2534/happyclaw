@@ -565,6 +565,38 @@ body {
   animation-timing-function: steps(40);
 }
 
+/* A quiet dot after the last streamed text while a reply is being written
+ * (StreamingMarkdown `caret`): the text itself shows where the reply goes on,
+ * not only the status row. Pseudo-element, so it never enters a copy. */
+[data-streaming-caret='true']
+  > :last-child
+  > :is(p, h1, h2, h3, h4, h5, h6):last-child::after,
+[data-streaming-caret='true']
+  > :last-child
+  > [data-markdown-root]
+  > :is(p, h1, h2, h3, h4, h5, h6):last-child::after,
+[data-streaming-caret='true']
+  > :last-child
+  > :is(ul, ol):last-child
+  > li:last-child::after {
+  content: '';
+  display: inline-block;
+  width: 0.5em;
+  height: 0.5em;
+  margin-left: 0.3em;
+  border-radius: 9999px;
+  background: currentColor;
+  vertical-align: 0.05em;
+  opacity: 0.45;
+  animation: hc-caret-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes hc-caret-pulse {
+  50% {
+    opacity: 0.15;
+  }
+}
+
 /* Native scrollbar styling is deliberately scoped to the chat context panes.
  * Mobile engines may still hide their overlay scrollbar while idle; those
  * panes render an in-flow edge hint instead of changing every scroller in the

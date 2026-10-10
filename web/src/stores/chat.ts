@@ -231,10 +231,23 @@ export interface StreamingState {
   partialText: string;
   thinkingText: string;
   isThinking: boolean;
-  /** Wall-clock ms of the first thinking_delta in the current thinking burst. */
+  /**
+   * Wall-clock ms the current thinking burst began. A burst that arrives all
+   * at once after silent reasoning starts at the model request (`requesting`,
+   * a returned tool or the run start), not at the first delta received.
+   */
   thinkingStartedAt?: number;
-  /** Captured at the transition isThinking: true → false. Used to render "已思考 Xs". */
+  /** Thinking time of the finished bursts, summed. Renders "已思考 Xs". */
   thinkingDurationMs?: number;
+  /** When the model's current request began; the next burst starts there. */
+  phaseStartedAt?: number;
+  /** A tool returned and the model has not produced anything since. */
+  awaitingModel?: boolean;
+  /**
+   * The run ended (run_finished) and this frozen projection waits for the
+   * turn's final message, which replaces it in the same store update.
+   */
+  settling?: boolean;
   activeTools: Array<{
     toolName: string;
     toolUseId: string;
@@ -461,25 +474,111 @@ function retainThinkingCacheForMessages<V>(
   return capThinkingCache(next);
 }
 
-/** Record the moment thinking starts; resets on transition non-thinking → thinking. */
-function markThinkingStarted(prev: StreamingState, next: StreamingState): void {
-  if (!prev.isThinking) {
-    next.thinkingStartedAt = Date.now();
-    next.thinkingDurationMs = undefined;
-  } else if (prev.thinkingStartedAt == null) {
-    next.thinkingStartedAt = Date.now();
+/**
+ * Start a thinking burst on the transition non-thinking → thinking. Thinking
+ * often streams in one late burst after the model reasoned silently, so the
+ * burst starts when the model's request did (`phaseStartedAt`, or the run's
+ * start for the first burst) rather than when its first delta arrived.
+ */
+function markThinkingStarted(
+  prev: StreamingState,
+  next: StreamingState,
+  runStartedAt?: number,
+): void {
+  if (!prev.isThinking || prev.thinkingStartedAt == null) {
+    const now = Date.now();
+    const requestStart =
+      prev.phaseStartedAt ??
+      (prev.thinkingDurationMs == null && !prev.partialText
+        ? runStartedAt
+        : undefined);
+    next.thinkingStartedAt =
+      requestStart != null && requestStart <= now ? requestStart : now;
+  }
+  next.phaseStartedAt = undefined;
+  next.awaitingModel = false;
+}
+
+/** Add the finished burst to the reply's thinking time (isThinking:true → false). */
+function markThinkingEnded(prev: StreamingState, next: StreamingState): void {
+  if (prev.isThinking && prev.thinkingStartedAt != null) {
+    next.thinkingDurationMs =
+      (prev.thinkingDurationMs ?? 0) +
+      Math.max(0, Date.now() - prev.thinkingStartedAt);
+    next.thinkingStartedAt = undefined;
   }
 }
 
-/** Record the elapsed thinking duration on the transition isThinking:true → false. */
-function markThinkingEnded(prev: StreamingState, next: StreamingState): void {
-  if (
-    prev.isThinking &&
-    prev.thinkingStartedAt != null &&
-    next.thinkingDurationMs == null
-  ) {
-    next.thinkingDurationMs = Date.now() - prev.thinkingStartedAt;
+/** Thinking time so far, including a burst still in progress. */
+function totalThinkingMs(state: StreamingState): number | undefined {
+  if (state.isThinking && state.thinkingStartedAt != null) {
+    return (
+      (state.thinkingDurationMs ?? 0) +
+      Math.max(0, Date.now() - state.thinkingStartedAt)
+    );
   }
+  return state.thinkingDurationMs;
+}
+
+/** Status texts that describe the run's phase rather than news for the reader. */
+const PHASE_STATUS_TEXTS = new Set(['requesting', '正在深入分析…']);
+
+function isPhaseStatus(statusText?: string | null): boolean {
+  return !!statusText && PHASE_STATUS_TEXTS.has(statusText);
+}
+
+function runStartedAtMs(
+  activeRuns: ClientActiveRuns,
+  runtimeJid: string,
+): number | undefined {
+  const startedAt = activeRuns[runtimeJid]?.startedAt;
+  const ms = startedAt ? Date.parse(startedAt) : Number.NaN;
+  return Number.isFinite(ms) ? ms : undefined;
+}
+
+/**
+ * Apply one rAF batch of text/thinking deltas in arrival order: a batch that
+ * ends in text must end the thinking burst even when thinking came first
+ * (background tabs pause rAF, so whole phases land in one batch).
+ */
+function applyDeltaChunks(
+  prev: StreamingState,
+  chunks: DeltaChunk[],
+  runStartedAt: number | undefined,
+): StreamingState {
+  let state = prev;
+  let index = 0;
+  while (index < chunks.length) {
+    const thinking = chunks[index].thinking;
+    let text = '';
+    while (index < chunks.length && chunks[index].thinking === thinking) {
+      text += chunks[index].text;
+      index += 1;
+    }
+    if (!text) continue;
+    const next = { ...state };
+    if (thinking) {
+      const combined = state.thinkingText + text;
+      next.thinkingText =
+        combined.length > MAX_THINKING_TEXT
+          ? combined.slice(-MAX_THINKING_TEXT)
+          : combined;
+      next.isThinking = true;
+      markThinkingStarted(state, next, runStartedAt);
+    } else {
+      next.partialText = capStreamingText(
+        state.partialText + text,
+        MAX_STREAMING_TEXT,
+      );
+      next.isThinking = false;
+      next.awaitingModel = false;
+      next.phaseStartedAt = undefined;
+      if (isPhaseStatus(state.systemStatus)) next.systemStatus = null;
+      markThinkingEnded(state, next);
+    }
+    state = next;
+  }
+  return state;
 }
 
 interface PendingMessageUsage {
@@ -580,6 +679,13 @@ interface ChatState {
   thinkingCache: Record<string, string>;
   /** Per-message-id duration in ms; rendered as "已思考 Xs" inside ReasoningBlock. */
   thinkingDurationCache: Record<string, number>;
+  /**
+   * The execution trace a finished reply streamed (tools, hooks, tasks), by
+   * final message id, so the reply keeps its collapsed "执行详情".
+   */
+  traceCache: Record<string, StreamingTraceEvent[]>;
+  /** Stop requested for a runtime JID (ms); the run shows "正在停止…". */
+  stopRequests: Record<string, number>;
   pendingThinking: Record<string, string>;
   pendingThinkingDuration: Record<string, number>;
   /** Per-group lock: true while clearHistory is in-flight, prevents race re-injection */
@@ -860,21 +966,96 @@ function freezeStreamingState(
   // as soon as it arrives.
   const hasData = state.partialText || state.thinkingText;
   if (!hasData) return null;
-  // Preserve any in-flight thinking duration so the interrupted card still shows "已思考 Xs".
-  const thinkingDurationMs =
-    state.thinkingDurationMs ??
-    (state.isThinking && state.thinkingStartedAt != null
-      ? Date.now() - state.thinkingStartedAt
-      : undefined);
   return {
     ...state,
     isThinking: false,
     activeTools: [],
     activeHook: null,
     systemStatus: null,
+    awaitingModel: false,
     interrupted: true,
-    thinkingDurationMs,
+    // Keep an in-flight burst so the interrupted card still shows "已思考 Xs".
+    thinkingDurationMs: totalThinkingMs(state),
+    thinkingStartedAt: undefined,
   };
+}
+
+/**
+ * Freeze a finished run's projection until its final message arrives. The
+ * server announces run_finished before it broadcasts the final message;
+ * dropping the card on run_finished blanked the reply, moved the reader and
+ * lost the thinking and execution details. Null when nothing was shown.
+ */
+function settleStreamingState(
+  state: StreamingState | undefined,
+): StreamingState | null {
+  if (!state) return null;
+  if (state.settling) return state;
+  if (!state.partialText && !state.thinkingText) return null;
+  return {
+    ...state,
+    isThinking: false,
+    activeTools: [],
+    activeHook: null,
+    systemStatus: null,
+    awaitingModel: false,
+    thinkingDurationMs: totalThinkingMs(state),
+    thinkingStartedAt: undefined,
+    settling: true,
+  };
+}
+
+/** How long a settled card waits for its final message before re-syncing. */
+const SETTLE_FALLBACK_MS = 1500;
+/** Trace rows kept per finished reply (the panel shows 20 per group). */
+const MAX_CACHED_TRACE_EVENTS = 60;
+
+/**
+ * Thinking and execution details of a finished reply, keyed by its final
+ * message id. Only taken from a projection that belongs to the finished
+ * reply: a settled or interrupted card, or a live one with no newer run.
+ */
+function finalizedReplyCaches(
+  s: ChatState,
+  state: StreamingState | undefined,
+  messageId: string,
+  fallbackThinking?: string,
+  fallbackDuration?: number,
+): Partial<ChatState> {
+  const thinkingText = state?.thinkingText || fallbackThinking;
+  const duration = state ? totalThinkingMs(state) : fallbackDuration;
+  const trace = (state?.traceEvents ?? []).filter(isUserVisibleTraceEvent);
+  return {
+    ...(thinkingText
+      ? {
+          thinkingCache: capThinkingCache({
+            ...s.thinkingCache,
+            [messageId]: thinkingText,
+          }),
+        }
+      : {}),
+    ...(thinkingText && duration != null
+      ? {
+          thinkingDurationCache: capThinkingCache({
+            ...s.thinkingDurationCache,
+            [messageId]: duration,
+          }),
+        }
+      : {}),
+    ...(trace.length > 0
+      ? {
+          traceCache: capThinkingCache({
+            ...s.traceCache,
+            [messageId]: trace.slice(-MAX_CACHED_TRACE_EVENTS),
+          }),
+        }
+      : {}),
+  };
+}
+
+/** The projection is a previous run's leftover, not the live run's. */
+function isFrozenProjection(state: StreamingState | undefined): boolean {
+  return !!state && (!!state.settling || !!state.interrupted);
 }
 
 /**
@@ -884,7 +1065,12 @@ function resolveStreamingPrev(
   current: StreamingState | undefined,
   event: StreamEvent,
 ): StreamingState {
-  if (current?.turnId && event.turnId && current.turnId !== event.turnId) {
+  // A settled card belongs to the finished run; events that pass the run
+  // fence afterwards come from a new run and start a fresh projection.
+  if (
+    current?.settling ||
+    (current?.turnId && event.turnId && current.turnId !== event.turnId)
+  ) {
     return {
       ...DEFAULT_STREAMING_STATE,
       turnId: event.turnId,
@@ -952,11 +1138,6 @@ const dbTaskAgentCleanupTimers = new Map<
   ReturnType<typeof setTimeout>
 >();
 
-// ─── Streaming state sessionStorage persistence ───────────────────────
-// Survives page refresh so StreamingDisplay can restore accumulated content.
-const STREAMING_STORAGE_KEY = 'hc_streaming';
-const streamingSaveTimers = new Map<string, ReturnType<typeof setTimeout>>();
-
 function isInternalLifecycleStatus(statusText?: string | null): boolean {
   return (
     statusText === 'requesting' ||
@@ -974,91 +1155,24 @@ function isUserVisibleTraceEvent(event: StreamingTraceEvent): boolean {
   return event.kind !== 'context' && event.title !== 'Agent Context';
 }
 
-/** Debounced save of streaming state to sessionStorage (trailing-edge, 500ms per jid). */
-function saveStreamingToSession(
-  chatJid: string,
-  state: StreamingState | undefined,
-): void {
-  // Cancel previous timer to always save the latest state (trailing-edge debounce)
-  const existing = streamingSaveTimers.get(chatJid);
-  if (existing) clearTimeout(existing);
-  streamingSaveTimers.set(
-    chatJid,
-    setTimeout(() => {
-      streamingSaveTimers.delete(chatJid);
-      try {
-        const stored = JSON.parse(
-          sessionStorage.getItem(STREAMING_STORAGE_KEY) || '{}',
-        );
-        if (
-          state &&
-          (state.partialText ||
-            state.thinkingText ||
-            state.activeTools.length > 0 ||
-            state.recentEvents.length > 0 ||
-            state.traceEvents.length > 0 ||
-            Object.keys(state.taskStates).length > 0)
-        ) {
-          stored[chatJid] = {
-            // Cap the snapshot at a block boundary so a restored reply
-            // doesn't start inside a code fence or table.
-            partialText: markdownTail(state.partialText, 4000),
-            thinkingText: state.thinkingText.slice(-MAX_THINKING_TEXT),
-            isThinking: state.isThinking,
-            activeTools: state.activeTools,
-            recentEvents: state.recentEvents
-              .filter(isUserVisibleTimelineEvent)
-              .slice(-10),
-            traceEvents: state.traceEvents
-              .filter(isUserVisibleTraceEvent)
-              .slice(-50),
-            taskStates: state.taskStates,
-            todos: state.todos,
-            systemStatus: state.systemStatus,
-            turnId: state.turnId,
-            ts: Date.now(),
-          };
-        } else {
-          delete stored[chatJid];
-        }
-        sessionStorage.setItem(STREAMING_STORAGE_KEY, JSON.stringify(stored));
-      } catch {
-        /* quota exceeded or SSR */
-      }
-    }, 500),
-  );
-}
-
-/** Remove streaming state from sessionStorage. */
-function clearStreamingFromSession(chatJid: string): void {
-  const timer = streamingSaveTimers.get(chatJid);
-  if (timer) {
-    clearTimeout(timer);
-    streamingSaveTimers.delete(chatJid);
-  }
-  try {
-    const stored = JSON.parse(
-      sessionStorage.getItem(STREAMING_STORAGE_KEY) || '{}',
-    );
-    delete stored[chatJid];
-    sessionStorage.setItem(STREAMING_STORAGE_KEY, JSON.stringify(stored));
-  } catch {
-    /* SSR */
-  }
-}
-
 /**
  * rAF batching for text_delta / thinking_delta events.
  * Instead of calling set() on every single delta (~50ms intervals), we accumulate
  * deltas and flush them once per animation frame (~16ms), merging multiple deltas
  * into a single state update.
  */
+interface DeltaChunk {
+  thinking: boolean;
+  text: string;
+}
 interface PendingDelta {
-  texts: string[];
-  thinkings: string[];
+  /** Text and thinking deltas in arrival order. */
+  chunks: DeltaChunk[];
   raf: number;
   runtimeJid: string;
   runId?: string;
+  /** Turn of every chunk; a delta of another turn flushes the batch first. */
+  turnId?: string;
 }
 const pendingDeltas = new Map<string, PendingDelta>();
 
@@ -1080,6 +1194,48 @@ function cancelPendingDeltaForRuntime(runtimeJid: string): void {
   }
 }
 
+/**
+ * Apply a runtime's buffered deltas now, while its run still owns them: a
+ * terminal event (run_finished, interrupted, the final message) must not
+ * drop the last frame of text or thinking still waiting for rAF.
+ */
+function flushPendingDeltaForRuntime(
+  runtimeJid: string,
+  set: (fn: (s: ChatState) => Partial<ChatState>) => void,
+): void {
+  const marker = '#agent:';
+  const markerIndex = runtimeJid.indexOf(marker);
+  const agentId =
+    markerIndex >= 0
+      ? runtimeJid.slice(markerIndex + marker.length)
+      : undefined;
+  const chatJid =
+    markerIndex >= 0 ? runtimeJid.slice(0, markerIndex) : runtimeJid;
+  const key = agentId ? `agent:${agentId}` : `main:${chatJid}`;
+  const entry = pendingDeltas.get(key);
+  if (!entry || entry.runtimeJid !== runtimeJid) return;
+  cancelAnimationFrame(entry.raf);
+  flushPendingDelta(key, chatJid, agentId, set);
+}
+
+/**
+ * The state a batch of deltas extends: the live projection of the same turn,
+ * or a fresh one for a new run (after a settled card) or a new turn.
+ */
+function deltaBase(
+  current: StreamingState | undefined,
+  turnId: string | undefined,
+): StreamingState {
+  if (
+    !current ||
+    current.settling ||
+    (current.turnId && turnId && current.turnId !== turnId)
+  ) {
+    return { ...DEFAULT_STREAMING_STATE, turnId };
+  }
+  return turnId && !current.turnId ? { ...current, turnId } : current;
+}
+
 function flushPendingDelta(
   key: string,
   chatJid: string,
@@ -1089,9 +1245,6 @@ function flushPendingDelta(
   const entry = pendingDeltas.get(key);
   if (!entry) return;
   pendingDeltas.delete(key);
-
-  const mergedText = entry.texts.join('');
-  const mergedThinking = entry.thinkings.join('');
 
   if (agentId) {
     set((s) => {
@@ -1104,25 +1257,17 @@ function flushPendingDelta(
       ) {
         return s;
       }
-      if (!s.agentStreaming[agentId] && s.agentWaiting[agentId] === false)
-        return s;
-      const prev = s.agentStreaming[agentId] || { ...DEFAULT_STREAMING_STATE };
-      const next = { ...prev };
-      if (mergedText) {
-        const combined = prev.partialText + mergedText;
-        next.partialText = capStreamingText(combined, MAX_STREAMING_TEXT);
-        next.isThinking = false;
-        markThinkingEnded(prev, next);
-      }
-      if (mergedThinking) {
-        const combined = prev.thinkingText + mergedThinking;
-        next.thinkingText =
-          combined.length > MAX_THINKING_TEXT
-            ? combined.slice(-MAX_THINKING_TEXT)
-            : combined;
-        next.isThinking = true;
-        markThinkingStarted(prev, next);
-      }
+      const current = s.agentStreaming[agentId];
+      if (!current && s.agentWaiting[agentId] === false) return s;
+      // A stopped card is frozen until its terminal message replaces it.
+      if (current?.interrupted && !current.settling) return s;
+      const prev = deltaBase(current, entry.turnId);
+      const next = applyDeltaChunks(
+        prev,
+        entry.chunks,
+        runStartedAtMs(s.activeRuns, entry.runtimeJid),
+      );
+      if (next === prev) return s;
       return { agentStreaming: { ...s.agentStreaming, [agentId]: next } };
     });
   } else {
@@ -1136,32 +1281,95 @@ function flushPendingDelta(
       ) {
         return s;
       }
-      if (!s.streaming[chatJid] && s.waiting[chatJid] === false) return s;
-      if (s.streaming[chatJid]?.interrupted) return s;
-      const prev = s.streaming[chatJid] || { ...DEFAULT_STREAMING_STATE };
-      const next = { ...prev };
-      if (mergedText) {
-        const combined = prev.partialText + mergedText;
-        next.partialText = capStreamingText(combined, MAX_STREAMING_TEXT);
-        next.isThinking = false;
-        markThinkingEnded(prev, next);
-      }
-      if (mergedThinking) {
-        const combined = prev.thinkingText + mergedThinking;
-        next.thinkingText =
-          combined.length > MAX_THINKING_TEXT
-            ? combined.slice(-MAX_THINKING_TEXT)
-            : combined;
-        next.isThinking = true;
-        markThinkingStarted(prev, next);
-      }
-      saveStreamingToSession(chatJid, next);
+      const current = s.streaming[chatJid];
+      if (!current && s.waiting[chatJid] === false) return s;
+      if (current?.interrupted && !current.settling) return s;
+      const prev = deltaBase(current, entry.turnId);
+      const next = applyDeltaChunks(
+        prev,
+        entry.chunks,
+        runStartedAtMs(s.activeRuns, entry.runtimeJid),
+      );
+      if (next === prev) return s;
       return {
         waiting: { ...s.waiting, [chatJid]: true },
         streaming: { ...s.streaming, [chatJid]: next },
       };
     });
   }
+}
+
+function withoutKey<V>(
+  record: Record<string, V>,
+  key: string,
+): Record<string, V> {
+  if (!(key in record)) return record;
+  const next = { ...record };
+  delete next[key];
+  return next;
+}
+
+/**
+ * A settled card normally gives way to its final message within ~60ms. If
+ * none arrives (a missed WebSocket frame, a reply persisted only in the DB),
+ * re-sync from the server so the final replaces it; failing that, drop it.
+ */
+function scheduleSettleFallback(
+  runtimeJid: string,
+  settled: StreamingState,
+  set: (fn: (s: ChatState) => Partial<ChatState>) => void,
+  get: () => ChatState,
+): void {
+  const marker = '#agent:';
+  const markerIndex = runtimeJid.indexOf(marker);
+  const agentId =
+    markerIndex >= 0 ? runtimeJid.slice(markerIndex + marker.length) : null;
+  const chatJid =
+    markerIndex >= 0 ? runtimeJid.slice(0, markerIndex) : runtimeJid;
+  const current = () =>
+    agentId ? get().agentStreaming[agentId] : get().streaming[chatJid];
+  setTimeout(async () => {
+    if (current() !== settled) return;
+    try {
+      if (agentId) {
+        if (get().agentMessages[agentId]) {
+          await get().refreshAgentMessages(chatJid, agentId);
+        }
+      } else if (get().messages[chatJid]) {
+        await get().refreshMessages(chatJid);
+      }
+    } catch {
+      /* fall through to dropping the card */
+    }
+    if (current() !== settled) return;
+    set((s) => {
+      if (agentId) {
+        if (s.agentStreaming[agentId] !== settled) return s;
+        return { agentStreaming: withoutKey(s.agentStreaming, agentId) };
+      }
+      if (s.streaming[chatJid] !== settled) return s;
+      // Keep its thinking for the final message a later sync brings in.
+      return {
+        streaming: withoutKey(s.streaming, chatJid),
+        ...(settled.thinkingText
+          ? {
+              pendingThinking: {
+                ...s.pendingThinking,
+                [chatJid]: settled.thinkingText,
+              },
+              ...(settled.thinkingDurationMs != null
+                ? {
+                    pendingThinkingDuration: {
+                      ...s.pendingThinkingDuration,
+                      [chatJid]: settled.thinkingDurationMs,
+                    },
+                  }
+                : {}),
+            }
+          : {}),
+      };
+    });
+  }, SETTLE_FALLBACK_MS);
 }
 
 function scheduleDbTaskAgentCleanup(
@@ -1617,6 +1825,9 @@ function updateTaskRuntime(
   return true;
 }
 
+/** Tools whose end comes from their own lifecycle, not their tool_result. */
+const TOOLS_ENDED_BY_LIFECYCLE = new Set(['Task', 'Agent', 'Skill']);
+
 /**
  * Apply a single StreamEvent to a StreamingState object.
  * Shared by main conversation and SDK subagent streaming.
@@ -1639,6 +1850,9 @@ function applyStreamEvent(
       const combined = prev.partialText + (event.text || '');
       next.partialText = capStreamingText(combined, maxText);
       next.isThinking = false;
+      next.awaitingModel = false;
+      next.phaseStartedAt = undefined;
+      if (isPhaseStatus(prev.systemStatus)) next.systemStatus = null;
       markThinkingEnded(prev, next);
       break;
     }
@@ -1659,6 +1873,11 @@ function applyStreamEvent(
     case 'tool_use_start': {
       next.isThinking = false;
       markThinkingEnded(prev, next);
+      if (!event.parentToolUseId) {
+        next.awaitingModel = false;
+        next.phaseStartedAt = undefined;
+        if (isPhaseStatus(prev.systemStatus)) next.systemStatus = null;
+      }
       const toolUseId = event.toolUseId || '';
       const existing = prev.activeTools.find(
         (t) => t.toolUseId === toolUseId && toolUseId,
@@ -1714,6 +1933,11 @@ function applyStreamEvent(
             isSkill ? 'skill' : 'tool',
             `✓ ${label} (${elapsedSec}s)`,
           );
+          if (!event.parentToolUseId && !ended.isNested) {
+            // The model takes over again: the next burst starts here.
+            next.awaitingModel = true;
+            next.phaseStartedAt = Date.now();
+          }
         }
       }
       // An end event without a toolUseId is malformed — ignore it instead of
@@ -1724,6 +1948,31 @@ function applyStreamEvent(
         updateTaskRuntime(prev, next, event);
       }
       break;
+    case 'tool_result': {
+      // A returned tool is done even before the runner infers its end from
+      // the next assistant message; the status line must not keep saying
+      // "正在运行命令" while the model is already on its next step. Task and
+      // Skill keep their own lifecycle (sub-agent events, nested tools).
+      if (!event.toolUseId || event.parentToolUseId) break;
+      const ended = prev.activeTools.find(
+        (t) => t.toolUseId === event.toolUseId,
+      );
+      if (!ended || TOOLS_ENDED_BY_LIFECYCLE.has(ended.toolName)) break;
+      next.activeTools = prev.activeTools.filter(
+        (t) => t.toolUseId !== event.toolUseId,
+      );
+      const rawSec = (Date.now() - ended.startTime) / 1000;
+      next.recentEvents = pushEvent(
+        prev.recentEvents,
+        'tool',
+        `✓ 工具 ${ended.toolName} (${rawSec % 1 === 0 ? rawSec.toFixed(0) : rawSec.toFixed(1)}s)`,
+      );
+      if (!ended.isNested) {
+        next.awaitingModel = true;
+        next.phaseStartedAt = Date.now();
+      }
+      break;
+    }
     case 'tool_progress': {
       const existing = prev.activeTools.find(
         (t) => t.toolUseId === event.toolUseId,
@@ -1849,6 +2098,10 @@ function applyStreamEvent(
       break;
     case 'status': {
       next.systemStatus = event.statusText || null;
+      // A new model request: thinking that follows started here.
+      if (event.statusText === 'requesting' && !event.parentToolUseId) {
+        next.phaseStartedAt = Date.now();
+      }
       if (event.statusText && !isInternalLifecycleStatus(event.statusText)) {
         next.recentEvents = pushEvent(
           prev.recentEvents,
@@ -1927,6 +2180,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
   streaming: {},
   thinkingCache: {},
   thinkingDurationCache: {},
+  traceCache: {},
+  stopRequests: {},
   pendingThinking: {},
   pendingThinkingDuration: {},
   clearing: {},
@@ -2111,9 +2366,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
           );
           const merged = mergedUsage.messages;
           // Check if agent has truly finalized (explicit sdk_send_message should not clear streaming)
-          // interrupt_partial 到达时若流式卡片已冻结，不视为"agent 已回复"，
+          // interrupt_partial 到达时若流式卡片已冻结（运行仍在），不视为"agent 已回复"，
           // 避免清除冻结的富内容。消息仍添加到列表，10s 兜底计时器做最终清理。
-          const isFrozen = !!s.streaming[jid]?.interrupted;
+          const streamState = s.streaming[jid];
+          const exactRunActive = !!s.activeRuns[jid];
+          const isFrozen = !!streamState?.interrupted && !streamState.settling;
           const agentReplied = data.messages.some(
             (m) =>
               m.is_from_me &&
@@ -2124,58 +2381,57 @@ export const useChatStore = create<ChatState>((set, get) => ({
           const hasSystemError = data.messages.some((m) =>
             isTerminalSystemMessage(m),
           );
+          // Same rule as a live final message: it replaces a settled or
+          // stopped card, never the projection of a newer active run.
+          const finalizes =
+            (agentReplied || hasSystemError) &&
+            (!exactRunActive || isFrozenProjection(streamState));
 
-          // Transfer pending thinking to thinkingCache
-          let nextThinkingCache = s.thinkingCache;
-          let nextThinkingDurationCache = s.thinkingDurationCache;
+          // Move the finished reply's thinking and execution details onto it.
+          const lastAiMsg = agentReplied
+            ? [...data.messages]
+                .reverse()
+                .find(
+                  (m) =>
+                    m.is_from_me &&
+                    m.sender !== '__system__' &&
+                    m.source_kind !== 'sdk_send_message',
+                )
+            : undefined;
+          const replyCaches =
+            finalizes && lastAiMsg
+              ? finalizedReplyCaches(
+                  s,
+                  streamState,
+                  lastAiMsg.id,
+                  s.pendingThinking[jid],
+                  s.pendingThinkingDuration[jid],
+                )
+              : {};
           let nextPendingThinking = s.pendingThinking;
           let nextPendingThinkingDuration = s.pendingThinkingDuration;
-          if (agentReplied && s.pendingThinking[jid]) {
-            const lastAiMsg = [...data.messages]
-              .reverse()
-              .find(
-                (m) =>
-                  m.is_from_me &&
-                  m.sender !== '__system__' &&
-                  m.source_kind !== 'sdk_send_message',
-              );
-            if (lastAiMsg) {
-              nextThinkingCache = capThinkingCache({
-                ...s.thinkingCache,
-                [lastAiMsg.id]: s.pendingThinking[jid],
-              });
-              const pendingDur = s.pendingThinkingDuration[jid];
-              if (pendingDur != null) {
-                nextThinkingDurationCache = capThinkingCache({
-                  ...s.thinkingDurationCache,
-                  [lastAiMsg.id]: pendingDur,
-                });
-              }
-              const { [jid]: _, ...restPending } = s.pendingThinking;
-              nextPendingThinking = restPending;
-              const { [jid]: __, ...restPendingDur } =
-                s.pendingThinkingDuration;
-              nextPendingThinkingDuration = restPendingDur;
-            }
+          if (finalizes && lastAiMsg) {
+            const { [jid]: _, ...restPending } = s.pendingThinking;
+            nextPendingThinking = restPending;
+            const { [jid]: __, ...restPendingDur } = s.pendingThinkingDuration;
+            nextPendingThinkingDuration = restPendingDur;
           }
 
           return {
+            ...replyCaches,
             pendingMessageUsage: mergedUsage.pending,
             messages: { ...s.messages, [jid]: merged },
             waiting:
-              agentReplied || hasSystemError
+              finalizes && !exactRunActive
                 ? { ...s.waiting, [jid]: false }
                 : s.waiting,
-            streaming:
-              agentReplied || hasSystemError
-                ? (() => {
-                    const next = { ...s.streaming };
-                    delete next[jid];
-                    return next;
-                  })()
-                : s.streaming,
-            thinkingCache: nextThinkingCache,
-            thinkingDurationCache: nextThinkingDurationCache,
+            streaming: finalizes
+              ? (() => {
+                  const next = { ...s.streaming };
+                  delete next[jid];
+                  return next;
+                })()
+              : s.streaming,
             pendingThinking: nextPendingThinking,
             pendingThinkingDuration: nextPendingThinkingDuration,
             error: null,
@@ -2387,11 +2643,17 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   interruptQuery: async (jid: string) => {
+    // Answer the click at once: the run shows "正在停止…" with its timer
+    // frozen while the interrupt travels; text already in flight still lands.
+    set((s) => ({ stopRequests: { ...s.stopRequests, [jid]: Date.now() } }));
+    const clearStopRequest = () =>
+      set((s) => ({ stopRequests: withoutKey(s.stopRequests, jid) }));
     try {
       const data = await api.post<{ success: boolean; interrupted: boolean }>(
         `/api/groups/${encodeURIComponent(jid)}/interrupt`,
       );
       if (!data.interrupted) {
+        clearStopRequest();
         // Agent 已完成，无活跃查询可中断。
         // 解析虚拟 JID 判断是 agent 还是主会话，清除卡住的状态。
         const agentSep = jid.indexOf('#agent:');
@@ -2422,6 +2684,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       return true;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      clearStopRequest();
       set({ error: message });
       // The run keeps going; say so instead of silently restoring the button.
       showToast('停止失败', message || '请检查网络后重试');
@@ -2546,12 +2809,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
           pendingThinking: nextPendingThinking,
           clearing: nextClearing,
           thinkingCache: retainThinkingCacheForMessages(
-            nextMessages,
+            { ...nextAgentMessages, ...nextMessages },
             s.thinkingCache,
           ),
           thinkingDurationCache: retainThinkingCacheForMessages(
-            nextMessages,
+            { ...nextAgentMessages, ...nextMessages },
             s.thinkingDurationCache,
+          ),
+          traceCache: retainThinkingCacheForMessages(
+            { ...nextAgentMessages, ...nextMessages },
+            s.traceCache,
           ),
           agents: nextAgents,
           pendingMessageUsage: clearPendingMessageUsage(
@@ -2837,12 +3104,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
           streaming: nextStreaming,
           pendingThinking: nextPendingThinking,
           thinkingCache: retainThinkingCacheForMessages(
-            nextMessages,
+            { ...s.agentMessages, ...nextMessages },
             s.thinkingCache,
           ),
           thinkingDurationCache: retainThinkingCacheForMessages(
-            nextMessages,
+            { ...s.agentMessages, ...nextMessages },
             s.thinkingDurationCache,
+          ),
+          traceCache: retainThinkingCacheForMessages(
+            { ...s.agentMessages, ...nextMessages },
+            s.traceCache,
           ),
           currentGroup: nextCurrent,
           error: null,
@@ -2996,7 +3267,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
         if (agentId) {
           return { agentStreaming: { ...s.agentStreaming, [agentId]: next } };
         }
-        saveStreamingToSession(chatJid, next);
         return { streaming: { ...s.streaming, [chatJid]: next } };
       });
     }
@@ -3013,28 +3283,39 @@ export const useChatStore = create<ChatState>((set, get) => ({
         cancelPendingDelta(key);
         entry = undefined;
       }
+      if (entry && event.turnId && entry.turnId !== event.turnId) {
+        // A new turn: settle the old turn's frame before starting this one.
+        cancelAnimationFrame(entry.raf);
+        flushPendingDelta(key, chatJid, agentId, set);
+        entry = undefined;
+      }
+      const chunk = {
+        thinking: event.eventType === 'thinking_delta',
+        text: event.text || '',
+      };
       if (entry) {
-        // Already have a pending rAF — just accumulate
-        if (event.eventType === 'text_delta')
-          entry.texts.push(event.text || '');
-        else entry.thinkings.push(event.text || '');
+        // Already have a pending rAF — just accumulate, keeping arrival order
+        entry.chunks.push(chunk);
         return;
       }
       entry = {
-        texts: [],
-        thinkings: [],
+        chunks: [chunk],
         raf: 0,
         runtimeJid,
         runId,
+        turnId: event.turnId,
       };
-      if (event.eventType === 'text_delta') entry.texts.push(event.text || '');
-      else entry.thinkings.push(event.text || '');
       entry.raf = requestAnimationFrame(() => {
         flushPendingDelta(key, chatJid, agentId, set);
       });
       pendingDeltas.set(key, entry);
       return;
     }
+
+    // Keep arrival order: text/thinking still waiting for rAF happened before
+    // this event (a tool start must not be overtaken by the thinking that
+    // preceded it).
+    flushPendingDeltaForRuntime(runtimeJid, set);
 
     // ① conversation agent（DB 持久化的）
     if (agentId) {
@@ -3084,7 +3365,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
         if (!s.agentStreaming[agentId] && s.agentWaiting[agentId] === false) {
           return s;
         }
-        const prev = resolveStreamingPrev(s.agentStreaming[agentId], event);
+        // A stopped card stays frozen until its terminal message arrives.
+        const current = s.agentStreaming[agentId];
+        if (current?.interrupted && !current.settling) return s;
+        const prev = resolveStreamingPrev(current, event);
         const next = { ...prev };
         applyStreamEvent(event, prev, next, MAX_STREAMING_TEXT);
         return { agentStreaming: { ...s.agentStreaming, [agentId]: next } };
@@ -3260,11 +3544,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
       set((s) => {
         const current = s.streaming[chatJid];
-        if (!current || current.interrupted) return s;
+        if (!current || current.interrupted || current.settling) return s;
         const prev = resolveStreamingPrev(current, event);
         const next = { ...prev };
         applyStreamEvent(event, prev, next, MAX_STREAMING_TEXT);
-        saveStreamingToSession(chatJid, next);
         return {
           streaming: { ...s.streaming, [chatJid]: next },
         };
@@ -3383,14 +3666,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
       if (!s.streaming[chatJid] && s.waiting[chatJid] === false) {
         return s;
       }
-      // 冻结的中断状态不接收新事件（如 usage），防止 waiting 被改回 true
-      if (s.streaming[chatJid]?.interrupted) {
+      // 冻结的中断状态不接收新事件（如 usage），防止 waiting 被改回 true。
+      // 已结束运行的 settling 卡片由新运行的事件替换。
+      const current = s.streaming[chatJid];
+      if (current?.interrupted && !current.settling) {
         return s;
       }
-      const prev = resolveStreamingPrev(s.streaming[chatJid], event);
+      const prev = resolveStreamingPrev(current, event);
       const next = { ...prev };
       applyStreamEvent(event, prev, next, MAX_STREAMING_TEXT);
-      saveStreamingToSession(chatJid, next);
       return {
         waiting: { ...s.waiting, [chatJid]: true },
         streaming: { ...s.streaming, [chatJid]: next },
@@ -3451,6 +3735,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
     // Route to agentMessages if this is a conversation agent message
     if (agentId) {
+      // Same as the main path below: apply a frame still waiting for rAF
+      // before the reply replaces the card it belongs to.
+      flushPendingDeltaForRuntime(`${chatJid}#agent:${agentId}`, set);
       let snapshotMessages: Message[] | null = null;
       let snapshotHasMore = false;
       let didReceiveProactiveUtterance = false;
@@ -3473,9 +3760,19 @@ export const useChatStore = create<ChatState>((set, get) => ({
           msg.sender !== '__system__' &&
           msg.source_kind !== 'sdk_send_message';
         const exactRunActive = !!s.activeRuns[`${chatJid}#agent:${agentId}`];
+        // The reply replaces its settled (or stopped) card in this same
+        // update, carrying its thinking and execution details over. A live
+        // projection under an active run belongs to the next attempt.
+        const agentState = s.agentStreaming[agentId];
+        const replacesProjection =
+          isAgentReply && (!exactRunActive || isFrozenProjection(agentState));
+        const replyCaches =
+          replacesProjection && agentState
+            ? finalizedReplyCaches(s, agentState, msg.id)
+            : {};
 
         const nextAgentStreaming = isAgentReply
-          ? exactRunActive
+          ? exactRunActive && !replacesProjection
             ? s.agentStreaming
             : holdsRunningWorkflow
               ? {
@@ -3527,6 +3824,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         );
 
         return {
+          ...replyCaches,
           agentMessages: { ...s.agentMessages, [agentId]: updated },
           pendingMessageUsage: mergedUsage.pending,
           agentWaiting: nextAgentWaiting,
@@ -3603,20 +3901,24 @@ export const useChatStore = create<ChatState>((set, get) => ({
         if (shouldFinalizeAssistant && !holdsRunningWorkflow)
           didFinalizeAssistant = true;
 
-        // Agent 回复或系统错误：立即清除流式状态和等待标志，转移 thinking 缓存
+        // Agent 回复或系统错误：在同一次更新里用定稿替换流式卡片（settling
+        // 或已中断冻结的卡片），并把 thinking 与执行详情转存到该消息。
         const exactRunActive = !!s.activeRuns[chatJid];
         const streamState = s.streaming[chatJid];
-        const thinkingText =
-          isAgentReply && !exactRunActive
-            ? streamState?.thinkingText || s.pendingThinking[chatJid]
-            : undefined;
-        const thinkingDuration =
-          isAgentReply && !exactRunActive
-            ? (streamState?.thinkingDurationMs ??
-              s.pendingThinkingDuration[chatJid])
-            : undefined;
+        const replacesProjection =
+          !exactRunActive || isFrozenProjection(streamState);
+        const replyCaches =
+          isAgentReply && replacesProjection
+            ? finalizedReplyCaches(
+                s,
+                streamState,
+                msg.id,
+                s.pendingThinking[chatJid],
+                s.pendingThinkingDuration[chatJid],
+              )
+            : {};
         const nextStreaming = { ...s.streaming };
-        if (exactRunActive) {
+        if (!replacesProjection) {
           // The exact terminal for the previous reply has already started a
           // replacement attempt. Preserve that replacement's stream.
         } else if (holdsRunningWorkflow) {
@@ -3627,7 +3929,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         }
         const nextPending = { ...s.pendingThinking };
         const nextPendingDur = { ...s.pendingThinkingDuration };
-        if (!exactRunActive) {
+        if (replacesProjection) {
           delete nextPending[chatJid];
           delete nextPendingDur[chatJid];
         }
@@ -3646,6 +3948,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
             : s.unreadReplies;
 
         return {
+          ...replyCaches,
           messages: { ...s.messages, [chatJid]: updated },
           pendingMessageUsage: mergedUsage.pending,
           waiting: {
@@ -3656,22 +3959,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
           pendingThinking: nextPending,
           pendingThinkingDuration: nextPendingDur,
           unreadReplies: nextUnread,
-          ...(thinkingText
-            ? {
-                thinkingCache: capThinkingCache({
-                  ...s.thinkingCache,
-                  [msg.id]: thinkingText,
-                }),
-              }
-            : {}),
-          ...(thinkingDuration != null
-            ? {
-                thinkingDurationCache: capThinkingCache({
-                  ...s.thinkingDurationCache,
-                  [msg.id]: thinkingDuration,
-                }),
-              }
-            : {}),
         };
       }
 
@@ -4303,13 +4590,21 @@ export const useChatStore = create<ChatState>((set, get) => ({
           const merged = mergedUsage.messages;
           snapshotMessages = merged;
           snapshotHasMore = !!s.agentHasMore[agentId];
-          const agentReplied = data.messages.some(
-            (m) =>
-              m.is_from_me &&
-              m.sender !== '__system__' &&
-              m.source_kind !== 'sdk_send_message',
-          );
-          const nextAgentStreaming = agentReplied
+          const lastAiMsg = [...data.messages]
+            .reverse()
+            .find(
+              (m) =>
+                m.is_from_me &&
+                m.sender !== '__system__' &&
+                m.source_kind !== 'sdk_send_message',
+            );
+          const agentState = s.agentStreaming[agentId];
+          const exactRunActive = !!s.activeRuns[`${jid}#agent:${agentId}`];
+          // Same rule as a live final message: it replaces a settled or
+          // stopped card, never the projection of a newer active run.
+          const finalizes =
+            !!lastAiMsg && (!exactRunActive || isFrozenProjection(agentState));
+          const nextAgentStreaming = finalizes
             ? (() => {
                 const n = { ...s.agentStreaming };
                 delete n[agentId];
@@ -4318,11 +4613,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
             : s.agentStreaming;
 
           return {
+            ...(finalizes && lastAiMsg && agentState
+              ? finalizedReplyCaches(s, agentState, lastAiMsg.id)
+              : {}),
             agentMessages: { ...s.agentMessages, [agentId]: merged },
             pendingMessageUsage: mergedUsage.pending,
-            agentWaiting: agentReplied
-              ? { ...s.agentWaiting, [agentId]: false }
-              : s.agentWaiting,
+            agentWaiting:
+              finalizes && !exactRunActive
+                ? { ...s.agentWaiting, [agentId]: false }
+                : s.agentWaiting,
             agentStreaming: nextAgentStreaming,
           };
         });
@@ -4509,7 +4808,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
           if (!knownJids.has(jid)) {
             delete nextWaiting[jid];
             delete nextStreaming[jid];
-            clearStreamingFromSession(jid);
           }
         }
         for (const agentId of Object.keys(nextAgentWaiting)) {
@@ -4546,7 +4844,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
           // and create a spinner that no run_finished can close.
           delete nextWaiting[g.jid];
           delete nextStreaming[g.jid];
-          clearStreamingFromSession(g.jid);
         }
         return {
           waiting: nextWaiting,
@@ -4563,27 +4860,53 @@ export const useChatStore = create<ChatState>((set, get) => ({
   // WS 重连时接收后端推送的流式快照，恢复 StreamingDisplay
   handleStreamSnapshot: (chatJid, snapshot, agentId, runId) => {
     const runtimeJid = agentId ? `${chatJid}#agent:${agentId}` : chatJid;
-    const restored: StreamingState = {
-      ...DEFAULT_STREAMING_STATE,
-      partialText: snapshot.partialText || '',
-      thinkingText: snapshot.thinkingText || '',
-      activeTools: (snapshot.activeTools || []).map((t) => ({
-        toolName: t.toolName,
-        toolUseId: t.toolUseId,
-        startTime: t.startTime,
-        toolInputSummary: t.toolInputSummary,
-        parentToolUseId: t.parentToolUseId,
-      })),
-      recentEvents: (
-        (snapshot.recentEvents || []) as StreamingTimelineEvent[]
-      ).filter(isUserVisibleTimelineEvent),
-      traceEvents: (snapshot.traceEvents || []).filter(isUserVisibleTraceEvent),
-      taskStates: snapshot.taskStates || {},
-      todos: snapshot.todos,
-      systemStatus: snapshot.systemStatus || null,
-      isThinking: snapshot.isThinking ?? false,
-      activeHook: snapshot.activeHook ?? null,
-      turnId: snapshot.turnId,
+    const restore = (local: StreamingState | undefined): StreamingState => {
+      const restored: StreamingState = {
+        ...DEFAULT_STREAMING_STATE,
+        partialText: snapshot.partialText || '',
+        thinkingText: snapshot.thinkingText || '',
+        activeTools: (snapshot.activeTools || []).map((t) => ({
+          toolName: t.toolName,
+          toolUseId: t.toolUseId,
+          startTime: t.startTime,
+          toolInputSummary: t.toolInputSummary,
+          parentToolUseId: t.parentToolUseId,
+        })),
+        recentEvents: (
+          (snapshot.recentEvents || []) as StreamingTimelineEvent[]
+        ).filter(isUserVisibleTimelineEvent),
+        traceEvents: (snapshot.traceEvents || []).filter(
+          isUserVisibleTraceEvent,
+        ),
+        taskStates: snapshot.taskStates || {},
+        todos: snapshot.todos,
+        systemStatus: snapshot.systemStatus || null,
+        isThinking: snapshot.isThinking ?? false,
+        activeHook: snapshot.activeHook ?? null,
+        turnId: snapshot.turnId,
+      };
+      // The same turn of the same run (the caller fences the run) only ever
+      // grows. A reconnect snapshot may carry a block-bounded tail of a very
+      // long reply: never replace the longer text this tab already shows
+      // with it. A shorter local text missed deltas and takes the snapshot.
+      const sameTurn =
+        !!local &&
+        !local.settling &&
+        (!local.turnId || !snapshot.turnId || local.turnId === snapshot.turnId);
+      if (local && sameTurn) {
+        if (local.partialText.length > restored.partialText.length) {
+          restored.partialText = local.partialText;
+        }
+        if (local.thinkingText.length > restored.thinkingText.length) {
+          restored.thinkingText = local.thinkingText;
+        }
+        restored.thinkingStartedAt = local.thinkingStartedAt;
+        restored.thinkingDurationMs = local.thinkingDurationMs;
+        restored.phaseStartedAt = local.phaseStartedAt;
+        restored.sessionId = local.sessionId;
+        restored.interrupted = local.interrupted;
+      }
+      return restored;
     };
 
     if (agentId) {
@@ -4594,7 +4917,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
         }
         return {
           agentWaiting: { ...s.agentWaiting, [agentId]: true },
-          agentStreaming: { ...s.agentStreaming, [agentId]: restored },
+          agentStreaming: {
+            ...s.agentStreaming,
+            [agentId]: restore(s.agentStreaming[agentId]),
+          },
         };
       });
     } else {
@@ -4605,7 +4931,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
         }
         return {
           waiting: { ...s.waiting, [chatJid]: true },
-          streaming: { ...s.streaming, [chatJid]: restored },
+          streaming: {
+            ...s.streaming,
+            [chatJid]: restore(s.streaming[chatJid]),
+          },
         };
       });
     }
@@ -4640,6 +4969,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     if (get().activeRuns[chatJid]?.runId !== runId) {
       cancelPendingDeltaForRuntime(chatJid);
     }
+    const settled: { state: StreamingState | null } = { state: null };
     set((s) => {
       const replacingAttempt = s.activeRuns[chatJid]?.runId !== runId;
       const activeRuns = applyRunStarted(s.activeRuns, {
@@ -4648,26 +4978,41 @@ export const useChatStore = create<ChatState>((set, get) => ({
         startedAt: new Date().toISOString(),
         phase: 'preparing',
       });
+      const stopRequests = replacingAttempt
+        ? withoutKey(s.stopRequests, chatJid)
+        : s.stopRequests;
+      // The previous attempt's card waits (settled) for its final message,
+      // which often arrives after the next queued run has started; the new
+      // run's first event replaces it if the final is later still.
+      const settle = (prev: StreamingState | undefined) => {
+        const next = replacingAttempt ? settleStreamingState(prev) : prev;
+        if (next && next !== prev) settled.state = next;
+        return next;
+      };
       if (agentId) {
         const nextStreaming = { ...s.agentStreaming };
-        if (replacingAttempt) delete nextStreaming[agentId];
+        const kept = settle(nextStreaming[agentId]);
+        if (kept) nextStreaming[agentId] = kept;
+        else delete nextStreaming[agentId];
         return {
           activeRuns,
+          stopRequests,
           agentWaiting: { ...s.agentWaiting, [agentId]: true },
           agentStreaming: nextStreaming,
         };
       }
       const nextStreaming = { ...s.streaming };
-      if (replacingAttempt) {
-        delete nextStreaming[chatJid];
-        clearStreamingFromSession(chatJid);
-      }
+      const kept = settle(nextStreaming[chatJid]);
+      if (kept) nextStreaming[chatJid] = kept;
+      else delete nextStreaming[chatJid];
       return {
         activeRuns,
+        stopRequests,
         waiting: { ...s.waiting, [chatJid]: true },
         streaming: nextStreaming,
       };
     });
+    if (settled.state) scheduleSettleFallback(chatJid, settled.state, set, get);
   },
 
   handleRunFinished: (chatJid, runId) => {
@@ -4676,37 +5021,51 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const agentId =
       markerIndex >= 0 ? chatJid.slice(markerIndex + marker.length) : null;
     if (get().activeRuns[chatJid]?.runId !== runId) return;
+    // The last buffered frame still belongs to this run: apply it before the
+    // run fence closes, then drop anything left.
+    flushPendingDeltaForRuntime(chatJid, set);
     cancelPendingDeltaForRuntime(chatJid);
+    const settled: { state: StreamingState | null } = { state: null };
     set((s) => {
       const finished = applyRunFinished(s.activeRuns, chatJid, runId);
       // A terminal event from an old attempt must not touch its replacement.
       if (!finished.applied) return s;
+      const stopRequests = withoutKey(s.stopRequests, chatJid);
+      // The server announces run_finished before it broadcasts the final
+      // message. Freeze the card (settled) so the final replaces it in one
+      // update instead of leaving a blank frame in between.
       if (agentId) {
         const nextStreaming = { ...s.agentStreaming };
-        delete nextStreaming[agentId];
+        settled.state = settleStreamingState(nextStreaming[agentId]);
+        if (settled.state) nextStreaming[agentId] = settled.state;
+        else delete nextStreaming[agentId];
         return {
           activeRuns: finished.runs,
+          stopRequests,
           agentWaiting: { ...s.agentWaiting, [agentId]: false },
           agentStreaming: nextStreaming,
         };
       }
       const nextStreaming = { ...s.streaming };
-      delete nextStreaming[chatJid];
+      settled.state = settleStreamingState(nextStreaming[chatJid]);
+      if (settled.state) nextStreaming[chatJid] = settled.state;
+      else delete nextStreaming[chatJid];
       const nextPendingThinking = { ...s.pendingThinking };
       delete nextPendingThinking[chatJid];
       const nextPendingThinkingDuration = {
         ...s.pendingThinkingDuration,
       };
       delete nextPendingThinkingDuration[chatJid];
-      clearStreamingFromSession(chatJid);
       return {
         activeRuns: finished.runs,
+        stopRequests,
         waiting: { ...s.waiting, [chatJid]: false },
         streaming: nextStreaming,
         pendingThinking: nextPendingThinking,
         pendingThinkingDuration: nextPendingThinkingDuration,
       };
     });
+    if (settled.state) scheduleSettleFallback(chatJid, settled.state, set, get);
   },
 
   handleActiveRunSnapshot: (runs, queuedChatJids = []) => {
@@ -4731,6 +5090,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
       };
 
       for (const jid of Object.keys(nextStreaming)) {
+        // A settled card belongs to a finished run and still waits for its
+        // final message (with its own re-sync fallback).
+        if (nextStreaming[jid]?.settling) continue;
         if (
           shouldDiscardStreamForAuthoritativeRun(previous, authoritative, jid)
         ) {
@@ -4745,6 +5107,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         const authoritativeJid = Object.keys(authoritative).find((jid) =>
           jid.endsWith(suffix),
         );
+        if (nextAgentStreaming[agentId]?.settling) continue;
         if (
           !authoritativeJid ||
           !previousJid ||
@@ -4773,16 +5136,21 @@ export const useChatStore = create<ChatState>((set, get) => ({
       for (const agentId of queuedWaitKeys.agentWaiting) {
         nextAgentWaiting[agentId] = true;
       }
-      for (const jid of Object.keys(s.streaming)) {
-        if (!authoritative[jid]) clearStreamingFromSession(jid);
-      }
       for (const jid of Object.keys(previous)) {
         if (jid.includes('#agent:') || authoritative[jid]) continue;
         delete nextPendingThinking[jid];
         delete nextPendingThinkingDuration[jid];
       }
+      const stopRequests = Object.fromEntries(
+        Object.entries(s.stopRequests).filter(
+          ([jid]) =>
+            !!authoritative[jid] &&
+            authoritative[jid].runId === previous[jid]?.runId,
+        ),
+      );
       return {
         activeRuns: authoritative,
+        stopRequests,
         waiting: nextWaiting,
         agentWaiting: nextAgentWaiting,
         streaming: nextStreaming,
@@ -4802,7 +5170,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
       cancelAnimationFrame(mainEntry.raf);
       pendingDeltas.delete(mainKey);
     }
-    clearStreamingFromSession(chatJid);
     set((s) => {
       const next = { ...s.streaming };
       const thinkingText = next[chatJid]?.thinkingText;

@@ -171,6 +171,7 @@ export const MessageList = memo(function MessageList({
   const thinkingDurationCache = useChatStore(
     (s) => s.thinkingDurationCache ?? {},
   );
+  const traceCache = useChatStore((s) => s.traceCache ?? {});
   const hasWorkflowCard = useChatStore((state) => {
     const current = agentId
       ? state.agentStreaming[agentId]
@@ -449,6 +450,93 @@ export const MessageList = memo(function MessageList({
     return items;
   }, [timelineMessages, hasWorkflowCard, today]);
 
+  // A finished reply replaces its streaming block in one store update (the
+  // block is held, settled, until the final message arrives). The new row is
+  // seeded with the block's measured height instead of the length estimate,
+  // which overshot by 1.2–1.6x and rolled a pinned reader back a screen; a
+  // reader scrolled into the reply keeps the row where the block was.
+  const hasStreaming = useChatStore((s) =>
+    agentId ? !!s.agentStreaming[agentId] : !!s.streaming[groupJid ?? ''],
+  );
+  const streamingBlockRef = useRef<HTMLDivElement>(null);
+  const seedSizesRef = useRef(new Map<string, number>());
+  const pendingSwapRef = useRef<{
+    id: string;
+    anchorTop: number | null;
+    pinned: boolean;
+  } | null>(null);
+  const swappedIdRef = useRef<string | null>(null);
+  // The swapped-in row keeps the streaming block's place on screen briefly.
+  const anchorHoldRef = useRef<{
+    id: string;
+    anchorTop: number;
+    until: number;
+  } | null>(null);
+  const SWAP_ANCHOR_HOLD_MS = 400;
+  const applyAnchorHold = useCallback(() => {
+    const hold = anchorHoldRef.current;
+    const parent = parentRef.current;
+    if (!hold || !parent) return;
+    const row = parent.querySelector<HTMLElement>(
+      `[data-message-id="${CSS.escape(hold.id)}"]`,
+    );
+    if (!row) return;
+    const delta =
+      row.getBoundingClientRect().top -
+      parent.getBoundingClientRect().top -
+      hold.anchorTop;
+    if (Math.abs(delta) < 1) return;
+    layoutScrollTopRef.current = parent.scrollTop + delta;
+    parent.scrollTop += delta;
+  }, []);
+  const committedStreamRef = useRef({
+    hasStreaming,
+    messages: timelineMessages,
+  });
+  {
+    const committed = committedStreamRef.current;
+    if (
+      committed.hasStreaming &&
+      !hasStreaming &&
+      committed.messages !== timelineMessages &&
+      !pendingSwapRef.current
+    ) {
+      const before = new Set(committed.messages.map((m) => m.id));
+      let reply: Message | undefined;
+      for (let i = timelineMessages.length - 1; i >= 0; i -= 1) {
+        const m = timelineMessages[i];
+        if (!before.has(m.id) && m.is_from_me && m.sender !== '__system__') {
+          reply = m;
+          break;
+        }
+      }
+      const block = streamingBlockRef.current;
+      const parent = parentRef.current;
+      if (reply && block && parent) {
+        // Still the committed DOM: the block is on screen until this commits.
+        if (block.querySelector('[data-markdown-root]')) {
+          seedSizesRef.current.set(reply.id, block.offsetHeight);
+          if (seedSizesRef.current.size > 20) {
+            const oldest = seedSizesRef.current.keys().next().value;
+            if (oldest !== undefined) seedSizesRef.current.delete(oldest);
+          }
+        }
+        pendingSwapRef.current = {
+          id: reply.id,
+          anchorTop:
+            block.offsetHeight > 0
+              ? block.getBoundingClientRect().top -
+                parent.getBoundingClientRect().top
+              : null,
+          pinned: scrollStateRef.current.autoScroll,
+        };
+      }
+    }
+  }
+  useLayoutEffect(() => {
+    committedStreamRef.current = { hasStreaming, messages: timelineMessages };
+  });
+
   // Chat always starts at bottom — no scroll position restoration.
   // key={...} on <MessageList> guarantees a fresh mount on group/tab switch.
   const virtualizer = useVirtualizer({
@@ -482,6 +570,8 @@ export const MessageList = memo(function MessageList({
         case 'error':
           return 56;
         case 'message': {
+          const seeded = seedSizesRef.current.get(item.content.id);
+          if (seeded !== undefined) return seeded;
           const len = item.content.content.length;
           if (item.content.is_from_me) {
             // AI messages often contain markdown tables, code blocks, and
@@ -558,6 +648,7 @@ export const MessageList = memo(function MessageList({
     };
     const handleWheel = (event: WheelEvent) => {
       if (event.ctrlKey) return;
+      anchorHoldRef.current = null;
       // pinToBottom's own listener handles the wheel while it is attached.
       if (animationWheelRef.current) return;
       if (event.deltaY < 0) releasePin(true);
@@ -565,6 +656,7 @@ export const MessageList = memo(function MessageList({
     };
     const handleTouchStart = (event: TouchEvent) => {
       endSettle();
+      anchorHoldRef.current = null;
       touchStartYRef.current = event.touches[0]?.clientY ?? null;
       touchingRef.current = true;
       // Let the finger take over; a tap resumes the way down on touchend.
@@ -590,6 +682,7 @@ export const MessageList = memo(function MessageList({
       }
     };
     const handleKeyDown = (event: KeyboardEvent) => {
+      anchorHoldRef.current = null;
       const scrollsUp =
         event.key === 'PageUp' ||
         event.key === 'ArrowUp' ||
@@ -602,6 +695,7 @@ export const MessageList = memo(function MessageList({
       // Grabbing the scrollbar takes manual control; where it is dragged
       // decides the rest.
       if (event.target === parent && event.offsetX >= parent.clientWidth) {
+        anchorHoldRef.current = null;
         releasePin(false);
       }
     };
@@ -681,6 +775,8 @@ export const MessageList = memo(function MessageList({
     }
     let arrived = 0;
     for (let i = from + 1; i < timelineMessages.length; i += 1) {
+      // A reply that replaced the stream the reader saw is not news.
+      if (timelineMessages[i].id === swappedIdRef.current) continue;
       if (isVisibleArrival(timelineMessages[i])) arrived += 1;
     }
     if (arrived > 0) setUnseenCount((count) => count + arrived);
@@ -838,15 +934,44 @@ export const MessageList = memo(function MessageList({
     return () => observer.disconnect();
   }, [scheduleSmoothCatchUp, syncEdges]);
 
-  // Auto-scroll when streaming content is active. Subscribes directly to the
-  // chat store (no React re-render) and schedules a single rAF-coalesced
-  // scrollTo per animation frame, regardless of how many text_delta /
-  // thinking_delta updates land. This replaces the 100ms setInterval poll
-  // (PR #455 era) which competed with smooth scrolls and caused 3-4 visible
-  // jumps when the user scrolled to the bottom mid-stream.
-  const hasStreaming = useChatStore((s) =>
-    agentId ? !!s.agentStreaming[agentId] : !!s.streaming[groupJid ?? ''],
-  );
+  // Place the swapped-in reply: a pinned reader lands on the bottom at once
+  // (no animated catch-up); otherwise the row holds the block's place on
+  // screen while the rows around it finish measuring (a date row or the row
+  // itself correcting its estimate), until the reader scrolls.
+  useLayoutEffect(() => {
+    const swap = pendingSwapRef.current;
+    if (!swap) return;
+    pendingSwapRef.current = null;
+    swappedIdRef.current = swap.id;
+    const parent = parentRef.current;
+    if (!parent) return;
+    if (swap.pinned) {
+      if (parent.scrollHeight - parent.scrollTop - parent.clientHeight >= 1) {
+        layoutScrollTopRef.current = parent.scrollHeight - parent.clientHeight;
+        parent.scrollTop = parent.scrollHeight;
+      }
+      return;
+    }
+    if (swap.anchorTop === null) return;
+    const hold = {
+      id: swap.id,
+      anchorTop: swap.anchorTop,
+      until: Date.now() + SWAP_ANCHOR_HOLD_MS,
+    };
+    anchorHoldRef.current = hold;
+    const keepAnchor = () => {
+      if (anchorHoldRef.current !== hold) return;
+      applyAnchorHold();
+      if (Date.now() < hold.until) requestAnimationFrame(keepAnchor);
+      else anchorHoldRef.current = null;
+    };
+    keepAnchor();
+  }, [flatMessages, applyAnchorHold]);
+  // Rows that measure during the swap commit re-render synchronously before
+  // paint; re-anchor in that commit too, not a frame later.
+  useLayoutEffect(() => {
+    if (anchorHoldRef.current) applyAnchorHold();
+  });
 
   // A finished reply swaps the streaming block for its final row, inserted at
   // an estimated height and then measured; the correction moves scrollTop and
@@ -860,6 +985,12 @@ export const MessageList = memo(function MessageList({
     if (!finished || !scrollStateRef.current.autoScroll) return;
     settleUntilRef.current = Math.max(settleUntilRef.current, Date.now() + 700);
   }, [hasStreaming]);
+  // Auto-scroll when streaming content is active. Subscribes directly to the
+  // chat store (no React re-render) and schedules a single rAF-coalesced
+  // scrollTo per animation frame, regardless of how many text_delta /
+  // thinking_delta updates land. This replaces the 100ms setInterval poll
+  // (PR #455 era) which competed with smooth scrolls and caused 3-4 visible
+  // jumps when the user scrolled to the bottom mid-stream.
   useEffect(() => {
     if (!hasStreaming) return;
 
@@ -931,14 +1062,17 @@ export const MessageList = memo(function MessageList({
     <div className="relative flex-1 overflow-hidden overflow-x-hidden">
       <div
         ref={parentRef}
-        className="h-full overflow-y-auto overflow-x-hidden pb-10 pt-6"
+        className="h-full overflow-y-auto overflow-x-hidden pb-10"
       >
+        {/* The top inset sits on the content, not the scroller: a sticky
+            status row sticks inside the scroller's padding box, and with
+            the padding on the scroller 24px of text scrolled by above it. */}
         <div
           ref={contentRef}
           className={
             displayMode === 'compact'
-              ? 'mx-auto px-4 min-w-0'
-              : 'mx-auto min-w-0 max-w-3xl px-4 lg:px-6'
+              ? 'mx-auto px-4 pt-6 min-w-0'
+              : 'mx-auto min-w-0 max-w-3xl px-4 pt-6 lg:px-6'
           }
         >
           {loading && hasMore && (
@@ -1096,6 +1230,7 @@ export const MessageList = memo(function MessageList({
                   }}
                   ref={virtualizer.measureElement}
                   data-index={virtualItem.index}
+                  data-message-id={message.id}
                 >
                   <ErrorBoundary>
                     <MessageBubble
@@ -1103,6 +1238,7 @@ export const MessageList = memo(function MessageList({
                       showTime={showTime}
                       thinkingContent={thinkingCache[message.id]}
                       thinkingDurationMs={thinkingDurationCache[message.id]}
+                      traceEvents={traceCache[message.id]}
                       agentName={agentIdentity.name}
                       agentAvatarUrl={agentAvatarUrl}
                       agentAvatarEmoji={agentAvatarEmoji}
@@ -1116,7 +1252,7 @@ export const MessageList = memo(function MessageList({
 
           {/* In the scroll flow rather than an overlay, so a short viewport
               (phone in landscape, keyboard up) can scroll to every starter.
-              The top inset subtracts the scroller's own pt-6. */}
+              The top inset subtracts the content's own pt-6. */}
           {timelineMessages.length === 0 && !loading && (
             <div
               data-hc-empty-state
@@ -1176,29 +1312,21 @@ export const MessageList = memo(function MessageList({
             </div>
           )}
 
-          {groupJid && !agentId && (
-            <StreamingDisplay
-              groupJid={groupJid}
-              isWaiting={!!isWaiting}
-              senderName={agentIdentity.name}
-              agentAvatarUrl={agentAvatarUrl}
-              agentAvatarEmoji={agentAvatarEmoji}
-              agentAvatarColor={agentAvatarColor}
-              interactionMode={interactionMode}
-            />
-          )}
-          {groupJid && agentId && (
-            <StreamingDisplay
-              groupJid={groupJid}
-              isWaiting={!!isWaiting}
-              agentId={agentId}
-              senderName={agentIdentity.name}
-              agentAvatarUrl={agentAvatarUrl}
-              agentAvatarEmoji={agentAvatarEmoji}
-              agentAvatarColor={agentAvatarColor}
-              interactionMode={interactionMode}
-            />
-          )}
+          <div ref={streamingBlockRef} data-hc-streaming-block="">
+            {groupJid && (
+              <StreamingDisplay
+                groupJid={groupJid}
+                isWaiting={!!isWaiting}
+                agentId={agentId}
+                senderName={agentIdentity.name}
+                agentAvatarUrl={agentAvatarUrl}
+                agentAvatarEmoji={agentAvatarEmoji}
+                agentAvatarColor={agentAvatarColor}
+                interactionMode={interactionMode}
+                stopHint
+              />
+            )}
+          </div>
 
           {/* Inline streaming for spawn agents — parallel tasks in same chat */}
           {groupJid &&

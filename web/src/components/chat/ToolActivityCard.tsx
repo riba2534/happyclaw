@@ -110,8 +110,9 @@ export function describeToolActivity(toolName: string): string {
     case 'Bash':
       return '正在运行命令';
     case 'Read':
-    case 'Glob':
       return '正在读取文件';
+    case 'Glob':
+      return '正在查找文件';
     case 'Grep':
       return '正在搜索代码';
     case 'WebSearch':

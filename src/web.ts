@@ -1739,7 +1739,7 @@ function setupWebSocket(server: any): WebSocketServer {
               chatJid: jid,
               runId: snap.runId,
               snapshot: {
-                partialText: snap.partialText,
+                partialText: snapshotResyncText(jid, snap.partialText),
                 thinkingText: snap.thinkingText,
                 activeTools: snap.activeTools,
                 recentEvents: snap.recentEvents,
@@ -2786,6 +2786,88 @@ const MAX_SNAPSHOT_TOMBSTONES = 500;
 /** Accumulates full (non-truncated) text per group for shutdown persistence & disk buffer. */
 const streamingFullTexts = new Map<string, string>();
 const MAX_SNAPSHOT_TEXT = 4000;
+/** A reconnect resync carries the whole reply up to the client's own cap. */
+const MAX_SNAPSHOT_RESYNC_TEXT = 200_000;
+
+const SNAPSHOT_FENCE_PATTERN = /^ {0,3}(`{3,}|~{3,})/;
+const SNAPSHOT_LIST_ITEM_PATTERN = /^ {0,3}(?:[-*+]|\d{1,9}[.)])(?:\s|$)/;
+
+/**
+ * Where `text`'s top-level Markdown blocks start (blank lines outside code
+ * fences and `$$` math, unless the next line continues the block). Mirrors
+ * splitMarkdownBlocks in web/src/lib/markdown-blocks.ts.
+ */
+function markdownBlockStarts(text: string): number[] {
+  const starts = [0];
+  let offset = 0;
+  let fence: { char: string; length: number } | null = null;
+  let inMath = false;
+  let lastContentLine = '';
+  let pendingBlank = false;
+  let hasContent = false;
+  for (const line of text.split('\n')) {
+    const lineStart = offset;
+    offset += line.length + 1;
+    if (fence) {
+      const close = SNAPSHOT_FENCE_PATTERN.exec(line);
+      if (
+        close &&
+        close[1][0] === fence.char &&
+        close[1].length >= fence.length &&
+        line.trim() === close[1]
+      ) {
+        fence = null;
+      }
+      continue;
+    }
+    if (inMath) {
+      if (line.trim() === '$$') inMath = false;
+      continue;
+    }
+    if (line.trim() === '') {
+      if (hasContent) pendingBlank = true;
+      continue;
+    }
+    if (pendingBlank) {
+      const continues =
+        /^[ \t]/.test(line) ||
+        (SNAPSHOT_LIST_ITEM_PATTERN.test(line) &&
+          SNAPSHOT_LIST_ITEM_PATTERN.test(lastContentLine));
+      if (!continues) starts.push(lineStart);
+      pendingBlank = false;
+    }
+    hasContent = true;
+    const open = SNAPSHOT_FENCE_PATTERN.exec(line);
+    if (open) fence = { char: open[1][0], length: open[1].length };
+    else if (line.trim() === '$$') inMath = true;
+    if (!/^[ \t]/.test(line)) lastContentLine = line;
+  }
+  return starts;
+}
+
+/**
+ * The text a reconnecting client restores. It used to be the last 4000 raw
+ * characters, cut mid-word or mid-fence, and it replaced the longer text the
+ * client already had. Send the whole streamed reply; past the client's cap,
+ * cut at a block boundary with the client's `markdownTail` marker.
+ */
+function snapshotResyncText(jid: string, tail: string): string {
+  const full = streamingFullTexts.get(jid);
+  return capSnapshotText(full && full.endsWith(tail) ? full : tail);
+}
+
+/** `text` up to `max` characters, cut at a block boundary (markdownTail). */
+export function capSnapshotText(
+  text: string,
+  max: number = MAX_SNAPSHOT_RESYNC_TEXT,
+): string {
+  if (text.length <= max) return text;
+  const minStart = text.length - max;
+  const start = markdownBlockStarts(text).find((index) => index >= minStart);
+  if (start !== undefined) return `…\n\n${text.slice(start)}`;
+  const cut = text.indexOf('\n', minStart);
+  return `…\n\n${cut >= 0 ? text.slice(cut + 1) : text.slice(minStart)}`;
+}
 const MAX_SNAPSHOT_THINKING = 8000;
 const MAX_SNAPSHOT_EVENTS = 20;
 const MAX_SNAPSHOT_TRACE_EVENTS = 200;

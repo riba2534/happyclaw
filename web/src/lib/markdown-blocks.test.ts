@@ -1,5 +1,11 @@
 import { describe, expect, test } from 'vitest';
-import { markdownTail, splitMarkdownBlocks } from './markdown-blocks';
+import {
+  canRenderBlockwise,
+  endsInOpenFence,
+  findMarkdownDefinitions,
+  markdownTail,
+  splitMarkdownBlocks,
+} from './markdown-blocks';
 
 const join = (blocks: string[]) => blocks.join('\n');
 
@@ -95,5 +101,50 @@ describe('markdownTail', () => {
     const tail = markdownTail(text, 40);
     expect(tail.startsWith('…\n\n```')).toBe(true);
     expect(tail.endsWith('end')).toBe(true);
+  });
+});
+
+describe('endsInOpenFence', () => {
+  test('is true only while a fence is unclosed', () => {
+    expect(endsInOpenFence('text\n```ts\nconst a = 1;')).toBe(true);
+    expect(endsInOpenFence('```ts\nconst a = 1;\n```')).toBe(false);
+    expect(endsInOpenFence('~~~~\n```\nstill code')).toBe(true);
+    expect(endsInOpenFence('plain paragraph')).toBe(false);
+  });
+});
+
+describe('findMarkdownDefinitions', () => {
+  test('collects reference links and notices footnotes outside code', () => {
+    const text = [
+      'See [文档][ref] and a note[^1].',
+      '',
+      '[ref]: https://example.com',
+      '[^1]: The note.',
+      '',
+      '```',
+      '[inside]: https://not-a-definition',
+      '```',
+    ].join('\n');
+    expect(findMarkdownDefinitions(text)).toEqual({
+      links: ['[ref]: https://example.com'],
+      footnotes: true,
+    });
+  });
+
+  test('ignores definitions that only appear inside fences', () => {
+    expect(
+      findMarkdownDefinitions('```\n[x]: https://a\n[^1]: b\n```'),
+    ).toEqual({ links: [], footnotes: false });
+  });
+});
+
+describe('canRenderBlockwise', () => {
+  test('falls back to one document for cross-block meaning', () => {
+    expect(canRenderBlockwise('# A\n\nB', false)).toBe(true);
+    expect(canRenderBlockwise('[a][r]\n\n[r]: https://x', false)).toBe(false);
+    expect(canRenderBlockwise('a[^1]\n\n[^1]: b', false)).toBe(false);
+    expect(canRenderBlockwise('<details>\n\nx\n\n</details>', true)).toBe(
+      false,
+    );
   });
 });

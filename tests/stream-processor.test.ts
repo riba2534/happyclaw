@@ -798,3 +798,84 @@ describe('StreamEventProcessor card-consumer data contracts', () => {
     expect(mainText?.agentScope).toBe('main');
   });
 });
+
+describe('StreamEventProcessor main tool results', () => {
+  function startTool(
+    processor: StreamEventProcessor,
+    name: string,
+    id: string,
+    index = 0,
+  ) {
+    processor.processStreamEvent({
+      type: 'stream_event',
+      event: {
+        type: 'content_block_start',
+        index,
+        content_block: { type: 'tool_use', name, id },
+      },
+    });
+  }
+
+  function returnResult(processor: StreamEventProcessor, id: string) {
+    processor.processMainToolResults({
+      type: 'user',
+      parent_tool_use_id: null,
+      message: {
+        content: [{ type: 'tool_result', tool_use_id: id, content: 'ok' }],
+      },
+    });
+  }
+
+  const ends = (outputs: ContainerOutput[]) =>
+    outputs
+      .map((output) => output.streamEvent)
+      .filter((event) => event?.eventType === 'tool_use_end')
+      .map((event) => event?.toolUseId);
+
+  test('ends the active top-level tool as soon as its result returns', () => {
+    const { processor, outputs } = makeProcessor();
+    startTool(processor, 'Glob', 'toolu_glob');
+    returnResult(processor, 'toolu_glob');
+
+    const events = outputs.map((output) => output.streamEvent?.eventType);
+    expect(events.indexOf('tool_result')).toBeLessThan(
+      events.indexOf('tool_use_end'),
+    );
+    expect(ends(outputs)).toEqual(['toolu_glob']);
+
+    // The next text block no longer infers a second end for it.
+    processor.processStreamEvent({
+      type: 'stream_event',
+      event: {
+        type: 'content_block_start',
+        index: 1,
+        content_block: { type: 'text', text: '' },
+      },
+    });
+    expect(ends(outputs)).toEqual(['toolu_glob']);
+  });
+
+  test('leaves Task and an active Skill to their own lifecycle', () => {
+    const { processor, outputs } = makeProcessor();
+    startTool(processor, 'Task', 'toolu_task');
+    returnResult(processor, 'toolu_task');
+    expect(ends(outputs)).toEqual([]);
+
+    const skill = makeProcessor();
+    startTool(skill.processor, 'Skill', 'toolu_skill');
+    returnResult(skill.processor, 'toolu_skill');
+    expect(ends(skill.outputs)).toEqual([]);
+  });
+
+  test('does not end a tool that is no longer the active one', () => {
+    const { processor, outputs } = makeProcessor();
+    startTool(processor, 'Read', 'toolu_a', 0);
+    startTool(processor, 'Read', 'toolu_b', 1);
+    // Starting B already ended A.
+    expect(ends(outputs)).toEqual(['toolu_a']);
+    returnResult(processor, 'toolu_a');
+    expect(ends(outputs)).toEqual(['toolu_a']);
+    returnResult(processor, 'toolu_b');
+    expect(ends(outputs)).toEqual(['toolu_a', 'toolu_b']);
+  });
+});

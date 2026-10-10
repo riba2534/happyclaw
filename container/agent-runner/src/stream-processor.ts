@@ -1664,8 +1664,32 @@ export class StreamEventProcessor {
             },
           });
         }
+        this.endTopLevelToolOnResult(block.tool_use_id);
       }
     }
+  }
+
+  /**
+   * A returned top-level tool is finished. Waiting for the next assistant
+   * message to infer its end left "正在运行命令" (and a spinning card) on
+   * screen for 5-6s per tool while the model was already planning its next
+   * step. Task tools end via their task lifecycle, and the active Skill keeps
+   * nesting the tools it runs, so both keep the inferred end.
+   */
+  private endTopLevelToolOnResult(toolUseId: string): void {
+    if (
+      toolUseId !== this.activeTopLevelToolUseId ||
+      this.taskToolUseIds.has(toolUseId) ||
+      toolUseId === this.activeSkillToolUseId
+    ) {
+      return;
+    }
+    this.emit({
+      status: 'stream',
+      result: null,
+      streamEvent: { eventType: 'tool_use_end', toolUseId },
+    });
+    this.activeTopLevelToolUseId = null;
   }
 
   /** Check if a tool_use was already resolved by the streaming accumulator. */

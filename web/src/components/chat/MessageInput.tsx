@@ -1430,6 +1430,12 @@ interface QueuedFollowUpRowProps {
 const ROW_ICON_BUTTON =
   'flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-surface-hover hover:text-foreground disabled:cursor-not-allowed disabled:opacity-35 pointer-coarse:size-10';
 
+/**
+ * A steer stops the current reply and releases the queue with it: queued
+ * messages go to the next turn together with this one (CLAUDE.md §6.4).
+ */
+const STEER_NOW_DESCRIPTION = '将停止当前回复，与已排队的消息一起立即发送';
+
 function QueuedFollowUpRow({
   item,
   index,
@@ -1458,6 +1464,7 @@ function QueuedFollowUpRow({
           onClick={() => void handleFollowUpAction(item, 'steer')}
           className="inline-flex h-7 shrink-0 items-center gap-1 rounded-md px-2 text-caption font-medium text-primary-text transition-colors hover:bg-primary/10 disabled:cursor-not-allowed disabled:opacity-50 pointer-coarse:h-10"
           aria-label={`立即发送：${label}`}
+          aria-description={STEER_NOW_DESCRIPTION}
         >
           {busy || locked ? (
             <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -1467,9 +1474,7 @@ function QueuedFollowUpRow({
           {locked ? '发送中' : '立即发送'}
         </button>
       </TooltipTrigger>
-      <TooltipContent side="top">
-        将停止当前回复，并立即发送这条消息
-      </TooltipContent>
+      <TooltipContent side="top">{STEER_NOW_DESCRIPTION}</TooltipContent>
     </Tooltip>
   );
 

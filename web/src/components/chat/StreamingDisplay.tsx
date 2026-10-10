@@ -3,9 +3,7 @@ import {
   ChevronDown,
   ChevronRight,
   ChevronUp,
-  ListTree,
   Loader2,
-  ShieldAlert,
   Sparkles,
 } from 'lucide-react';
 import {
@@ -27,6 +25,7 @@ import { useConnectionStatus } from '../../hooks/useConnectionStatus';
 import { useShellStore } from '../../stores/shell';
 import { formatThinkingDuration } from '../../utils/thinking-duration';
 import { WorkflowRunCard } from './WorkflowRunCard';
+import { PermissionAlert, TracePanel } from './ExecutionTrace';
 import { shouldShowStreamingPartialText } from '../../lib/interaction-mode';
 import { useThrottledValue } from '../../hooks/useThrottledValue';
 import { cn } from '@/lib/utils';
@@ -125,23 +124,62 @@ function isCompactingStatus(status: string | null | undefined): boolean {
   return status === 'compacting' || !!status?.startsWith('正在整理上下文');
 }
 
+/** The runner's heartbeat while the model reasons without visible thinking. */
+const DEEP_THINKING_STATUS = '正在深入分析…';
+
 /** Statuses the run status line already shows as its phase. */
 function isPhaseSystemStatus(status: string): boolean {
-  return status === 'requesting' || isCompactingStatus(status);
+  return (
+    status === 'requesting' ||
+    status === DEEP_THINKING_STATUS ||
+    isCompactingStatus(status)
+  );
 }
 
 /** Collapsible block for a single Task Agent — visually consistent with the Thinking block. */
 /** Present-tense phase for the run status next to the agent name. */
-function describeRunPhase(streaming: StreamingState | null | undefined) {
-  if (!streaming) return '正在准备回复';
+function describeRunPhase(
+  streaming: StreamingState | null | undefined,
+  stopping: boolean,
+) {
+  if (stopping) return '正在停止…';
+  if (!streaming || streaming.settling) return '正在准备回复';
   const tools = streaming.activeTools;
   const tool =
     [...tools].reverse().find((t) => !t.isNested) ?? tools[tools.length - 1];
   if (tool) return describeToolActivity(tool.toolName);
   if (isCompactingStatus(streaming.systemStatus)) return '正在整理上下文';
-  if (streaming.isThinking) return '正在思考';
+  // A tool just returned: the model is working out its next step.
+  if (streaming.isThinking || streaming.awaitingModel) return '正在思考';
+  if (streaming.systemStatus === DEEP_THINKING_STATUS) return '正在深入分析';
   if (streaming.partialText) return '正在回复';
   return '正在处理';
+}
+
+/** Thinking shorter than a second reads as noise ("已思考 0.2 秒"). */
+function thinkingLabel(durationMs: number | undefined): string {
+  return durationMs != null && durationMs >= 1000
+    ? formatThinkingDuration(durationMs)
+    : '思考过程';
+}
+
+/** Initial reasoning-block state: open only while thinking is live. */
+function initialThinkingExpanded(
+  streaming: StreamingState | null | undefined,
+): boolean {
+  return !streaming?.thinkingText || streaming.isThinking;
+}
+
+/**
+ * Milliseconds between Markdown renders of the open (last) block. An open
+ * table or long block re-parses in full on every render (85ms for a 60-row
+ * table at 4x CPU), so large open blocks render less often.
+ */
+function streamingMarkdownInterval(text: string): number {
+  const openTail = text.length - text.lastIndexOf('\n\n');
+  if (openTail > 4000) return 300;
+  if (openTail > 1500) return 200;
+  return STREAMING_MARKDOWN_INTERVAL_MS;
 }
 
 function formatRunElapsed(seconds: number): string {
@@ -153,11 +191,16 @@ function formatRunElapsed(seconds: number): string {
 const RunStatus = memo(function RunStatus({
   runtimeJid,
   phase,
+  stopHint = false,
 }: {
   runtimeJid: string;
   phase: string;
+  /** This view's composer stops the run on Esc. */
+  stopHint?: boolean;
 }) {
   const startedAt = useChatStore((s) => s.activeRuns[runtimeJid]?.startedAt);
+  // A requested stop freezes the timer at the click: the run is ending.
+  const stoppedAt = useChatStore((s) => s.stopRequests[runtimeJid]);
   // Offline, the run may have moved on; don't pretend the phase is live. A
   // dropped WebSocket alone isn't enough: HTTP polling keeps state fresh.
   const offline = useConnectionStatus() === 'offline';
@@ -165,17 +208,22 @@ const RunStatus = memo(function RunStatus({
   const announced = useThrottledValue(shownPhase, 3000);
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
-    if (!startedAt) return;
+    if (!startedAt || stoppedAt) return;
     const interval = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(interval);
-  }, [startedAt]);
+  }, [startedAt, stoppedAt]);
   const start = startedAt ? Date.parse(startedAt) : Number.NaN;
   const elapsed = Number.isFinite(start)
-    ? Math.max(0, Math.floor((now - start) / 1000))
+    ? Math.max(0, Math.floor(((stoppedAt ?? now) - start) / 1000))
     : null;
   return (
     <span className="flex min-w-0 items-center gap-1.5 text-caption text-muted-foreground">
-      <span className={cn('truncate', offline ? 'text-warning' : 'shimmer')}>
+      <span
+        className={cn(
+          'truncate',
+          offline ? 'text-warning' : !stoppedAt && 'shimmer',
+        )}
+      >
         {shownPhase}
       </span>
       <span role="status" aria-live="polite" className="sr-only">
@@ -184,6 +232,14 @@ const RunStatus = memo(function RunStatus({
       {elapsed != null && !offline && (
         <span className="shrink-0 text-faint-foreground tabular-nums">
           {formatRunElapsed(elapsed)}
+        </span>
+      )}
+      {stopHint && !stoppedAt && !offline && (
+        <span
+          aria-hidden="true"
+          className="shrink-0 text-faint-foreground max-sm:hidden pointer-coarse:hidden"
+        >
+          · Esc 停止
         </span>
       )}
     </span>
@@ -432,197 +488,6 @@ const SdkTaskRuntimeBlock = memo(function SdkTaskRuntimeBlock({
   );
 });
 
-// The trace and permission panels take the event list rather than the whole
-// streaming state, so they skip the re-renders caused by streamed text.
-const TracePanel = memo(function TracePanel({
-  traceEvents,
-  taskCount,
-}: {
-  traceEvents: import('../../stores/chat').StreamingState['traceEvents'];
-  taskCount: number;
-}) {
-  const [expanded, setExpanded] = useState(false);
-  const seenTrace = new Set<string>();
-  const visibleTrace = traceEvents
-    .filter((e) => e.displayLevel !== 'debug' && e.kind !== 'context')
-    .filter((event) => {
-      const key = `${event.kind}\u0000${event.taskId ?? ''}\u0000${event.title}\u0000${event.summary ?? ''}\u0000${event.detail ?? ''}`;
-      if (seenTrace.has(key)) return false;
-      seenTrace.add(key);
-      return true;
-    });
-  if (visibleTrace.length === 0 && taskCount === 0) return null;
-
-  const groups = [
-    {
-      key: 'permission',
-      label: '权限拒绝',
-      items: visibleTrace.filter((e) => e.kind === 'permission'),
-    },
-    {
-      key: 'task',
-      label: '子任务',
-      items: visibleTrace.filter((e) => e.kind === 'task'),
-    },
-    {
-      key: 'tool',
-      label: '工具',
-      items: visibleTrace.filter(
-        (e) => e.kind === 'tool' || e.kind === 'skill',
-      ),
-    },
-    {
-      key: 'hook',
-      label: 'Hooks',
-      items: visibleTrace.filter((e) => e.kind === 'hook'),
-    },
-    {
-      key: 'memory',
-      label: '记忆与压缩',
-      items: visibleTrace.filter((e) => e.kind === 'memory'),
-    },
-    {
-      key: 'system',
-      label: '系统',
-      items: visibleTrace.filter((e) => e.kind === 'status'),
-    },
-  ].filter((g) => g.items.length > 0);
-
-  return (
-    <div className="mb-2 font-sans">
-      <button
-        type="button"
-        onClick={() => setExpanded(!expanded)}
-        aria-expanded={expanded}
-        className="-ml-1.5 inline-flex h-7 cursor-pointer items-center gap-1.5 rounded-md px-1.5 text-caption text-muted-foreground transition-colors hover:bg-surface-hover hover:text-foreground"
-      >
-        <ListTree className="size-3.5" />
-        <span>执行详情</span>
-        <span className="tabular-nums text-faint-foreground">
-          {visibleTrace.length} 条
-        </span>
-        <ChevronRight
-          className={`size-3.5 transition-transform duration-150 ${expanded ? 'rotate-90' : ''}`}
-        />
-      </button>
-      {expanded && (
-        <div className="mt-1 max-h-72 space-y-3 overflow-y-auto border-l-2 border-surface-border py-1 pl-3">
-          {groups.map((group) => (
-            <div key={group.key}>
-              <div className="mb-1 text-micro font-medium text-faint-foreground">
-                {group.label}
-              </div>
-              <div className="space-y-1">
-                {group.items.slice(-20).map((item) => (
-                  <TraceRow
-                    key={item.id}
-                    item={item}
-                    danger={group.key === 'permission'}
-                  />
-                ))}
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-});
-
-/** A single trace row. Rows carrying a `detail` (e.g. recalled memory, compaction
- *  summary) become click-to-expand so the trace stays scannable but the full
- *  context is one click away. Permission rows render in red. */
-function TraceRow({
-  item,
-  danger,
-}: {
-  item: import('../../stores/chat').StreamingTraceEvent;
-  danger?: boolean;
-}) {
-  const [open, setOpen] = useState(false);
-  const hasDetail = !!item.detail && item.detail !== item.summary;
-  const base = danger ? 'text-error' : 'text-foreground/80';
-  return (
-    <div className={`text-label ${base} break-words`}>
-      {hasDetail ? (
-        <button
-          type="button"
-          onClick={() => setOpen((o) => !o)}
-          aria-expanded={open}
-          className="flex w-full cursor-pointer items-start gap-1 rounded-sm text-left outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
-        >
-          {open ? (
-            <ChevronUp className="mt-0.5 h-3 w-3 shrink-0 text-muted-foreground" />
-          ) : (
-            <ChevronDown className="mt-0.5 h-3 w-3 shrink-0 text-muted-foreground" />
-          )}
-          <TraceRowText item={item} />
-        </button>
-      ) : (
-        <div className="flex items-start gap-1">
-          <TraceRowText item={item} />
-        </div>
-      )}
-      {hasDetail && open && (
-        <div className="mt-0.5 ml-4 border-l-2 border-surface-border pl-2 text-caption break-all whitespace-pre-wrap text-muted-foreground">
-          {item.detail}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function TraceRowText({
-  item,
-}: {
-  item: import('../../stores/chat').StreamingTraceEvent;
-}) {
-  return (
-    <span>
-      <span className="font-medium">{item.title}</span>
-      {item.summary && (
-        <span className="text-muted-foreground"> — {item.summary}</span>
-      )}
-    </span>
-  );
-}
-
-/** Prominent red banner listing denied tool calls — a denied permission is a
- *  real signal the user should see at a glance, not something buried in the
- *  collapsed trace panel. */
-const PermissionAlert = memo(function PermissionAlert({
-  traceEvents,
-}: {
-  traceEvents: import('../../stores/chat').StreamingState['traceEvents'];
-}) {
-  const denied = traceEvents.filter((e) => e.kind === 'permission');
-  if (denied.length === 0) return null;
-  return (
-    <div className="mb-2 rounded-lg bg-error/5 p-2.5 font-sans ring-1 ring-error/20">
-      <div className="mb-1 flex items-center gap-1.5 text-caption font-medium text-error">
-        <ShieldAlert className="size-3.5" />
-        权限被拒绝 ({denied.length})
-      </div>
-      <div className="space-y-0.5 max-h-28 overflow-y-auto">
-        {denied.slice(-10).map((item) => (
-          <div
-            key={item.id}
-            className="text-label break-words text-foreground/80"
-          >
-            <span className="font-medium">{item.title}</span>
-            {(item.detail || item.summary) && (
-              <span className="opacity-75">
-                {' '}
-                — {item.detail || item.summary}
-              </span>
-            )}
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-});
-
 /** Shared streaming content — used by both compact and chat modes to eliminate duplication. */
 function StreamingContent({
   streaming,
@@ -633,6 +498,7 @@ function StreamingContent({
   thinkingRef,
   handleThinkingScroll,
   showPartialText,
+  live,
 }: {
   streaming: import('../../stores/chat').StreamingState;
   localElapsed: Record<string, number>;
@@ -642,11 +508,20 @@ function StreamingContent({
   thinkingRef: React.RefObject<HTMLDivElement | null>;
   handleThinkingScroll: () => void;
   showPartialText: boolean;
+  /** The run is producing this card right now (not stopped or settled). */
+  live: boolean;
 }) {
   const partialMarkdown = useThrottledValue(
     streaming.partialText,
-    STREAMING_MARKDOWN_INTERVAL_MS,
+    streamingMarkdownInterval(streaming.partialText),
   );
+  // Text is arriving: a quiet trailing dot marks where it continues.
+  const writing =
+    live &&
+    !streaming.isThinking &&
+    !streaming.awaitingModel &&
+    streaming.activeTools.length === 0 &&
+    !!streaming.partialText;
   // Classify active tools
   const cardTools = streaming.activeTools.filter(
     (t) => t.toolName !== 'AskUserQuestion',
@@ -690,10 +565,7 @@ function StreamingContent({
             <span className={streaming.isThinking ? 'shimmer' : undefined}>
               {streaming.isThinking
                 ? '思考中…'
-                : streaming.thinkingDurationMs != null &&
-                    streaming.thinkingDurationMs > 0
-                  ? formatThinkingDuration(streaming.thinkingDurationMs)
-                  : '思考过程'}
+                : thinkingLabel(streaming.thinkingDurationMs)}
             </span>
             <ChevronRight
               className={`size-3.5 transition-transform duration-150 ${thinkingExpanded ? 'rotate-90' : ''}`}
@@ -802,6 +674,7 @@ function StreamingContent({
             content={partialMarkdown}
             groupJid={groupJid}
             variant="chat"
+            caret={writing}
           />
         </div>
       )}
@@ -818,6 +691,8 @@ interface StreamingDisplayProps {
   agentAvatarEmoji?: string | null;
   agentAvatarColor?: string | null;
   interactionMode?: InteractionMode;
+  /** The status line mentions Esc: this view's composer stops the run. */
+  stopHint?: boolean;
 }
 
 const EMPTY_AGENTS: AgentInfo[] = [];
@@ -831,6 +706,7 @@ export function StreamingDisplay({
   agentAvatarEmoji,
   agentAvatarColor,
   interactionMode = 'assistant',
+  stopHint = false,
 }: StreamingDisplayProps) {
   const mainStreaming = useChatStore((s) => s.streaming[groupJid]);
   const agentStreamingState = useChatStore((s) =>
@@ -843,6 +719,7 @@ export function StreamingDisplay({
   );
   const runtimeJid = agentId ? `${groupJid}#agent:${agentId}` : groupJid;
   const streaming = agentId ? agentStreamingState : mainStreaming;
+  const stopping = useChatStore((s) => !!s.stopRequests[runtimeJid]);
   // Task agents — only shown in main conversation (not inside agent tabs)
   const allAgents = useChatStore((s) =>
     !agentId ? (s.agents[groupJid] ?? EMPTY_AGENTS) : EMPTY_AGENTS,
@@ -879,10 +756,13 @@ export function StreamingDisplay({
   const senderName = agentIdentity.name;
   const { mode: displayMode } = useDisplayMode();
   const isCompact = displayMode === 'compact';
-  const [thinkingExpanded, setThinkingExpanded] = useState(true);
+  // After a remount (switching conversations, a reload) a reply that has
+  // moved on from thinking keeps its reasoning collapsed.
+  const [thinkingExpanded, setThinkingExpanded] = useState(() =>
+    initialThinkingExpanded(streaming),
+  );
   const thinkingRef = useRef<HTMLDivElement>(null);
   const userScrolledRef = useRef(false);
-  const prevIsThinkingRef = useRef(false);
   const userToggledThinkingRef = useRef(false);
   const [localElapsed, setLocalElapsed] = useState<Record<string, number>>({});
 
@@ -948,40 +828,39 @@ export function StreamingDisplay({
     el.scrollTop = el.scrollHeight;
   }, [streaming?.thinkingText, thinkingExpanded]);
 
-  // Reset on group change
+  // Reset on group change (not on mount: the initial state already did).
+  const resetGroupRef = useRef(groupJid);
   useEffect(() => {
-    setThinkingExpanded(true);
+    if (resetGroupRef.current === groupJid) return;
+    resetGroupRef.current = groupJid;
+    const current = agentId
+      ? useChatStore.getState().agentStreaming[agentId]
+      : useChatStore.getState().streaming[groupJid];
+    setThinkingExpanded(initialThinkingExpanded(current));
     userScrolledRef.current = false;
     userToggledThinkingRef.current = false;
-    prevIsThinkingRef.current = false;
-  }, [groupJid]);
+  }, [agentId, groupJid]);
 
   useEffect(() => {
     if (!streaming) {
       setThinkingExpanded(true);
       userScrolledRef.current = false;
       userToggledThinkingRef.current = false;
-      prevIsThinkingRef.current = false;
     }
   }, [streaming]);
 
-  // Auto-collapse the reasoning block on isThinking: true → false transition
-  // so the streaming card height matches the post-streaming MessageBubble's
-  // collapsed ReasoningBlock — eliminates the layout jump described in #493.
-  // We respect an explicit user toggle: if the user manually expanded/collapsed
-  // during this turn we don't override.
+  // Collapse the reasoning block once thinking is over so the streaming card
+  // height matches the post-streaming MessageBubble's collapsed
+  // ReasoningBlock — eliminates the layout jump described in #493. Not only
+  // on an observed true → false transition: a burst that starts and ends
+  // within one frame (or before a remount) was never seen thinking. We
+  // respect an explicit user toggle during this turn.
   useEffect(() => {
     const isThinking = streaming?.isThinking ?? false;
     const hasThinking = !!streaming?.thinkingText;
-    if (
-      prevIsThinkingRef.current &&
-      !isThinking &&
-      hasThinking &&
-      !userToggledThinkingRef.current
-    ) {
+    if (!isThinking && hasThinking && !userToggledThinkingRef.current) {
       setThinkingExpanded(false);
     }
-    prevIsThinkingRef.current = isThinking;
   }, [streaming?.isThinking, streaming?.thinkingText]);
 
   // Local elapsed time for tools. Depend on the joined tool-id signature
@@ -1022,8 +901,19 @@ export function StreamingDisplay({
 
   const runStatus =
     isWaiting && !streaming?.interrupted ? (
-      <RunStatus runtimeJid={runtimeJid} phase={describeRunPhase(streaming)} />
+      <RunStatus
+        runtimeJid={runtimeJid}
+        phase={describeRunPhase(streaming, stopping)}
+        stopHint={stopHint}
+      />
     ) : null;
+  // Only a card the run is still writing gets live affordances (the caret).
+  const live =
+    isWaiting &&
+    !stopping &&
+    !!streaming &&
+    !streaming.interrupted &&
+    !streaming.settling;
   // Sticky: a long run pushes the row above the viewport, and it carries the
   // phase and elapsed time. Same height as MessageBubble's row so the
   // streaming → final swap doesn't move content.
@@ -1152,6 +1042,7 @@ export function StreamingDisplay({
               thinkingRef={thinkingRef}
               handleThinkingScroll={handleThinkingScroll}
               showPartialText={showPartialText}
+              live={live}
             />
           )}
 
@@ -1195,6 +1086,7 @@ export function StreamingDisplay({
                 thinkingRef={thinkingRef}
                 handleThinkingScroll={handleThinkingScroll}
                 showPartialText={showPartialText}
+                live={live}
               />
             )}
 
@@ -1209,6 +1101,9 @@ export function StreamingDisplay({
           </div>
         </div>
       </div>
+      {/* Holds the place of the final reply's action row (MessageBubble), so
+          the card and the reply that replaces it are the same height. */}
+      <div aria-hidden="true" className="mt-1.5 h-7 pointer-coarse:h-10" />
     </div>
   );
 }

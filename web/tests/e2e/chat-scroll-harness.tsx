@@ -6,10 +6,16 @@
 //   &slowImage=1     the newest reply embeds an image served late by the test
 // window.__chatScroll also drives a streamed reply: startStreaming() appends a
 // sentence every intervalMs, finishStreaming() swaps the stream for its final
-// message in one store update, as a completed reply does.
+// message in one store update, as a completed reply does. wsEmit() feeds
+// WebSocket frames (stream_event, stream_snapshot, new_message) through the
+// app's real subscriptions, runStarted()/runFinished() the run lifecycle, and
+// switchTo() opens another workspace (web:e2e-scroll-other) mid-stream.
+import { useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { MemoryRouter } from 'react-router-dom';
 import { ChatView } from '../../src/components/chat/ChatView';
+import { wsManager } from '../../src/api/ws';
+import { useGlobalStreamSubscriptions } from '../../src/hooks/useStreamSubscriptions';
 import { useAuthStore, type UserPublic } from '../../src/stores/auth';
 import {
   useChatStore,
@@ -25,6 +31,7 @@ const late = params.get('late') === '1';
 const slowImage = params.get('slowImage') === '1';
 const olderPages = params.get('hasMore') === '1' ? 3 : 0;
 const groupJid = 'web:e2e-scroll';
+const otherJid = 'web:e2e-scroll-other';
 const userId = 'scroll-user';
 
 const user: UserPublic = {
@@ -125,8 +132,26 @@ function appendStreamText(text: string) {
 }
 
 let loadedOlderPages = 0;
+let switchView: (jid: string) => void = () => {};
 const state = {
   loadedOlderPages: () => loadedOlderPages,
+  /** Delivers a WebSocket frame to the app's subscribers. */
+  wsEmit(type: string, data: unknown) {
+    (wsManager as unknown as { emit(t: string, d: unknown): void }).emit(
+      type,
+      data,
+    );
+  },
+  runStarted(runId: string, jid = groupJid) {
+    useChatStore.getState().handleRunStarted(jid, runId);
+  },
+  runFinished(runId: string, jid = groupJid) {
+    useChatStore.getState().handleRunFinished(jid, runId);
+  },
+  /** Opens another workspace (unmounting this ChatView) or comes back. */
+  switchTo(jid: string) {
+    switchView(jid);
+  },
   /** Appends an agent reply, or a system row (e.g. `agent_error:…`). */
   pushMessage(content: string, sender = 'happyclaw-agent') {
     useChatStore.setState((s) => ({
@@ -221,31 +246,38 @@ useAuthStore.setState({
   checking: false,
 });
 
+const workspace = {
+  added_at: '2026-01-01T00:00:00.000Z',
+  interaction_mode: 'assistant' as const,
+  kind: 'web' as const,
+  is_home: false,
+  is_my_home: false,
+  can_modify: true,
+  execution_mode: 'host' as const,
+  agent_profile_name: '测试智能体',
+};
+
 useChatStore.setState({
   groups: {
-    [groupJid]: {
-      name: '滚动测试工作区',
-      folder: 'e2e-scroll',
-      added_at: '2026-01-01T00:00:00.000Z',
-      interaction_mode: 'assistant',
-      kind: 'web',
-      is_home: false,
-      is_my_home: false,
-      can_modify: true,
-      execution_mode: 'host',
-      agent_profile_name: '测试智能体',
+    [groupJid]: { ...workspace, name: '滚动测试工作区', folder: 'e2e-scroll' },
+    [otherJid]: {
+      ...workspace,
+      name: '另一个工作区',
+      folder: 'e2e-scroll-other',
     },
   },
   currentGroup: groupJid,
-  messages: late ? {} : { [groupJid]: firstPage() },
+  messages: late
+    ? { [otherJid]: page(9, 4) }
+    : { [groupJid]: firstPage(), [otherJid]: page(9, 4) },
   waiting: {},
-  hasMore: { [groupJid]: olderPages > 0 },
-  agents: { [groupJid]: [] },
-  activeAgentTab: { [groupJid]: null },
+  hasMore: { [groupJid]: olderPages > 0, [otherJid]: false },
+  agents: { [groupJid]: [], [otherJid]: [] },
+  activeAgentTab: { [groupJid]: null, [otherJid]: null },
   agentMessages: {},
   agentWaiting: {},
   agentHasMore: {},
-  followUps: { [groupJid]: [] },
+  followUps: { [groupJid]: [], [otherJid]: [] },
   loading: false,
   loadMessages: async (jid: string, loadMore?: boolean) => {
     if (!loadMore) {
@@ -284,10 +316,21 @@ useFileStore.setState({
   navigateTo: () => undefined,
 });
 
+/** The app shell's part: global stream subscriptions and the open workspace. */
+function HarnessRoot() {
+  useGlobalStreamSubscriptions();
+  const [jid, setJid] = useState(groupJid);
+  switchView = (next) => {
+    useChatStore.setState({ currentGroup: next });
+    setJid(next);
+  };
+  return <ChatView key={jid} groupJid={jid} />;
+}
+
 createRoot(document.getElementById('root')!).render(
   <MemoryRouter initialEntries={['/chat/e2e-scroll']}>
     <main className="h-[100dvh] overflow-hidden bg-background">
-      <ChatView groupJid={groupJid} />
+      <HarnessRoot />
     </main>
   </MemoryRouter>,
 );

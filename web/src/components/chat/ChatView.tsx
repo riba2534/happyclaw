@@ -265,9 +265,7 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
   const sendMessage = useChatStore((s) => s.sendMessage);
   const interruptQuery = useChatStore((s) => s.interruptQuery);
   const resetSession = useChatStore((s) => s.resetSession);
-  const handleStreamEvent = useChatStore((s) => s.handleStreamEvent);
   const handleWsNewMessage = useChatStore((s) => s.handleWsNewMessage);
-  const handleStreamSnapshot = useChatStore((s) => s.handleStreamSnapshot);
   const updateInteractionMode = useChatStore((s) => s.updateInteractionMode);
 
   const agents = useChatStore((s) => s.agents[groupJid] ?? EMPTY_AGENTS);
@@ -649,13 +647,10 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
     activeAgentMessages,
   ]);
 
-  // 监听 WebSocket 流式事件
+  // stream_event / stream_snapshot are applied for every workspace by
+  // AppLayout (useGlobalStreamSubscriptions); this view only listens to the
+  // events that concern the conversation it shows.
   useEffect(() => {
-    const unsub1 = wsManager.on('stream_event', (data: any) => {
-      if (data.chatJid === groupJid) {
-        handleStreamEvent(groupJid, data.event, data.agentId, data.runId);
-      }
-    });
     // 通过 new_message 立即添加消息到本地状态（消除轮询延迟导致的消息"丢失"）
     const unsub2 = wsManager.on('new_message', (data: any) => {
       if (data.chatJid === groupJid && data.message) {
@@ -668,26 +663,6 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
         showToast('发送失败', data.error || '消息格式无效', 4000);
       }
     });
-    // 后端推送的流式快照（WS 重连时恢复）
-    const agentSnapshotPrefix = groupJid + '#agent:';
-    const unsub4 = wsManager.on('stream_snapshot', (data: any) => {
-      if (!data.snapshot) return;
-      if (data.chatJid === groupJid) {
-        handleStreamSnapshot(groupJid, data.snapshot, undefined, data.runId);
-      } else if (
-        typeof data.chatJid === 'string' &&
-        data.chatJid.startsWith(agentSnapshotPrefix)
-      ) {
-        // Agent-specific snapshot: extract agentId and restore agentStreaming
-        const snapshotAgentId = data.chatJid.slice(agentSnapshotPrefix.length);
-        handleStreamSnapshot(
-          groupJid,
-          data.snapshot,
-          snapshotAgentId,
-          data.runId,
-        );
-      }
-    });
     const unsub5 = wsManager.on('follow_up_update', (data: any) => {
       if (data.chatJid !== groupJid || !Array.isArray(data.items)) return;
       const targetJid = data.agentId
@@ -697,19 +672,11 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
     });
     // agent_status 已提升到 AppLayout 全局监听
     return () => {
-      unsub1();
       unsub2();
       unsub3();
-      unsub4();
       unsub5();
     };
-  }, [
-    groupJid,
-    handleStreamEvent,
-    handleWsNewMessage,
-    handleStreamSnapshot,
-    handleFollowUpUpdate,
-  ]);
+  }, [groupJid, handleWsNewMessage, handleFollowUpUpdate]);
 
   useEffect(() => {
     void loadFollowUps(followUpChatJid);

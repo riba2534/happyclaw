@@ -94,3 +94,75 @@ export function markdownTail(text: string, keep: number): string {
   }
   return `…\n\n${blocks.slice(start).join('\n')}`;
 }
+
+/** Calls `visit` for every line outside fenced code, with its fence state. */
+function scanOutsideFences(
+  text: string,
+  visit: (line: string) => void,
+): boolean {
+  let fence: { char: string; length: number } | null = null;
+  for (const line of text.split('\n')) {
+    if (fence) {
+      const close = FENCE_PATTERN.exec(line);
+      if (
+        close &&
+        close[1][0] === fence.char &&
+        close[1].length >= fence.length &&
+        line.trim() === close[1]
+      ) {
+        fence = null;
+      }
+      continue;
+    }
+    const open = FENCE_PATTERN.exec(line);
+    if (open) {
+      fence = { char: open[1][0], length: open[1].length };
+      continue;
+    }
+    visit(line);
+  }
+  return fence !== null;
+}
+
+/** True when `text` ends inside a code fence that has not closed yet. */
+export function endsInOpenFence(text: string): boolean {
+  return scanOutsideFences(text, () => {});
+}
+
+const LINK_DEFINITION_PATTERN = /^ {0,3}\[(?!\^)[^\]]+\]:\s*\S/;
+const FOOTNOTE_DEFINITION_PATTERN = /^ {0,3}\[\^[^\]\s]+\]:/;
+const FOOTNOTE_REFERENCE_PATTERN = /\[\^[^\]\s]+\]/;
+
+/**
+ * Definitions that resolve across the whole document: reference-style link
+ * definitions (`[ref]: url`) and footnotes (`[^1]` / `[^1]: …`).
+ */
+export function findMarkdownDefinitions(text: string): {
+  links: string[];
+  footnotes: boolean;
+} {
+  const links: string[] = [];
+  let footnotes = false;
+  if (!text.includes(']')) return { links, footnotes };
+  scanOutsideFences(text, (line) => {
+    if (LINK_DEFINITION_PATTERN.test(line)) links.push(line.trim());
+    else if (
+      FOOTNOTE_DEFINITION_PATTERN.test(line) ||
+      FOOTNOTE_REFERENCE_PATTERN.test(line)
+    ) {
+      footnotes = true;
+    }
+  });
+  return { links, footnotes };
+}
+
+/**
+ * Block-by-block rendering matches whole-document rendering unless the text
+ * relies on document-wide definitions (reference links, footnotes) or raw
+ * HTML that may wrap several blocks (`<details>` around paragraphs).
+ */
+export function canRenderBlockwise(text: string, rawHtml: boolean): boolean {
+  if (rawHtml) return false;
+  const { links, footnotes } = findMarkdownDefinitions(text);
+  return links.length === 0 && !footnotes;
+}
