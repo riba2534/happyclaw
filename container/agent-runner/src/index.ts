@@ -2148,7 +2148,7 @@ async function runQueryAttempt(
   const usageReconciler = new ResultUsageReconciler({
     resumed: !!sessionId,
     baseline: sessionId
-      ? readUsageBaseline(resolveTranscriptDir(), sessionId)
+      ? readUsageBaseline(resolveTranscriptDir(), sessionId, logWarn)
       : null,
   });
   const assistantUsageCollector = new AssistantUsageCollector();

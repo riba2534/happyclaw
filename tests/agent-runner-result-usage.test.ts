@@ -1,6 +1,13 @@
 import { afterEach, describe, expect, test } from 'vitest';
 
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import {
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -11,6 +18,7 @@ import {
 import { AssistantUsageCollector } from '../container/agent-runner/src/assistant-usage.js';
 import {
   readUsageBaseline,
+  usageBaselinePath,
   writeUsageBaseline,
 } from '../container/agent-runner/src/usage-baseline-store.js';
 
@@ -807,6 +815,50 @@ describe('usage baseline sidecar', () => {
     dirs.push(dir);
     return dir;
   }
+
+  function asideFiles(dir: string) {
+    return readdirSync(dir).filter((name) => name.includes('.corrupt-'));
+  }
+
+  test('a missing sidecar is not an error', () => {
+    const dir = sidecarDir();
+    const warnings: string[] = [];
+    expect(readUsageBaseline(dir, 'none', (w) => warnings.push(w))).toBeNull();
+    expect(warnings).toEqual([]);
+  });
+
+  test.each([
+    ['torn', (file: string) => writeFileSync(file, '{"version":2,"sess')],
+    [
+      'from an older format',
+      (file: string) =>
+        writeFileSync(
+          file,
+          JSON.stringify({
+            version: 1,
+            sessionId: 's',
+            updatedAt: '',
+            totalCostUSD: 0,
+            modelUsage: {},
+          }),
+        ),
+    ],
+    ['unreadable', (file: string) => mkdirSync(file)],
+  ])(
+    'a sidecar that is %s is moved aside so no later process reads it',
+    (_label, corrupt) => {
+      const dir = sidecarDir();
+      const file = usageBaselinePath(dir, 's')!;
+      corrupt(file);
+      const warnings: string[] = [];
+      expect(readUsageBaseline(dir, 's', (w) => warnings.push(w))).toBeNull();
+      expect(warnings).toHaveLength(1);
+      expect(asideFiles(dir)).toHaveLength(1);
+      // The next process finds no sidecar and re-baselines cleanly.
+      expect(readUsageBaseline(dir, 's', (w) => warnings.push(w))).toBeNull();
+      expect(warnings).toHaveLength(1);
+    },
+  );
 
   test('pending usage round-trips with its age', () => {
     const dir = sidecarDir();
