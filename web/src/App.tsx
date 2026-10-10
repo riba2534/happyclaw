@@ -14,6 +14,7 @@ import {
   shouldPreloadChatRoute,
 } from './utils/chat-route-preload';
 import { preloadedComponent } from './lib/preloaded-component';
+import { Toaster } from '@/components/ui/sonner';
 import { ConfirmHost } from '@/components/common/ConfirmHost';
 
 // The shell and chat page are preloaded at entry and render without
@@ -54,14 +55,6 @@ const appLayoutRoute = preloadedComponent(
 );
 const loadAppLayout = appLayoutRoute.preload;
 const AppLayout = appLayoutRoute.Component;
-// The toast host (and the sonner library) load right after the entry instead
-// of inside it; nothing can toast before the first data request returns.
-const toasterHost = preloadedComponent(
-  () => import('@/components/ui/sonner').then((m) => ({ default: m.Toaster })),
-  () => null,
-);
-const Toaster = toasterHost.Component;
-if (typeof window !== 'undefined') void toasterHost.preload();
 
 // Start the expensive chat split as soon as the entry executes, but only for
 // the default/chat routes. Static HTML modulepreloads made login, setup, tasks,
