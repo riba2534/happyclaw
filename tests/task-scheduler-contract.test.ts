@@ -2835,8 +2835,13 @@ describe('scheduled task workspace/session contract', () => {
       },
     });
 
+    // The competing claim happens after one full lease has elapsed, so only
+    // the heartbeat (every leaseMs / 3) keeps it owned. The margins tolerate
+    // a loaded CI event loop: a 60ms lease lapsed whenever a timer slipped
+    // by ~40ms, and the leftover claim then leaked into the next test.
+    const leaseMs = 900;
     deps.storeResultAndNotify.mockImplementationOnce(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 180));
+      await new Promise((resolve) => setTimeout(resolve, 2_400));
       return {
         status: 'success',
         summary: {
@@ -2847,10 +2852,14 @@ describe('scheduled task workspace/session contract', () => {
         },
       };
     });
-    const retrying = processClaimedTaskRunNotification(retryClaim, deps, 60);
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    const retrying = processClaimedTaskRunNotification(
+      retryClaim,
+      deps,
+      leaseMs,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 1_500));
     expect(
-      db.claimNextTaskRunNotification('competing-retry-worker', 60),
+      db.claimNextTaskRunNotification('competing-retry-worker', leaseMs),
     ).toBeUndefined();
     expect(await retrying).toBe(true);
     expect(deps.storeResultAndNotify).toHaveBeenLastCalledWith(
