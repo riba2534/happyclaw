@@ -240,10 +240,12 @@ test('scrolling up right after a new message is not undone', async ({
   const center = await transcriptCenter(page);
   await page.mouse.move(center.x, center.y);
   await page.mouse.wheel(0, -900);
-  await expect.poll(async () => (await metrics(page)).gap).toBeGreaterThan(500);
+  // While the jump is still animating the list applies the wheel's own delta
+  // (900 / devicePixelRatio here); afterwards Chrome scrolls natively.
+  await expect.poll(async () => (await metrics(page)).gap).toBeGreaterThan(200);
 
   await page.waitForTimeout(1500);
-  expect((await metrics(page)).gap).toBeGreaterThan(500);
+  expect((await metrics(page)).gap).toBeGreaterThan(200);
   await expect(bottomButton(page)).toBeVisible();
 });
 
@@ -266,6 +268,76 @@ test('scrolling up while the jump to the bottom animates stops it there', async 
   expect(afterWheel).toBeGreaterThan(150);
 
   // Neither the animation nor its catch-up resumes the way down.
+  await page.waitForTimeout(1500);
+  expect(Math.abs((await metrics(page)).gap - afterWheel)).toBeLessThan(5);
+  await expect(bottomButton(page)).toBeVisible();
+});
+
+test('scrolling up while the jump to the bottom finishes its last pixels still stops it', async ({
+  page,
+}) => {
+  await openHarness(page, { n: '60' });
+  await settledAtBottom(page);
+  const { top } = await metrics(page);
+  await scrollTranscriptTo(page, top - 3000);
+  await page.waitForTimeout(300);
+
+  // The scroll handler counts the jump as landed within 10px of the bottom
+  // while Chrome is still animating, and ignoring the wheel. Scroll up right
+  // then; a synthetic wheel never scrolls natively, so only the takeover can
+  // move the transcript.
+  await page.evaluate(() => {
+    const el = [
+      ...document.querySelectorAll<HTMLElement>(
+        '[data-hc-chat-view] .overflow-y-auto',
+      ),
+    ].sort((a, b) => b.scrollHeight - a.scrollHeight)[0];
+    const probe = window as unknown as { __landedAfterMs?: number };
+    let clickedAt = 0;
+    document.addEventListener(
+      'click',
+      () => {
+        clickedAt = performance.now();
+      },
+      { capture: true, once: true },
+    );
+    const onScroll = () => {
+      if (!clickedAt) return;
+      if (el.scrollHeight - el.scrollTop - el.clientHeight >= 10) return;
+      el.removeEventListener('scroll', onScroll);
+      probe.__landedAfterMs = performance.now() - clickedAt;
+      // After every scroll listener, including the one that records landing.
+      setTimeout(() => {
+        el.dispatchEvent(
+          new WheelEvent('wheel', {
+            deltaY: -400,
+            bubbles: true,
+            cancelable: true,
+          }),
+        );
+      });
+    };
+    el.addEventListener('scroll', onScroll);
+  });
+
+  await bottomButton(page).click();
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          (window as unknown as { __landedAfterMs?: number }).__landedAfterMs,
+      ),
+    )
+    .toBeDefined();
+  const landedAfterMs = await page.evaluate(
+    () => (window as unknown as { __landedAfterMs: number }).__landedAfterMs,
+  );
+  // Past the 600ms animation window the catch-up has already finished the
+  // jump and native wheel scrolling works again: not the case under test.
+  test.skip(landedAfterMs > 560, `jump landed after ${landedAfterMs}ms`);
+
+  await expect.poll(async () => (await metrics(page)).gap).toBeGreaterThan(300);
+  const afterWheel = (await metrics(page)).gap;
   await page.waitForTimeout(1500);
   expect(Math.abs((await metrics(page)).gap - afterWheel)).toBeLessThan(5);
   await expect(bottomButton(page)).toBeVisible();
@@ -309,7 +381,9 @@ test('a touch scroll up while the jump to the bottom animates stops it there', a
   await page.waitForTimeout(150);
   await touchDrag(page, 300);
   await page.waitForTimeout(1500);
-  expect((await metrics(page)).gap).toBeGreaterThan(300);
+  // Touch slop and the stopped animation eat part of the drag; pulled back
+  // down would leave no gap at all.
+  expect((await metrics(page)).gap).toBeGreaterThan(150);
   await expect(bottomButton(page)).toBeVisible();
 });
 
