@@ -13,6 +13,7 @@ import {
   lazyCreateContainerDialog,
 } from '../components/common/lazy-dialogs';
 import { useOpenedOnce } from '../lib/preloaded-component';
+import { findRouteGroupJid } from '../lib/route-workspace';
 import { EmojiAvatar } from '../components/common/EmojiAvatar';
 import {
   DropdownMenu,
@@ -88,21 +89,10 @@ export function ChatPage() {
     user?.username ||
     '?')[0].toUpperCase();
 
-  const routeGroupJid = useMemo(() => {
-    if (!groupFolder) return null;
-    const entry =
-      Object.entries(groups).find(
-        ([jid, info]) =>
-          info.folder === groupFolder &&
-          jid.startsWith('web:') &&
-          !!info.is_home,
-      ) ||
-      Object.entries(groups).find(
-        ([jid, info]) => info.folder === groupFolder && jid.startsWith('web:'),
-      ) ||
-      Object.entries(groups).find(([_, info]) => info.folder === groupFolder);
-    return entry?.[0] || null;
-  }, [groupFolder, groups]);
+  const routeGroupJid = useMemo(
+    () => (groupFolder ? findRouteGroupJid(groups, groupFolder) : null),
+    [groupFolder, groups],
+  );
   const hasGroups = Object.keys(groups).length > 0;
 
   // The workspace list is loaded once by AppLayout for every route and kept

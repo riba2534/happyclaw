@@ -24,6 +24,10 @@ import type {
 } from '../types';
 import { applyFollowUpTransition } from '../lib/message-timeline';
 import {
+  currentRouteChatFolder,
+  findRouteGroupJid,
+} from '../lib/route-workspace';
+import {
   normalizeGroupInteractionMode,
   normalizeInteractionMode,
 } from '../lib/interaction-mode';
@@ -1852,6 +1856,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
             state.currentGroup && !!groups[state.currentGroup];
 
           let nextCurrent = currentStillExists ? state.currentGroup : null;
+          // The first load lands before ChatPage syncs the route into the
+          // store. Defaulting to home there made the sidebar expand home and
+          // fetch its session list on every load of another workspace.
+          const routeFolder = nextCurrent ? null : currentRouteChatFolder();
+          if (!nextCurrent && routeFolder) {
+            nextCurrent = findRouteGroupJid(groups, routeFolder);
+          }
           if (!nextCurrent) {
             const homeEntry = Object.entries(groups).find(
               ([_, group]) => group.is_my_home,
