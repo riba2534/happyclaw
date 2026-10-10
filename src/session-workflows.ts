@@ -267,8 +267,9 @@ function usageTotal(usage: SessionAssistantUsage): number {
  * the whole-file signature cache missed on every request of an active session
  * (measured 2.4MB reparsed per message-list request, on a 2s poll). The parse
  * state is therefore kept per session and only bytes appended since the last
- * pass are read; a shrunk file (rotation) or a replaced file (session-trim and
- * history-image-prune rewrite via tmp+rename, so dev/ino change) resets the
+ * pass are read; a shrunk file (rotation or the CLI's local transcript GC) or
+ * a replaced file (history-image-prune rewrites via tmp+rename, so dev/ino
+ * change) resets the
  * state. A partial trailing line is buffered as raw bytes so mid-write reads
  * and multi-byte UTF-8 at the chunk boundary stay intact.
  */
