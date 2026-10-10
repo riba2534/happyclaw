@@ -113,4 +113,24 @@ describe('Agent Runner terminal invariants', () => {
       /abort\|aborted\|interrupt\|interrupted\|cancelled\|canceled/,
     );
   });
+
+  test('the background context audit can neither crash the runner nor fail a published turn', () => {
+    // An unhandled rejection exits the runner with code 1.
+    expect(source).toMatch(
+      /publishContextAudit\(pluginLoadWarnings\(message\)\)\.catch\(/,
+    );
+    expect(source).not.toContain('void publishContextAudit(');
+    // A late hard-budget verdict must not turn a delivered final into an error.
+    expect(source).toMatch(
+      /if \(resultCount > 0 \|\| durableInputCompletion\.isCompleted\) \{[\s\S]*?letting the turn finish[\s\S]*?return;\s*\}\s*log\(`\[ERROR\] \$\{message\}`\);\s*contextBudgetExceeded = \{/,
+    );
+  });
+
+  test('the no-visible companion stop counts every turn still queued in Claude Code', () => {
+    // completeAnsweredTurns() already removed the finished input, so the
+    // default (turns after the current one) would miss one queued turn.
+    expect(source).toMatch(
+      /stopActiveTurn\(\s*q,\s*'No-visible companion interrupt',\s*ipcDeliveryTracker\.pendingTurnCount,\s*\)/,
+    );
+  });
 });

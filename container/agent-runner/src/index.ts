@@ -3161,6 +3161,14 @@ async function runQueryAttempt(
       ) {
         const message =
           contextBudget.error ?? 'startup context budget exceeded';
+        if (resultCount > 0 || durableInputCompletion.isCompleted) {
+          // The audit runs in the background; once this query published a
+          // result, failing the runner would contradict a delivered final.
+          logWarn(
+            `${message}; detected after this query already published a result, letting the turn finish`,
+          );
+          return;
+        }
         log(`[ERROR] ${message}`);
         contextBudgetExceeded = {
           startupTokens: contextBudget.startupTokens,
@@ -3538,7 +3546,13 @@ async function runQueryAttempt(
         stream.end();
         ipcPolling = false;
         ipcQueryWatcher.close();
-        stopActiveTurn(q, 'No-visible companion interrupt');
+        // The completed input has left the tracker, so every turn it still
+        // holds was already written to Claude Code and is queued there.
+        stopActiveTurn(
+          q,
+          'No-visible companion interrupt',
+          ipcDeliveryTracker.pendingTurnCount,
+        );
         return {
           newSessionId,
           lastAssistantUuid,
@@ -3726,7 +3740,12 @@ async function runQueryAttempt(
         // so it runs in the background.
         if (!contextAuditStarted) {
           contextAuditStarted = true;
-          void publishContextAudit(pluginLoadWarnings(message));
+          publishContextAudit(pluginLoadWarnings(message)).catch(
+            (err: unknown) =>
+              logWarn(
+                `Context audit failed: ${err instanceof Error ? err.message : String(err)}`,
+              ),
+          );
         }
       }
 
