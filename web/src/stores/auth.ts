@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { resetUserScopedStores } from './user-scope';
 import { api, apiFetch } from '../api/client';
+import { wsManager } from '../api/ws';
 import { clearMessageSnapshotCache } from '../utils/messageSnapshotCache';
 
 export type Permission =
@@ -166,6 +167,11 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
   logout: async () => {
     await api.post('/api/auth/logout');
+    // The socket is bound to the old session; left open, the server closes
+    // it with 1008 at its next broadcast and the client then bounces a user
+    // who has meanwhile signed in again back to /login. The next AppLayout
+    // mount reconnects with the new session.
+    wsManager.disconnect();
     // Clear AFTER server-side session invalidation so the next user on this
     // device cannot see this user's message snapshots.
     resetUserScopedStores();

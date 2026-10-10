@@ -40,7 +40,11 @@ function canvasToBlob(
 async function downscale(file: File): Promise<Blob | null> {
   let bitmap: ImageBitmap;
   try {
-    bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' });
+    // EXIF orientation is applied by default (the spec default is
+    // 'from-image'). Passing the option explicitly throws a TypeError in
+    // engines that predate the enum value (Safari < 16, Chrome < 112), which
+    // would silently skip downscaling there.
+    bitmap = await createImageBitmap(file);
   } catch {
     return null; // Unsupported format (e.g. HEIC on some browsers).
   }
