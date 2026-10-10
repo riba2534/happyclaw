@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from 'vitest';
 
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -443,5 +443,171 @@ describe('result usage across resumed processes', () => {
     expect(readUsageBaseline(dir, 'a')).not.toBeNull();
     expect(readUsageBaseline(dir, 'b')).toBeNull();
     expect(readUsageBaseline(dir, '../a')).toBeNull();
+  });
+});
+
+/** Sum of every usage event the runner would emit. */
+function ledgerTotal(
+  events: Array<{
+    inputTokens: number;
+    outputTokens: number;
+    cacheReadInputTokens: number;
+    reasoningTokens?: number;
+  }>,
+) {
+  return events.reduce(
+    (sum, event) => ({
+      input: sum.input + event.inputTokens,
+      output: sum.output + event.outputTokens + (event.reasoningTokens ?? 0),
+      cacheRead: sum.cacheRead + event.cacheReadInputTokens,
+    }),
+    { input: 0, output: 0, cacheRead: 0 },
+  );
+}
+
+describe('per-message usage that modelUsage covers only later', () => {
+  test('a background subagent call straddling the main result is billed once', () => {
+    // Frames recorded from Claude Code 2.1.296: the subagent's assistant
+    // message arrives before the first result, whose cumulative modelUsage
+    // does not include that still-running call yet.
+    const frames = readFileSync(
+      new URL(
+        './fixtures/agent-runner/usage-straddle-frames.jsonl',
+        import.meta.url,
+      ),
+      'utf8',
+    )
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as Record<string, any>);
+    const collector = new AssistantUsageCollector();
+    const reconciler = new ResultUsageReconciler();
+    const events: Parameters<typeof ledgerTotal>[0] = [];
+    for (const frame of frames) {
+      if (frame.type === 'stream_event') collector.observeStreamEvent(frame);
+      if (frame.type === 'assistant') collector.ingest(frame);
+      if (frame.type !== 'result') continue;
+      for (
+        let batch = collector.drain('s');
+        batch;
+        batch = collector.drain('s')
+      ) {
+        reconciler.recordAccounted(batch.tokens.modelUsage);
+        events.push(batch.tokens);
+      }
+      const reconciled = reconciler.applyResult({
+        usage: frame.usage,
+        totalCostUSD: frame.total_cost_usd,
+        modelUsage: frame.modelUsage,
+        fallbackModelKey: 'default',
+      });
+      if (reconciled.residual) events.push(reconciled.residual);
+    }
+    const final = Object.values(
+      frames.filter((frame) => frame.type === 'result').at(-1)!.modelUsage,
+    )[0] as Record<string, number>;
+    const cumulative = {
+      input: final.inputTokens,
+      output: final.outputTokens,
+      cacheRead: final.cacheReadInputTokens,
+    };
+    const ledger = ledgerTotal(events);
+    // Invariant: the ledger never exceeds Claude Code's cumulative modelUsage.
+    expect(ledger.input).toBeLessThanOrEqual(cumulative.input);
+    expect(ledger.output).toBeLessThanOrEqual(cumulative.output);
+    expect(ledger.cacheRead).toBeLessThanOrEqual(cumulative.cacheRead);
+    expect(ledger).toEqual(cumulative);
+    expect(reconciler.pendingAccounted).toEqual({});
+  });
+
+  test('usage flushed before close() is not billed again after resume', () => {
+    // Claude Code 2.1.296 writes the closed turn's call into the session's
+    // cost-state: the resumed process restores 1100/87 and adds 20/2.
+    const dir = mkdtempSync(join(tmpdir(), 'usage-baseline-'));
+    dirs.push(dir);
+    const events: Parameters<typeof ledgerTotal>[0] = [];
+    const a = new ResultUsageReconciler();
+    a.recordAccounted(accounted(100, 10));
+    events.push(tokens(100, 10));
+    const first = a.applyResult(result({ [MODEL]: tokens(100, 10) }));
+    if (first.residual) events.push(first.residual);
+    writeUsageBaseline(dir, a.toBaseline('closed'));
+    // Interrupt: the runner flushes msg_turn2_tool without a result, persists
+    // the pending usage, then closes the query.
+    a.recordAccounted(accounted(1_000, 77));
+    events.push(tokens(1_000, 77));
+    expect(a.shouldPersist).toBe(true);
+    writeUsageBaseline(dir, a.toBaseline('closed'));
+
+    const b = new ResultUsageReconciler({
+      resumed: true,
+      baseline: readUsageBaseline(dir, 'closed'),
+    });
+    b.recordAccounted(accounted(20, 2));
+    events.push(tokens(20, 2));
+    const resumed = b.applyResult(result({ [MODEL]: tokens(1_120, 89) }));
+    if (resumed.residual) events.push(resumed.residual);
+
+    const ledger = ledgerTotal(events);
+    expect(ledger.input).toBeLessThanOrEqual(1_120);
+    expect(ledger.output).toBeLessThanOrEqual(89);
+    expect(ledger).toEqual({ input: 1_120, output: 89, cacheRead: 0 });
+    expect(b.pendingAccounted).toEqual({});
+  });
+
+  test('pending usage is carried per model and never eats another model', () => {
+    const reconciler = new ResultUsageReconciler();
+    // Main call 150/15 plus a still-running subagent call flushed at 2000/1.
+    reconciler.recordAccounted(accounted(2_150, 16));
+    const first = reconciler.applyResult(
+      result({
+        [MODEL]: tokens(150, 15),
+        'claude-haiku-5-5': tokens(300, 40),
+      }),
+    );
+    // The Haiku call is a genuine internal call and is billed now; the part
+    // of the Sonnet usage the delta does not cover yet stays pending.
+    expect(first.residual?.modelUsage).toEqual({
+      'claude-haiku-5-5': tokens(300, 40),
+    });
+    expect(reconciler.pendingAccounted[MODEL]).toMatchObject({
+      inputTokens: 2_000,
+      outputTokens: 1,
+    });
+    // The subagent call lands with its real output of 300.
+    const second = reconciler.applyResult(
+      result({
+        [MODEL]: tokens(2_150, 315),
+        'claude-haiku-5-5': tokens(300, 40),
+      }),
+    );
+    expect(second.residual?.modelUsage).toEqual({
+      [MODEL]: tokens(0, 299),
+    });
+    expect(reconciler.pendingAccounted).toEqual({});
+  });
+
+  test('a baseline reset drops pending usage instead of carrying it', () => {
+    const seeded = new ResultUsageReconciler();
+    seeded.applyResult(result({ [MODEL]: tokens(1_000, 100) }));
+    seeded.recordAccounted(accounted(50, 5));
+    const stale = new ResultUsageReconciler({
+      resumed: true,
+      baseline: seeded.toBaseline('s'),
+    });
+    expect(stale.pendingAccounted[MODEL]).toMatchObject({ inputTokens: 50 });
+    expect(
+      stale.applyResult(result({ [MODEL]: tokens(500, 50) })).baselineReset,
+    ).toBe('decrease');
+    expect(stale.pendingAccounted).toEqual({});
+  });
+
+  test('a resumed query without a baseline persists nothing until its first result', () => {
+    const reconciler = new ResultUsageReconciler({ resumed: true });
+    reconciler.recordAccounted(accounted(10, 1));
+    expect(reconciler.shouldPersist).toBe(false);
+    reconciler.applyResult(result({ [MODEL]: tokens(5_000, 900) }));
+    expect(reconciler.shouldPersist).toBe(true);
+    expect(reconciler.pendingAccounted).toEqual({});
   });
 });

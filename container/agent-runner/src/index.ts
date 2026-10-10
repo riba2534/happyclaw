@@ -2185,9 +2185,15 @@ async function runQueryAttempt(
           fallbackModelKey: queryModelRuntime.usageModelKey,
         })
       : { costUSD: 0 };
-    if (isResult && activeSessionId && usageReconciler.hasBaseline) {
+    if (
+      activeSessionId &&
+      (isResult || assistantBatches.length > 0) &&
+      usageReconciler.shouldPersist
+    ) {
       // Persist before emitting: a runner killed after this point resumes
-      // from totals that already include this result.
+      // from totals that already include this result, and from per-message
+      // usage flushed without a result (interrupt, close, exit) that Claude
+      // Code restores into the next process's totals.
       try {
         writeUsageBaseline(
           resolveTranscriptDir(),

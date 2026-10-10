@@ -76,6 +76,11 @@ export interface PersistedUsageBaseline {
   updatedAt: string;
   totalCostUSD: number;
   modelUsage: Record<string, ModelUsageTotals>;
+  /**
+   * Per-message usage already billed but not yet covered by a reconciled
+   * cumulative modelUsage (see ResultUsageReconciler.accounted).
+   */
+  pendingAccounted?: Record<string, ModelUsageTotals>;
 }
 
 /** Tokens that were not billed by a per-message event. */
@@ -155,7 +160,10 @@ export function isPersistedUsageBaseline(
     record.version === 1 &&
     record.sessionId === sessionId &&
     !!record.modelUsage &&
-    typeof record.modelUsage === 'object'
+    typeof record.modelUsage === 'object' &&
+    (record.pendingAccounted === undefined ||
+      (!!record.pendingAccounted &&
+        typeof record.pendingAccounted === 'object'))
   );
 }
 
@@ -163,7 +171,15 @@ export class ResultUsageReconciler {
   private readonly baseline = new Map<string, ModelUsageTotals>();
   private baselineCostUSD = 0;
   private baselineTrusted: boolean;
-  /** Per-message tokens billed since the last reconciled result. */
+  /**
+   * Per-message tokens already billed that no reconciled cumulative
+   * modelUsage covers yet. Claude Code adds an API call to modelUsage only
+   * once the call ends, while the runner bills a message as soon as it is
+   * flushed: a subagent call can straddle the main result, and a call flushed
+   * before close() reaches only the next process's restored totals. Whatever
+   * a result's delta does not consume is therefore carried to the next one
+   * (and persisted), never dropped.
+   */
   private readonly accounted = new Map<string, ModelUsageTotals>();
 
   /**
@@ -183,6 +199,7 @@ export class ResultUsageReconciler {
         this.baseline.set(model, snapshot(value));
       }
       this.baselineCostUSD = nonNegative(baseline.totalCostUSD);
+      this.recordAccounted(baseline.pendingAccounted);
     }
     this.baselineTrusted = !options?.resumed || !!baseline;
   }
@@ -246,9 +263,14 @@ export class ResultUsageReconciler {
         ? 0
         : totalCostUSD - this.baselineCostUSD;
 
-    const residual = baselineReset
-      ? undefined
+    // After a reset the per-message lower bound stands on its own: nothing
+    // pending is carried into the new baseline.
+    const { residual, unconsumed } = baselineReset
+      ? { residual: undefined, unconsumed: new Map<string, ModelUsageTotals>() }
       : this.residualFor(currentByModel, accounted);
+    for (const [model, value] of unconsumed) {
+      this.recordAccounted({ [model]: value });
+    }
     this.baseline.clear();
     for (const [model, current] of currentByModel) {
       this.baseline.set(model, current);
@@ -262,7 +284,7 @@ export class ResultUsageReconciler {
     };
   }
 
-  /** Persistable form of the current baseline. */
+  /** Persistable form of the current baseline and pending usage. */
   toBaseline(sessionId: string): PersistedUsageBaseline {
     return {
       version: 1,
@@ -272,17 +294,45 @@ export class ResultUsageReconciler {
       modelUsage: Object.fromEntries(
         [...this.baseline].map(([model, value]) => [model, { ...value }]),
       ),
+      ...(this.accounted.size > 0
+        ? {
+            pendingAccounted: Object.fromEntries(
+              [...this.accounted].map(([model, value]) => [
+                model,
+                { ...value },
+              ]),
+            ),
+          }
+        : {}),
     };
   }
 
-  get hasBaseline(): boolean {
-    return this.baseline.size > 0;
+  /**
+   * Whether the sidecar should be written. A resumed query without a
+   * baseline does not know the restored totals yet, so it persists nothing
+   * until its first result establishes them.
+   */
+  get shouldPersist(): boolean {
+    return (
+      this.baselineTrusted &&
+      (this.baseline.size > 0 || this.accounted.size > 0)
+    );
+  }
+
+  /** Pending per-message usage not yet covered by modelUsage (tests, logs). */
+  get pendingAccounted(): Record<string, ModelUsageTotals> {
+    return Object.fromEntries(
+      [...this.accounted].map(([model, value]) => [model, { ...value }]),
+    );
   }
 
   private residualFor(
     currentByModel: Map<string, ModelUsageTotals>,
     accounted: Map<string, ModelUsageTotals>,
-  ): ResidualUsage | undefined {
+  ): {
+    residual: ResidualUsage | undefined;
+    unconsumed: Map<string, ModelUsageTotals>;
+  } {
     const remaining = new Map<string, ModelUsageTotals>();
     for (const [model, current] of currentByModel) {
       const previous = this.baseline.get(model) ?? emptyTotals();
@@ -323,19 +373,26 @@ export class ResultUsageReconciler {
     for (const model of remaining.keys()) {
       byMatchKey.set(modelMatchKey(model), model);
     }
-    const unmatched: ModelUsageTotals[] = [];
+    // What a model's delta cannot cover yet stays pending under that model
+    // rather than eating another model's internal usage.
+    const unconsumed = new Map<string, ModelUsageTotals>();
+    const unmatched: Array<[string, ModelUsageTotals]> = [];
     for (const [model, value] of accounted) {
       const source = { ...value };
       const target =
         remaining.get(model) ??
         remaining.get(byMatchKey.get(modelMatchKey(model)) ?? '');
-      if (target) consume(target, source);
-      if (hasTokens(source)) unmatched.push(source);
+      if (!target) {
+        unmatched.push([model, source]);
+        continue;
+      }
+      consume(target, source);
+      if (hasTokens(source)) unconsumed.set(model, source);
     }
     // A proxy may answer under another model ID than the one modelUsage is
     // keyed by. Never bill those tokens twice: take them out of the largest
     // remaining buckets.
-    for (const source of unmatched) {
+    for (const [model, source] of unmatched) {
       const targets = [...remaining.values()].sort(
         (left, right) =>
           right.inputTokens +
@@ -346,6 +403,7 @@ export class ResultUsageReconciler {
         consume(target, source);
         if (!hasTokens(source)) break;
       }
+      if (hasTokens(source)) unconsumed.set(model, source);
     }
 
     const residual: ResidualUsage = {
@@ -368,7 +426,11 @@ export class ResultUsageReconciler {
       };
       for (const field of TOKEN_FIELDS) residual[field] += tokens[field];
     }
-    return Object.keys(residual.modelUsage).length > 0 ? residual : undefined;
+    return {
+      residual:
+        Object.keys(residual.modelUsage).length > 0 ? residual : undefined,
+      unconsumed,
+    };
   }
 
   private applyRootUsage(
