@@ -15,6 +15,9 @@ export function FileUploadZone({ groupJid }: FileUploadZoneProps) {
   const { uploadFiles, cancelUpload, uploading, uploadProgress } =
     useFileStore();
 
+  // Every drag event stops here: the chat canvas around the file panel is a
+  // drop target of its own (files there go to the composer), and must see
+  // neither half of an enter/leave pair from this zone.
   const handleDragOver = (e: DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
@@ -66,6 +69,7 @@ export function FileUploadZone({ groupJid }: FileUploadZoneProps) {
 
   return (
     <div
+      onDragEnter={handleDragOver}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}

@@ -18,7 +18,7 @@ import {
 } from '../../stores/chat';
 import { useAuthStore } from '../../stores/auth';
 import { MessageList } from './MessageList';
-import { MessageInput } from './MessageInput';
+import { MessageInput, type MessageInputHandle } from './MessageInput';
 import {
   Sheet,
   SheetContent,
@@ -40,6 +40,7 @@ import {
   Settings2,
   SlidersHorizontal,
   Terminal,
+  Upload,
   X,
 } from 'lucide-react';
 import { useDisplayMode } from '../../hooks/useDisplayMode';
@@ -126,6 +127,7 @@ const ContainerEnvPanel = lazyContainerEnvPanel.Component;
 const ImBindingDialog = lazyImBindingDialog.Component;
 const SessionSidebar = lazySessionSidebar.Component;
 const WorkspaceInteractionModeDialog = lazyInteractionModeDialog.Component;
+import { useFileDropZone } from '../../hooks/useFileDropZone';
 import { useSessionActions } from '../../hooks/useSessionActions';
 import { useStableCallback } from '../../hooks/useStableCallback';
 import {
@@ -276,6 +278,13 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
   const followUpChatJid = activeAgentTab
     ? `${groupJid}#agent:${activeAgentTab}`
     : groupJid;
+
+  // Files dropped anywhere on the chat canvas go to the composer; without a
+  // page-level target the browser would navigate the tab to the file.
+  const composerRef = useRef<MessageInputHandle>(null);
+  const { isDragOver, dropZoneProps } = useFileDropZone((dataTransfer) =>
+    composerRef.current?.acceptDrop(dataTransfer),
+  );
   const queuedFollowUps = useChatStore(
     (s) => s.followUps[followUpChatJid] ?? EMPTY_FOLLOW_UPS,
   );
@@ -1126,6 +1135,7 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
       ref={containerRef}
       data-hc-chat-view
       className="h-full flex overflow-hidden bg-background"
+      {...dropZoneProps}
     >
       <div
         className={cn(
@@ -1141,7 +1151,7 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
               icon={<ArrowLeft />}
               onClick={handleBackAction}
               hideTooltip
-              className="-ml-1.5 lg:hidden"
+              className="-ml-1.5 pointer-coarse:size-10 lg:hidden"
             />
           )}
           {headerLeft}
@@ -1223,9 +1233,14 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
             </div>
           </div>
           {currentContextWaiting && (
-            <span className="hidden shrink-0 items-center gap-1.5 px-1 text-caption text-muted-foreground sm:inline-flex">
-              <Spinner className="size-3.5" />
-              运行中
+            <span
+              data-testid="chat-run-indicator"
+              title="运行中"
+              className="inline-flex shrink-0 items-center gap-1.5 px-1 text-caption text-muted-foreground"
+            >
+              <Spinner className="size-3.5" aria-hidden="true" />
+              {/* Phones keep the spinner only; the header has no room. */}
+              <span className="max-sm:sr-only">运行中</span>
             </span>
           )}
           <div className="flex shrink-0 items-center gap-0.5">
@@ -1293,7 +1308,18 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
         {/* Main conversation canvas */}
         <div className="flex-1 flex overflow-hidden min-h-0">
           {/* Messages Area */}
-          <div className="flex-1 flex flex-col min-w-0 overflow-x-hidden">
+          <div className="relative flex-1 flex flex-col min-w-0 overflow-x-hidden">
+            {isDragOver && (
+              <div
+                data-testid="chat-drop-overlay"
+                className="pointer-events-none absolute inset-2 z-50 flex items-center justify-center rounded-xl border-2 border-dashed border-primary bg-primary/5 backdrop-blur-[2px] dark:bg-primary/10"
+              >
+                <div className="flex flex-col items-center gap-2 text-primary-text">
+                  <Upload className="size-8" />
+                  <span className="text-sm font-medium">松开上传文件</span>
+                </div>
+              </div>
+            )}
             {activeAgentTab && isConversationTab ? (
               <>
                 <MessageList
@@ -1317,6 +1343,11 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
                   onSend={sendStarterActiveAgent}
                 />
                 <MessageInput
+                  // One instance per conversation: draft and pending
+                  // attachments never carry over to another session.
+                  key={followUpChatJid}
+                  ref={composerRef}
+                  draftKey={followUpChatJid}
                   placeholder={`向 ${agentProfileLabel} 发送消息…`}
                   onSend={sendActiveAgent}
                   groupJid={groupJid}
@@ -1351,6 +1382,9 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
                   onSend={sendStarterMain}
                 />
                 <MessageInput
+                  key={groupJid}
+                  ref={composerRef}
+                  draftKey={groupJid}
                   placeholder={`向 ${agentProfileLabel} 发送消息…`}
                   onSend={sendMain}
                   groupJid={groupJid}
