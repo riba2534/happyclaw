@@ -1102,6 +1102,29 @@ export function initDatabase(
     CREATE INDEX IF NOT EXISTS idx_agents_status ON agents(status);
   `);
 
+  // v76 -> v77: sub-agent checkpoints. One row per sub-agent Task, keyed to
+  // the DB input whose turn launched it. Kept apart from `agents` (UI tabs,
+  // purged minutes after completion) because a replay of a still-uncommitted
+  // input may happen much later and must see the finished answers.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS subagent_checkpoints (
+      task_id TEXT PRIMARY KEY,
+      group_folder TEXT NOT NULL,
+      chat_jid TEXT NOT NULL,
+      input_message_id TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'running',
+      summary TEXT,
+      result_text TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_subagent_checkpoints_input
+      ON subagent_checkpoints(chat_jid, input_message_id);
+    CREATE INDEX IF NOT EXISTS idx_subagent_checkpoints_updated
+      ON subagent_checkpoints(updated_at);
+  `);
+
   // Top-level Agent Profiles: runtime identities/personas that own workspaces.
   // Do not confuse this with the legacy `agents` table above, which stores
   // workspace-scoped conversation/task/spawn agents.
@@ -12374,6 +12397,9 @@ export function rebuildWorkspacePersistentState(input: {
       prepareCached('DELETE FROM agents WHERE group_folder = ?').run(
         input.groupFolder,
       );
+      prepareCached(
+        'DELETE FROM subagent_checkpoints WHERE group_folder = ?',
+      ).run(input.groupFolder);
 
       for (const siblingJid of siblingJids) {
         ensureChatExists(siblingJid);
@@ -12428,6 +12454,9 @@ export function deleteImGroupRecord(jid: string): void {
     prepareCached(`DELETE FROM sessions
        WHERE agent_id IN (SELECT id FROM agents WHERE chat_jid = ?)`).run(jid);
     prepareCached('DELETE FROM agents WHERE chat_jid = ?').run(jid);
+    prepareCached('DELETE FROM subagent_checkpoints WHERE chat_jid = ?').run(
+      jid,
+    );
     prepareCached(
       'UPDATE scheduled_tasks SET workspace_jid = NULL, workspace_folder = NULL WHERE workspace_jid = ?',
     ).run(jid);
@@ -12521,6 +12550,9 @@ export function deleteGroupData(
     prepareCached('DELETE FROM sessions WHERE group_folder = ?').run(folder);
     prepareCached(
       'DELETE FROM agents WHERE group_folder = ? OR chat_jid = ?',
+    ).run(folder, jid);
+    prepareCached(
+      'DELETE FROM subagent_checkpoints WHERE group_folder = ? OR chat_jid = ?',
     ).run(folder, jid);
     // 6. 删除聊天记录
     prepareCached('DELETE FROM messages WHERE chat_jid = ?').run(jid);
@@ -13991,6 +14023,114 @@ export function getRunningTaskAgentsByChat(chatJid: string): SubAgent[] {
     "SELECT * FROM agents WHERE chat_jid = ? AND kind = 'task' AND status = 'running'",
   ).all(chatJid) as Array<Record<string, unknown>>;
   return rows.map(mapAgentRow);
+}
+
+// ===================== Sub-agent checkpoints =====================
+
+export type SubagentCheckpointStatus =
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'stopped';
+
+export interface SubagentCheckpoint {
+  taskId: string;
+  chatJid: string;
+  inputMessageId: string;
+  description: string;
+  status: SubagentCheckpointStatus;
+  summary: string | null;
+  resultText: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/**
+ * Record a sub-agent Task launch or update. The first input association wins
+ * so a late frame can never move a Task onto another input; a terminal status
+ * is never downgraded back to running.
+ */
+export function upsertSubagentCheckpoint(input: {
+  taskId: string;
+  groupFolder: string;
+  chatJid: string;
+  inputMessageId: string;
+  description?: string;
+  status?: SubagentCheckpointStatus;
+  summary?: string | null;
+  resultText?: string | null;
+}): void {
+  if (!input.taskId || !input.inputMessageId) return;
+  const now = new Date().toISOString();
+  prepareCached(`INSERT INTO subagent_checkpoints
+      (task_id, group_folder, chat_jid, input_message_id, description, status,
+       summary, result_text, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(task_id) DO UPDATE SET
+      description = CASE WHEN excluded.description <> ''
+        THEN excluded.description ELSE subagent_checkpoints.description END,
+      status = CASE
+        WHEN excluded.status = 'running' THEN subagent_checkpoints.status
+        ELSE excluded.status END,
+      summary = COALESCE(excluded.summary, subagent_checkpoints.summary),
+      result_text = COALESCE(excluded.result_text, subagent_checkpoints.result_text),
+      updated_at = excluded.updated_at`).run(
+    input.taskId,
+    input.groupFolder,
+    input.chatJid,
+    input.inputMessageId,
+    input.description ?? '',
+    input.status ?? 'running',
+    input.summary || null,
+    input.resultText?.trim() ? input.resultText : null,
+    now,
+    now,
+  );
+}
+
+/** Sub-agent checkpoints launched by any of the given inputs of one chat. */
+export function listSubagentCheckpointsForInputs(
+  chatJid: string,
+  inputMessageIds: readonly string[],
+): SubagentCheckpoint[] {
+  const ids = [...new Set(inputMessageIds.filter(Boolean))];
+  const rows: Array<Record<string, unknown>> = [];
+  // Stay well below SQLite's bound-parameter limit for large replay windows.
+  for (let offset = 0; offset < ids.length; offset += 500) {
+    const chunk = ids.slice(offset, offset + 500);
+    rows.push(
+      ...(db
+        .prepare(
+          `SELECT * FROM subagent_checkpoints
+            WHERE chat_jid = ?
+              AND input_message_id IN (${chunk.map(() => '?').join(',')})`,
+        )
+        .all(chatJid, ...chunk) as Array<Record<string, unknown>>),
+    );
+  }
+  return rows
+    .map((row) => ({
+      taskId: String(row.task_id),
+      chatJid: String(row.chat_jid),
+      inputMessageId: String(row.input_message_id),
+      description: String(row.description ?? ''),
+      status: String(row.status) as SubagentCheckpointStatus,
+      summary: typeof row.summary === 'string' ? row.summary : null,
+      resultText: typeof row.result_text === 'string' ? row.result_text : null,
+      createdAt: String(row.created_at),
+      updatedAt: String(row.updated_at),
+    }))
+    .sort(
+      (a, b) =>
+        a.createdAt.localeCompare(b.createdAt) ||
+        a.taskId.localeCompare(b.taskId),
+    );
+}
+
+export function pruneSubagentCheckpoints(beforeTimestamp: string): number {
+  return prepareCached(
+    'DELETE FROM subagent_checkpoints WHERE updated_at < ?',
+  ).run(beforeTimestamp).changes;
 }
 
 export function markRunningTaskAgentsAsError(chatJid: string): number {

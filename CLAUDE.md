@@ -149,6 +149,10 @@ Web UI 约定：
 - `CONTAINER_TIMEOUT` 控制单次运行上限，`IDLE_TIMEOUT` 控制暖 Runner 的空闲保留时间。
 - Script 任务与其他任务共用 `CONTAINER_TIMEOUT`，不设置独立并发池或超时配置。
 - 服务重启时，错过的周期任务记为 `missed` 并推进计划；一次性任务仍会补跑。
+- 后台子代理未结清时 Runner 扣住本轮结果，游标不前进，重启后整轮重跑。子代理（Task）
+  的启动、终态和最终答复按发起它的输入写入 `subagent_checkpoints`；重跑同一输入时
+  这些断点作为上下文回注给主 Agent：已完成的直接汇总，未完成的标明中断，部署、迁移、
+  推送等非幂等操作要求先核实实际状态。宿主不会自动重跑任何子任务。
 
 Host 模式没有 `maxConcurrentHostProcesses`。旧客户端提交该字段时后端仅为兼容而忽略，
 不得重新把它实现为全局 Host 并发池。
@@ -358,7 +362,7 @@ data/
 - 渠道：`channel_accounts`、`channel_mounts`、`agent_channel_mounts`、
   `im_context_bindings`
 - 消息与调度：`chats`、`messages`、`scheduled_tasks`、`task_runs`、
-  `task_run_logs`
+  `task_run_logs`、`subagent_checkpoints`
 - 用量与计费：`usage_records`、`usage_events`、`usage_daily_summary` 及
   `billing_*`、订阅、余额和兑换码相关表
 

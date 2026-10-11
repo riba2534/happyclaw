@@ -24,6 +24,10 @@ import {
 import type { WorkflowRunSnapshot } from './stream-event.types.js';
 import { BackgroundTaskDrainTracker } from './background-task-drain.js';
 
+// Bounds for the per-Task final-answer capture forwarded on task_notification.
+const SUB_AGENT_RESULT_MAX_CHARS = 16_000;
+const SUB_AGENT_RESULT_MAX_TASKS = 64;
+
 // SDK 任务终态（task_updated.patch.status 语义下"不会再有后续信号"的状态）。
 // web/src/stores/chat.ts、src/web.ts、src/index.ts 各有等价映射——SDK 新增
 // 终态时需同步检查；此处漏判的代价是 pendingSdkTasks 泄漏导致关流被永久推迟。
@@ -152,6 +156,15 @@ export class StreamEventProcessor {
 
   // Best available completion summary per Task/Agent tool_use_id.
   private readonly taskSummariesByToolUseId = new Map<string, string>();
+
+  // Latest text answer of each sub-agent, keyed by its Task tool_use_id. The
+  // last assistant API response that carried text is the sub-agent's final
+  // answer once its task settles; it rides on task_notification so the host
+  // can checkpoint finished sub-agent work for a replayed turn.
+  private readonly subAgentFinalTextByTask = new Map<
+    string,
+    { messageId: string | undefined; text: string }
+  >();
 
   // Track active nested tool per parent context (for synthetic tool_use_end)
   private readonly activeNestedToolByParent = new Map<
@@ -963,6 +976,7 @@ export class StreamEventProcessor {
             taskStatus: 'completed',
             taskSummary: summary,
             summary,
+            taskResult: this.subAgentFinalTextByTask.get(id)?.text,
             isSynthetic: true,
             displayLevel: 'primary',
           },
@@ -1427,6 +1441,47 @@ export class StreamEventProcessor {
   }
 
   /**
+   * Remember the newest text answer of a sub-agent. SDK splits one API
+   * response into one assistant frame per content block, all sharing
+   * message.id, so blocks of the same response are joined and a newer
+   * response with text replaces the older one.
+   */
+  private recordSubAgentText(taskToolUseId: string, message: any): void {
+    const content = message.message?.content;
+    if (!Array.isArray(content)) return;
+    const text = content
+      .filter(
+        (block: any) =>
+          block?.type === 'text' && typeof block.text === 'string',
+      )
+      .map((block: any) => block.text as string)
+      .join('\n')
+      .trim();
+    if (!text) return;
+    const messageId =
+      typeof message.message?.id === 'string' ? message.message.id : undefined;
+    const previous = this.subAgentFinalTextByTask.get(taskToolUseId);
+    const joined =
+      previous && messageId !== undefined && previous.messageId === messageId
+        ? `${previous.text}\n${text}`
+        : text;
+    // Re-insert so Map order tracks recency for the size bound below.
+    this.subAgentFinalTextByTask.delete(taskToolUseId);
+    this.subAgentFinalTextByTask.set(taskToolUseId, {
+      messageId,
+      text:
+        joined.length > SUB_AGENT_RESULT_MAX_CHARS
+          ? `${joined.slice(0, SUB_AGENT_RESULT_MAX_CHARS)}…`
+          : joined,
+    });
+    while (this.subAgentFinalTextByTask.size > SUB_AGENT_RESULT_MAX_TASKS) {
+      const oldest = this.subAgentFinalTextByTask.keys().next().value;
+      if (oldest === undefined) break;
+      this.subAgentFinalTextByTask.delete(oldest);
+    }
+  }
+
+  /**
    * Process sub-agent messages (assistant/user with parent_tool_use_id that matches a Task).
    * Returns true if the message was handled as a sub-agent message.
    */
@@ -1454,6 +1509,7 @@ export class StreamEventProcessor {
     }
 
     if (message.type === 'assistant') {
+      this.recordSubAgentText(msgParentToolUseId, message);
       const subContent = message.message?.content as
         | Array<{
             type: string;
@@ -1942,6 +1998,7 @@ export class StreamEventProcessor {
         taskStatus: message.status,
         taskSummary: message.summary,
         summary: message.summary,
+        taskResult: this.subAgentFinalTextByTask.get(effectiveToolUseId)?.text,
         outputFile: message.output_file,
         sdkTaskUsage: this.normalizeTaskUsage(message.usage),
         workflowRun: completedWorkflowRun,
@@ -1951,6 +2008,7 @@ export class StreamEventProcessor {
     });
     if (message.summary)
       this.taskSummariesByToolUseId.set(effectiveToolUseId, message.summary);
+    this.subAgentFinalTextByTask.delete(effectiveToolUseId);
     this.cleanupTaskTools(effectiveToolUseId);
     this.backgroundTaskToolUseIds.delete(effectiveToolUseId);
     this.workflowRunsByToolUseId.delete(effectiveToolUseId);

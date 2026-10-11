@@ -328,6 +328,11 @@ export interface StreamEvent {
   taskId?: string;
   taskStatus?: string;
   taskSummary?: string;
+  /** Final text answer of a finished sub-agent Task, captured by the runner
+   *  from the sub-agent's own stream (bounded). Only set on
+   *  `task_notification`; the host checkpoints it so a replayed turn can reuse
+   *  finished sub-agent work instead of redoing it. */
+  taskResult?: string;
   /** SDK task discriminant, e.g. `local_workflow` or `subagent`. */
   taskType?: string;
   /** Claude Code Workflow meta.name (only present for workflow tasks). */
