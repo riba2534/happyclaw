@@ -219,6 +219,9 @@ import {
   getRunningTaskAgentsByChat,
   markRunningTaskAgentsAsError,
   markAllRunningTaskAgentsAsError,
+  upsertSubagentCheckpoint,
+  listSubagentCheckpointsForInputs,
+  pruneSubagentCheckpoints,
   markStaleSpawnAgentsAsError,
   listActiveConversationAgents,
   getSession,
@@ -665,6 +668,10 @@ import {
   persistGroupUpdate,
 } from './group-owner.js';
 import { buildRecentConversationHistoryContext } from './conversation-history.js';
+import {
+  buildSubagentCheckpointContext,
+  SUBAGENT_CHECKPOINT_RETENTION_MS,
+} from './subagent-checkpoint.js';
 import {
   collectKnownReferenceAttachmentIndexes,
   collectReferencedMessageIds,
@@ -7241,8 +7248,29 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   const knownReferencedMessageIds = historyContext
     ? new Set(historyContext.messageIds)
     : activeSessionReferencedMessageIds;
+  // A replayed input may already have launched sub-agents in an earlier,
+  // uncommitted attempt. Hand their checkpoints back so finished work is
+  // summarized rather than redone (and side effects are verified first).
+  const subagentCheckpoint = buildSubagentCheckpointContext(
+    listSubagentCheckpointsForInputs(
+      group.folder,
+      chatJid,
+      missedMessages.map((message) => message.id),
+    ),
+  );
+  if (subagentCheckpoint) {
+    logger.info(
+      {
+        group: group.name,
+        completed: subagentCheckpoint.completed,
+        unfinished: subagentCheckpoint.unfinished,
+      },
+      'Replay: injected sub-agent checkpoints into prompt',
+    );
+  }
   let prompt =
     (historyContext?.context ?? '') +
+    (subagentCheckpoint?.context ?? '') +
     formatMessages(missedMessages, {
       knownMessageIds: knownReferencedMessageIds,
     });
@@ -7337,6 +7365,22 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   let channelManualNoticesAcknowledged = true;
   let lastReplyMsgId: string | undefined;
   const queryTaskIds = new Set<string>();
+  // Sub-agent Tasks are checkpointed against the DB input whose turn launched
+  // them, so a replay of that input can reuse their finished answers.
+  const batchMessageIds = new Set(missedMessages.map((message) => message.id));
+  const taskInputMessageId = (
+    output: Pick<ContainerOutput, 'inputTurnId' | 'ipcReceipts'>,
+  ): string => {
+    const inputTurnId = resolveContainerOutputInputTurnId(
+      output,
+      lastProcessed.id,
+    );
+    if (batchMessageIds.has(inputTurnId)) return inputTurnId;
+    return (
+      queue.getPendingIpcDeliveryMessageId(chatJid, inputTurnId) ??
+      lastProcessed.id
+    );
+  };
   const healthyCompletedInputTurns = new Set<string>();
   const inputUsageProjection = new InputUsageProjection(lastProcessed.id);
   const processingIndicatorJidsByInput = new Map<string, string>();
@@ -9186,6 +9230,15 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
                     se.taskDescription,
                   );
                 }
+                if (!existing || existing.chat_jid === chatJid) {
+                  upsertSubagentCheckpoint({
+                    taskId,
+                    groupFolder: group.folder,
+                    chatJid,
+                    inputMessageId: taskInputMessageId(result),
+                    description: desc,
+                  });
+                }
                 if (publishesFrameworkAnswer(interactionMode)) {
                   broadcastAgentStatus(
                     chatJid,
@@ -9299,6 +9352,28 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
                       'task',
                     );
                   }
+                }
+                // Only checkpoint a Task this conversation owns: the
+                // getAgent() match above is by id alone.
+                if (
+                  !existing ||
+                  (existing.kind === 'task' && existing.chat_jid === chatJid)
+                ) {
+                  upsertSubagentCheckpoint({
+                    taskId: targetTaskId,
+                    groupFolder: group.folder,
+                    chatJid,
+                    inputMessageId: taskInputMessageId(result),
+                    status:
+                      se.taskStatus === 'completed'
+                        ? 'completed'
+                        : se.taskStatus === 'stopped' ||
+                            se.taskStatus === 'killed'
+                          ? 'stopped'
+                          : 'failed',
+                    summary: summary ?? null,
+                    resultText: se.taskResult?.slice(0, 16_000) ?? null,
+                  });
                 }
               } catch (err) {
                 logger.warn(
@@ -23915,6 +23990,9 @@ async function main(): Promise<void> {
           ).toISOString(),
         );
         const cleaned = deleteCompletedAgents(tenMinutesAgo);
+        pruneSubagentCheckpoints(
+          new Date(Date.now() - SUBAGENT_CHECKPOINT_RETENTION_MS).toISOString(),
+        );
         void pruneRetiredIpcNamespaces();
         const prunedCursors = pruneCursorState();
         if (cleaned > 0 || archived > 0 || prunedCursors > 0) {

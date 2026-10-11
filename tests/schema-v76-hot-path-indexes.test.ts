@@ -101,13 +101,17 @@ afterAll(() => {
 });
 
 describe('schema v76 hot-path indexes', () => {
-  test('backs up the v75 database, adds the indexes and stamps v76', () => {
+  test('backs up the v75 database, adds the indexes and stamps the head', () => {
     process.env.HAPPYCLAW_MIGRATION_BACKUP_DIR = backupDir;
     db.initDatabase();
-    expect(db.getRouterState('schema_version')).toBe('76');
+    expect(db.getRouterState('schema_version')).toBe(
+      String(db.CURRENT_SCHEMA_VERSION),
+    );
     const backups = fs.readdirSync(backupDir);
     expect(
-      backups.some((name) => name.startsWith('messages-v75-to-v76-')),
+      backups.some((name) =>
+        name.startsWith(`messages-v75-to-v${db.CURRENT_SCHEMA_VERSION}-`),
+      ),
     ).toBe(true);
 
     const conn = new Database(databasePath, { readonly: true });
@@ -190,10 +194,8 @@ describe('schema v76 hot-path indexes', () => {
 
     const conn = new Database(databasePath);
     conn
-      .prepare(
-        "UPDATE router_state SET value = '77' WHERE key = 'schema_version'",
-      )
-      .run();
+      .prepare("UPDATE router_state SET value = ? WHERE key = 'schema_version'")
+      .run(String(db.CURRENT_SCHEMA_VERSION + 1));
     conn.close();
     expect(() => db.initDatabase()).toThrow('refusing downgrade');
   });

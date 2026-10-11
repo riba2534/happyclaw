@@ -1236,6 +1236,17 @@ export class GroupQueue {
     return state?.active && state.queryInFlight ? state.queryId : null;
   }
 
+  /** Terminal DB message id covered by a still-pending IPC input delivery. */
+  getPendingIpcDeliveryMessageId(
+    groupJid: string,
+    deliveryId: string,
+  ): string | null {
+    return (
+      this.groups.get(groupJid)?.pendingIpcDeliveries?.get(deliveryId)?.cursor
+        .id ?? null
+    );
+  }
+
   getPublishedIpcQueryId(groupJid: string, deliveryId: string): string | null {
     const state = this.groups.get(groupJid);
     if (!state?.active || !state.pendingIpcDeliveries.has(deliveryId))
