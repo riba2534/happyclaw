@@ -1108,7 +1108,7 @@ export function initDatabase(
   // input may happen much later and must see the finished answers.
   db.exec(`
     CREATE TABLE IF NOT EXISTS subagent_checkpoints (
-      task_id TEXT PRIMARY KEY,
+      task_id TEXT NOT NULL,
       group_folder TEXT NOT NULL,
       chat_jid TEXT NOT NULL,
       input_message_id TEXT NOT NULL,
@@ -1117,10 +1117,13 @@ export function initDatabase(
       summary TEXT,
       result_text TEXT,
       created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
+      updated_at TEXT NOT NULL,
+      -- Tenant-scoped key: a colliding or forged task_id from another
+      -- workspace/chat can never touch this conversation's checkpoint.
+      PRIMARY KEY (group_folder, chat_jid, task_id)
     );
     CREATE INDEX IF NOT EXISTS idx_subagent_checkpoints_input
-      ON subagent_checkpoints(chat_jid, input_message_id);
+      ON subagent_checkpoints(group_folder, chat_jid, input_message_id);
     CREATE INDEX IF NOT EXISTS idx_subagent_checkpoints_updated
       ON subagent_checkpoints(updated_at);
   `);
@@ -14060,13 +14063,19 @@ export function upsertSubagentCheckpoint(input: {
   summary?: string | null;
   resultText?: string | null;
 }): void {
-  if (!input.taskId || !input.inputMessageId) return;
+  if (
+    !input.taskId ||
+    !input.inputMessageId ||
+    !input.groupFolder ||
+    !input.chatJid
+  )
+    return;
   const now = new Date().toISOString();
   prepareCached(`INSERT INTO subagent_checkpoints
       (task_id, group_folder, chat_jid, input_message_id, description, status,
        summary, result_text, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(task_id) DO UPDATE SET
+    ON CONFLICT(group_folder, chat_jid, task_id) DO UPDATE SET
       description = CASE WHEN excluded.description <> ''
         THEN excluded.description ELSE subagent_checkpoints.description END,
       status = CASE
@@ -14088,11 +14097,16 @@ export function upsertSubagentCheckpoint(input: {
   );
 }
 
-/** Sub-agent checkpoints launched by any of the given inputs of one chat. */
+/**
+ * Sub-agent checkpoints launched by any of the given inputs of one
+ * conversation. Always scoped to the caller's workspace folder and chat.
+ */
 export function listSubagentCheckpointsForInputs(
+  groupFolder: string,
   chatJid: string,
   inputMessageIds: readonly string[],
 ): SubagentCheckpoint[] {
+  if (!groupFolder || !chatJid) return [];
   const ids = [...new Set(inputMessageIds.filter(Boolean))];
   const rows: Array<Record<string, unknown>> = [];
   // Stay well below SQLite's bound-parameter limit for large replay windows.
@@ -14102,10 +14116,10 @@ export function listSubagentCheckpointsForInputs(
       ...(db
         .prepare(
           `SELECT * FROM subagent_checkpoints
-            WHERE chat_jid = ?
+            WHERE group_folder = ? AND chat_jid = ?
               AND input_message_id IN (${chunk.map(() => '?').join(',')})`,
         )
-        .all(chatJid, ...chunk) as Array<Record<string, unknown>>),
+        .all(groupFolder, chatJid, ...chunk) as Array<Record<string, unknown>>),
     );
   }
   return rows

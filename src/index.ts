@@ -7253,6 +7253,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   // summarized rather than redone (and side effects are verified first).
   const subagentCheckpoint = buildSubagentCheckpointContext(
     listSubagentCheckpointsForInputs(
+      group.folder,
       chatJid,
       missedMessages.map((message) => message.id),
     ),
@@ -9229,13 +9230,15 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
                     se.taskDescription,
                   );
                 }
-                upsertSubagentCheckpoint({
-                  taskId,
-                  groupFolder: group.folder,
-                  chatJid,
-                  inputMessageId: taskInputMessageId(result),
-                  description: desc,
-                });
+                if (!existing || existing.chat_jid === chatJid) {
+                  upsertSubagentCheckpoint({
+                    taskId,
+                    groupFolder: group.folder,
+                    chatJid,
+                    inputMessageId: taskInputMessageId(result),
+                    description: desc,
+                  });
+                }
                 if (publishesFrameworkAnswer(interactionMode)) {
                   broadcastAgentStatus(
                     chatJid,
@@ -9350,7 +9353,12 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
                     );
                   }
                 }
-                if (!existing || existing.kind === 'task') {
+                // Only checkpoint a Task this conversation owns: the
+                // getAgent() match above is by id alone.
+                if (
+                  !existing ||
+                  (existing.kind === 'task' && existing.chat_jid === chatJid)
+                ) {
                   upsertSubagentCheckpoint({
                     taskId: targetTaskId,
                     groupFolder: group.folder,

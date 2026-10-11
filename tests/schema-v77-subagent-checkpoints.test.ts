@@ -84,9 +84,10 @@ describe('schema v77 sub-agent checkpoints', () => {
         conn
           .prepare(
             `EXPLAIN QUERY PLAN SELECT * FROM subagent_checkpoints
-              WHERE chat_jid = ? AND input_message_id IN (?, ?)`,
+              WHERE group_folder = ? AND chat_jid = ?
+                AND input_message_id IN (?, ?)`,
           )
-          .all('web:main', 'a', 'b') as Array<{ detail: string }>
+          .all('main', 'web:main', 'a', 'b') as Array<{ detail: string }>
       )
         .map((row) => row.detail)
         .join(' | ');
@@ -103,7 +104,7 @@ describe('schema v77 sub-agent checkpoints', () => {
       description: 'after migration',
     });
     expect(
-      db.listSubagentCheckpointsForInputs('web:main', ['msg-1']),
+      db.listSubagentCheckpointsForInputs('main', 'web:main', ['msg-1']),
     ).toHaveLength(1);
   });
 
@@ -113,7 +114,7 @@ describe('schema v77 sub-agent checkpoints', () => {
     db.initDatabase();
     expect(fs.readdirSync(backupDir)).toHaveLength(before);
     expect(
-      db.listSubagentCheckpointsForInputs('web:main', ['msg-1']),
+      db.listSubagentCheckpointsForInputs('main', 'web:main', ['msg-1']),
     ).toHaveLength(1);
     db.closeDatabase();
 
