@@ -1168,9 +1168,30 @@ adminRoutes.delete(
 
 // --- Invite Codes ---
 
+/**
+ * A non-admin invite manager may only see / revoke invites it could have
+ * created itself (same ceiling as POST /invites): never admin invites, never
+ * invites carrying permissions the actor does not hold. Otherwise a
+ * `user_admin` member copies an admin invite and registers an admin account.
+ */
+function inviteWithinActorCeiling(
+  actor: AuthUser,
+  invite: { role: string; permissions: readonly Permission[] },
+): boolean {
+  if (actor.role === 'admin') return true;
+  if (invite.role === 'admin') return false;
+  const allowed = new Set<Permission>(actor.permissions);
+  return invite.permissions.every((p) => allowed.has(p));
+}
+
 // GET /api/admin/invites - 获取邀请码列表
 adminRoutes.get('/invites', authMiddleware, inviteManageMiddleware, (c) => {
-  return c.json({ invites: getAllInviteCodes() });
+  const actor = c.get('user') as AuthUser;
+  return c.json({
+    invites: getAllInviteCodes().filter((invite) =>
+      inviteWithinActorCeiling(actor, invite),
+    ),
+  });
 });
 
 // POST /api/admin/invites - 创建邀请码
@@ -1272,10 +1293,12 @@ adminRoutes.delete(
   (c) => {
     const code = c.req.param('code');
     const invite = getInviteCode(code);
-    if (!invite) return c.json({ error: 'Invite not found' }, 404);
+    const actor = c.get('user') as AuthUser;
+    if (!invite || !inviteWithinActorCeiling(actor, invite)) {
+      return c.json({ error: 'Invite not found' }, 404);
+    }
 
     deleteInviteCode(code);
-    const actor = c.get('user') as AuthUser;
     logAuthEvent({
       event_type: 'invite_deleted',
       username: actor.username,
