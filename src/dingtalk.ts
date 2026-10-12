@@ -2431,6 +2431,15 @@ export function createDingTalkConnection(
         }
         const steerText =
           runtimeControl?.kind === 'steer' ? runtimeControl.text : undefined;
+        // Text slash commands run before route validation so a paired account
+        // mount (no explicit binding yet) can still reach /new, /bind, etc.
+        if (
+          steerText === undefined &&
+          data.msgtype === 'text' &&
+          (await runSlashCommand(admissionText))
+        ) {
+          return;
+        }
         if (!resolvedRoute) {
           logger.warn(
             { jid },
@@ -2960,7 +2969,12 @@ export function createDingTalkConnection(
         // ── Authorized: process message ──
 
         // Handle slash commands
-        if (steerText === undefined && (await runSlashCommand(content))) return;
+        if (
+          steerText === undefined &&
+          data.msgtype !== 'text' &&
+          (await runSlashCommand(content))
+        )
+          return;
 
         // Route was resolved before registration and media download.
         const id = crypto.randomUUID();
