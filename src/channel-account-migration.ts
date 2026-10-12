@@ -119,3 +119,26 @@ export function syncDefaultChannelAccountCredentials(input: {
     }) ?? account
   );
 }
+
+/**
+ * The legacy global Feishu config carries credentials only, and
+ * syncDefaultChannelAccountCredentials replaces the whole secret. Carry the
+ * auto-learned bot owner forward so a re-save does not let the next DM
+ * re-claim the bot. Feishu open_ids are per app, so a new appId drops it.
+ */
+export function mergeLegacyFeishuOwner(
+  ownerUserId: string,
+  secret: ChannelAccountSecret,
+): ChannelAccountSecret {
+  const existing = getLegacyChannelAccount(ownerUserId, 'feishu');
+  if (!existing || secret.ownerOpenId) return secret;
+  let previous: ChannelAccountSecret | null;
+  try {
+    previous = loadChannelAccountSecret(existing.secret_ref);
+  } catch {
+    // An unreadable secret is about to be replaced; don't block the re-save.
+    return secret;
+  }
+  if (!previous?.ownerOpenId || previous.appId !== secret.appId) return secret;
+  return { ...secret, ownerOpenId: previous.ownerOpenId };
+}

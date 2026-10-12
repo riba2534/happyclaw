@@ -464,6 +464,7 @@ import {
 } from './channel-account-secrets.js';
 import {
   ensureLegacyDefaultChannelAccount,
+  mergeLegacyFeishuOwner,
   syncDefaultChannelAccountCredentials,
 } from './channel-account-migration.js';
 import { resolveChannelAccountFallbackWorkspace } from './channel-account-routing.js';
@@ -18792,7 +18793,10 @@ async function main(): Promise<void> {
       provider: 'feishu',
       name: '默认飞书',
       enabled: config.enabled !== false,
-      secret: { appId: config.appId, appSecret: config.appSecret },
+      secret: mergeLegacyFeishuOwner(adminUser.id, {
+        appId: config.appId,
+        appSecret: config.appSecret,
+      }),
     });
     if (!defaultAccount.enabled) {
       await disconnectChannelAccountById(defaultAccount.id);
