@@ -569,6 +569,14 @@ export function createWhatsAppConnection(
       if (type !== 'notify') return;
       const task = (async (): Promise<void> => {
         for (const msg of messages) {
+          // Baileys upserts CIPHERTEXT/unavailable stubs (no decryptable body)
+          // and later re-emits the same key.id with real content via PDO
+          // placeholder resend or decrypt retry. Admitting the stub into
+          // runMessage markSeen's the key and permanently drops the follow-up.
+          // StubType.CIPHERTEXT === 2 in WAProto.
+          if (!msg.message || msg.messageStubType === 2) {
+            continue;
+          }
           const remoteJid = msg.key?.remoteJid;
           const logicalJid = remoteJid
             ? canonicalizeWhatsAppProviderConversationJid(remoteJid)
