@@ -91,16 +91,27 @@ export function assignPlan(
   planId: string,
   actorId: string,
   durationDays?: number,
-  opts?: { trialDays?: number; notes?: string; autoRenew?: boolean },
+  opts?: {
+    trialDays?: number;
+    notes?: string;
+    autoRenew?: boolean;
+    /** Explicit expiry (overrides durationDays); null = never expires. */
+    expiresAt?: string | null;
+  },
 ): void {
   assertBillableUser(userId);
   const plan = getBillingPlan(planId);
   if (!plan) throw new Error(`Plan not found: ${planId}`);
 
   const now = new Date();
-  const expiresAt = durationDays
-    ? new Date(now.getTime() + durationDays * 24 * 60 * 60 * 1000).toISOString()
-    : null;
+  const expiresAt =
+    opts?.expiresAt !== undefined
+      ? opts.expiresAt
+      : durationDays
+        ? new Date(
+            now.getTime() + durationDays * 24 * 60 * 60 * 1000,
+          ).toISOString()
+        : null;
 
   const trialDays = opts?.trialDays ?? plan.trial_days;
   const trialEndsAt = trialDays
@@ -806,12 +817,17 @@ export function redeemTrial(userId: string, days: number): boolean {
   const base = currentTrialEnd > now ? currentTrialEnd : now;
   const newTrialEnd = new Date(base.getTime() + days * 24 * 60 * 60 * 1000);
 
-  // Re-assign the same plan with extended trial
+  // Re-assign the same plan with extended trial. Strictly preserve the
+  // current subscription's expires_at and auto_renew: a trial must never
+  // turn a time-limited plan permanent or clear auto-renew. Do not stretch
+  // expiry out to the trial end.
   assignPlan(userId, effective.plan.id, userId, undefined, {
     trialDays: Math.ceil(
       (newTrialEnd.getTime() - now.getTime()) / (24 * 60 * 60 * 1000),
     ),
     notes: `试用延长 ${days} 天`,
+    expiresAt: effective.subscription.expires_at,
+    autoRenew: effective.subscription.auto_renew,
   });
   return true;
 }
