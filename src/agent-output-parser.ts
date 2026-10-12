@@ -10,14 +10,85 @@ import { getSystemSettings } from './runtime-config.js';
 import { logger } from './logger.js';
 import { OutputFrameScanner } from './output-frame-scanner.js';
 import type { ContainerOutput } from './agent-runtime-contracts.js';
+import type { StreamEvent } from './types.js';
 
 // Sentinel markers for robust output parsing (must match agent-runner)
 export const OUTPUT_START_MARKER = '---HAPPYCLAW_OUTPUT_START---';
 export const OUTPUT_END_MARKER = '---HAPPYCLAW_OUTPUT_END---';
 
 /**
+ * Top-level StreamEvent fields the contract types as a string (including the
+ * string-literal unions `agentScope` / `displayLevel`). Host code slices,
+ * trims and interpolates these, often inside card flush timers that run
+ * outside any try/catch, so a non-string here can crash the host.
+ * `parentToolUseId` may also be null; `eventType` is handled separately.
+ */
+const STREAM_EVENT_STRING_FIELDS: ReadonlyArray<keyof StreamEvent> = [
+  'agentScope',
+  'queryRunId',
+  'turnId',
+  'sessionId',
+  'messageUuid',
+  'displayLevel',
+  'text',
+  'title',
+  'summary',
+  'detail',
+  'rawType',
+  'toolName',
+  'toolUseId',
+  'parentToolUseId',
+  'skillName',
+  'toolInputSummary',
+  'toolResult',
+  'hookName',
+  'hookEvent',
+  'hookOutcome',
+  'statusText',
+  'taskDescription',
+  'taskId',
+  'taskStatus',
+  'taskSummary',
+  'taskType',
+  'workflowName',
+  'subagentType',
+  'lastToolName',
+  'outputFile',
+];
+
+/**
+ * Validate a framed `streamEvent`. Returns undefined (drop the event) when it
+ * is not a plain object or its required `eventType` discriminant is not a
+ * string; otherwise removes every string-typed field that arrived as a
+ * non-string (`parentToolUseId: null` is kept, as the contract allows it).
+ */
+function normalizeStreamEvent(value: unknown): StreamEvent | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return undefined;
+  }
+  const event = value as Record<string, unknown>;
+  if (typeof event.eventType !== 'string') return undefined;
+  for (const field of STREAM_EVENT_STRING_FIELDS) {
+    const fieldValue = event[field];
+    if (fieldValue === undefined || typeof fieldValue === 'string') continue;
+    if (field === 'parentToolUseId' && fieldValue === null) continue;
+    delete event[field];
+  }
+  return event as unknown as StreamEvent;
+}
+
+/**
  * Parse a framed payload slice, accepting it only if it yields a JSON *object*
  * (a real ContainerOutput). Returns null on any parse error or a non-object.
+ *
+ * Framed stdout is untrusted, so the fields host code consumes as strings are
+ * type-checked here, at the host boundary. A present `result` that is not a
+ * string becomes null, and `streamEvent` is validated by
+ * normalizeStreamEvent(). Downstream code treats these as strings: the
+ * provider-limit classifier runs synchronously in the stdout 'data' handler,
+ * and the IM streaming cards slice tool summaries inside flush timers. A
+ * number or object there used to throw outside any catch and take down the
+ * host process.
  */
 function tryParseContainerOutput(jsonStr: string): ContainerOutput | null {
   let v: unknown;
@@ -26,7 +97,18 @@ function tryParseContainerOutput(jsonStr: string): ContainerOutput | null {
   } catch {
     return null;
   }
-  return typeof v === 'object' && v !== null ? (v as ContainerOutput) : null;
+  if (typeof v !== 'object' || v === null) return null;
+  const output = v as ContainerOutput;
+  const result: unknown = output.result;
+  if (result !== undefined && result !== null && typeof result !== 'string') {
+    output.result = null;
+  }
+  if ('streamEvent' in output) {
+    const streamEvent = normalizeStreamEvent(output.streamEvent);
+    if (streamEvent) output.streamEvent = streamEvent;
+    else delete output.streamEvent;
+  }
+  return output;
 }
 
 // ─── Stdout Stream Parser ────────────────────────────────────────────
@@ -1060,7 +1142,8 @@ function hasKnownClaudeLimitNoticeTail(tail: string): boolean {
 export function classifyProviderLimitNotice(
   result: string | null,
 ): ProviderLimitScope | null {
-  if (!result) return null;
+  // Defence in depth: callers pass untrusted agent output.
+  if (typeof result !== 'string' || !result) return null;
   const normalized = result.trim().replace(/\s+/g, ' ');
   if (!normalized || normalized.length > 400) return null;
 

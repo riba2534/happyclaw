@@ -386,6 +386,8 @@ export class DiscordStreamingEditController {
   }
 
   updateToolSummary(toolId: string, summary: string): void {
+    // Defence in depth: buildAuxPrefix() slices it inside the aux-flush timer, outside any catch.
+    if (typeof summary !== 'string') return;
     const tc = this.tools.get(toolId);
     if (tc) {
       tc.summary = summary;
