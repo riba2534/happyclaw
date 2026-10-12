@@ -222,8 +222,34 @@ export class QQStreamingController {
     );
 
     if (!finalText.trim()) {
-      this.state = 'completed';
-      return;
+      if (this.sentChunkCount === 0 && !this.streamMsgId) {
+        this.state = 'completed';
+        return;
+      }
+      const emptyDoneText = safeFinal.trim()
+        ? safeFinal
+        : '> ⚠️ 本次运行没有生成可展示的最终内容。';
+      try {
+        await this.doSendChunk(emptyDoneText, 10); // DONE
+        this.state = 'completed';
+        logger.info(
+          { openid: this.openid, chunks: this.sentChunkCount },
+          'QQ streaming completed',
+        );
+        return;
+      } catch (err: any) {
+        logger.warn(
+          { err: err.message, openid: this.openid },
+          'QQ streaming finalize failed; refusing duplicate plain fallback',
+        );
+        this.terminalDeliveryError ??= new PartialChannelDeliveryError(
+          this.sentChunkCount,
+          this.sentChunkCount + 1,
+          err,
+        );
+        this.state = 'aborted';
+        throw this.terminalDeliveryError;
+      }
     }
 
     if (this.definitiveStartRejection) {
