@@ -19,6 +19,8 @@ const dingtalkHttps = vi.hoisted(() => ({
         return req;
       },
       write() {},
+      setTimeout() {},
+      destroy() {},
       end() {
         const responseListeners: Record<
           string,

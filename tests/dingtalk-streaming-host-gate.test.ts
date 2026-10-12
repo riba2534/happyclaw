@@ -102,6 +102,8 @@ const dingtalkHttps = vi.hoisted(() => {
           return req;
         },
         write() {},
+        setTimeout() {},
+        destroy() {},
         end() {
           const requestPath = String(options.path ?? '');
           if (String(options.hostname).includes('oapi.dingtalk.com')) {
