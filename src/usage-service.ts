@@ -10,6 +10,7 @@ import {
 import {
   deductUsageCost,
   getUserEffectivePlan,
+  invalidateUserBillingCache,
   isBillingEnabled,
 } from './billing.js';
 import {
@@ -220,6 +221,11 @@ export function recordUsageEvent(options: RecordUsageEventOptions): {
     trackBillingUsage: Boolean(user),
     chargeBalance: shouldCharge,
   });
+
+  // The batch above always adds tokens to the daily/monthly quota ledgers,
+  // even when the event is billed $0 and deductUsageCost below is skipped.
+  // Drop the cached quota verdict so the next pre-turn gate sees them.
+  if (result.inserted) invalidateUserBillingCache(options.userId);
 
   // The wallet mutation already committed atomically in recordUsageEventBatch.
   // This compatibility call emits the existing billing audit/access hooks;
