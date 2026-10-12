@@ -506,6 +506,10 @@ export function createDiscordConnection(
       inboundLifecycle.assertCurrent(lease);
       // Skip bot messages
       if (msg.author.bot) return;
+      // Discord system messages (THREAD_CREATED, CHANNEL_NAME_CHANGE, pins,
+      // joins, boosts...) keep a human author but are not prompts; some carry
+      // the thread/channel name in `content`.
+      if (msg.system) return;
 
       // Discord group DMs do not have a stable channel ownership model in
       // HappyClaw (the previous implementation incorrectly keyed them by the
@@ -1218,6 +1222,8 @@ export function createDiscordConnection(
         connectedClient.on(Events.MessageCreate, (msg) => {
           if (stopping || !inboundLifecycle.isCurrent(lease)) return;
           if (msg.author?.bot) return;
+          // Symmetry with handleMessage: drop system messages before lease work.
+          if (msg.system) return;
           const task = inboundLifecycle
             .runMessage(
               lease,
