@@ -263,6 +263,15 @@ function leaseLost(
   fallbackAttempt: number,
 ): ChannelOutboxDeliveryResult {
   const current = getChannelOutboxItem(itemId);
+  // If complete/fail lost the lease while still `sending`, promote now so
+  // getUncertainChannelOutboxForTurn sees the fence without startup reconcile.
+  if (current?.status === 'sending') {
+    reconcileExpiredChannelOutbox();
+    const updated = getChannelOutboxItem(itemId);
+    if (updated?.status === 'uncertain' || updated?.status === 'delivered') {
+      return resultFromItem(updated, updated.status === 'delivered');
+    }
+  }
   if (current?.status === 'delivered' || current?.status === 'uncertain') {
     return resultFromItem(current, current.status === 'delivered');
   }
