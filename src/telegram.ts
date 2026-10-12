@@ -696,13 +696,22 @@ export function parseTelegramProviderTarget(
   if (!/^-?[1-9]\d*$/.test(rawChatId)) return null;
   const chatId = Number(rawChatId);
   if (!Number.isSafeInteger(chatId)) return null;
-  if (
-    fragments.length > 1 ||
-    (fragments.length === 1 && !fragments[0].startsWith('thread:'))
-  ) {
+  // Native thread routes carry #thread:N#root:N (buildNativeThreadRouteJid).
+  // Telegram Bot API only understands message_thread_id; ignore #root: and
+  // fail closed on any other fragment.
+  const unknown = fragments.filter(
+    (part) => !part.startsWith('thread:') && !part.startsWith('root:'),
+  );
+  if (unknown.length > 0) return null;
+  const threadFragments = fragments.filter((part) =>
+    part.startsWith('thread:'),
+  );
+  if (threadFragments.length > 1) return null;
+  if (fragments.length > 0 && threadFragments.length === 0) {
+    // root-only (or empty thread) is not a valid Telegram send target
     return null;
   }
-  const threadFragment = fragments[0];
+  const threadFragment = threadFragments[0];
   let rawThreadId: string | undefined;
   try {
     rawThreadId = threadFragment
