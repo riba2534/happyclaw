@@ -4958,6 +4958,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
     // Re-check after the async IDB read: clearHistory may have started while
     // we were awaiting.
     if (get().clearing[jid]) return;
+    // First-paint only: if network load (or delete) already established this
+    // key, do not merge a stale IDB snapshot back over calibrated state.
+    if (Object.prototype.hasOwnProperty.call(get().agentMessages, agentId)) {
+      return;
+    }
     set((s) => {
       const existing = s.agentMessages[agentId] || [];
       const mergedUsage = mergePendingMessageUsage(
