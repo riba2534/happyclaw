@@ -1741,6 +1741,17 @@ function injectPreparedFollowUp(
 ): 'sent' | 'no_active' | 'cancelled' {
   const item = items[items.length - 1];
   if (items.some((queued) => !getQueuedFollowUp(queued.chat_jid, queued.id))) {
+    // A sibling may have been cancelled during prepare/reply awaits. Mirror the
+    // prepare-cancel path: restore remaining promoting rows to queued so they
+    // stay claimable. Tip returned 'cancelled' with no restore, leaving siblings
+    // stuck in promoting (invisible to getMessagesSince and claimNext) until
+    // process restart.
+    const remaining = items.filter((queued) =>
+      getQueuedFollowUp(queued.chat_jid, queued.id),
+    );
+    if (remaining.length > 0) {
+      restorePromotingFollowUpBatch(remaining);
+    }
     return 'cancelled';
   }
   const linkedAnchor = resolveForwardBundleBatchAnchor(items);
