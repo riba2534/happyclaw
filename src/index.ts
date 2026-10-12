@@ -11171,6 +11171,7 @@ async function processAgentConversation(
   // Plugin command expander (DMI commands) — agent conversation cold start.
   // Replies go to virtualChatJid so the agent UI tab routes them correctly;
   // cursor advancement also uses the virtual JID since that's the read key.
+  const deferredReplyCursors: MessageCursor[] = [];
   {
     const fallbackExpandCtx = buildExpandContext(
       virtualChatJid,
@@ -11184,12 +11185,33 @@ async function processAgentConversation(
         undefined,
         persistPluginExpansion,
       );
-      // Crash-safe split (#18 P2-bug-2): hold the recovery cursor when toSend
-      // still has work pending.
-      const advanceReplyCursor =
-        toSend.length === 0
-          ? completeOutOfBandMessage
-          : advanceNextPullCursorOnly;
+      // Crash-safe split (#18 P2-bug-2) + Batch-1076: while toSend still has
+      // work pending, never advance next_pull past min(toSend.sequence). Defer
+      // later reply cursors until toSend commits so a failed turn never skips
+      // earlier undelivered user messages on retry.
+      const minToSendSeq =
+        toSend.length > 0
+          ? Math.min(
+              ...toSend.map(
+                (m) => m.ingest_sequence ?? Number.MAX_SAFE_INTEGER,
+              ),
+            )
+          : null;
+      const advanceReplyCursor = (cursor: MessageCursor) => {
+        if (toSend.length === 0) {
+          completeOutOfBandMessage(virtualChatJid, cursor);
+          return;
+        }
+        if (
+          minToSendSeq != null &&
+          typeof cursor.sequence === 'number' &&
+          cursor.sequence >= minToSendSeq
+        ) {
+          deferredReplyCursors.push(cursor);
+          return;
+        }
+        advanceNextPullCursorOnly(virtualChatJid, cursor);
+      };
       // A Web plugin command must not inherit a prior IM recipient.
       let agentPluginRepliesAcknowledged = true;
       for (const r of replies) {
@@ -11214,7 +11236,7 @@ async function processAgentConversation(
             r.originalMsg.id,
           );
         }
-        advanceReplyCursor(virtualChatJid, {
+        advanceReplyCursor({
           timestamp: r.originalMsg.timestamp,
           id: r.originalMsg.id,
           sequence: r.originalMsg.ingest_sequence,
@@ -11261,6 +11283,9 @@ async function processAgentConversation(
           ),
     });
     if (!answered) return false;
+    for (const cursor of deferredReplyCursors.splice(0)) {
+      advanceNextPullCursorOnly(virtualChatJid, cursor);
+    }
     automationTurns.remember(batchInputId, missedMessages);
     automationTurns.settleAll(UNSETTLED_RUN_OUTCOME);
     if (agent.kind === 'spawn') {
@@ -12637,6 +12662,11 @@ async function processAgentConversation(
       sequence: lastProcessed.ingest_sequence,
     });
     flushAcknowledgedIpcForJid(virtualChatJid);
+    if (typeof deferredReplyCursors !== 'undefined') {
+      for (const cursor of deferredReplyCursors.splice(0)) {
+        advanceNextPullCursorOnly(virtualChatJid, cursor);
+      }
+    }
     cursorCommittedInputTurns.add(inputTurnId);
   };
   // A deterministic failure (one a replay cannot fix): the input fails its
