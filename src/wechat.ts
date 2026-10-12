@@ -64,6 +64,22 @@ const DEFAULT_API_REQUEST_TIMEOUT_MS = 30000;
 const RECONNECT_MIN_DELAY_MS = 3000;
 const RECONNECT_MAX_DELAY_MS = 60000;
 const REPEATED_ERROR_LOG_INTERVAL_MS = 5 * 60 * 1000;
+/** Retry cadence while host intake is paused/deferred (cursor not acked). */
+const INBOUND_DEFER_RETRY_MS = 1000;
+
+function weChatInboundDeferredError(): Error {
+  return Object.assign(new Error('WeChat inbound intake is deferred'), {
+    code: 'WECHAT_INBOUND_DEFERRED',
+  });
+}
+
+function isWeChatInboundDeferred(err: unknown): boolean {
+  return (
+    !!err &&
+    typeof err === 'object' &&
+    (err as { code?: unknown }).code === 'WECHAT_INBOUND_DEFERRED'
+  );
+}
 
 const IMAGE_MAX_BASE64_SIZE = 5 * 1024 * 1024; // 5 MB for inline base64
 
@@ -163,6 +179,11 @@ export interface WeChatConnectOpts extends ChannelFollowUpConnectOpts {
   onConnectionStateChange?: (state: WeChatConnectionState) => void;
   /** Persist a fully processed getUpdates cursor before the next poll. */
   onUpdatesBuf?: (cursor: string) => void | Promise<void>;
+  /**
+   * Host intake is paused (graceful shutdown) or deferred (startup recovery).
+   * The batch must stay unacknowledged so the durable cursor replays it.
+   */
+  shouldDeferInbound?: () => boolean;
 }
 
 export interface WeChatConnection {
@@ -1218,6 +1239,10 @@ export function createWeChatConnection(
       const fromUserId = msg.from_user_id;
       if (!fromUserId) return;
 
+      // A paused host would turn this into an "unauthorized" terminal ignore
+      // and the batch cursor would be acknowledged past an unstored message.
+      if (opts.shouldDeferInbound?.()) throw weChatInboundDeferredError();
+
       // Dedup
       const key = dedupKey(msg);
       if (dedup.isDuplicate(key)) return;
@@ -1633,6 +1658,11 @@ export function createWeChatConnection(
 
     while (!stopping) {
       try {
+        // Do not even fetch while host intake is paused/deferred.
+        if (activeOpts?.shouldDeferInbound?.()) {
+          await sleep(INBOUND_DEFER_RETRY_MS);
+          continue;
+        }
         const response = await getUpdates();
         if (stopping) break;
 
@@ -1671,6 +1701,11 @@ export function createWeChatConnection(
 
         const opts = activeOpts;
         if (!opts || stopping) break;
+        if (opts.shouldDeferInbound?.()) {
+          // Keep currentGetUpdatesBuf: the same batch is replayed later.
+          await sleep(INBOUND_DEFER_RETRY_MS);
+          continue;
+        }
 
         // Cursor acknowledgement is deliberately last. A crash or processing
         // failure replays the whole batch from the previous durable cursor.
@@ -1683,6 +1718,10 @@ export function createWeChatConnection(
         });
       } catch (err) {
         if (stopping) break;
+        if (isWeChatInboundDeferred(err)) {
+          await sleep(INBOUND_DEFER_RETRY_MS);
+          continue;
+        }
 
         // Once healthy, a client-side long-poll timeout only means the server
         // kept the request open longer than advertised. It is not an outage.

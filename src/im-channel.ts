@@ -1053,6 +1053,7 @@ export function createWeChatChannel(
           onPairAttempt: opts.onPairAttempt,
           onConnectionStateChange: opts.onWeChatConnectionStateChange,
           onUpdatesBuf,
+          shouldDeferInbound: opts.shouldDeferInbound,
         });
         // A healthy getUpdates response may take one long-poll interval. The
         // manager must retain the running connector while transport health is

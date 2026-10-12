@@ -40,12 +40,14 @@ describe('WeChat admission and lifecycle wiring', () => {
     const isChatAuthorized = vi.fn(() => true);
     const onPairAttempt = vi.fn(async () => true);
     const onConnectionStateChange = vi.fn();
+    const shouldDeferInbound = vi.fn(() => false);
     const opts: IMChannelConnectOpts = {
       onReady: vi.fn(),
       onNewChat: vi.fn(),
       isChatAuthorized,
       onPairAttempt,
       onWeChatConnectionStateChange: onConnectionStateChange,
+      shouldDeferInbound,
     };
     const channel = createWeChatChannel({
       botToken: 'token',
@@ -58,6 +60,9 @@ describe('WeChat admission and lifecycle wiring', () => {
     expect(capture.connectOpts?.onPairAttempt).toBe(onPairAttempt);
     expect(capture.connectOpts?.onConnectionStateChange).toBe(
       onConnectionStateChange,
+    );
+    expect(capture.connectOpts?.shouldDeferInbound).toBe(
+      opts.shouldDeferInbound,
     );
   });
 
