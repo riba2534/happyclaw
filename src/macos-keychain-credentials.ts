@@ -60,6 +60,22 @@ export type SecurityCommandRunner = (
   request: SecurityCommandRequest,
 ) => Promise<SecurityCommandOutput>;
 
+/**
+ * Lets a reconcile/remove that hands the Keychain item to a different owner
+ * first adopt an SDK refresh the previous owner left behind. Host runners only
+ * reconcile at spawn, so the previous owner's rotated refresh token exists
+ * nowhere else; overwriting it unharvested strands that Provider on a refresh
+ * token the authorization server has already invalidated.
+ */
+export interface KeychainPreviousOwnerHarvest {
+  loadProviderCredentials: (providerId: string) => KeychainClaudeAiOauth | null;
+  persistProviderRefresh: (
+    providerId: string,
+    expected: KeychainClaudeAiOauth,
+    refreshed: KeychainClaudeAiOauth,
+  ) => Promise<boolean> | boolean;
+}
+
 export interface ReconcileClaudeKeychainOptions {
   providerId: string;
   claudeAiOauth: KeychainClaudeAiOauth;
@@ -69,6 +85,7 @@ export interface ReconcileClaudeKeychainOptions {
   ) => Promise<boolean> | boolean;
   /** Workspace folder, used only to give operational log lines context. */
   folder?: string;
+  previousOwner?: KeychainPreviousOwnerHarvest;
 }
 
 export class MacosKeychainCredentialError extends Error {
@@ -622,6 +639,11 @@ export class MacosKeychainCredentialStore {
       }
 
       if (ownership.providerId !== options.providerId) {
+        await this.adoptPreviousOwnerRefresh(
+          options.previousOwner,
+          ownership,
+          existingOauth,
+        );
         const merged = mergeClaudeKeychainPayload(existingJson, desired);
         if (merged !== null) await this.write(service, merged);
         await this.writeOwnership(
@@ -670,6 +692,67 @@ export class MacosKeychainCredentialStore {
     });
   }
 
+  private async adoptPreviousOwnerRefresh(
+    harvest: KeychainPreviousOwnerHarvest | undefined,
+    ownership: KeychainOwnership,
+    existingOauth: KeychainClaudeAiOauth,
+  ): Promise<void> {
+    if (!harvest || !ownership.credentialFingerprint) return;
+    // Unchanged since HappyClaw's last confirmed write: nothing to adopt.
+    if (oauthFingerprint(existingOauth) === ownership.credentialFingerprint) {
+      return;
+    }
+    let previous: KeychainClaudeAiOauth;
+    try {
+      const loaded = harvest.loadProviderCredentials(ownership.providerId);
+      if (!loaded) return;
+      previous = normalizeClaudeAiOauth(loaded);
+    } catch (err) {
+      logger.warn(
+        { err, providerId: ownership.providerId },
+        'Failed to load previous Keychain OAuth owner for refresh harvest',
+      );
+      return;
+    }
+    // An explicit update of the previous Provider since our write wins.
+    // Matching ownership.credentialFingerprint is the same lineage gate the
+    // same-provider persistRefresh path uses (ownership fingerprint === desired).
+    if (oauthFingerprint(previous) !== ownership.credentialFingerprint) {
+      logger.warn(
+        { providerId: ownership.providerId },
+        'Skipped previous-owner Keychain OAuth harvest (store no longer matches ownership fingerprint)',
+      );
+      return;
+    }
+    // Only a lifetime-extending rewrite is evidence of an SDK refresh.
+    if (existingOauth.expiresAt <= previous.expiresAt) {
+      logger.warn(
+        { providerId: ownership.providerId },
+        'Skipped previous-owner Keychain OAuth harvest (Keychain expiry not later)',
+      );
+      return;
+    }
+    try {
+      const persisted = await harvest.persistProviderRefresh(
+        ownership.providerId,
+        previous,
+        existingOauth,
+      );
+      if (!persisted) {
+        logger.warn(
+          { providerId: ownership.providerId },
+          'Declined previous-owner Keychain OAuth refresh harvest (CAS mismatch)',
+        );
+      }
+    } catch (err) {
+      // Best effort: never block the newly selected Provider's spawn.
+      logger.warn(
+        { err, providerId: ownership.providerId },
+        'Failed to persist previous-owner Keychain OAuth refresh harvest',
+      );
+    }
+  }
+
   private async persistRefresh(
     options: ReconcileClaudeKeychainOptions,
     expected: KeychainClaudeAiOauth,
@@ -698,7 +781,11 @@ export class MacosKeychainCredentialStore {
     }
   }
 
-  async remove(configDir: string, providerId: string): Promise<void> {
+  async remove(
+    configDir: string,
+    providerId: string,
+    previousOwner?: KeychainPreviousOwnerHarvest,
+  ): Promise<void> {
     if (this.platform !== 'darwin') return;
     if (!providerId) {
       throw new MacosKeychainCredentialError(
@@ -711,8 +798,26 @@ export class MacosKeychainCredentialStore {
         this.read(service),
         this.read(`${service}${OWNERSHIP_SUFFIX}`),
       ]);
-      if (ownershipJson !== null) parseOwnership(ownershipJson);
+      const ownership =
+        ownershipJson !== null ? parseOwnership(ownershipJson) : null;
       if (existingJson !== null) {
+        const existingOauth = (() => {
+          try {
+            const payload = parsePayload(existingJson);
+            return payload.claudeAiOauth === undefined
+              ? null
+              : normalizeClaudeAiOauth(payload.claudeAiOauth);
+          } catch {
+            return null;
+          }
+        })();
+        if (ownership && existingOauth && ownership.providerId !== providerId) {
+          await this.adoptPreviousOwnerRefresh(
+            previousOwner,
+            ownership,
+            existingOauth,
+          );
+        }
         const merged = mergeClaudeKeychainPayload(existingJson, null);
         if (merged !== null) await this.write(service, merged);
       }
@@ -733,6 +838,7 @@ export async function syncClaudeKeychainOAuth(
 export async function removeClaudeKeychainOAuth(
   configDir: string,
   providerId: string,
+  previousOwner?: KeychainPreviousOwnerHarvest,
 ): Promise<void> {
-  await defaultStore.remove(configDir, providerId);
+  await defaultStore.remove(configDir, providerId, previousOwner);
 }

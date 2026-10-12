@@ -4598,6 +4598,31 @@ export async function runHostAgent(
       !!mergedConfig.anthropicBaseUrl ||
       hasExplicitWorkspaceClaudeAuth(containerOverride);
 
+    // Host runners reconcile the Keychain only at spawn. When this spawn hands
+    // the item to another owner, adopt the previous Provider's pending SDK
+    // refresh first (CAS on that Provider's stored credential). Do not project
+    // into the previous owner's session .credentials.json.
+    const hostKeychainPreviousOwnerHarvest = {
+      loadProviderCredentials: (providerId: string) => {
+        const provider = getProviders().find(
+          (candidate) => candidate.id === providerId,
+        );
+        return provider
+          ? buildClaudeAiOauthPayload(providerToConfig(provider))
+          : null;
+      },
+      persistProviderRefresh: (
+        providerId: string,
+        expected: ClaudeOAuthCredentials,
+        refreshed: ClaudeOAuthCredentials,
+      ) =>
+        updateProviderOAuthCredentialsIfCurrent(
+          providerId,
+          expected,
+          refreshed,
+        ),
+    };
+
     // A custom endpoint or an explicit workspace key/token selects a non-OAuth
     // authentication mode. Remove all session and Keychain OAuth state before
     // spawning so Claude Code cannot override that selection.
@@ -4626,6 +4651,7 @@ export async function runHostAgent(
           resolvedSessionsDir,
           hostSelectedProfileId ??
             workspaceRuntimeCredentialOwnerId(group.folder),
+          hostKeychainPreviousOwnerHarvest,
         );
       } catch (err) {
         logger.error(
@@ -4657,6 +4683,7 @@ export async function runHostAgent(
               refreshed,
             );
           },
+          previousOwner: hostKeychainPreviousOwnerHarvest,
         });
       } catch (err) {
         logger.error(

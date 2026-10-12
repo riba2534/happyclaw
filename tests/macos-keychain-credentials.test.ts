@@ -1,14 +1,18 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 
-const { warnMock } = vi.hoisted(() => ({ warnMock: vi.fn() }));
-vi.mock('../src/logger.js', () => ({
-  logger: {
-    warn: warnMock,
-    info: vi.fn(),
-    error: vi.fn(),
-    debug: vi.fn(),
-  },
-}));
+const { warnMock, log } = vi.hoisted(() => {
+  const warnMock = vi.fn();
+  return {
+    warnMock,
+    log: {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: warnMock,
+      error: vi.fn(),
+    },
+  };
+});
+vi.mock('../src/logger.js', () => ({ logger: log }));
 
 import {
   claudeKeychainOwnershipServiceName,
@@ -692,5 +696,233 @@ describe('Keychain claudeAiOauth cleared by Claude Code', () => {
       claudeAiOauth: normalizeClaudeAiOauth(OAUTH),
       mcpOAuth: { keep: true },
     });
+  });
+});
+
+describe('previous-owner Keychain refresh harvest', () => {
+  const OAUTH_A = {
+    accessToken: 'sk-ant-oat01-a-1',
+    refreshToken: 'sk-ant-ort01-a-1',
+    expiresAt: 1_900_000_000_000,
+    scopes: ['user:inference', 'user:profile'],
+    subscriptionType: 'max',
+  };
+  const REFRESHED_A = {
+    accessToken: 'sk-ant-oat01-a-3',
+    refreshToken: 'sk-ant-ort01-a-3',
+    expiresAt: 1_900_008_000_000,
+    scopes: ['user:inference', 'user:profile'],
+    subscriptionType: 'max',
+  };
+  const OAUTH_B = {
+    accessToken: 'sk-ant-oat01-b-1',
+    refreshToken: 'sk-ant-ort01-b-1',
+    expiresAt: 1_900_000_000_000,
+    scopes: ['user:inference', 'user:profile'],
+    subscriptionType: 'max',
+  };
+
+  function harvestStore(initial: Record<string, typeof OAUTH_A>) {
+    const providers = new Map(
+      Object.entries(initial).map(([id, oauth]) => [
+        id,
+        normalizeClaudeAiOauth(oauth),
+      ]),
+    );
+    const snap = (oauth: typeof OAUTH_A) =>
+      JSON.stringify(normalizeClaudeAiOauth(oauth));
+    return {
+      providers,
+      previousOwner: {
+        loadProviderCredentials: (id: string) => providers.get(id) ?? null,
+        persistProviderRefresh: (
+          id: string,
+          expected: typeof OAUTH_A,
+          refreshed: typeof OAUTH_A,
+        ) => {
+          const cur = providers.get(id);
+          if (!cur || snap(cur) !== snap(expected)) return false;
+          providers.set(id, normalizeClaudeAiOauth(refreshed));
+          return true;
+        },
+      },
+    };
+  }
+
+  test('A then B then A: harvest saves rotated refresh so A can run again', async () => {
+    log.warn.mockClear();
+    const fake = new FakeKeychain();
+    const store = fake.store();
+    const service = claudeKeychainServiceName(CONFIG_DIR);
+    const { providers, previousOwner } = harvestStore({
+      'official-a': OAUTH_A,
+      'official-b': OAUTH_B,
+    });
+
+    await store.reconcile(CONFIG_DIR, {
+      providerId: 'official-a',
+      claudeAiOauth: OAUTH_A,
+      previousOwner,
+    });
+    // SDK refreshed A in the Keychain between spawns.
+    fake.items.set(
+      service,
+      JSON.stringify({ claudeAiOauth: REFRESHED_A, mcpOAuth: { keep: true } }),
+    );
+
+    await store.reconcile(CONFIG_DIR, {
+      providerId: 'official-b',
+      claudeAiOauth: OAUTH_B,
+      previousOwner,
+    });
+    expect(providers.get('official-a')).toEqual(
+      normalizeClaudeAiOauth(REFRESHED_A),
+    );
+    expect(JSON.parse(fake.items.get(service)!).claudeAiOauth).toEqual(
+      normalizeClaudeAiOauth(OAUTH_B),
+    );
+    expect(JSON.parse(fake.items.get(service)!).mcpOAuth).toEqual({
+      keep: true,
+    });
+
+    // Third turn: A comes back with the harvested refresh.
+    const persistA = vi.fn(() => true);
+    const effective = await store.reconcile(CONFIG_DIR, {
+      providerId: 'official-a',
+      claudeAiOauth: providers.get('official-a')!,
+      persistRefreshedCredentials: persistA,
+      previousOwner,
+    });
+    expect(effective).toEqual(normalizeClaudeAiOauth(REFRESHED_A));
+    expect(persistA).not.toHaveBeenCalled();
+    expect(log.warn).not.toHaveBeenCalled();
+  });
+
+  test('remove() after A refreshed harvests into A before stripping', async () => {
+    log.warn.mockClear();
+    const fake = new FakeKeychain();
+    const store = fake.store();
+    const service = claudeKeychainServiceName(CONFIG_DIR);
+    const { providers, previousOwner } = harvestStore({
+      'official-a': OAUTH_A,
+    });
+
+    await store.reconcile(CONFIG_DIR, {
+      providerId: 'official-a',
+      claudeAiOauth: OAUTH_A,
+      previousOwner,
+    });
+    fake.items.set(
+      service,
+      JSON.stringify({
+        claudeAiOauth: REFRESHED_A,
+        mcpOAuth: { keep: 'mcp' },
+      }),
+    );
+
+    await store.remove(CONFIG_DIR, 'gateway-custom', previousOwner);
+    expect(providers.get('official-a')).toEqual(
+      normalizeClaudeAiOauth(REFRESHED_A),
+    );
+    const payload = JSON.parse(fake.items.get(service)!);
+    expect(payload.claudeAiOauth).toBeUndefined();
+    expect(payload.mcpOAuth).toEqual({ keep: 'mcp' });
+    expect(log.warn).not.toHaveBeenCalled();
+  });
+
+  test('CAS mismatch / stale expiresAt: not saved, warned, B still runs', async () => {
+    log.warn.mockClear();
+    const fake = new FakeKeychain();
+    const store = fake.store();
+    const service = claudeKeychainServiceName(CONFIG_DIR);
+    const { providers, previousOwner } = harvestStore({
+      'official-a': OAUTH_A,
+      'official-b': OAUTH_B,
+    });
+
+    await store.reconcile(CONFIG_DIR, {
+      providerId: 'official-a',
+      claudeAiOauth: OAUTH_A,
+      previousOwner,
+    });
+    fake.items.set(service, JSON.stringify({ claudeAiOauth: REFRESHED_A }));
+    // Admin updated A's store since ownership was written — CAS must decline.
+    providers.set(
+      'official-a',
+      normalizeClaudeAiOauth({
+        ...OAUTH_A,
+        accessToken: 'sk-ant-oat01-a-admin-update',
+        refreshToken: 'sk-ant-ort01-a-admin-update',
+      }),
+    );
+
+    const effective = await store.reconcile(CONFIG_DIR, {
+      providerId: 'official-b',
+      claudeAiOauth: OAUTH_B,
+      previousOwner,
+    });
+    expect(effective).toEqual(normalizeClaudeAiOauth(OAUTH_B));
+    expect(providers.get('official-a')!.accessToken).toBe(
+      'sk-ant-oat01-a-admin-update',
+    );
+    expect(log.warn).toHaveBeenCalled();
+
+    // Stale / non-extending rewrite: no harvest, no overwrite of store.
+    log.warn.mockClear();
+    const { providers: providers2, previousOwner: harvest2 } = harvestStore({
+      'official-a': OAUTH_A,
+      'official-b': OAUTH_B,
+    });
+    const fake2 = new FakeKeychain();
+    const store2 = fake2.store();
+    const service2 = claudeKeychainServiceName(CONFIG_DIR);
+    await store2.reconcile(CONFIG_DIR, {
+      providerId: 'official-a',
+      claudeAiOauth: OAUTH_A,
+      previousOwner: harvest2,
+    });
+    const notNewer = {
+      ...OAUTH_A,
+      accessToken: 'sk-ant-oat01-a-rewritten',
+      refreshToken: 'sk-ant-ort01-a-rewritten',
+      expiresAt: OAUTH_A.expiresAt, // not later
+    };
+    fake2.items.set(service2, JSON.stringify({ claudeAiOauth: notNewer }));
+    await store2.reconcile(CONFIG_DIR, {
+      providerId: 'official-b',
+      claudeAiOauth: OAUTH_B,
+      previousOwner: harvest2,
+    });
+    expect(providers2.get('official-a')).toEqual(
+      normalizeClaudeAiOauth(OAUTH_A),
+    );
+    expect(JSON.parse(fake2.items.get(service2)!).claudeAiOauth).toEqual(
+      normalizeClaudeAiOauth(OAUTH_B),
+    );
+    expect(log.warn).toHaveBeenCalled();
+  });
+
+  test('sticky same-provider refresh path still persists via persistRefreshedCredentials', async () => {
+    log.warn.mockClear();
+    const fake = new FakeKeychain();
+    const store = fake.store();
+    const service = claudeKeychainServiceName(CONFIG_DIR);
+    const { previousOwner } = harvestStore({ 'official-a': OAUTH_A });
+    await store.reconcile(CONFIG_DIR, {
+      providerId: 'official-a',
+      claudeAiOauth: OAUTH_A,
+      previousOwner,
+    });
+    fake.items.set(service, JSON.stringify({ claudeAiOauth: REFRESHED_A }));
+    const persist = vi.fn(() => true);
+    const effective = await store.reconcile(CONFIG_DIR, {
+      providerId: 'official-a',
+      claudeAiOauth: OAUTH_A,
+      persistRefreshedCredentials: persist,
+      previousOwner,
+    });
+    expect(effective).toEqual(normalizeClaudeAiOauth(REFRESHED_A));
+    expect(persist).toHaveBeenCalledOnce();
+    expect(log.warn).not.toHaveBeenCalled();
   });
 });
