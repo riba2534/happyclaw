@@ -946,7 +946,9 @@ export function createWeComConnection(
     frame: WsFrame<BaseMessage>,
     text: string,
   ): Promise<void> {
-    await client.replyStream(frame, generateReqId('reply'), text, true);
+    await awaitWeComProviderAck('command reply', () =>
+      client.replyStream(frame, generateReqId('reply'), text, true),
+    );
   }
 
   async function sendMarkdownPages(
@@ -2015,7 +2017,9 @@ export function createWeComConnection(
         sendStream: async (streamContent: string, finish: boolean) => {
           // `frame` is deliberately closed over. Never re-read a per-chat map:
           // concurrent messages in one chat retain their own req_id.
-          await client.replyStream(frame, streamId, streamContent, finish);
+          await awaitWeComProviderAck('stream reply', () =>
+            client.replyStream(frame, streamId, streamContent, finish),
+          );
         },
         fallbackSend: async (fallbackText: string) => {
           await sendMarkdownPages(client, chatId, fallbackText);
