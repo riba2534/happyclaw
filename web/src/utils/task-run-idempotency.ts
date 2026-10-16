@@ -100,6 +100,21 @@ function writeEntries(
   }
 }
 
+function mintRunKey(): string {
+  if (typeof globalThis.crypto?.randomUUID === 'function') {
+    return globalThis.crypto.randomUUID();
+  }
+  // Plain-HTTP LAN hosts are not secure contexts: randomUUID is missing there,
+  // but getRandomValues is available everywhere.
+  const bytes = globalThis.crypto.getRandomValues(new Uint8Array(16));
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = Array.from(bytes, (byte) =>
+    byte.toString(16).padStart(2, '0'),
+  ).join('');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
 /** Reuse an unacknowledged Run Now key across renders and page reloads. */
 export function getPendingTaskRunKey(
   userId: string,
@@ -112,7 +127,7 @@ export function getPendingTaskRunKey(
     writeEntries(userId, entries);
     return existing.key;
   }
-  const key = crypto.randomUUID();
+  const key = mintRunKey();
   entries[taskId] = { key, createdAt: now };
   writeEntries(userId, entries);
   return key;
