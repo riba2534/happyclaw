@@ -4402,6 +4402,7 @@ export async function runHostAgent(
         effectiveOauth = await syncClaudeKeychainOAuth(resolvedSessionsDir, {
           providerId: hostSelectedProfileId ?? '',
           claudeAiOauth: effectiveOauth,
+          folder: group.folder,
           persistRefreshedCredentials: (expected, refreshed) => {
             if (!hostSelectedProfileId) return false;
             return updateProviderOAuthCredentialsIfCurrent(

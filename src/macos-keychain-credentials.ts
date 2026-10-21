@@ -14,6 +14,8 @@ import { spawn } from 'child_process';
 import crypto from 'crypto';
 import os from 'os';
 
+import { logger } from './logger.js';
+
 const SECURITY_BIN = '/usr/bin/security';
 const SECURITY_TIMEOUT_MS = 10_000;
 const NOT_FOUND_MARKER = 'could not be found';
@@ -65,6 +67,8 @@ export interface ReconcileClaudeKeychainOptions {
     expected: KeychainClaudeAiOauth,
     refreshed: KeychainClaudeAiOauth,
   ) => Promise<boolean> | boolean;
+  /** Workspace folder, used only to give operational log lines context. */
+  folder?: string;
 }
 
 export class MacosKeychainCredentialError extends Error {
@@ -146,6 +150,32 @@ export function normalizeClaudeAiOauth(value: unknown): KeychainClaudeAiOauth {
   return normalized;
 }
 
+function isEmptyTokenField(value: unknown): boolean {
+  return value === undefined || value === '';
+}
+
+/**
+ * Claude Code does not delete its Keychain item when an OAuth account is
+ * revoked or logged out; it blanks `claudeAiOauth` in place, leaving empty
+ * tokens and a zero expiry. Such a value holds no credential at all, so it is
+ * safe to treat as "no existing OAuth" rather than as a corrupt value.
+ *
+ * Deliberately narrow: both tokens must be empty or missing and the expiry
+ * must be zero or missing. A value with only some credential fields blanked is
+ * not a known Claude Code state and must still fail closed.
+ */
+export function isClearedClaudeAiOauth(value: unknown): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return false;
+  }
+  const oauth = value as Record<string, unknown>;
+  return (
+    isEmptyTokenField(oauth.accessToken) &&
+    isEmptyTokenField(oauth.refreshToken) &&
+    (oauth.expiresAt === undefined || oauth.expiresAt === 0)
+  );
+}
+
 function oauthJson(oauth: KeychainClaudeAiOauth): string {
   return JSON.stringify(normalizeClaudeAiOauth(oauth));
 }
@@ -204,7 +234,10 @@ export function mergeClaudeKeychainPayload(
   }
 
   const desired = normalizeClaudeAiOauth(claudeAiOauth);
-  if ('claudeAiOauth' in payload) {
+  if (
+    'claudeAiOauth' in payload &&
+    !isClearedClaudeAiOauth(payload.claudeAiOauth)
+  ) {
     const existing = normalizeClaudeAiOauth(payload.claudeAiOauth);
     if (oauthEqual(existing, desired)) return null;
   }
@@ -499,12 +532,29 @@ export class MacosKeychainCredentialStore {
       }
 
       const payload = parsePayload(existingJson);
+      const clearedByClaudeCode =
+        payload.claudeAiOauth !== undefined &&
+        isClearedClaudeAiOauth(payload.claudeAiOauth);
       const existingOauth =
-        payload.claudeAiOauth === undefined
+        payload.claudeAiOauth === undefined || clearedByClaudeCode
           ? null
           : normalizeClaudeAiOauth(payload.claudeAiOauth);
 
       if (existingOauth === null) {
+        if (clearedByClaudeCode) {
+          // Claude Code blanked the item after the previous account was
+          // revoked. Without this branch every later spawn fails forever, even
+          // after switching to a healthy account.
+          logger.warn(
+            {
+              folder: options.folder ?? null,
+              service,
+              previousProviderId: ownership?.providerId ?? null,
+              providerId: options.providerId,
+            },
+            'Replacing Keychain claudeAiOauth cleared by Claude Code with the selected provider credentials',
+          );
+        }
         const merged = mergeClaudeKeychainPayload(existingJson, desired);
         if (merged !== null) await this.write(service, merged);
         await this.writeOwnership(

@@ -38,7 +38,7 @@
     "dingtalk-stream": "2.1.6-beta.1",
     "discord.js": "^14.26.2",
     "grammy": "^1.40.0",
-    "hono": "^4.13.7",
+    "hono": "^4.13.13",
     "music-metadata": "11.16.1",
     "node-pty": "^1.1.0",
     "pino": "^9.6.0",

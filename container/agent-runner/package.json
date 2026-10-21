@@ -16,7 +16,7 @@
     "zod": "^4.0.0"
   },
   "overrides": {
-    "hono": "4.13.7"
+    "hono": "4.13.13"
   },
   "devDependencies": {
     "@types/node": "^22.10.7",

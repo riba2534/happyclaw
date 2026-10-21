@@ -1,8 +1,19 @@
 import { describe, expect, test, vi } from 'vitest';
 
+const { warnMock } = vi.hoisted(() => ({ warnMock: vi.fn() }));
+vi.mock('../src/logger.js', () => ({
+  logger: {
+    warn: warnMock,
+    info: vi.fn(),
+    error: vi.fn(),
+    debug: vi.fn(),
+  },
+}));
+
 import {
   claudeKeychainOwnershipServiceName,
   claudeKeychainServiceName,
+  isClearedClaudeAiOauth,
   MacosKeychainCredentialError,
   MacosKeychainCredentialStore,
   mergeClaudeKeychainPayload,
@@ -24,6 +35,14 @@ const REFRESHED = {
   expiresAt: 1_800_003_600_000,
   scopes: ['user:inference', 'user:profile'],
   subscriptionType: 'max',
+};
+
+// The shape Claude Code leaves behind after an OAuth account is revoked.
+const CLEARED_BY_CLAUDE_CODE = {
+  accessToken: '',
+  refreshToken: '',
+  expiresAt: 0,
+  scopes: [],
 };
 
 type SecurityRequest = Parameters<SecurityCommandRunner>[0];
@@ -446,5 +465,219 @@ describe('MacosKeychainCredentialStore', () => {
     releaseFirst();
     await Promise.all([first, second]);
     expect(reads).toBe(4);
+  });
+});
+
+describe('Keychain claudeAiOauth cleared by Claude Code', () => {
+  test('recognizes only fully blanked OAuth values as cleared', () => {
+    expect(isClearedClaudeAiOauth(CLEARED_BY_CLAUDE_CODE)).toBe(true);
+    expect(isClearedClaudeAiOauth({})).toBe(true);
+    expect(isClearedClaudeAiOauth({ accessToken: '', refreshToken: '' })).toBe(
+      true,
+    );
+    for (const notCleared of [
+      null,
+      'cleared',
+      [],
+      OAUTH,
+      { ...CLEARED_BY_CLAUDE_CODE, accessToken: 'sk-ant-oat01-left' },
+      { ...CLEARED_BY_CLAUDE_CODE, refreshToken: 'sk-ant-ort01-left' },
+      { ...CLEARED_BY_CLAUDE_CODE, expiresAt: OAUTH.expiresAt },
+      { ...CLEARED_BY_CLAUDE_CODE, accessToken: null },
+      { ...CLEARED_BY_CLAUDE_CODE, expiresAt: '0' },
+    ]) {
+      expect(isClearedClaudeAiOauth(notCleared)).toBe(false);
+    }
+  });
+
+  test('replaces a cleared item with the selected provider and preserves MCP OAuth', async () => {
+    warnMock.mockClear();
+    const fake = new FakeKeychain();
+    const service = claudeKeychainServiceName(CONFIG_DIR);
+    const ownershipService = claudeKeychainOwnershipServiceName(CONFIG_DIR);
+    const mcpOAuth = { plugin: { clientId: 'mcp-client', token: 'mcp-token' } };
+    fake.items.set(
+      service,
+      JSON.stringify({ claudeAiOauth: CLEARED_BY_CLAUDE_CODE, mcpOAuth }),
+    );
+    // Ownership still points at the revoked account, fingerprinted at the
+    // credential HappyClaw last confirmed for it.
+    fake.items.set(
+      ownershipService,
+      JSON.stringify({
+        version: 1,
+        providerId: 'revoked-account',
+        credentialFingerprint: 'f'.repeat(64),
+      }),
+    );
+
+    const effective = await fake.store().reconcile(CONFIG_DIR, {
+      providerId: 'official-b',
+      claudeAiOauth: REFRESHED,
+      folder: 'main',
+    });
+
+    expect(effective).toEqual(normalizeClaudeAiOauth(REFRESHED));
+    const stored = JSON.parse(fake.items.get(service)!);
+    expect(stored.claudeAiOauth).toEqual(normalizeClaudeAiOauth(REFRESHED));
+    expect(stored.mcpOAuth).toEqual(mcpOAuth);
+    const ownership = JSON.parse(fake.items.get(ownershipService)!);
+    expect(ownership.providerId).toBe('official-b');
+    expect(ownership.credentialFingerprint).toMatch(/^[0-9a-f]{64}$/);
+    expect(ownership.credentialFingerprint).not.toBe('f'.repeat(64));
+
+    expect(warnMock).toHaveBeenCalledTimes(1);
+    const [context, message] = warnMock.mock.calls[0];
+    expect(context).toMatchObject({
+      folder: 'main',
+      previousProviderId: 'revoked-account',
+      providerId: 'official-b',
+    });
+    expect(message).toContain('cleared by Claude Code');
+    const logged = JSON.stringify(warnMock.mock.calls);
+    expect(logged).not.toContain(REFRESHED.accessToken);
+    expect(logged).not.toContain(REFRESHED.refreshToken);
+    expect(logged).not.toContain('mcp-token');
+
+    // The next spawn sees a normal, owned credential and stays quiet.
+    warnMock.mockClear();
+    await expect(
+      fake.store().reconcile(CONFIG_DIR, {
+        providerId: 'official-b',
+        claudeAiOauth: REFRESHED,
+        folder: 'main',
+      }),
+    ).resolves.toEqual(normalizeClaudeAiOauth(REFRESHED));
+    expect(warnMock).not.toHaveBeenCalled();
+  });
+
+  test('replaces a cleared item even when the same provider still owns it', async () => {
+    const fake = new FakeKeychain();
+    const service = claudeKeychainServiceName(CONFIG_DIR);
+    fake.items.set(service, JSON.stringify({ claudeAiOauth: OAUTH }));
+    const store = fake.store();
+    await store.reconcile(CONFIG_DIR, {
+      providerId: 'official-a',
+      claudeAiOauth: OAUTH,
+    });
+    fake.items.set(
+      service,
+      JSON.stringify({ claudeAiOauth: CLEARED_BY_CLAUDE_CODE }),
+    );
+
+    await expect(
+      store.reconcile(CONFIG_DIR, {
+        providerId: 'official-a',
+        claudeAiOauth: OAUTH,
+      }),
+    ).resolves.toEqual(normalizeClaudeAiOauth(OAUTH));
+    expect(JSON.parse(fake.items.get(service)!).claudeAiOauth).toEqual(
+      normalizeClaudeAiOauth(OAUTH),
+    );
+  });
+
+  test.each([
+    ['only the access token blanked', { ...OAUTH, accessToken: '' }],
+    ['only the refresh token blanked', { ...OAUTH, refreshToken: '' }],
+    [
+      'tokens blanked but expiry kept',
+      { ...CLEARED_BY_CLAUDE_CODE, expiresAt: OAUTH.expiresAt },
+    ],
+    [
+      'a token left behind',
+      { ...CLEARED_BY_CLAUDE_CODE, refreshToken: 'sk-ant-ort01-left' },
+    ],
+    ['null tokens', { ...CLEARED_BY_CLAUDE_CODE, accessToken: null }],
+  ])('still fails closed for partially blanked OAuth: %s', async (_, oauth) => {
+    const fake = new FakeKeychain();
+    const service = claudeKeychainServiceName(CONFIG_DIR);
+    const original = JSON.stringify({ claudeAiOauth: oauth, mcpOAuth: {} });
+    fake.items.set(service, original);
+
+    await expect(
+      fake.store().reconcile(CONFIG_DIR, {
+        providerId: 'official-a',
+        claudeAiOauth: OAUTH,
+      }),
+    ).rejects.toThrow('incomplete or invalid');
+    expect(fake.items.get(service)).toBe(original);
+    expect(fake.items.has(claudeKeychainOwnershipServiceName(CONFIG_DIR))).toBe(
+      false,
+    );
+  });
+
+  test('still fails closed for corrupt payload or ownership JSON', async () => {
+    const corruptPayload = new FakeKeychain();
+    corruptPayload.items.set(
+      claudeKeychainServiceName(CONFIG_DIR),
+      '{"claudeAiOauth":',
+    );
+    await expect(
+      corruptPayload.store().reconcile(CONFIG_DIR, {
+        providerId: 'official-a',
+        claudeAiOauth: OAUTH,
+      }),
+    ).rejects.toThrow('not valid JSON');
+
+    const corruptOwnership = new FakeKeychain();
+    const service = claudeKeychainServiceName(CONFIG_DIR);
+    const original = JSON.stringify({
+      claudeAiOauth: CLEARED_BY_CLAUDE_CODE,
+    });
+    corruptOwnership.items.set(service, original);
+    corruptOwnership.items.set(
+      claudeKeychainOwnershipServiceName(CONFIG_DIR),
+      '{"version":1,',
+    );
+    await expect(
+      corruptOwnership.store().reconcile(CONFIG_DIR, {
+        providerId: 'official-a',
+        claudeAiOauth: OAUTH,
+      }),
+    ).rejects.toThrow('ownership payload is not valid JSON');
+    expect(corruptOwnership.items.get(service)).toBe(original);
+  });
+
+  test('valid credentials owned by another provider follow the unchanged switch path', async () => {
+    warnMock.mockClear();
+    const fake = new FakeKeychain();
+    const service = claudeKeychainServiceName(CONFIG_DIR);
+    fake.items.set(
+      service,
+      JSON.stringify({ claudeAiOauth: OAUTH, mcpOAuth: { keep: 1 } }),
+    );
+    await fake.store().reconcile(CONFIG_DIR, {
+      providerId: 'official-a',
+      claudeAiOauth: OAUTH,
+    });
+    const persist = vi.fn(() => true);
+
+    await expect(
+      fake.store().reconcile(CONFIG_DIR, {
+        providerId: 'official-b',
+        claudeAiOauth: REFRESHED,
+        persistRefreshedCredentials: persist,
+      }),
+    ).resolves.toEqual(normalizeClaudeAiOauth(REFRESHED));
+    expect(persist).not.toHaveBeenCalled();
+    expect(JSON.parse(fake.items.get(service)!)).toEqual({
+      claudeAiOauth: normalizeClaudeAiOauth(REFRESHED),
+      mcpOAuth: { keep: 1 },
+    });
+    expect(warnMock).not.toHaveBeenCalled();
+  });
+
+  test('merge treats a cleared value as absent and keeps other fields', () => {
+    const merged = mergeClaudeKeychainPayload(
+      JSON.stringify({
+        claudeAiOauth: CLEARED_BY_CLAUDE_CODE,
+        mcpOAuth: { keep: true },
+      }),
+      OAUTH,
+    );
+    expect(JSON.parse(merged!)).toEqual({
+      claudeAiOauth: normalizeClaudeAiOauth(OAUTH),
+      mcpOAuth: { keep: true },
+    });
   });
 });
