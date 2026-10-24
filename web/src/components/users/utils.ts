@@ -34,6 +34,7 @@ export const PERMISSION_LABELS: Record<Permission, string> = {
 export const ROLE_LABELS: Record<string, string> = {
   admin: '管理员',
   member: '普通成员',
+  guest: '访客',
 };
 export interface TabNotification {
   setNotice: (value: string | null) => void;

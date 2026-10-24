@@ -133,6 +133,18 @@ describe('optional provider onboarding', () => {
     expect(container.textContent).toBe('chat page');
   });
 
+  test('keeps read-only guests out of onboarding', async () => {
+    mocks.state.user.role = 'guest';
+    await renderAt('/setup/providers');
+    expect(container.textContent).toBe('chat page');
+  });
+
+  test('lets read-only guests open their own settings', async () => {
+    mocks.state.user.role = 'guest';
+    await renderAt('/settings');
+    expect(container.textContent).toBe('settings page');
+  });
+
   test('still checks permissions', async () => {
     mocks.state.hasPermission.mockReturnValue(false);
     await renderAt('/private');

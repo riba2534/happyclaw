@@ -21,6 +21,7 @@ import type {
   AuthEventType,
 } from '../types.js';
 import { invalidateUserSessions, getWebDeps } from '../web-context.js';
+import { revokeGuestSessionsForOwner } from '../guest-access.js';
 import { imManager } from '../im-manager.js';
 import {
   listUsers,
@@ -42,6 +43,8 @@ import {
   deleteInviteCode,
   queryAuthAuditLogs,
   getRegisteredGroup,
+  deleteGuestUser,
+  deleteGuestWorkspaceGrantsForGuest,
 } from '../db.js';
 import {
   validateUsername,
@@ -255,7 +258,10 @@ adminRoutes.get('/users', authMiddleware, usersManageMiddleware, (c) => {
   const statusRaw = c.req.query('status') || 'all';
   const page = parseInt(c.req.query('page') || '1', 10);
   const pageSize = parseInt(c.req.query('pageSize') || '50', 10);
-  const role = roleRaw === 'admin' || roleRaw === 'member' ? roleRaw : 'all';
+  const role =
+    roleRaw === 'admin' || roleRaw === 'member' || roleRaw === 'guest'
+      ? roleRaw
+      : 'all';
   const status =
     statusRaw === 'active' ||
     statusRaw === 'disabled' ||
@@ -437,6 +443,20 @@ adminRoutes.patch(
           const denial = denyEscalationToTarget(c, actor, target, 'modify');
           if (denial) return denial;
         }
+        // Guest accounts are owned by their creator (POST /api/guests). Admin
+        // user management may rename, disable, delete or reset them, but a
+        // guest can never be promoted, nor a member/admin demoted to guest.
+        if (
+          target.role === 'guest' &&
+          (validation.data.role !== undefined ||
+            (validation.data.permissions !== undefined &&
+              validation.data.permissions.length > 0))
+        ) {
+          return c.json(
+            { error: 'Guest accounts cannot change role or permissions' },
+            400,
+          );
+        }
         if (
           actor.role !== 'admin' &&
           validation.data.role !== undefined &&
@@ -583,6 +603,10 @@ adminRoutes.patch(
             postCommitActions.push(() => {
               invalidateUserSessions(id);
               deleteUserSessionsByUserId(id);
+              revokeGuestSessionsForOwner(id);
+              if (target.role === 'guest') {
+                deleteGuestWorkspaceGrantsForGuest(id);
+              }
               void imManager
                 .disconnectAllUserChannels(id)
                 .catch(() => undefined);
@@ -600,6 +624,7 @@ adminRoutes.patch(
             postCommitActions.push(() => {
               invalidateUserSessions(id);
               deleteUserSessionsByUserId(id);
+              revokeGuestSessionsForOwner(id);
               void imManager
                 .disconnectAllUserChannels(id)
                 .catch(() => undefined);
@@ -837,6 +862,9 @@ adminRoutes.delete(
           `Administrator ${id} was deleted`,
           () => deleteUser(id),
         );
+      } else if (target.role === 'guest') {
+        // Also drops the guest's grants and pinned rows.
+        deleteGuestUser(id);
       } else {
         deleteUser(id);
       }
@@ -845,6 +873,7 @@ adminRoutes.delete(
       if (err.persisted) {
         invalidateUserSessions(id);
         deleteUserSessionsByUserId(id);
+        revokeGuestSessionsForOwner(id);
         void imManager.disconnectAllUserChannels(id).catch(() => undefined);
       }
       return c.json(
@@ -861,6 +890,7 @@ adminRoutes.delete(
     // 与 PATCH status='deleted' 路径对齐：清缓存 + 断 IM 连接，否则前端调
     // DELETE 之后 sessionCache 仍是 active 状态、IM bot 持续响应群消息直到重启。
     invalidateUserSessions(id);
+    revokeGuestSessionsForOwner(id);
     void imManager.disconnectAllUserChannels(id).catch(() => undefined);
 
     // Cleanup avatar files for deleted user

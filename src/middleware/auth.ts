@@ -19,6 +19,7 @@ import {
   SESSION_COOKIE_NAME_PLAIN,
 } from '../config.js';
 import { logger } from '../logger.js';
+import { guestRequestDenial } from './guest-guard.js';
 
 /**
  * Extract ALL values for a given cookie name from the raw Cookie header.
@@ -107,6 +108,15 @@ export const authMiddleware = async (c: any, next: any) => {
   }
   if (session.status === 'deleted') {
     return c.json({ error: 'Account deleted' }, 403);
+  }
+
+  if (session.role === 'guest') {
+    const denial = guestRequestDenial(
+      session.user_id,
+      c.req.method,
+      c.req.path,
+    );
+    if (denial) return c.json({ error: denial }, 403);
   }
 
   c.set('user', {

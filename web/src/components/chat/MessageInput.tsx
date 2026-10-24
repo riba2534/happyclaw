@@ -1361,6 +1361,8 @@ interface QueuedFollowUpsPanelProps {
   saveFollowUpEdit: (item: QueuedFollowUp) => Promise<void>;
   onEditChange: (value: string) => void;
   onCancelEdit: () => void;
+  /** View-only queue (read-only guests): no reorder, edit, steer or delete. */
+  readOnly?: boolean;
 }
 
 /**
@@ -1381,6 +1383,7 @@ const QueuedFollowUpsPanel = memo(function QueuedFollowUpsPanel({
   saveFollowUpEdit,
   onEditChange,
   onCancelEdit,
+  readOnly = false,
 }: QueuedFollowUpsPanelProps) {
   const listId = useId();
   const [expanded, setExpanded] = useState(false);
@@ -1458,6 +1461,7 @@ const QueuedFollowUpsPanel = memo(function QueuedFollowUpsPanel({
               saveFollowUpEdit={saveFollowUpEdit}
               onEditChange={onEditChange}
               onCancelEdit={onCancelEdit}
+              readOnly={readOnly}
             />
           ))}
         </div>
@@ -1479,6 +1483,7 @@ interface QueuedFollowUpRowProps {
   saveFollowUpEdit: QueuedFollowUpsPanelProps['saveFollowUpEdit'];
   onEditChange: QueuedFollowUpsPanelProps['onEditChange'];
   onCancelEdit: QueuedFollowUpsPanelProps['onCancelEdit'];
+  readOnly: boolean;
 }
 
 const ROW_ICON_BUTTON =
@@ -1503,6 +1508,7 @@ function QueuedFollowUpRow({
   saveFollowUpEdit,
   onEditChange,
   onCancelEdit,
+  readOnly,
 }: QueuedFollowUpRowProps) {
   const steering = item.delivery_mode === 'steer';
   const locked = steering || item.delivery_status === 'promoting';
@@ -1611,7 +1617,7 @@ function QueuedFollowUpRow({
             images={images}
             touch={touch}
           />
-          {touch ? (
+          {readOnly ? null : touch ? (
             // One row per item on touch: the primary action inline, the
             // rest behind a menu instead of a second row of buttons.
             <div className="flex shrink-0 items-center gap-0.5 -mr-1.5">
@@ -1752,3 +1758,71 @@ function QueuedFollowUpContent({
     </div>
   );
 }
+
+const noopFollowUpAction = async () => false;
+const noop = () => {};
+const noopAsync = async () => {};
+const NO_ACTING = new Set<string>();
+
+interface ReadOnlyComposerProps {
+  notice: string;
+  queuedFollowUps?: QueuedFollowUp[];
+}
+
+/**
+ * Replaces the composer for read-only viewers (guests): the queued messages
+ * stay visible, but nothing can be typed, sent, stopped or reordered.
+ */
+export const ReadOnlyComposer = memo(function ReadOnlyComposer({
+  notice,
+  queuedFollowUps = [],
+}: ReadOnlyComposerProps) {
+  const { mode: displayMode } = useDisplayMode();
+  const isCompact = displayMode === 'compact';
+  const isTouchInput = useMediaQuery('(pointer: coarse) and (hover: none)');
+  const isPhoneWidth = useMediaQuery('(max-width: 639px)');
+  return (
+    <div
+      data-hc-composer
+      data-readonly="true"
+      className="relative bg-background pt-1 pb-3 max-lg:border-t max-lg:border-surface-border max-lg:bg-background/80 max-lg:backdrop-blur-xl"
+      style={{
+        paddingBottom: 'max(0.75rem, env(safe-area-inset-bottom, 0px))',
+      }}
+    >
+      <div
+        className={
+          isCompact ? 'mx-auto px-4' : 'mx-auto max-w-3xl px-4 lg:px-6'
+        }
+      >
+        {queuedFollowUps.length > 0 && (
+          <QueuedFollowUpsPanel
+            queuedFollowUps={queuedFollowUps}
+            compact={isCompact}
+            touch={isTouchInput}
+            collapsible={isTouchInput || isPhoneWidth}
+            collapseNow={false}
+            actingOn={NO_ACTING}
+            editingFollowUpId={null}
+            editingFollowUpContent=""
+            handleFollowUpAction={noopFollowUpAction}
+            beginEditingFollowUp={noop}
+            saveFollowUpEdit={noopAsync}
+            onEditChange={noop}
+            onCancelEdit={noop}
+            readOnly
+          />
+        )}
+        <div
+          role="status"
+          className={cn(
+            'relative z-10 flex min-h-11 items-center justify-center bg-muted/50 px-4 py-2.5 text-center text-caption text-muted-foreground ring-1 ring-surface-border',
+            isCompact ? 'rounded-lg' : 'rounded-2xl',
+          )}
+        >
+          {notice}
+        </div>
+      </div>
+    </div>
+  );
+});

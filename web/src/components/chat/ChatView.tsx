@@ -17,9 +17,14 @@ import {
   type Message,
   type QueuedFollowUp,
 } from '../../stores/chat';
-import { useAuthStore } from '../../stores/auth';
+import { useAuthStore, useIsGuest } from '../../stores/auth';
+import { GUEST_READ_ONLY_NOTICE } from '../../lib/guest';
 import { MessageList } from './MessageList';
-import { MessageInput, type MessageInputHandle } from './MessageInput';
+import {
+  MessageInput,
+  ReadOnlyComposer,
+  type MessageInputHandle,
+} from './MessageInput';
 import { ModelSelector } from './ModelSelector';
 import {
   Sheet,
@@ -356,14 +361,18 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
   const markChatRead = useChatStore((s) => s.markChatRead);
 
   const currentUser = useAuthStore((s) => s.user);
-  const canUseTerminal = group?.execution_mode !== 'host';
+  const isGuest = useIsGuest();
+  // Guests view granted workspaces only: no composer, terminal, uploads,
+  // session changes or workspace configuration.
+  const readOnly = isGuest || !!group?.read_only;
+  const canUseTerminal = group?.execution_mode !== 'host' && !readOnly;
   const pollRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   const isHome = !!group?.is_home;
   // Workspace config (skills + MCP) write permission. Backend `canModifyGroup`
   // ACL result is propagated via the `can_modify` field; trust it as the
   // single source of truth to avoid frontend/backend divergence.
-  const canModifyWorkspaceConfig = !!group?.can_modify;
+  const canModifyWorkspaceConfig = !!group?.can_modify && !readOnly;
   const interactionMode = normalizeInteractionMode(group?.interaction_mode);
   const processVisibility = normalizeProcessVisibility(
     group?.process_visibility,
@@ -377,6 +386,7 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
 
   // Fetch IM connection status for home groups
   const isOwnHome =
+    !readOnly &&
     isHome &&
     ((!!group?.created_by && group.created_by === currentUser?.id) ||
       (currentUser?.role === 'admin' && group?.folder === 'main'));
@@ -1153,7 +1163,7 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
       ref={containerRef}
       data-hc-chat-view
       className="h-full flex overflow-hidden bg-background"
-      {...dropZoneProps}
+      {...(readOnly ? {} : dropZoneProps)}
     >
       <div
         className={cn(
@@ -1205,6 +1215,7 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
               )}
             </nav>
             <div className="hidden min-w-0 items-center gap-1.5 overflow-hidden md:flex">
+              {readOnly && <Badge variant="neutral">只读</Badge>}
               {group.execution_mode && (
                 <Badge variant="outline">
                   {group.execution_mode === 'host' ? '宿主机' : 'Docker'}
@@ -1327,7 +1338,7 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
         <div className="flex-1 flex overflow-hidden min-h-0">
           {/* Messages Area */}
           <div className="relative flex-1 flex flex-col min-w-0 overflow-x-hidden">
-            {isDragOver && (
+            {isDragOver && !readOnly && (
               <div
                 data-testid="chat-drop-overlay"
                 className="pointer-events-none absolute inset-2 z-50 flex items-center justify-center rounded-xl border-2 border-dashed border-primary bg-primary/5 backdrop-blur-[2px] dark:bg-primary/10"
@@ -1358,29 +1369,39 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
                   agentAvatarEmoji={group?.agent_profile_avatar_emoji}
                   agentAvatarColor={group?.agent_profile_avatar_color}
                   interactionMode={interactionMode}
-                  onSend={sendStarterActiveAgent}
+                  onSend={readOnly ? undefined : sendStarterActiveAgent}
                 />
-                <MessageInput
-                  // One instance per conversation: draft and pending
-                  // attachments never carry over to another session.
-                  key={followUpChatJid}
-                  ref={composerRef}
-                  draftKey={followUpChatJid}
-                  placeholder={`向 ${agentProfileLabel} 发送消息…`}
-                  onSend={sendActiveAgent}
-                  groupJid={groupJid}
-                  contextLabel={currentContextName}
-                  isRunning={currentContextWaiting}
-                  onStop={activeAgentInterrupted ? undefined : stopActiveAgent}
-                  queuedFollowUps={queuedFollowUps}
-                  onFollowUpAction={handleFollowUpAction}
-                  onResetSession={
-                    canModifyWorkspaceConfig
-                      ? requestResetActiveAgent
-                      : undefined
-                  }
-                  modelSelector={modelSelector}
-                />
+                {readOnly ? (
+                  <ReadOnlyComposer
+                    key={followUpChatJid}
+                    notice={GUEST_READ_ONLY_NOTICE}
+                    queuedFollowUps={queuedFollowUps}
+                  />
+                ) : (
+                  <MessageInput
+                    // One instance per conversation: draft and pending
+                    // attachments never carry over to another session.
+                    key={followUpChatJid}
+                    ref={composerRef}
+                    draftKey={followUpChatJid}
+                    placeholder={`向 ${agentProfileLabel} 发送消息…`}
+                    onSend={sendActiveAgent}
+                    groupJid={groupJid}
+                    contextLabel={currentContextName}
+                    isRunning={currentContextWaiting}
+                    onStop={
+                      activeAgentInterrupted ? undefined : stopActiveAgent
+                    }
+                    queuedFollowUps={queuedFollowUps}
+                    onFollowUpAction={handleFollowUpAction}
+                    onResetSession={
+                      canModifyWorkspaceConfig
+                        ? requestResetActiveAgent
+                        : undefined
+                    }
+                    modelSelector={modelSelector}
+                  />
+                )}
               </>
             ) : (
               <>
@@ -1398,27 +1419,35 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
                   agentAvatarEmoji={group?.agent_profile_avatar_emoji}
                   agentAvatarColor={group?.agent_profile_avatar_color}
                   interactionMode={interactionMode}
-                  onSend={sendStarterMain}
+                  onSend={readOnly ? undefined : sendStarterMain}
                 />
-                <MessageInput
-                  key={groupJid}
-                  ref={composerRef}
-                  draftKey={groupJid}
-                  placeholder={`向 ${agentProfileLabel} 发送消息…`}
-                  onSend={sendMain}
-                  groupJid={groupJid}
-                  isRunning={currentContextWaiting}
-                  onStop={mainInterrupted ? undefined : stopMain}
-                  queuedFollowUps={queuedFollowUps}
-                  onFollowUpAction={handleFollowUpAction}
-                  onResetSession={
-                    canModifyWorkspaceConfig ? requestResetMain : undefined
-                  }
-                  onToggleTerminal={
-                    canUseTerminal ? handleTerminalToggle : undefined
-                  }
-                  modelSelector={modelSelector}
-                />
+                {readOnly ? (
+                  <ReadOnlyComposer
+                    key={groupJid}
+                    notice={GUEST_READ_ONLY_NOTICE}
+                    queuedFollowUps={queuedFollowUps}
+                  />
+                ) : (
+                  <MessageInput
+                    key={groupJid}
+                    ref={composerRef}
+                    draftKey={groupJid}
+                    placeholder={`向 ${agentProfileLabel} 发送消息…`}
+                    onSend={sendMain}
+                    groupJid={groupJid}
+                    isRunning={currentContextWaiting}
+                    onStop={mainInterrupted ? undefined : stopMain}
+                    queuedFollowUps={queuedFollowUps}
+                    onFollowUpAction={handleFollowUpAction}
+                    onResetSession={
+                      canModifyWorkspaceConfig ? requestResetMain : undefined
+                    }
+                    onToggleTerminal={
+                      canUseTerminal ? handleTerminalToggle : undefined
+                    }
+                    modelSelector={modelSelector}
+                  />
+                )}
               </>
             )}
           </div>
@@ -1505,7 +1534,7 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
         </SheetContent>
       </Sheet>
 
-      {interactionModeDialogMounted && (
+      {interactionModeDialogMounted && !readOnly && (
         <WorkspaceInteractionModeDialog
           open={showInteractionModeDialog}
           workspaceName={workspaceDisplayName}
@@ -1520,32 +1549,34 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
       )}
 
       {/* Mobile: Terminal sheet */}
-      <Sheet
-        open={mobileTerminal}
-        onOpenChange={(v) => !v && setMobileTerminal(false)}
-      >
-        <SheetContent
-          side="bottom"
-          className="p-0 data-[side=bottom]:h-[85dvh]"
+      {canUseTerminal && (
+        <Sheet
+          open={mobileTerminal}
+          onOpenChange={(v) => !v && setMobileTerminal(false)}
         >
-          <SheetHeader className="px-4 pt-4 pb-2">
-            <SheetTitle>终端</SheetTitle>
-            <SheetDescription className="sr-only">
-              使用当前工作区的终端。
-            </SheetDescription>
-          </SheetHeader>
-          <div className="flex-1 overflow-hidden h-[calc(85dvh-56px)]">
-            <Suspense fallback={null}>
-              <TerminalPanel
-                groupJid={groupJid}
-                visible
-                onHide={() => setMobileTerminal(false)}
-                onDelete={() => setMobileTerminal(false)}
-              />
-            </Suspense>
-          </div>
-        </SheetContent>
-      </Sheet>
+          <SheetContent
+            side="bottom"
+            className="p-0 data-[side=bottom]:h-[85dvh]"
+          >
+            <SheetHeader className="px-4 pt-4 pb-2">
+              <SheetTitle>终端</SheetTitle>
+              <SheetDescription className="sr-only">
+                使用当前工作区的终端。
+              </SheetDescription>
+            </SheetHeader>
+            <div className="flex-1 overflow-hidden h-[calc(85dvh-56px)]">
+              <Suspense fallback={null}>
+                <TerminalPanel
+                  groupJid={groupJid}
+                  visible
+                  onHide={() => setMobileTerminal(false)}
+                  onDelete={() => setMobileTerminal(false)}
+                />
+              </Suspense>
+            </div>
+          </SheetContent>
+        </Sheet>
+      )}
 
       {/* Reset session confirm dialog */}
       <ConfirmDialog
@@ -1564,7 +1595,7 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
       />
 
       {/* IM binding dialog */}
-      {bindingAgentId && (
+      {bindingAgentId && !readOnly && (
         <ImBindingDialog
           open={!!bindingAgentId}
           groupJid={groupJid}

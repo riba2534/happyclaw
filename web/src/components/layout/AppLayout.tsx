@@ -10,7 +10,7 @@ import { useRouteRestore } from '../../hooks/useRouteRestore';
 import { useBillingStore } from '../../stores/billing';
 import { useGroupsStore } from '../../stores/groups';
 import { useChatStore } from '../../stores/chat';
-import { useAuthStore } from '../../stores/auth';
+import { useAuthStore, useIsGuest } from '../../stores/auth';
 import { ErrorBoundary } from '../common/ErrorBoundary';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { MotionProvider } from '@/lib/motion';
@@ -27,12 +27,17 @@ export function AppLayout() {
   const hideMobileTabBar = /^\/chat\/.+/.test(location.pathname);
   useTheme(); // 应用并同步持久化的主题偏好
   useRouteRestore(); // PWA 重启时恢复上次访问的路由（默认关闭，设置中启用）
+  // Read-only guests may only call a small GET allowlist; skip everything
+  // else (billing, creating sessions) so they never see 403s.
+  const isGuest = useIsGuest();
 
   // ⌘B / Ctrl+B toggles the desktop sidebar between full width and icon rail.
   const toggleSidebar = useShellStore((s) => s.toggleSidebar);
   useShortcut(SHORTCUTS.toggleSidebar, toggleSidebar, { enabled: isDesktop });
   const { startNewConversation } = useNewConversation();
-  useShortcut(SHORTCUTS.newConversation, () => void startNewConversation());
+  useShortcut(SHORTCUTS.newConversation, () => void startNewConversation(), {
+    enabled: !isGuest,
+  });
 
   // The sidebar's workspace tree is visible on every route, not just /chat.
   const loadGroups = useChatStore((s) => s.loadGroups);
@@ -48,8 +53,9 @@ export function AppLayout() {
   // 加载计费状态（控制导航栏是否显示账单入口）
   const loadBillingStatus = useBillingStore((s) => s.loadBillingStatus);
   useEffect(() => {
+    if (isGuest) return;
     loadBillingStatus();
-  }, [loadBillingStatus]);
+  }, [isGuest, loadBillingStatus]);
 
   // 监听 WebSocket 计费更新
   useEffect(() => {

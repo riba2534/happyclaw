@@ -211,7 +211,8 @@ function stmts() {
           updated_at = datetime('now')`,
       ),
       getSessionWithUser: db.prepare(
-        `SELECT s.*, u.username, u.role, u.status, u.display_name, u.permissions, u.must_change_password
+        `SELECT s.*, u.username, u.role, u.status, u.display_name, u.permissions, u.must_change_password,
+                u.guest_owner_id
          FROM user_sessions s
          JOIN users u ON s.user_id = u.id
          WHERE s.id = ?`,
@@ -1183,6 +1184,28 @@ export function initDatabase(
   // and read back as no steps.
   ensureColumn('turn_traces', 'steps_json', "TEXT NOT NULL DEFAULT '[]'");
   ensureColumn('turn_traces', 'steps_dropped', 'INTEGER NOT NULL DEFAULT 0');
+
+  // v82 -> v83: read-only guest accounts. A guest belongs to exactly one
+  // owner (`users.guest_owner_id`) and can only view the owner's workspaces
+  // listed in guest_workspace_grants. `owner_user_id` is denormalized so a
+  // grant whose workspace changed hands, or whose guest was re-parented, is
+  // never honoured (every check joins it against both users rows).
+  ensureColumn('users', 'guest_owner_id', 'TEXT');
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS guest_workspace_grants (
+      guest_user_id TEXT NOT NULL,
+      workspace_jid TEXT NOT NULL,
+      owner_user_id TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY (guest_user_id, workspace_jid)
+    );
+    CREATE INDEX IF NOT EXISTS idx_guest_workspace_grants_workspace
+      ON guest_workspace_grants(workspace_jid);
+    CREATE INDEX IF NOT EXISTS idx_guest_workspace_grants_owner
+      ON guest_workspace_grants(owner_user_id);
+    CREATE INDEX IF NOT EXISTS idx_users_guest_owner
+      ON users(guest_owner_id);
+  `);
 
   // Top-level Agent Profiles: runtime identities/personas that own workspaces.
   // Do not confuse this with the legacy `agents` table above, which stores
@@ -10392,7 +10415,8 @@ export function backfillAgentProfileDefaultsAndWorkspaceMappings(): void {
   // runners, so no process-local profile membership lock is necessary here.
   const tx = db.transaction(() => {
     const users = prepareCached(
-      "SELECT id FROM users WHERE status != 'deleted'",
+      // Guests never own an Agent Profile.
+      "SELECT id FROM users WHERE status != 'deleted' AND role != 'guest'",
     ).all() as Array<{ id: string }>;
     for (const user of users) {
       getOrCreateDefaultAgentProfile(user.id);
@@ -10820,6 +10844,9 @@ function syncWorkspaceFromRegisteredGroup(
 
 function deleteWorkspaceMirror(jid: string, folder?: string): void {
   deleteWorkspaceMemoryData(jid);
+  prepareCached(
+    'DELETE FROM guest_workspace_grants WHERE workspace_jid = ?',
+  ).run(jid);
   prepareCached('DELETE FROM workspaces WHERE jid = ?').run(jid);
   prepareCached(
     'DELETE FROM workspace_runtime_sessions WHERE workspace_jid = ?',
@@ -12571,9 +12598,14 @@ function ensureGroupDirExists(folder: string): void {
  */
 export function ensureUserHomeGroup(
   userId: string,
-  role: 'admin' | 'member',
+  role: UserRole,
   username?: string,
 ): string {
+  if (role === 'guest') {
+    // Callers skip guests; refusing here keeps a missed call site from
+    // handing a read-only account its own executable workspace.
+    throw new Error('Guest accounts do not have a home workspace');
+  }
   const existing = getUserHomeGroup(userId);
   if (existing) {
     ensureGroupDirExists(existing.folder);
@@ -13006,8 +13038,11 @@ export function deleteGroupData(
     deleteTurnTracesForChatTree(jid);
     prepareCached('DELETE FROM chats WHERE jid = ?').run(jid);
     prepareCached('DELETE FROM chats WHERE jid LIKE ?').run(`${jid}#agent:%`);
-    // 7. 删除 pin 记录
+    // 7. 删除 pin 记录与访客授权
     prepareCached('DELETE FROM user_pinned_groups WHERE jid = ?').run(jid);
+    prepareCached(
+      'DELETE FROM guest_workspace_grants WHERE workspace_jid = ?',
+    ).run(jid);
     // 8. 清除定时任务的工作区关联（任务本身不删，只断开绑定）
     prepareCached(
       'UPDATE scheduled_tasks SET workspace_jid = NULL, workspace_folder = NULL WHERE workspace_jid = ?',
@@ -13407,7 +13442,9 @@ export function getGroupsByOwner(
 // ===================== Auth CRUD =====================
 
 function parseUserRole(value: unknown): UserRole {
-  return value === 'admin' ? 'admin' : 'member';
+  if (value === 'admin') return 'admin';
+  if (value === 'guest') return 'guest';
+  return 'member';
 }
 
 function parseUserStatus(value: unknown): UserStatus {
@@ -13417,6 +13454,8 @@ function parseUserStatus(value: unknown): UserStatus {
 }
 
 function parsePermissionsFromDb(raw: unknown, role: UserRole): Permission[] {
+  // Guests never hold a permission, whatever the stored column says.
+  if (role === 'guest') return [];
   if (typeof raw === 'string') {
     try {
       const parsed = normalizePermissions(JSON.parse(raw));
@@ -13468,6 +13507,10 @@ function mapUserRow(row: Record<string, unknown>): User {
     ai_avatar_url:
       typeof row.ai_avatar_url === 'string' ? row.ai_avatar_url : null,
     default_require_mention: !!row.default_require_mention,
+    guest_owner_id:
+      role === 'guest' && typeof row.guest_owner_id === 'string'
+        ? row.guest_owner_id
+        : null,
     created_at: String(row.created_at),
     updated_at: String(row.updated_at),
     last_login_at:
@@ -13495,6 +13538,7 @@ function toUserPublic(user: User, lastActiveAt: string | null): UserPublic {
     ai_avatar_color: user.ai_avatar_color,
     ai_avatar_url: user.ai_avatar_url,
     default_require_mention: user.default_require_mention,
+    guest_owner_id: user.guest_owner_id,
     created_at: user.created_at,
     last_login_at: user.last_login_at,
     last_active_at: lastActiveAt,
@@ -13519,6 +13563,8 @@ export interface CreateUserInput {
   notes?: string | null;
   last_login_at?: string | null;
   deleted_at?: string | null;
+  /** Required for and only accepted with role === 'guest'. */
+  guest_owner_id?: string | null;
 }
 
 function initializeBillingForUser(
@@ -13572,13 +13618,19 @@ function initializeBillingForUser(
 }
 
 export function createUser(user: CreateUserInput): void {
-  const permissions = normalizePermissions(
-    user.permissions ?? getDefaultPermissions(user.role),
-  );
+  const isGuest = user.role === 'guest';
+  if (isGuest !== !!user.guest_owner_id) {
+    throw new Error('guest_owner_id is required for, and only for, guests');
+  }
+  const permissions = isGuest
+    ? []
+    : normalizePermissions(
+        user.permissions ?? getDefaultPermissions(user.role),
+      );
   prepareCached(`INSERT INTO users (
       id, username, password_hash, display_name, role, status, permissions, must_change_password,
-      disable_reason, notes, created_at, updated_at, last_login_at, deleted_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+      disable_reason, notes, created_at, updated_at, last_login_at, deleted_at, guest_owner_id
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
     user.id,
     user.username,
     user.password_hash,
@@ -13593,7 +13645,10 @@ export function createUser(user: CreateUserInput): void {
     user.updated_at,
     user.last_login_at ?? null,
     user.deleted_at ?? null,
+    isGuest ? user.guest_owner_id : null,
   );
+  // Guests cannot start a run, so they get no wallet, subscription or Agent.
+  if (isGuest) return;
   initializeBillingForUser(user.id, user.role, user.created_at);
   getOrCreateDefaultAgentProfile(user.id);
 }
@@ -13702,9 +13757,11 @@ export function listUsers(options: ListUsersOptions = {}): ListUsersResult {
   const rows = db
     .prepare(
       `
-      SELECT u.*, MAX(s.last_active_at) AS last_active_at
+      SELECT u.*, MAX(s.last_active_at) AS last_active_at,
+             go.username AS guest_owner_username
       FROM users u
       LEFT JOIN user_sessions s ON s.user_id = u.id
+      LEFT JOIN users go ON go.id = u.guest_owner_id
       ${whereClause}
       GROUP BY u.id
       ORDER BY
@@ -13724,7 +13781,14 @@ export function listUsers(options: ListUsersOptions = {}): ListUsersResult {
       const user = mapUserRow(row);
       const lastActiveAt =
         typeof row.last_active_at === 'string' ? row.last_active_at : null;
-      return toUserPublic(user, lastActiveAt);
+      const publicUser = toUserPublic(user, lastActiveAt);
+      if (user.role === 'guest') {
+        publicUser.guest_owner_username =
+          typeof row.guest_owner_username === 'string'
+            ? row.guest_owner_username
+            : null;
+      }
+      return publicUser;
     }),
     total: totalRow.count,
     page,
@@ -13916,6 +13980,139 @@ export function restoreUser(id: string): void {
      WHERE id = ?`).run(new Date().toISOString(), id);
 }
 
+// --- Guest accounts ---
+
+export interface GuestWorkspaceGrant {
+  guest_user_id: string;
+  workspace_jid: string;
+  owner_user_id: string;
+  created_at: string;
+}
+
+/** Non-deleted guests owned by `ownerId`, oldest first. */
+export function listGuestsByOwner(ownerId: string): User[] {
+  const rows = prepareCached(
+    `SELECT * FROM users
+     WHERE role = 'guest' AND guest_owner_id = ? AND status != 'deleted'
+     ORDER BY created_at ASC`,
+  ).all(ownerId) as Array<Record<string, unknown>>;
+  return rows.map(mapUserRow);
+}
+
+/** Ids of every guest (any status) owned by `ownerId`. */
+export function listGuestIdsByOwner(ownerId: string): string[] {
+  const rows = prepareCached(
+    "SELECT id FROM users WHERE role = 'guest' AND guest_owner_id = ?",
+  ).all(ownerId) as Array<{ id: string }>;
+  return rows.map((row) => row.id);
+}
+
+export function listGuestWorkspaceGrants(
+  guestUserId: string,
+): GuestWorkspaceGrant[] {
+  return prepareCached(
+    `SELECT guest_user_id, workspace_jid, owner_user_id, created_at
+     FROM guest_workspace_grants
+     WHERE guest_user_id = ?
+     ORDER BY created_at ASC, workspace_jid ASC`,
+  ).all(guestUserId) as GuestWorkspaceGrant[];
+}
+
+/** Replace a guest's grant set atomically. Callers validate the JIDs. */
+export function replaceGuestWorkspaceGrants(
+  guestUserId: string,
+  ownerUserId: string,
+  workspaceJids: readonly string[],
+): void {
+  const now = new Date().toISOString();
+  db.transaction(() => {
+    prepareCached(
+      'DELETE FROM guest_workspace_grants WHERE guest_user_id = ?',
+    ).run(guestUserId);
+    const insert = prepareCached(
+      `INSERT OR IGNORE INTO guest_workspace_grants
+         (guest_user_id, workspace_jid, owner_user_id, created_at)
+       VALUES (?, ?, ?, ?)`,
+    );
+    for (const jid of workspaceJids) {
+      insert.run(guestUserId, jid, ownerUserId, now);
+    }
+  })();
+}
+
+export function deleteGuestWorkspaceGrantsForGuest(guestUserId: string): void {
+  prepareCached(
+    'DELETE FROM guest_workspace_grants WHERE guest_user_id = ?',
+  ).run(guestUserId);
+}
+
+export function deleteGuestWorkspaceGrantsForWorkspace(
+  workspaceJid: string,
+): void {
+  prepareCached(
+    'DELETE FROM guest_workspace_grants WHERE workspace_jid = ?',
+  ).run(workspaceJid);
+}
+
+/**
+ * The only grant predicate: the grant row exists, the guest is an active
+ * guest of the grant's owner, the owner is active and not itself a guest, and
+ * the workspace is still owned by that owner.
+ */
+const ACTIVE_GUEST_GRANT_SQL = `FROM guest_workspace_grants g
+     JOIN users gu ON gu.id = g.guest_user_id
+     JOIN users o ON o.id = g.owner_user_id
+     WHERE gu.role = 'guest' AND gu.status = 'active'
+       AND gu.guest_owner_id = g.owner_user_id
+       AND o.status = 'active' AND o.role != 'guest'`;
+
+export function hasActiveGuestWorkspaceGrant(
+  guestUserId: string,
+  workspaceJid: string,
+  workspaceOwnerId: string,
+): boolean {
+  return !!prepareCached(
+    `SELECT 1 ${ACTIVE_GUEST_GRANT_SQL}
+       AND g.guest_user_id = ? AND g.workspace_jid = ? AND g.owner_user_id = ?
+     LIMIT 1`,
+  ).get(guestUserId, workspaceJid, workspaceOwnerId);
+}
+
+export function listActiveGuestIdsForWorkspace(
+  workspaceJid: string,
+  workspaceOwnerId: string,
+): string[] {
+  const rows = prepareCached(
+    `SELECT g.guest_user_id AS id ${ACTIVE_GUEST_GRANT_SQL}
+       AND g.workspace_jid = ? AND g.owner_user_id = ?`,
+  ).all(workspaceJid, workspaceOwnerId) as Array<{ id: string }>;
+  return rows.map((row) => row.id);
+}
+
+/** Workspace JIDs a guest may currently view (owner active, rows intact). */
+export function listActiveGuestGrantJids(guestUserId: string): string[] {
+  const rows = prepareCached(
+    `SELECT g.workspace_jid AS jid ${ACTIVE_GUEST_GRANT_SQL}
+       AND g.guest_user_id = ?`,
+  ).all(guestUserId) as Array<{ jid: string }>;
+  return rows.map((row) => row.jid);
+}
+
+/** Purge a guest's grants, pins and sessions, then mark the row deleted. */
+export function deleteGuestUser(guestUserId: string): void {
+  db.transaction(() => {
+    prepareCached(
+      'DELETE FROM guest_workspace_grants WHERE guest_user_id = ?',
+    ).run(guestUserId);
+    if (tableExists('user_pinned_groups')) {
+      prepareCached('DELETE FROM user_pinned_groups WHERE user_id = ?').run(
+        guestUserId,
+      );
+    }
+    deleteUser(guestUserId);
+  })();
+}
+
 // --- User Sessions ---
 
 export function createUserSession(session: UserSession): void {
@@ -13953,6 +14150,10 @@ export function getSessionWithUser(
     display_name: String(row.display_name ?? ''),
     permissions: parsePermissionsFromDb(row.permissions, role),
     must_change_password: !!row.must_change_password,
+    guest_owner_id:
+      role === 'guest' && typeof row.guest_owner_id === 'string'
+        ? row.guest_owner_id
+        : null,
   };
 }
 
@@ -13992,6 +14193,9 @@ export function deleteExpiredSessions(): number {
 // --- Invite Codes ---
 
 export function createInviteCode(invite: InviteCode): void {
+  if (invite.role === 'guest') {
+    throw new Error('Invite codes cannot create guest accounts');
+  }
   const permissions = normalizePermissions(invite.permissions);
   prepareCached(`INSERT INTO invite_codes (code, created_by, role, permission_template, permissions, max_uses, used_count, expires_at, created_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
@@ -14059,6 +14263,11 @@ export function registerUserWithInvite(input: {
 
       if (!inviteRow) return { ok: false, reason: 'invalid_or_expired_invite' };
       const inviteRole = parseUserRole(inviteRow.role);
+      // Guests are only created by their owner (POST /api/guests); an invite
+      // can never yield one, even if the row was written by hand.
+      if (inviteRole === 'guest') {
+        return { ok: false, reason: 'invalid_or_expired_invite' };
+      }
       const invitePermissions = parsePermissionsFromDb(
         inviteRow.permissions,
         inviteRole,
@@ -15793,7 +16002,7 @@ export function getAllUserBillingOverview(): Array<{
        LEFT JOIN billing_plans p ON p.id = s.plan_id
        LEFT JOIN user_balances b ON b.user_id = u.id
        LEFT JOIN monthly_usage mu ON mu.user_id = u.id AND mu.month = ?
-       WHERE u.status != 'deleted'
+       WHERE u.status != 'deleted' AND u.role != 'guest'
        ORDER BY u.created_at ASC`).all(month) as Array<{
     user_id: string;
     username: string;

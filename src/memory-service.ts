@@ -18,7 +18,8 @@ import {
   type WorkspaceMemoryValue,
 } from './memory-store.js';
 import { getRegisteredGroup, getWorkspaceRecord } from './db.js';
-import { canAccessGroup, canModifyGroup } from './group-acl.js';
+import { canModifyGroup } from './group-acl.js';
+import { canViewGroup } from './guest-access.js';
 import type { UserRole } from './types.js';
 
 const MAX_CONTENT_LENGTH = 32_768;
@@ -205,7 +206,8 @@ function authorizeWorkspace(
   const permitted =
     operation === 'write'
       ? canModifyGroup(input.actor, groupWithJid)
-      : canAccessGroup(input.actor, groupWithJid);
+      : // Reads also admit read-only guests with an active grant.
+        canViewGroup(input.actor, groupWithJid);
   if (!permitted) {
     // Deliberately hide existence. Admin follows the same owner-only policy.
     throw new WorkspaceMemoryServiceError(

@@ -8,6 +8,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { useChatStore } from '../../stores/chat';
+import { useIsGuest } from '../../stores/auth';
 import { confirmDialog } from '../../stores/confirm';
 import { mediumTap } from '../../hooks/useHaptic';
 import { copyToClipboard } from '../../utils/clipboard';
@@ -40,6 +41,8 @@ export function MessageContextMenu({
   align = 'start',
   children,
 }: MessageContextMenuProps) {
+  // Read-only guests may copy and share, never delete records.
+  const canDelete = !useIsGuest() && !!chatJid && !!messageId;
   const handleDelete = async () => {
     if (!chatJid || !messageId) return;
     const confirmed = await confirmDialog({
@@ -77,7 +80,7 @@ export function MessageContextMenu({
             生成分享图片
           </DropdownMenuItem>
         )}
-        {chatJid && messageId && (
+        {canDelete && (
           <>
             {(content.trim() || onShareImage) && <DropdownMenuSeparator />}
             <DropdownMenuItem

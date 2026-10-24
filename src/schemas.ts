@@ -819,6 +819,35 @@ export const AdminPatchUserSchema = z.object({
   notes: z.string().max(2000).nullable().optional(),
 });
 
+/** Workspace JIDs granted to a guest: `web:*` workspace records only. */
+const GuestWorkspaceJidsSchema = z
+  .array(
+    z
+      .string()
+      .min(5)
+      .max(256)
+      .regex(/^web:[^#]+$/),
+  )
+  .max(200);
+
+export const GuestCreateSchema = z.object({
+  username: z.string().min(3).max(32),
+  password: z.string().min(8).max(128),
+  display_name: z.string().max(64).optional(),
+  workspace_jids: GuestWorkspaceJidsSchema,
+});
+
+export const GuestPatchSchema = z
+  .object({
+    display_name: z.string().max(64).optional(),
+    status: z.enum(['active', 'disabled']).optional(),
+    workspace_jids: GuestWorkspaceJidsSchema.optional(),
+    password: z.string().min(8).max(128).optional(),
+  })
+  .refine((value) => Object.keys(value).length > 0, {
+    message: 'No fields to update',
+  });
+
 export const InviteCreateSchema = z.object({
   role: z.enum(['admin', 'member']).optional(),
   permission_template: z

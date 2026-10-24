@@ -5833,6 +5833,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   // 刷新/重连时恢复正在运行的 agent 状态
   restoreActiveState: async () => {
+    // /api/status is not readable by read-only guests; their run state comes
+    // from the WebSocket active_run_snapshot instead.
+    if (useAuthStore.getState().user?.role === 'guest') return;
     try {
       const data = await api.get<{
         groups: Array<{

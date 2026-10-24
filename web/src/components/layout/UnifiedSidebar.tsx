@@ -15,7 +15,7 @@ import {
   SquarePen,
 } from 'lucide-react';
 import { useChatStore } from '../../stores/chat';
-import { useAuthStore } from '../../stores/auth';
+import { useAuthStore, useIsGuest } from '../../stores/auth';
 import { useBillingStore } from '../../stores/billing';
 import { useShellStore } from '../../stores/shell';
 import { useClearWorkspace } from '../../hooks/useClearWorkspace';
@@ -34,7 +34,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import { AccountMenuItems } from './AccountMenu';
+import { AccountMenuItems, GuestBadge } from './AccountMenu';
 import { DeleteWorkspaceDialog } from '../chat/DeleteWorkspaceDialog';
 import { RenameDialog } from '../chat/RenameDialog';
 import {
@@ -69,6 +69,7 @@ export function UnifiedSidebar() {
   const asideRef = useRef<HTMLElement>(null);
 
   const user = useAuthStore((s) => s.user);
+  const isGuest = useIsGuest();
   const appearance = useAuthStore((s) => s.appearance);
   const billingEnabled = useBillingStore((s) => s.billingEnabled);
   const width = useShellStore((s) => s.sidebarWidth);
@@ -106,8 +107,8 @@ export function UnifiedSidebar() {
     user?.username ||
     '?')[0].toUpperCase();
   const navItems = useMemo(
-    () => filterNavItems(billingEnabled),
-    [billingEnabled],
+    () => filterNavItems(billingEnabled, isGuest),
+    [billingEnabled, isGuest],
   );
 
   // 窄 selector：整 store 订阅会让侧边栏跟着流式输出每帧重渲染。
@@ -270,6 +271,7 @@ export function UnifiedSidebar() {
                   <span className="block truncate text-caption font-normal">
                     @{user?.username}
                   </span>
+                  <GuestBadge className="mt-1" />
                 </span>
               </DropdownMenuLabel>
               <DropdownMenuSeparator />
@@ -306,14 +308,16 @@ export function UnifiedSidebar() {
             onClick={() => setPaletteOpen(true)}
             collapsed={collapsed}
           />
-          <SidebarItem
-            icon={SquarePen}
-            label="新对话"
-            shortcut={SHORTCUTS.newConversation}
-            onClick={() => void startNewConversation()}
-            disabled={creatingSession}
-            collapsed={collapsed}
-          />
+          {!isGuest && (
+            <SidebarItem
+              icon={SquarePen}
+              label="新对话"
+              shortcut={SHORTCUTS.newConversation}
+              onClick={() => void startNewConversation()}
+              disabled={creatingSession}
+              collapsed={collapsed}
+            />
+          )}
           <div className="my-1.5" />
           {navItems.map(({ path, icon, label }) => (
             <SidebarItem
@@ -340,20 +344,24 @@ export function UnifiedSidebar() {
             <span className="text-caption font-medium text-muted-foreground">
               工作区
             </span>
-            <IconButton
-              label="新建工作区"
-              icon={<Plus />}
-              size="icon-xs"
-              onClick={() => setCreateOpen(true)}
-              className="text-muted-foreground"
-            />
+            {isGuest ? (
+              <GuestBadge />
+            ) : (
+              <IconButton
+                label="新建工作区"
+                icon={<Plus />}
+                size="icon-xs"
+                onClick={() => setCreateOpen(true)}
+                className="text-muted-foreground"
+              />
+            )}
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto px-2 pt-1 pb-3">
             {loading && allGroups.length === 0 ? (
               <SkeletonCardList count={6} compact />
             ) : agentSections.length === 0 ? (
               <p className="px-2 py-6 text-center text-caption text-muted-foreground">
-                暂无智能体工作区
+                {isGuest ? '暂无可查看的工作区' : '暂无智能体工作区'}
               </p>
             ) : (
               <WorkspaceTree
@@ -363,13 +371,15 @@ export function UnifiedSidebar() {
                 currentGroupJid={currentGroupJid}
                 activeSessionId={activeSessionId}
                 onSelect={selectWorkspace}
-                onRename={renameWorkspace}
+                // Guests only browse: no rename, delete, pin, new session,
+                // new workspace or agent links.
+                onRename={isGuest ? undefined : renameWorkspace}
                 onClearHistory={clearWorkspace}
-                onDelete={deleteWorkspace}
-                onTogglePin={pinWorkspace}
-                onCreateSession={createWorkspaceSession}
-                onCreateWorkspace={createAgentWorkspace}
-                onOpenAgent={openAgent}
+                onDelete={isGuest ? undefined : deleteWorkspace}
+                onTogglePin={isGuest ? undefined : pinWorkspace}
+                onCreateSession={isGuest ? undefined : createWorkspaceSession}
+                onCreateWorkspace={isGuest ? undefined : createAgentWorkspace}
+                onOpenAgent={isGuest ? undefined : openAgent}
                 isExpanded={isExpanded}
                 onToggleExpanded={toggleExpanded}
                 renderSessions={renderSessions}
@@ -387,7 +397,7 @@ export function UnifiedSidebar() {
           onClose={() => setShowBugReport(false)}
         />
       )}
-      {createMounted && (
+      {createMounted && !isGuest && (
         <CreateContainerDialog
           open={createOpen}
           defaultAgentProfileId={createAgentId}

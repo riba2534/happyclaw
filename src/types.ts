@@ -710,7 +710,12 @@ export interface TaskRunLog {
 
 // --- Auth types ---
 
-export type UserRole = 'admin' | 'member';
+/**
+ * `guest` is a read-only account owned by an admin/member (`guest_owner_id`).
+ * It can only view workspaces its owner explicitly granted; see
+ * src/guest-access.ts and docs/ACL-MATRIX.md.
+ */
+export type UserRole = 'admin' | 'member' | 'guest';
 export type UserStatus = 'active' | 'disabled' | 'deleted';
 
 export interface AuthUser {
@@ -763,6 +768,8 @@ export interface User {
    * Existing groups are not retroactively changed.
    */
   default_require_mention: boolean;
+  /** Owner account of a guest; null for admin/member. */
+  guest_owner_id: string | null;
   created_at: string;
   updated_at: string;
   last_login_at: string | null;
@@ -787,6 +794,9 @@ export interface UserPublic {
   ai_avatar_color: string | null;
   ai_avatar_url: string | null;
   default_require_mention: boolean;
+  guest_owner_id: string | null;
+  /** Populated by the admin users list for guest rows. */
+  guest_owner_username?: string | null;
   created_at: string;
   last_login_at: string | null;
   last_active_at: string | null;
@@ -810,6 +820,7 @@ export interface UserSessionWithUser extends UserSession {
   display_name: string;
   permissions: Permission[];
   must_change_password: boolean;
+  guest_owner_id: string | null;
 }
 
 export interface InviteCode {

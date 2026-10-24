@@ -47,6 +47,7 @@ export const PERMISSION_TEMPLATES: Record<
 export const ROLE_DEFAULT_PERMISSIONS: Record<UserRole, Permission[]> = {
   admin: [...ALL_PERMISSIONS],
   member: [],
+  guest: [],
 };
 
 export function normalizePermissions(input: unknown): Permission[] {

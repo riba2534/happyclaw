@@ -1,4 +1,4 @@
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
@@ -10,6 +10,7 @@ import {
 } from '../web-context.js';
 import { authMiddleware } from '../middleware/auth.js';
 import { canAccessGroup, canModifyGroup } from '../group-acl.js';
+import { canViewGroup } from '../guest-access.js';
 import {
   clearSessionChannelOwner,
   getRegisteredGroup,
@@ -175,6 +176,16 @@ function unbindError(result: { reason: string }): string {
     : 'IM group no longer exists';
 }
 
+/** Guests get 404 so an ungranted workspace's existence is not revealed. */
+function guestAwareForbidden(
+  c: Context<{ Variables: Variables }>,
+  user: Pick<AuthUser, 'role'>,
+) {
+  return user.role === 'guest'
+    ? c.json({ error: 'Group not found' }, 404)
+    : c.json({ error: 'Forbidden' }, 403);
+}
+
 // GET /api/groups/:jid/agents — list all agents for a group
 router.get('/:jid/agents', authMiddleware, async (c) => {
   const jid = decodeURIComponent(c.req.param('jid'));
@@ -185,8 +196,8 @@ router.get('/:jid/agents', authMiddleware, async (c) => {
     return c.json({ error: 'Group not found' }, 404);
   }
 
-  if (!canAccessGroup(user, { ...group, jid })) {
-    return c.json({ error: 'Forbidden' }, 403);
+  if (!canViewGroup(user, { ...group, jid })) {
+    return guestAwareForbidden(c, user);
   }
 
   const agents = listAgentsByJid(jid);
@@ -245,8 +256,8 @@ router.get('/:jid/sessions', authMiddleware, async (c) => {
   if (!group) {
     return c.json({ error: 'Group not found' }, 404);
   }
-  if (!canAccessGroup(user, { ...group, jid })) {
-    return c.json({ error: 'Forbidden' }, 403);
+  if (!canViewGroup(user, { ...group, jid })) {
+    return guestAwareForbidden(c, user);
   }
 
   const agents = listAgentsByJid(jid).filter((a) => a.kind === 'conversation');

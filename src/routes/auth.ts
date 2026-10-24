@@ -66,6 +66,7 @@ import {
 } from '../password-hash-busy.js';
 import type { AuthUser, User, UserPublic } from '../types.js';
 import { logger } from '../logger.js';
+import { getGuestAccountState } from '../guest-access.js';
 import {
   invalidateSessionCache,
   invalidateUserSessions,
@@ -117,6 +118,7 @@ export function toUserPublic(u: User): UserPublic {
     ai_avatar_color: u.ai_avatar_color ?? null,
     ai_avatar_url: u.ai_avatar_url ?? null,
     default_require_mention: u.default_require_mention,
+    guest_owner_id: u.guest_owner_id,
     created_at: u.created_at,
     last_login_at: u.last_login_at,
     last_active_at: null,
@@ -310,7 +312,19 @@ authRoutes.post('/login', authJsonBodyLimit, async (c) => {
     passwordMatch = false;
   }
 
-  if (!user || user.status !== 'active' || !passwordMatch) {
+  // A guest whose owner is disabled/deleted cannot log in (same answer as a
+  // wrong password, so the owner's state is not revealed).
+  const guestOwnerInvalid =
+    !!user &&
+    user.role === 'guest' &&
+    !getGuestAccountState(user.id).valid &&
+    user.status === 'active';
+  if (
+    !user ||
+    user.status !== 'active' ||
+    !passwordMatch ||
+    guestOwnerInvalid
+  ) {
     // Already counted by reserveLoginAttempt.
     logAuthEvent({
       event_type: 'login_failed',
@@ -322,7 +336,9 @@ authRoutes.post('/login', authJsonBodyLimit, async (c) => {
           ? 'user_not_found'
           : user.status !== 'active'
             ? 'account_inactive'
-            : 'wrong_password',
+            : !passwordMatch
+              ? 'wrong_password'
+              : 'guest_owner_inactive',
       },
     });
     return c.json({ error: 'Invalid credentials' }, 401);
@@ -344,9 +360,12 @@ authRoutes.post('/login', authJsonBodyLimit, async (c) => {
   settleLoginAttempt(username, ip, 'success');
   updateUserFields(user.id, { last_login_at: now });
 
-  // Ensure user has a home group (backfill for existing users)
+  // Ensure user has a home group (backfill for existing users). Guests are
+  // read-only viewers and never get a workspace of their own.
   try {
-    ensureUserHomeGroup(user.id, user.role, user.username);
+    if (user.role !== 'guest') {
+      ensureUserHomeGroup(user.id, user.role, user.username);
+    }
   } catch (err) {
     // Don't block login if home group creation fails
     logger.warn(

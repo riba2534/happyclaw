@@ -17,6 +17,8 @@ export interface GroupInfo {
   is_home?: boolean;
   is_my_home?: boolean;
   can_modify?: boolean;
+  /** Granted to a read-only guest: view only, never send or change. */
+  read_only?: boolean;
   editable?: boolean;
   deletable?: boolean;
   lastMessage?: string;

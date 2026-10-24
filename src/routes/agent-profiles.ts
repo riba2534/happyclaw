@@ -317,7 +317,7 @@ agentProfileRoutes.post(
     const preview = buildAgentCapabilityPreview({
       profile: previewProfile,
       workspace,
-      ownerRole: user.role,
+      ownerRole: user.role === 'admin' ? 'admin' : 'member',
     });
     const runContext = workspace ? getRunContextSnapshot(workspace.jid) : null;
     return c.json({

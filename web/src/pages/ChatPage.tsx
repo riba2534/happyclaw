@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { FolderPlus, Plus, SquarePen } from 'lucide-react';
 import { useChatStore } from '../stores/chat';
-import { useAuthStore } from '../stores/auth';
+import { useAuthStore, useIsGuest } from '../stores/auth';
 import { ChatView } from '../components/chat/ChatView';
 import { DeleteWorkspaceDialog } from '../components/chat/DeleteWorkspaceDialog';
 import { WorkspaceTree } from '../components/layout/sidebar/WorkspaceTree';
@@ -24,7 +24,7 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { IconButton } from '../components/common/IconButton';
 import { EmptyState } from '../components/common/EmptyState';
-import { AccountMenuItems } from '../components/layout/AccountMenu';
+import { AccountMenuItems, GuestBadge } from '../components/layout/AccountMenu';
 import { withBasePath } from '../utils/url';
 import { useSwipeBack } from '../hooks/useSwipeBack';
 import { useClearWorkspace } from '../hooks/useClearWorkspace';
@@ -80,6 +80,7 @@ export function ChatPage() {
     onDeleted: () => navigate('/chat', { replace: true }),
   });
   const user = useAuthStore((s) => s.user);
+  const isGuest = useIsGuest();
   const appearance = useAuthStore((s) => s.appearance);
   const appName = appearance?.appName || 'HappyClaw';
   const [showBugReport, setShowBugReport] = useState(false);
@@ -179,13 +180,17 @@ export function ChatPage() {
                 </span>
               )}
             </div>
-            <IconButton
-              label="新建工作区"
-              icon={<Plus />}
-              size="icon"
-              onClick={() => setCreateOpen(true)}
-              className="text-muted-foreground pointer-coarse:size-10"
-            />
+            {isGuest ? (
+              <GuestBadge />
+            ) : (
+              <IconButton
+                label="新建工作区"
+                icon={<Plus />}
+                size="icon"
+                onClick={() => setCreateOpen(true)}
+                className="text-muted-foreground pointer-coarse:size-10"
+              />
+            )}
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <button
@@ -224,33 +229,48 @@ export function ChatPage() {
                 custom={agentPartitions.custom}
                 currentGroupJid={currentGroup}
                 onSelect={selectMobileWorkspace}
-                onRename={(jid, name) =>
-                  setRenameState({ open: true, jid, name })
+                onRename={
+                  isGuest
+                    ? undefined
+                    : (jid, name) => setRenameState({ open: true, jid, name })
                 }
                 onClearHistory={openClear}
-                onDelete={openDelete}
-                onTogglePin={(jid) => void togglePin(jid)}
-                onCreateWorkspace={(agentId) => {
-                  setCreateAgentId(agentId);
-                  setCreateOpen(true);
-                }}
-                onOpenAgent={(agentId) =>
-                  navigate(
-                    `/agent-profiles?agent=${encodeURIComponent(agentId)}`,
-                  )
+                onDelete={isGuest ? undefined : openDelete}
+                onTogglePin={isGuest ? undefined : (jid) => void togglePin(jid)}
+                onCreateWorkspace={
+                  isGuest
+                    ? undefined
+                    : (agentId) => {
+                        setCreateAgentId(agentId);
+                        setCreateOpen(true);
+                      }
+                }
+                onOpenAgent={
+                  isGuest
+                    ? undefined
+                    : (agentId) =>
+                        navigate(
+                          `/agent-profiles?agent=${encodeURIComponent(agentId)}`,
+                        )
                 }
               />
             </div>
           ) : (
             <EmptyState
               icon={FolderPlus}
-              title="暂无智能体工作区"
-              description="新建一个工作区，开始和智能体协作。"
+              title={isGuest ? '暂无可查看的工作区' : '暂无智能体工作区'}
+              description={
+                isGuest
+                  ? '账户创建者授权工作区后，就会显示在这里。'
+                  : '新建一个工作区，开始和智能体协作。'
+              }
               action={
-                <Button onClick={() => setCreateOpen(true)}>
-                  <Plus />
-                  新建工作区
-                </Button>
+                isGuest ? undefined : (
+                  <Button onClick={() => setCreateOpen(true)}>
+                    <Plus />
+                    新建工作区
+                  </Button>
+                )
               }
             />
           )}
@@ -282,25 +302,29 @@ export function ChatPage() {
               欢迎使用 {appearance?.appName || 'HappyClaw'}
             </EmptyTitle>
             <EmptyDescription>
-              从左侧选择一个工作区，或者直接开始新的对话。
+              {isGuest
+                ? '从左侧选择一个工作区，查看其中的对话。'
+                : '从左侧选择一个工作区，或者直接开始新的对话。'}
             </EmptyDescription>
           </EmptyHeader>
-          <EmptyContent className="flex-row justify-center">
-            <Button
-              onClick={() => void startNewConversation()}
-              disabled={creatingSession}
-            >
-              <SquarePen />
-              新对话
-            </Button>
-            <Button
-              variant="outline"
-              onClick={() => setDesktopCreateOpen(true)}
-            >
-              <Plus />
-              新建工作区
-            </Button>
-          </EmptyContent>
+          {!isGuest && (
+            <EmptyContent className="flex-row justify-center">
+              <Button
+                onClick={() => void startNewConversation()}
+                disabled={creatingSession}
+              >
+                <SquarePen />
+                新对话
+              </Button>
+              <Button
+                variant="outline"
+                onClick={() => setDesktopCreateOpen(true)}
+              >
+                <Plus />
+                新建工作区
+              </Button>
+            </EmptyContent>
+          )}
         </Empty>
       )}
       {bugReportMounted && (
@@ -332,7 +356,7 @@ export function ChatPage() {
         onConfirm={handleDeleteConfirm}
         loading={deleteLoading}
       />
-      {createMounted && (
+      {createMounted && !isGuest && (
         <CreateContainerDialog
           open={createOpen}
           defaultAgentProfileId={createAgentId}

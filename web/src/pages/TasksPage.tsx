@@ -73,6 +73,9 @@ export function TasksPage() {
   const [detailOpen, setDetailOpen] = useState(false);
   const detailNonce = useRef(0);
   const isAdmin = user?.role === 'admin';
+  // Read-only guests browse tasks and their runs; they never create,
+  // edit, run, pause, delete, restore or purge.
+  const isGuest = user?.role === 'guest';
 
   const openDetail = (id: string, options?: { edit?: boolean }) => {
     detailNonce.current += 1;
@@ -338,10 +341,11 @@ export function TasksPage() {
           onPause={handlePause}
           onResume={handleResume}
           onDelete={handleDelete}
-          onRunNow={trash ? undefined : runTaskNow}
-          onRestore={trash ? handleRestore : undefined}
-          onPurge={trash ? handlePurge : undefined}
-          onStopRun={handleStopRun}
+          onRunNow={trash || isGuest ? undefined : runTaskNow}
+          onRestore={trash && !isGuest ? handleRestore : undefined}
+          onPurge={trash && !isGuest ? handlePurge : undefined}
+          onStopRun={isGuest ? undefined : handleStopRun}
+          readOnly={isGuest}
         />
       ))}
     </ListGroup>
@@ -376,10 +380,12 @@ export function TasksPage() {
           }
           action={
             <div className="flex flex-wrap justify-center gap-2">
-              <Button onClick={() => setShowCreateForm(true)}>
-                <Plus />
-                创建任务
-              </Button>
+              {!isGuest && (
+                <Button onClick={() => setShowCreateForm(true)}>
+                  <Plus />
+                  创建任务
+                </Button>
+              )}
               {deletedTasks.length > 0 && (
                 <Button variant="outline" onClick={() => setView('trash')}>
                   查看回收站
@@ -472,10 +478,12 @@ export function TasksPage() {
               onClick={loadTasks}
               disabled={loading}
             />
-            <Button onClick={() => setShowCreateForm(true)}>
-              <Plus />
-              新建任务
-            </Button>
+            {!isGuest && (
+              <Button onClick={() => setShowCreateForm(true)}>
+                <Plus />
+                新建任务
+              </Button>
+            )}
           </>
         }
       />
@@ -538,7 +546,7 @@ export function TasksPage() {
             ariaLabel="搜索定时任务"
             className="min-w-0 flex-1 sm:w-64 sm:flex-none"
           />
-          {view === 'trash' && purgeableDeletedTasks.length > 0 && (
+          {view === 'trash' && !isGuest && purgeableDeletedTasks.length > 0 && (
             <Button
               variant="destructive"
               onClick={() =>
@@ -563,7 +571,7 @@ export function TasksPage() {
         renderTrash()
       )}
 
-      {showCreateForm && (
+      {showCreateForm && !isGuest && (
         <CreateTaskForm
           onSubmit={handleCreateTask}
           onClose={() => {
@@ -580,7 +588,7 @@ export function TasksPage() {
             <TaskDetail
               key={`${detail.id}:${detail.nonce}`}
               task={detailTask}
-              initialEditing={detail.edit}
+              initialEditing={detail.edit && !isGuest}
             />
           )}
         </SheetContent>

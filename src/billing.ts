@@ -74,6 +74,16 @@ export function getUserEffectivePlan(
   };
 }
 
+/**
+ * Guests cannot start a run or spend quota, so they never hold a plan or a
+ * balance; refusing here keeps billing admin tools from creating either.
+ */
+function assertBillableUser(userId: string): void {
+  if (getUserById(userId)?.role === 'guest') {
+    throw new Error('Guest accounts cannot be billed');
+  }
+}
+
 export function assignPlan(
   userId: string,
   planId: string,
@@ -81,6 +91,7 @@ export function assignPlan(
   durationDays?: number,
   opts?: { trialDays?: number; notes?: string; autoRenew?: boolean },
 ): void {
+  assertBillableUser(userId);
   const plan = getBillingPlan(planId);
   if (!plan) throw new Error(`Plan not found: ${planId}`);
 
@@ -575,6 +586,7 @@ export function applyAdminBalanceAdjustment(
   actorId: string,
   idempotencyKey?: string,
 ) {
+  assertBillableUser(userId);
   const user = getUserById(userId);
   const userRole = user?.role ?? 'member';
   const before = checkBillingAccess(userId, userRole);
@@ -616,6 +628,7 @@ export function batchAssignPlans(
   actorId: string,
   durationDays?: number,
 ): number {
+  for (const userId of userIds) assertBillableUser(userId);
   const count = dbBatchAssignPlan(userIds, planId, actorId, durationDays);
   for (const userId of userIds) invalidateUserBillingCache(userId);
   return count;

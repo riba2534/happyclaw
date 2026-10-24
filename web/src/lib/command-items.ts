@@ -70,6 +70,8 @@ export interface CommandSourceInput {
   colorScheme: ColorScheme;
   /** Max sessions listed across all workspaces. */
   sessionLimit?: number;
+  /** False for read-only guests: no new conversation or workspace actions. */
+  canCreate?: boolean;
 }
 
 const THEME_LABELS: Record<Theme, string> = {
@@ -98,7 +100,7 @@ function workspaceLabel(group: GroupInfo): string {
 export function buildCommandGroups(
   input: CommandSourceInput,
 ): CommandGroupSpec[] {
-  const actions: CommandItemSpec[] = [
+  const createActions: CommandItemSpec[] = [
     {
       id: 'action:new-conversation',
       label: '新对话',
@@ -114,6 +116,9 @@ export function buildCommandGroups(
       icon: FolderPlus,
       action: { type: 'createWorkspace' },
     },
+  ];
+  const actions: CommandItemSpec[] = [
+    ...(input.canCreate === false ? [] : createActions),
     {
       id: 'action:toggle-sidebar',
       label: '切换侧边栏',

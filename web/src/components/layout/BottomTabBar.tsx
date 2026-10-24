@@ -1,6 +1,7 @@
 import { useMemo } from 'react';
 import { NavLink, useLocation } from 'react-router-dom';
 import { useBillingStore } from '../../stores/billing';
+import { useIsGuest } from '../../stores/auth';
 import { useScrollDirection } from '../../hooks/useScrollDirection';
 import { lightTap } from '../../hooks/useHaptic';
 import { filterNavItems } from './nav-items';
@@ -10,10 +11,15 @@ export function BottomTabBar() {
   const scrollDir = useScrollDirection();
   const isCompact = scrollDir === 'down';
   const billingEnabled = useBillingStore((s) => s.billingEnabled);
+  const isGuest = useIsGuest();
 
   const navItems = useMemo(
-    () => filterNavItems(billingEnabled).filter((item) => !item.hideOnMobile),
-    [billingEnabled],
+    () =>
+      // Guests have few pages, so their 记忆 tab fits on phones too.
+      filterNavItems(billingEnabled, isGuest).filter(
+        (item) => isGuest || !item.hideOnMobile,
+      ),
+    [billingEnabled, isGuest],
   );
 
   return (

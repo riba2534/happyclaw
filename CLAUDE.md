@@ -358,7 +358,8 @@ data/
 
 核心表族：
 
-- 用户与认证：`users`、`user_sessions`、`invite_codes`、`auth_audit_log`
+- 用户与认证：`users`、`user_sessions`、`invite_codes`、`auth_audit_log`、
+  `guest_workspace_grants`
 - 工作区与会话：`registered_groups`、`sessions`、`workspaces`、
   `workspace_runtime_sessions`、`session_model_selections`
 - Agent：`agent_profiles`、`agent_profile_prompt_versions`、
@@ -383,6 +384,10 @@ Channel Reliability 的 Inbox/Turn/Outbox/Card 表由
 - 系统配置、用户、邀请、审计和计费使用独立 Permission Middleware。
 - 敏感写操作必须先停止或暂停相关 Runner，并在提交失败时恢复队列。
 - API 返回资源不存在时通常使用 404 隐藏其他用户资源是否存在。
+- 只读访客（`role=guest`）由 admin/member 通过 `/api/guests` 创建并授权查看自己的
+  部分工作区。不要放宽 `canAccessGroup`：读取路径单独使用 `canViewGroup`，全局
+  Guard（`src/middleware/guest-guard.ts`）按显式白名单放行访客请求，新路由默认拒绝；
+  访客 WebSocket 只接收。访客没有 Home、Agent、钱包或订阅。
 
 完整边界见 `docs/ACL-MATRIX.md`。
 

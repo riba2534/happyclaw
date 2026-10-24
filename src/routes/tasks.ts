@@ -37,6 +37,7 @@ import {
   getWebDeps,
 } from '../web-context.js';
 import { canAccessGroup } from '../group-acl.js';
+import { guestHasActiveGrant } from '../guest-access.js';
 import {
   computeNextRunForSchedule,
   computeNextRunForTaskResume,
@@ -103,6 +104,19 @@ function canViewTask(task: ScheduledTask, authUser: AuthUser): boolean {
   );
 }
 
+/**
+ * Read-only visibility for the list/runs/logs routes. Owners keep the
+ * canViewTask rule; a guest sees tasks whose chat resolves to a workspace it
+ * holds an active grant on (host-mode included — reading only).
+ */
+function canReadTask(task: ScheduledTask, authUser: AuthUser): boolean {
+  if (authUser.role !== 'guest') return canViewTask(task, authUser);
+  const group = getRegisteredGroup(task.chat_jid);
+  return (
+    !!group && guestHasActiveGrant(authUser, { ...group, jid: task.chat_jid })
+  );
+}
+
 function taskPermissions(
   task: ScheduledTask,
   authUser: AuthUser,
@@ -113,7 +127,8 @@ function taskPermissions(
   } = {},
 ) {
   const isAdmin = authUser.role === 'admin';
-  const canManage = canViewTask(task, authUser);
+  // Guests can read tasks but never manage them: every flag below is false.
+  const canManage = authUser.role !== 'guest' && canViewTask(task, authUser);
   const canOperateExecution =
     canManage && (task.execution_type !== 'script' || isAdmin);
   const executionBlockedReason = getScriptTaskHostExecutionError(
@@ -171,7 +186,7 @@ tasksRoutes.get('/', authMiddleware, async (c) => {
     ? [...getAllTasks(), ...getDeletedTasks()]
     : getAllTasks();
   const visibleDefinitions = taskDefinitions.filter((task) =>
-    canViewTask(task, authUser),
+    canReadTask(task, authUser),
   );
   const tasks = visibleDefinitions.map((task) => {
     const recentRuns = getMergedTaskRunHistory(task.id, 1);
@@ -199,6 +214,12 @@ tasksRoutes.get('/', authMiddleware, async (c) => {
   // write; this filter is purely for surface consistency.
   const groupNames: Record<string, string> = {};
   for (const [jid, group] of Object.entries(allGroups)) {
+    if (authUser.role === 'guest') {
+      if (guestHasActiveGrant(authUser, { ...group, jid })) {
+        groupNames[jid] = group.name || jid;
+      }
+      continue;
+    }
     if (
       !canAccessGroup(
         { id: authUser.id, role: authUser.role },
@@ -885,7 +906,7 @@ tasksRoutes.get('/:id/runs', authMiddleware, (c) => {
   const existing = getTaskById(id);
   if (!existing) return c.json({ error: 'Task not found' }, 404);
   const authUser = c.get('user') as AuthUser;
-  if (!canViewTask(existing, authUser)) {
+  if (!canReadTask(existing, authUser)) {
     return c.json({ error: 'Task not found' }, 404);
   }
   const limitRaw = Number.parseInt(c.req.query('limit') || '20', 10);
@@ -901,7 +922,7 @@ tasksRoutes.get('/runs/:runId', authMiddleware, (c) => {
   if (!run) return c.json({ error: 'Task run not found' }, 404);
   const task = getTaskById(run.task_id);
   const authUser = c.get('user') as AuthUser;
-  if (!task || !canViewTask(task, authUser)) {
+  if (!task || !canReadTask(task, authUser)) {
     return c.json({ error: 'Task run not found' }, 404);
   }
   return c.json({ run });
@@ -993,7 +1014,11 @@ tasksRoutes.get('/:id/logs', authMiddleware, (c) => {
   if (!existing) return c.json({ error: 'Task not found' }, 404);
   const authUser = c.get('user') as AuthUser;
   const group = getRegisteredGroup(existing.chat_jid);
-  if (!group) {
+  if (authUser.role === 'guest') {
+    if (!canReadTask(existing, authUser)) {
+      return c.json({ error: 'Task not found' }, 404);
+    }
+  } else if (!group) {
     if (authUser.role !== 'admin')
       return c.json({ error: 'Task not found' }, 404);
   } else {

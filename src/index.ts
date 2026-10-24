@@ -6341,6 +6341,9 @@ function loadState(): void {
       }
     }
     for (const user of activeUsers) {
+      // Guests are read-only viewers of their owner's workspaces; they never
+      // get a Home, Agent Profile or workspace of their own.
+      if (user.role === 'guest') continue;
       const homeJid = ensureUserHomeGroup(
         user.id,
         user.role as 'admin' | 'member',
@@ -23950,7 +23953,8 @@ async function main(): Promise<void> {
         while (true) {
           const batch = listUsers({ status: 'active', pageSize, page });
           for (const u of batch.users) {
-            if (u.role === 'admin') continue;
+            // Admins are unmetered; guests cannot run anything to meter.
+            if (u.role === 'admin' || u.role === 'guest') continue;
             reconcileMonthlyUsage(u.id, month);
           }
           if (batch.users.length < pageSize) break;

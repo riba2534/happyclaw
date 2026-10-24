@@ -56,10 +56,27 @@ interface UserListTabProps extends TabNotification {
 }
 
 export function RoleBadge({ role }: { role: string }) {
+  if (role === 'guest') {
+    return <Badge variant="neutral">{ROLE_LABELS.guest}</Badge>;
+  }
   return (
     <Badge variant="outline" dot={role === 'admin' ? 'primary' : 'muted'}>
       {ROLE_LABELS[role] || role}
     </Badge>
+  );
+}
+
+/** Guests show who created them next to the role. */
+function UserRole({ user }: { user: UserPublic }) {
+  return (
+    <span className="inline-flex min-w-0 flex-wrap items-center gap-1">
+      <RoleBadge role={user.role} />
+      {user.role === 'guest' && user.guest_owner_username && (
+        <span className="truncate text-caption text-muted-foreground">
+          由 @{user.guest_owner_username} 创建
+        </span>
+      )}
+    </span>
   );
 }
 
@@ -306,7 +323,7 @@ export function UserListTab({
             </div>
           )}
           <div className="mt-1.5 flex flex-wrap items-center gap-1 sm:hidden">
-            <RoleBadge role={user.role} />
+            <UserRole user={user} />
             <StatusBadges user={user} />
           </div>
         </div>
@@ -315,7 +332,7 @@ export function UserListTab({
     {
       key: 'role',
       header: '角色',
-      cell: (user) => <RoleBadge role={user.role} />,
+      cell: (user) => <UserRole user={user} />,
       className: 'hidden sm:table-cell',
       headerClassName: 'hidden sm:table-cell',
     },
@@ -377,6 +394,7 @@ export function UserListTab({
             <SelectItem value="all">全部角色</SelectItem>
             <SelectItem value="admin">管理员</SelectItem>
             <SelectItem value="member">成员</SelectItem>
+            <SelectItem value="guest">访客</SelectItem>
           </SelectContent>
         </Select>
         <Select

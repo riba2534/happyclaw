@@ -12,11 +12,17 @@ export type Permission =
   | 'view_audit_log'
   | 'manage_billing';
 
+/**
+ * `guest` is a read-only account created by another user: it can only view
+ * the workspaces its owner granted and never sends, edits or runs anything.
+ */
+export type UserRole = 'admin' | 'member' | 'guest';
+
 export interface UserPublic {
   id: string;
   username: string;
   display_name: string;
-  role: 'admin' | 'member';
+  role: UserRole;
   status: 'active' | 'disabled' | 'deleted';
   permissions: Permission[];
   must_change_password: boolean;
@@ -34,6 +40,15 @@ export interface UserPublic {
   ai_avatar_color: string | null;
   ai_avatar_url: string | null;
   default_require_mention: boolean;
+  /** The user who created this guest account; null for regular users. */
+  guest_owner_id?: string | null;
+  /** Owner username, only present in the admin users list. */
+  guest_owner_username?: string | null;
+}
+
+/** True for read-only guest accounts. */
+export function isGuestUser(user: Pick<UserPublic, 'role'> | null | undefined) {
+  return user?.role === 'guest';
 }
 
 export interface AppearanceConfig {
@@ -353,6 +368,12 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     const user = get().user;
     if (!user) return false;
     if (user.role === 'admin') return true;
+    if (user.role === 'guest') return false;
     return user.permissions.includes(permission);
   },
 }));
+
+/** Whether the signed-in user is a read-only guest. */
+export function useIsGuest(): boolean {
+  return useAuthStore((s) => s.user?.role === 'guest');
+}

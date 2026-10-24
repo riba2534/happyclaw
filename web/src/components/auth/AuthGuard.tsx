@@ -3,6 +3,7 @@ import { Navigate, useLocation, useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { type Permission, useAuthStore } from '../../stores/auth';
 import { LogoLoading } from '../common/LogoLoading';
+import { isGuestAllowedPath } from '../../lib/guest';
 
 interface AuthGuardProps {
   children: React.ReactNode;
@@ -93,6 +94,12 @@ export function AuthGuard({
   // Users with must_change_password go to settings
   if (user?.must_change_password && location.pathname !== '/settings') {
     return <Navigate to="/settings" replace />;
+  }
+
+  // Read-only guests only reach chat, tasks, memory and their own settings;
+  // onboarding, capabilities, usage, billing and admin pages are not theirs.
+  if (user?.role === 'guest' && !isGuestAllowedPath(location.pathname)) {
+    return <Navigate to="/chat" replace />;
   }
 
   if (requireAdmin && user?.role !== 'admin') {

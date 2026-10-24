@@ -36,6 +36,11 @@ import {
 } from '../group-acl.js';
 import { MAX_GROUP_NAME_LEN } from '../group-constants.js';
 import {
+  canViewGroup,
+  canViewHostGroup,
+  guestHasActiveGrant,
+} from '../guest-access.js';
+import {
   clearSessionChannelOwner,
   getRegisteredGroup,
   setRegisteredGroup,
@@ -411,6 +416,8 @@ interface GroupPayloadItem {
   is_home?: boolean;
   is_my_home?: boolean;
   can_modify?: boolean;
+  /** Set for read-only guest views of a granted workspace. */
+  read_only?: boolean;
   pinned_at?: string;
   activation_mode?:
     | 'auto'
@@ -439,10 +446,22 @@ function buildGroupsPayload(user: AuthUser): Record<string, GroupPayloadItem> {
   );
 
   const result: Record<string, GroupPayloadItem> = {};
+  const isGuest = user.role === 'guest';
 
   // 先过滤出要显示的群组 jid
   const visibleEntries: Array<[string, (typeof groups)[string]]> = [];
   for (const [jid, group] of Object.entries(groups)) {
+    if (isGuest) {
+      // Guests see exactly the owner's workspaces they were granted
+      // (including a host-mode Home). IM rows are merged into their
+      // workspace's message view, so they are not listed separately.
+      if (
+        jid.startsWith('web:') &&
+        guestHasActiveGrant(user, { ...group, jid })
+      )
+        visibleEntries.push([jid, group]);
+      continue;
+    }
     const isHome = !!group.is_home;
     const isWeb = jid.startsWith('web:');
     const isHost = isHostExecutionGroup(group);
@@ -490,8 +509,8 @@ function buildGroupsPayload(user: AuthUser): Record<string, GroupPayloadItem> {
       folder: group.folder,
       added_at: group.added_at,
       kind: isHome ? 'home' : isWeb ? 'web' : 'feishu',
-      editable: isWeb,
-      deletable: isWeb && !isHome,
+      editable: isWeb && !isGuest,
+      deletable: isWeb && !isHome && !isGuest,
       lastMessage: latest?.content,
       lastMessageTime:
         latest?.timestamp ||
@@ -508,6 +527,7 @@ function buildGroupsPayload(user: AuthUser): Record<string, GroupPayloadItem> {
       is_home: isHome || undefined,
       is_my_home: (isHome && group.created_by === user.id) || undefined,
       can_modify: canModifyGroup(user, { ...group, jid }),
+      read_only: isGuest || undefined,
       pinned_at: pins[jid] || undefined,
       activation_mode: group.activation_mode ?? 'auto',
       conversation_source: group.conversation_source ?? 'manual',
@@ -2759,10 +2779,11 @@ groupRoutes.get('/:jid/messages', authMiddleware, async (c) => {
   }
 
   const authUser = c.get('user') as AuthUser;
-  if (!canAccessGroup({ id: authUser.id, role: authUser.role }, group)) {
+  // Read path: owners, plus guests holding an active grant (src/guest-access.ts).
+  if (!canViewGroup({ id: authUser.id, role: authUser.role }, group)) {
     return c.json({ error: 'Group not found' }, 404);
   }
-  if (isHostExecutionGroup(group) && !hasHostExecutionPermission(authUser)) {
+  if (isHostExecutionGroup(group) && !canViewHostGroup(authUser, group)) {
     return c.json(
       { error: 'Insufficient permissions for host execution mode' },
       403,
@@ -2997,17 +3018,14 @@ groupRoutes.get(
 
     const authUser = c.get('user') as AuthUser;
     if (
-      !canAccessGroup(
-        { id: authUser.id, role: authUser.role },
-        physicalGroup,
-      ) ||
-      !canAccessGroup({ id: authUser.id, role: authUser.role }, executionGroup)
+      !canViewGroup({ id: authUser.id, role: authUser.role }, physicalGroup) ||
+      !canViewGroup({ id: authUser.id, role: authUser.role }, executionGroup)
     ) {
       return c.json({ error: 'Group not found' }, 404);
     }
     if (
       isHostExecutionGroup(executionGroup) &&
-      !hasHostExecutionPermission(authUser)
+      !canViewHostGroup(authUser, executionGroup)
     ) {
       return c.json(
         { error: 'Insufficient permissions for host execution mode' },

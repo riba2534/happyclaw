@@ -268,7 +268,12 @@ export function TaskDetail({ task, initialEditing = false }: TaskDetailProps) {
     }
   };
 
-  const canEdit = !(task.deleted_at || task.permissions?.can_edit === false);
+  const isGuest = useAuthStore((state) => state.user?.role === 'guest');
+  const canEdit = !(
+    isGuest ||
+    task.deleted_at ||
+    task.permissions?.can_edit === false
+  );
   const [editing, setEditing] = useState(initialEditing && canEdit);
   const [saving, setSaving] = useState(false);
   const [editForm, setEditForm] = useState(() => formFromTask(task));

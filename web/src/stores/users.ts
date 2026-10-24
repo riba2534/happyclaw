@@ -41,7 +41,7 @@ export interface AuditLogEntry {
 
 export interface UserQuery {
   q?: string;
-  role?: 'all' | 'admin' | 'member';
+  role?: 'all' | 'admin' | 'member' | 'guest';
   status?: 'all' | 'active' | 'disabled' | 'deleted';
   page?: number;
   pageSize?: number;
@@ -115,7 +115,9 @@ function asMessage(err: unknown, fallback: string): string {
   return fallback;
 }
 
-function toQueryString(params: Record<string, string | number | undefined>): string {
+function toQueryString(
+  params: Record<string, string | number | undefined>,
+): string {
   const search = new URLSearchParams();
   for (const [key, value] of Object.entries(params)) {
     if (value === undefined) continue;
@@ -139,9 +141,10 @@ export const useUsersStore = create<UsersState>((set) => ({
 
   fetchPermissionMeta: async () => {
     try {
-      const data = await api.get<{ permissions: Permission[]; templates: PermissionTemplate[] }>(
-        '/api/admin/permission-templates',
-      );
+      const data = await api.get<{
+        permissions: Permission[];
+        templates: PermissionTemplate[];
+      }>('/api/admin/permission-templates');
       set({ permissions: data.permissions, templates: data.templates });
     } catch (err) {
       set({ error: asMessage(err, 'Failed to load permission metadata') });
@@ -159,9 +162,12 @@ export const useUsersStore = create<UsersState>((set) => ({
         page: q.page,
         pageSize: q.pageSize,
       });
-      const data = await api.get<{ users: UserPublic[]; total: number; page: number; pageSize: number }>(
-        `/api/admin/users${qs}`,
-      );
+      const data = await api.get<{
+        users: UserPublic[];
+        total: number;
+        page: number;
+        pageSize: number;
+      }>(`/api/admin/users${qs}`);
       set({
         users: data.users,
         totalUsers: data.total,
@@ -197,7 +203,9 @@ export const useUsersStore = create<UsersState>((set) => ({
   fetchInvites: async () => {
     set({ loading: true, error: null });
     try {
-      const data = await api.get<{ invites: InviteCode[] }>('/api/admin/invites');
+      const data = await api.get<{ invites: InviteCode[] }>(
+        '/api/admin/invites',
+      );
       set({ invites: data.invites, loading: false });
     } catch (err) {
       set({ error: asMessage(err, 'Failed to fetch invites'), loading: false });
@@ -234,7 +242,10 @@ export const useUsersStore = create<UsersState>((set) => ({
       }>(`/api/admin/audit-log${qs}`);
       set({ auditLogs: data.logs, loading: false });
     } catch (err) {
-      set({ error: asMessage(err, 'Failed to fetch audit logs'), loading: false });
+      set({
+        error: asMessage(err, 'Failed to fetch audit logs'),
+        loading: false,
+      });
     }
   },
 }));

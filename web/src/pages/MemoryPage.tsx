@@ -25,6 +25,7 @@ import {
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { api, apiFetch } from '../api/client';
+import { useIsGuest } from '../stores/auth';
 import { useMediaQuery } from '@/hooks/useMediaQuery';
 import { cn } from '@/lib/utils';
 import { randomUuid } from '@/utils/random-uuid';
@@ -287,7 +288,9 @@ export function MemoryPage() {
       workspaces.find((workspace) => workspace.jid === selectedWorkspaceJid),
     [selectedWorkspaceJid, workspaces],
   );
-  const canModify = selectedWorkspace?.can_modify === true;
+  // Read-only guests view memory but never create, edit or forget it.
+  const isGuest = useIsGuest();
+  const canModify = !isGuest && selectedWorkspace?.can_modify === true;
 
   const visibleItems = useMemo(() => {
     if (searchHits) return searchHits.map((hit) => hit.item);
@@ -981,13 +984,15 @@ export function MemoryPage() {
                   ))}
                 </SelectContent>
               </Select>
-              <Button
-                onClick={openCreate}
-                disabled={!selectedWorkspaceJid || !canModify}
-              >
-                <Plus />
-                新建记忆
-              </Button>
+              {!isGuest && (
+                <Button
+                  onClick={openCreate}
+                  disabled={!selectedWorkspaceJid || !canModify}
+                >
+                  <Plus />
+                  新建记忆
+                </Button>
+              )}
             </>
           }
         />

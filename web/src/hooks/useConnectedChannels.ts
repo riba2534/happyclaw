@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api/client';
 import { CHANNEL_OPTIONS } from '../utils/task-utils';
+import { useIsGuest } from '../stores/auth';
 
 /**
  * Fetch connected IM channel status once on mount.
@@ -8,8 +9,11 @@ import { CHANNEL_OPTIONS } from '../utils/task-utils';
  */
 export function useConnectedChannels(): Record<string, boolean> {
   const [connected, setConnected] = useState<Record<string, boolean>>({});
+  // Guests cannot read channel accounts; they only view tasks anyway.
+  const isGuest = useIsGuest();
 
   useEffect(() => {
+    if (isGuest) return;
     api
       .get<Record<string, boolean>>('/api/channel-accounts/status')
       .then((data) => {
@@ -22,7 +26,7 @@ export function useConnectedChannels(): Record<string, boolean> {
       .catch(() => {
         /* ignore */
       });
-  }, []);
+  }, [isGuest]);
 
   return connected;
 }

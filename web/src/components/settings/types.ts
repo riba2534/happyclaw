@@ -207,6 +207,7 @@ export type SettingsTab =
   | 'preferences'
   | 'my-channels'
   | 'security'
+  | 'guests'
   | 'groups'
   | 'agent-profiles'
   | 'memory'

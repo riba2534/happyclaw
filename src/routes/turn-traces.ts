@@ -12,13 +12,9 @@
 import { Hono } from 'hono';
 
 import { authMiddleware } from '../middleware/auth.js';
-import { canAccessGroup } from '../group-acl.js';
+import { canViewGroup, canViewHostGroup } from '../guest-access.js';
 import { getAgent, getRegisteredGroup, getTurnTrace } from '../db.js';
-import {
-  hasHostExecutionPermission,
-  isHostExecutionGroup,
-  type Variables,
-} from '../web-context.js';
+import { isHostExecutionGroup, type Variables } from '../web-context.js';
 import type { AuthUser } from '../types.js';
 import { presentTurnTrace, resolveTurnTraceExposure } from '../turn-trace.js';
 import {
@@ -52,14 +48,14 @@ turnTraceRoutes.get('/:jid/turn-traces/:turnId', authMiddleware, (c) => {
   const authUser = c.get('user') as AuthUser;
   const principal = { id: authUser.id, role: authUser.role };
   if (
-    !canAccessGroup(principal, physicalGroup) ||
-    !canAccessGroup(principal, executionGroup)
+    !canViewGroup(principal, physicalGroup) ||
+    !canViewGroup(principal, executionGroup)
   ) {
     return c.json({ error: 'Group not found' }, 404);
   }
   if (
     isHostExecutionGroup(executionGroup) &&
-    !hasHostExecutionPermission(authUser)
+    !canViewHostGroup(authUser, executionGroup)
   ) {
     return c.json(
       { error: 'Insufficient permissions for host execution mode' },

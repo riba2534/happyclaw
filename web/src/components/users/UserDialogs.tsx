@@ -329,7 +329,8 @@ export function EditUserDialog({
   useEffect(() => {
     if (!target) return;
     setError(null);
-    setEditRole(target.role);
+    // Guests keep their role: it is never changed to or from 'guest' here.
+    setEditRole(target.role === 'admin' ? 'admin' : 'member');
     setEditDisplayName(target.display_name || '');
     setEditPassword('');
     setEditNotes(target.notes || '');
@@ -343,7 +344,7 @@ export function EditUserDialog({
     setError(null);
     try {
       const payload: Parameters<typeof updateUser>[1] = {};
-      if (isAdmin && editRole !== user.role) {
+      if (isAdmin && user.role !== 'guest' && editRole !== user.role) {
         payload.role = editRole;
       }
       if (editDisplayName !== (user.display_name || '')) {
@@ -409,7 +410,7 @@ export function EditUserDialog({
               />
             </SettingsField>
             <SettingsField label="角色" htmlFor="edit-user-role">
-              {isAdmin ? (
+              {isAdmin && user?.role !== 'guest' ? (
                 <Select
                   value={editRole}
                   onValueChange={(value) => setEditRole(value as Role)}
@@ -430,7 +431,9 @@ export function EditUserDialog({
                       ? '管理员'
                       : user?.role === 'member'
                         ? '成员'
-                        : ''
+                        : user?.role === 'guest'
+                          ? '访客'
+                          : ''
                   }
                   disabled
                 />
@@ -468,7 +471,7 @@ export function EditUserDialog({
             </SettingsField>
           </div>
 
-          {assignablePermissions.length > 0 && (
+          {assignablePermissions.length > 0 && user?.role !== 'guest' && (
             <div className="space-y-1.5">
               <div className="text-label text-foreground">权限明细</div>
               <PermissionChecklist

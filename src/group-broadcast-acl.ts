@@ -3,6 +3,7 @@ import {
   getChannelMount,
   getJidsByFolder,
   getRegisteredGroup,
+  listActiveGuestIdsForWorkspace,
 } from './db.js';
 import {
   hasBoundWorkspaceReference,
@@ -60,5 +61,47 @@ export function getGroupAllowedUserIds(chatJid: string): Set<string> | null {
   // Ownership and binding are security-sensitive mutable state. Resolve them
   // on every broadcast instead of retaining a raw-JID cache that can outlive a
   // rebind or ownership transfer.
-  return new Set<string>([ownerId]);
+  const allowed = new Set<string>([ownerId]);
+
+  // Read-only guests with an active grant on the workspace this output is
+  // attributed to also receive it. The grant must come from the same owner
+  // that owns the workspace now (checked in SQL together with both accounts'
+  // status), so a stale grant never leaks a re-owned workspace.
+  const workspaceJid = resolveAudienceWorkspaceJid(
+    baseChatJid,
+    boundJid,
+    hasBinding,
+    group.folder,
+  );
+  if (workspaceJid) {
+    const workspace = getRegisteredGroup(workspaceJid);
+    if (workspace?.created_by === ownerId) {
+      for (const guestId of listActiveGuestIdsForWorkspace(
+        workspaceJid,
+        ownerId,
+      )) {
+        allowed.add(guestId);
+      }
+    }
+  }
+  return allowed;
+}
+
+function resolveAudienceWorkspaceJid(
+  baseChatJid: string,
+  boundJid: string | null,
+  hasBinding: boolean,
+  folder: string,
+): string | null {
+  if (boundJid) {
+    const marker = boundJid.indexOf('#agent:');
+    const base = marker >= 0 ? boundJid.slice(0, marker) : boundJid;
+    return base.startsWith('web:') ? base : null;
+  }
+  if (baseChatJid.startsWith('web:')) return baseChatJid;
+  if (hasBinding) return null;
+  for (const siblingJid of getJidsByFolder(folder)) {
+    if (siblingJid.startsWith('web:')) return siblingJid;
+  }
+  return null;
 }

@@ -47,6 +47,8 @@ interface TaskCardProps {
   onStopRun?: (runId: string | number) => void;
   onRestore?: (id: string) => void;
   onPurge?: (id: string) => void;
+  /** View only (read-only guests): hides every task action. */
+  readOnly?: boolean;
   isRunning?: boolean;
   isMutating?: boolean;
 }
@@ -74,6 +76,7 @@ export function TaskCard({
   onStopRun,
   onRestore,
   onPurge,
+  readOnly = false,
   isRunning = false,
   isMutating = false,
 }: TaskCardProps) {
@@ -194,6 +197,7 @@ export function TaskCard({
     !task.deleted_at &&
     (task.status === 'active' || task.status === 'paused');
   const canTogglePause =
+    !readOnly &&
     !task.deleted_at &&
     task.permissions?.can_pause !== false &&
     (task.status === 'active' || task.status === 'paused');
@@ -208,8 +212,10 @@ export function TaskCard({
     task.deleted_at && onRestore && task.permissions?.can_restore !== false;
   const canPurge =
     task.deleted_at && onPurge && task.permissions?.can_purge !== false;
-  const canTrash = !task.deleted_at && task.permissions?.can_delete !== false;
-  const canEdit = !task.deleted_at && task.permissions?.can_edit !== false;
+  const canTrash =
+    !readOnly && !task.deleted_at && task.permissions?.can_delete !== false;
+  const canEdit =
+    !readOnly && !task.deleted_at && task.permissions?.can_edit !== false;
 
   return (
     <ListRow

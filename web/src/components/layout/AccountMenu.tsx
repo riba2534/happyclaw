@@ -9,7 +9,8 @@ import {
   Sun,
   UserCog,
 } from 'lucide-react';
-import { useAuthStore } from '../../stores/auth';
+import { useAuthStore, useIsGuest } from '../../stores/auth';
+import { Badge } from '@/components/ui/badge';
 import { useTheme, type ColorScheme, type Theme } from '../../hooks/useTheme';
 import {
   DropdownMenuItem,
@@ -85,6 +86,17 @@ interface AccountMenuItemsProps {
   showUsage?: boolean;
 }
 
+/** Subtle marker for read-only guest accounts; renders nothing otherwise. */
+export function GuestBadge({ className }: { className?: string }) {
+  const isGuest = useIsGuest();
+  if (!isGuest) return null;
+  return (
+    <Badge variant="neutral" className={className}>
+      访客 · 只读
+    </Badge>
+  );
+}
+
 /** Account menu body shared by the desktop sidebar and the mobile header. */
 export function AccountMenuItems({
   onReportBug,
@@ -92,13 +104,18 @@ export function AccountMenuItems({
   showUsage = false,
 }: AccountMenuItemsProps) {
   const navigate = useNavigate();
+  const isGuest = useIsGuest();
   return (
     <>
-      <DropdownMenuItem onClick={() => navigate('/settings?tab=profile')}>
+      <DropdownMenuItem
+        onClick={() =>
+          navigate(isGuest ? '/settings?tab=security' : '/settings?tab=profile')
+        }
+      >
         <UserCog />
-        个人设置
+        {isGuest ? '账户与安全' : '个人设置'}
       </DropdownMenuItem>
-      {showUsage && (
+      {showUsage && !isGuest && (
         <DropdownMenuItem onClick={() => navigate('/usage')}>
           <BarChart3 />
           用量统计
@@ -121,10 +138,12 @@ export function AccountMenuItems({
           </DropdownMenuSubContent>
         </DropdownMenuSub>
       )}
-      <DropdownMenuItem onClick={onReportBug}>
-        <Bug />
-        报告问题
-      </DropdownMenuItem>
+      {!isGuest && (
+        <DropdownMenuItem onClick={onReportBug}>
+          <Bug />
+          报告问题
+        </DropdownMenuItem>
+      )}
       <DropdownMenuSeparator />
       <DropdownMenuItem
         variant="destructive"
