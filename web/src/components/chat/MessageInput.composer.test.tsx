@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-import { act } from 'react';
+import { act, useState } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type { Editor } from '@tiptap/core';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
@@ -541,66 +541,71 @@ describe('phone dock', () => {
     // iOS does not focus a tapped button: the text blurs with no related
     // target, then the click arrives. The card must not fold in between.
     env.phone = true;
-    let expanded = false;
-    const view = () => (
+    let opened = false;
+    // Like the real trigger, the click expands it in the same update.
+    function ModelPill() {
+      const [open, setOpen] = useState(false);
+      return (
+        <button
+          type="button"
+          data-testid="model"
+          aria-expanded={open}
+          onClick={() => {
+            opened = true;
+            setOpen(true);
+          }}
+        />
+      );
+    }
+    await render(
       <MessageInput
         groupJid="web:g1"
         onSend={vi.fn()}
-        modelSelector={
-          <button
-            type="button"
-            data-testid="model"
-            aria-expanded={expanded}
-            onClick={() => {
-              expanded = true;
-            }}
-          />
-        }
-      />
+        modelSelector={<ModelPill />}
+      />,
     );
-    await render(view());
-    const dock = () =>
-      container!
-        .querySelector('[data-hc-composer]')!
-        .getAttribute('data-composer-dock');
-    const model = () =>
-      container!.querySelector<HTMLButtonElement>('[data-testid="model"]')!;
-    const iosTap = async (target: HTMLElement) => {
-      await act(async () => {
+    const root = () => container!.querySelector('[data-hc-composer]')!;
+    const dock = () => root().getAttribute('data-composer-dock');
+    const settle = () =>
+      act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+    const pressAndBlur = (target: HTMLElement) =>
+      act(async () => {
         target.dispatchEvent(
           new PointerEvent('pointerdown', { bubbles: true }),
         );
         editor().commands.blur();
       });
-      // Folding here would move the pill out from under the finger.
-      expect(dock()).toBe('card');
-      await act(async () => {
-        target.click();
-      });
-      await render(view());
-      await act(async () => {
-        await new Promise((resolve) => setTimeout(resolve, 0));
-      });
-    };
 
     await act(async () => {
       editor().commands.focus();
     });
     expect(dock()).toBe('card');
-    await iosTap(model());
+    const model = container!.querySelector<HTMLElement>(
+      '[data-testid="model"]',
+    )!;
+    await pressAndBlur(model);
+    // Folding here would move the pill out from under the finger.
+    expect(dock()).toBe('card');
+    await act(async () => {
+      model.click();
+    });
+    await settle();
     // The sheet opened: the card stays.
-    expect(expanded).toBe(true);
+    expect(opened).toBe(true);
     expect(dock()).toBe('card');
+  });
 
-    // A tap that opens nothing and leaves no focus folds once it is over.
-    expanded = false;
-    await render(view());
+  test('a tap inside the card that opens nothing folds it once over', async () => {
+    env.phone = true;
+    await render(<MessageInput groupJid="web:g1" onSend={vi.fn()} />);
+    const root = () => container!.querySelector('[data-hc-composer]')!;
+    const dock = () => root().getAttribute('data-composer-dock');
     await act(async () => {
       editor().commands.focus();
     });
-    const plain = container!
-      .querySelector('[data-hc-composer]')!
-      .appendChild(document.createElement('span'));
+    const plain = root().appendChild(document.createElement('span'));
     await act(async () => {
       plain.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
       editor().commands.blur();
@@ -608,6 +613,8 @@ describe('phone dock', () => {
     expect(dock()).toBe('card');
     await act(async () => {
       plain.click();
+    });
+    await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
     expect(dock()).toBe('pill');
