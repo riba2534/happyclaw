@@ -118,6 +118,16 @@ describe('chunkTelegramMarkdown', () => {
       '<code>a&lt;b&gt;</code> <a href="https://e.x">x</a> <s>s</s>',
     );
   });
+
+  test('caps entity-heavy fence info on reopen', () => {
+    const chunks = chunkTelegramMarkdown(
+      '```' + '&'.repeat(1000) + '\n' + 'x\n'.repeat(200),
+    );
+    expect(chunks.length).toBeLessThan(50);
+    for (const chunk of chunks) {
+      expect(chunk.html.length).toBeLessThanOrEqual(4096);
+    }
+  });
 });
 
 describe('createTelegramRateLimitRetry', () => {

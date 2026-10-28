@@ -155,4 +155,17 @@ describe('splitMarkdownWithCodeFences', () => {
       '```\nopen',
     ]);
   });
+
+  test('caps reopened fence info string to avoid chunk explosion', () => {
+    const input = '```' + 'x'.repeat(4000) + '\n' + 'body line\n'.repeat(2000);
+    const chunks = splitMarkdownWithCodeFences(input, 3500);
+    expect(chunks.length).toBeGreaterThan(1);
+    expect(chunks.length).toBeLessThan(50);
+    for (const chunk of chunks) {
+      expect(chunk.length).toBeLessThanOrEqual(3500);
+    }
+    for (const chunk of chunks.slice(1)) {
+      expect(chunk.startsWith('```' + 'x'.repeat(32) + '\n')).toBe(true);
+    }
+  });
 });
