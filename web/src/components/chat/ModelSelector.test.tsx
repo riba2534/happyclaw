@@ -1529,6 +1529,17 @@ describe('on a phone', () => {
     );
   });
 
+  test('the sheet gives the rows the width and drops the footnote', async () => {
+    mocks.get.mockResolvedValue(
+      effortSelection({ selectedModelConfigId: 'official' }),
+    );
+    await render(null);
+    await open();
+    expect(sheet()!.querySelector('[aria-label="模型配置"]')).toBeNull();
+    expect(sheet()!.textContent).not.toContain('切换模型会开启新的底层会话');
+    expect(checked()).toHaveLength(1);
+  });
+
   test('a model without efforts gets no row', async () => {
     mocks.get.mockResolvedValue(
       effortSelection({

@@ -61,6 +61,19 @@ export function bottomSheetSnapHeights(screenHeight: number): {
   return { half, full };
 }
 
+/**
+ * The height detents are measured against. iOS shrinks innerHeight while
+ * the keyboard is up and does not always fire a resize when it goes, so a
+ * sheet opened from a focused composer stuck at the 320px floor. The
+ * layout viewport keeps the full screen.
+ */
+function sheetScreenHeight(): number {
+  return Math.max(
+    window.innerHeight,
+    document.documentElement.clientHeight || 0,
+  );
+}
+
 /** Released below this share of the half detent, the sheet closes. */
 const DISMISS_RATIO = 0.62;
 /** A downward flick this fast (px/ms) closes the sheet from anywhere. */
@@ -134,18 +147,22 @@ function BottomSheetContent({
     const element = contentRef.current;
     if (!element || !snap) return;
     const apply = () => {
-      element.style.height = `${bottomSheetSnapHeights(window.innerHeight)[snap]}px`;
+      element.style.height = `${bottomSheetSnapHeights(sheetScreenHeight())[snap]}px`;
     };
     apply();
     window.addEventListener('resize', apply);
-    return () => window.removeEventListener('resize', apply);
+    window.visualViewport?.addEventListener('resize', apply);
+    return () => {
+      window.removeEventListener('resize', apply);
+      window.visualViewport?.removeEventListener('resize', apply);
+    };
   }, [snap]);
 
   /** The snapped sheet's height for a drag now at `clientY`. */
   const dragHeight = (drag: DragState, clientY: number) =>
     Math.min(
       Math.max(drag.startHeight - (clientY - drag.startY), 0),
-      bottomSheetSnapHeights(window.innerHeight).full,
+      bottomSheetSnapHeights(sheetScreenHeight()).full,
     );
 
   const close = () => closeRef.current?.click();
@@ -193,7 +210,7 @@ function BottomSheetContent({
     const offset = event.clientY - drag.startY;
     const flick = drag.velocity > DISMISS_VELOCITY && offset > 24;
     if (snap) {
-      const heights = bottomSheetSnapHeights(window.innerHeight);
+      const heights = bottomSheetSnapHeights(sheetScreenHeight());
       const settled = flick
         ? 'dismiss'
         : settleBottomSheet(dragHeight(drag, event.clientY), heights);

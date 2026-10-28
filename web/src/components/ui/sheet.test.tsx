@@ -152,4 +152,13 @@ describe('the bottom sheet', () => {
     await drag(handle, 100, 700, true);
     expect(onOpenChange).toHaveBeenCalledWith(false);
   });
+
+  test('opened while a keyboard shrinks innerHeight, it still takes half the screen', () => {
+    vi.spyOn(window, 'innerHeight', 'get').mockReturnValue(420);
+    vi.spyOn(document.documentElement, 'clientHeight', 'get').mockReturnValue(
+      844,
+    );
+    const { content } = render(vi.fn(), undefined, true);
+    expect(content.style.height).toBe('473px');
+  });
 });

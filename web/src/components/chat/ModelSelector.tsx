@@ -643,6 +643,7 @@ export function ModelSelector({
         handleOpenChange(false);
         pickRow(row);
       }}
+      compact={phone}
       onManage={
         canManageModels
           ? () => {
@@ -874,6 +875,11 @@ interface ModelPanelProps {
   /** Null picks the default. */
   onPick: (row: ModelRow | null) => void;
   onManage: (() => void) | null;
+  /**
+   * A phone's sheet: the rows take the width (search still reaches every
+   * connection) and the footer keeps only the way to Settings.
+   */
+  compact?: boolean;
 }
 
 /**
@@ -889,6 +895,7 @@ function ModelPanel({
   effort,
   onPick,
   onManage,
+  compact = false,
 }: ModelPanelProps) {
   const effortRow = effort && (
     <EffortSegments
@@ -962,35 +969,37 @@ function ModelPanel({
       </div>
 
       <div className="flex h-[min(26rem,60dvh)] min-h-0 flex-1">
-        <div
-          role="group"
-          aria-label="模型配置"
-          className="flex w-12 shrink-0 flex-col items-center gap-1 overflow-y-auto border-r border-surface-border py-2"
-        >
-          <RailButton
-            label="全部"
-            active={rail === 'all' && !needle}
-            onClick={() => showRail('all')}
+        {!compact && (
+          <div
+            role="group"
+            aria-label="模型配置"
+            className="flex w-12 shrink-0 flex-col items-center gap-1 overflow-y-auto border-r border-surface-border py-2"
           >
-            <LayoutGrid className="size-4" aria-hidden="true" />
-          </RailButton>
-          {selection.options.map((option) => (
             <RailButton
-              key={option.id}
-              label={option.name}
-              active={rail === option.id && !needle}
-              onClick={() => showRail(option.id)}
+              label="全部"
+              active={rail === 'all' && !needle}
+              onClick={() => showRail('all')}
             >
-              <VendorTile
-                vendor={vendorOfConnection({
-                  kind: option.kind,
-                  model: ownModel(option),
-                })}
-                name={option.name}
-              />
+              <LayoutGrid className="size-4" aria-hidden="true" />
             </RailButton>
-          ))}
-        </div>
+            {selection.options.map((option) => (
+              <RailButton
+                key={option.id}
+                label={option.name}
+                active={rail === option.id && !needle}
+                onClick={() => showRail(option.id)}
+              >
+                <VendorTile
+                  vendor={vendorOfConnection({
+                    kind: option.kind,
+                    model: ownModel(option),
+                  })}
+                  name={option.name}
+                />
+              </RailButton>
+            ))}
+          </div>
+        )}
 
         <div
           ref={listRef}
@@ -1050,12 +1059,19 @@ function ModelPanel({
         </div>
       </div>
 
-      <div className="shrink-0 space-y-1 border-t border-surface-border px-3 py-2">
-        <p className="text-micro leading-4 text-muted-foreground">
-          {effort === undefined
-            ? '切换模型会开启新的底层会话，并自动带上最近的对话记录；推理等级在输入框旁调整。'
-            : '切换模型会开启新的底层会话，并自动带上最近的对话记录。'}
-        </p>
+      <div
+        className={cn(
+          'shrink-0 space-y-1 border-t border-surface-border px-3 py-2',
+          compact && !onManage && 'hidden',
+        )}
+      >
+        {!compact && (
+          <p className="text-micro leading-4 text-muted-foreground">
+            {effort === undefined
+              ? '切换模型会开启新的底层会话，并自动带上最近的对话记录；推理等级在输入框旁调整。'
+              : '切换模型会开启新的底层会话，并自动带上最近的对话记录。'}
+          </p>
+        )}
         {onManage && (
           <button
             type="button"
