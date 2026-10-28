@@ -1268,7 +1268,7 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
       >
         {/* Header. On a phone it is transparent over the conversation, which
             scrolls under a blur that fades out toward its bottom edge. */}
-        <header className="flex h-12 shrink-0 items-center gap-2 border-b border-surface-border px-4 max-lg:h-13 max-lg:bg-background/80 max-lg:backdrop-blur-xl lg:px-5 phone:absolute phone:inset-x-0 phone:top-0 phone:z-30 phone:h-(--chat-header-height) phone:border-b-0 phone:bg-transparent phone:px-3 phone:backdrop-blur-none phone:before:pointer-events-none phone:before:absolute phone:before:inset-x-0 phone:before:top-0 phone:before:-bottom-4 phone:before:-z-10 phone:before:bg-background/70 phone:before:backdrop-blur-xl phone:before:[mask-image:linear-gradient(to_bottom,black_55%,transparent)]">
+        <header className="flex h-12 shrink-0 items-center gap-2 border-b border-surface-border px-4 max-lg:h-13 max-lg:glass lg:px-5 phone:absolute phone:inset-x-0 phone:top-0 phone:z-30 phone:h-(--chat-header-height) phone:border-b-0 phone:bg-transparent phone:px-3 phone:backdrop-blur-none phone:before:pointer-events-none phone:before:absolute phone:before:inset-x-0 phone:before:top-0 phone:before:-bottom-4 phone:before:-z-10 phone:before:glass phone:before:[mask-image:linear-gradient(to_bottom,black_55%,transparent)]">
           {onBack && (
             <IconButton
               label="返回"

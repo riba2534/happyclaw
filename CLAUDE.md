@@ -110,6 +110,12 @@ Web UI 约定：
 - 三套配色（teal / orange / neutral）× 亮暗模式的色值只在 `globals.css` 的方案块中定义；
   层级色（`app-shell`、`surface-raised`、`surface-hover`、`surface-selected`、
   `surface-border`、`faint-foreground`）和阴影由这些色值派生，组件不得写死调色板颜色。
+- 浮在内容上的栏和控件（手机顶栏、停靠输入卡、浮动导航）用 `glass` 材质（`--glass-*`
+  由当前配色派生，减少透明度或不支持模糊时回落为不透明背景），独立浮起的形状再加
+  `glass-edge`。
+- 安装为 PWA 的手机上 iOS 没有历史手势：`useEdgeSwipe` 提供左缘返回、右缘前进；
+  横向滚动的内容标 `data-swipe-back-ignore`。PWA 关闭了长按菜单，可保存的图片加
+  `touch-callout-default`。
 - 字号使用角色化 token（`text-micro`、`text-caption`、`text-label`、`text-body`、
   `text-body-lg`、`text-title*`、`text-display*`）；状态用 `Badge` 变体或语义色
   （`success`、`warning`、`error`）。

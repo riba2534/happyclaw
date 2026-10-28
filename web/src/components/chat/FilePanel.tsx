@@ -304,7 +304,7 @@ function ImagePreview({
       <img
         src={buildPreviewUrl(groupJid, file.path)}
         alt={file.name}
-        className="max-h-[calc(100dvh-2rem)] max-w-[calc(100vw-2rem)] object-contain rounded-lg"
+        className="max-h-[calc(100dvh-2rem)] max-w-[calc(100vw-2rem)] touch-callout-default object-contain rounded-lg"
         onClick={(e) => e.stopPropagation()}
       />
     </MediaOverlay>

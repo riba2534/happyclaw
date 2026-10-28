@@ -15,7 +15,7 @@ import ReactMarkdown, {
   type UrlTransform,
 } from 'react-markdown';
 import { Check, Copy } from 'lucide-react';
-import { PreviewDialog } from './PreviewDialog';
+import { ImageLightbox } from './ImageLightbox';
 import {
   resolveMarkdownImageSrc,
   resolveMarkdownLinkHref,
@@ -108,29 +108,6 @@ const markdownUrlTransform: UrlTransform = (url, key, node) =>
     ? url
     : defaultUrlTransform(url);
 
-function MarkdownImageLightbox({
-  src,
-  onClose,
-}: {
-  src: string;
-  onClose: () => void;
-}) {
-  return (
-    <PreviewDialog
-      title="图片预览"
-      onClose={onClose}
-      layer="nested"
-      className="left-1/2 top-1/2 max-h-[90dvh] max-w-[90vw] -translate-x-1/2 -translate-y-1/2"
-    >
-      <img
-        src={src}
-        alt="放大查看"
-        className="max-w-[90vw] max-h-[90vh] object-contain cursor-default"
-      />
-    </PreviewDialog>
-  );
-}
-
 function MarkdownImage({
   src,
   alt,
@@ -183,7 +160,7 @@ function MarkdownImage({
         role="button"
         tabIndex={0}
         aria-label={alt ? `放大图片：${alt}` : '放大图片'}
-        className="my-3 h-auto max-w-full cursor-zoom-in rounded-lg border border-surface-border transition-colors hover:border-foreground/25"
+        className="my-3 h-auto max-w-full touch-callout-default cursor-zoom-in rounded-lg border border-surface-border transition-colors hover:border-foreground/25"
         style={{ maxHeight: '400px', objectFit: 'contain' }}
         onClick={() => setExpanded(true)}
         onKeyDown={(event) => {
@@ -195,7 +172,13 @@ function MarkdownImage({
         onError={() => setError(true)}
       />
       {expanded && (
-        <MarkdownImageLightbox src={src} onClose={() => setExpanded(false)} />
+        // The chat's image viewer: pull down to close, double-tap to zoom,
+        // long-press or the save button to keep the image.
+        <ImageLightbox
+          images={[src]}
+          initialIndex={0}
+          onClose={() => setExpanded(false)}
+        />
       )}
     </>
   );

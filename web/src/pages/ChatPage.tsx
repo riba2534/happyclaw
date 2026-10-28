@@ -40,7 +40,7 @@ import { IconButton } from '../components/common/IconButton';
 import { EmptyState } from '../components/common/EmptyState';
 import { AccountMenuItems } from '../components/layout/AccountMenu';
 import { withBasePath } from '../utils/url';
-import { useSwipeBack } from '../hooks/useSwipeBack';
+import { useEdgeSwipe } from '../hooks/useEdgeSwipe';
 import { useClearWorkspace } from '../hooks/useClearWorkspace';
 import type { GroupEntry } from '../utils/group-utils';
 import { useDeleteWorkspace } from '../hooks/useDeleteWorkspace';
@@ -179,12 +179,30 @@ export function ChatPage() {
 
   const activeGroupJid = groupFolder ? routeGroupJid : currentGroup;
   const chatViewRef = useRef<HTMLDivElement>(null);
+  const phoneHomeRef = useRef<HTMLDivElement>(null);
+  // The conversation just left for the list: the right-edge swipe returns
+  // to it, like a browser's forward. Opening anything else replaces it.
+  const [forwardFolder, setForwardFolder] = useState<string | null>(null);
 
   const handleBackToList = () => {
+    setForwardFolder(groupFolder ?? null);
     navigate('/chat', { state: revealState(groupFolder) });
   };
 
-  useSwipeBack(chatViewRef, handleBackToList);
+  useEdgeSwipe(chatViewRef, { onBack: handleBackToList });
+  useEdgeSwipe(
+    phoneHomeRef,
+    {
+      onForward: forwardFolder
+        ? () => navigate(`/chat/${forwardFolder}`)
+        : undefined,
+    },
+    { enabled: showPhoneHome },
+  );
+  useEffect(() => {
+    // Forward is only meaningful straight after going back.
+    if (groupFolder && !phoneSessionsLink) setForwardFolder(null);
+  }, [groupFolder, phoneSessionsLink]);
 
   const selectMobileWorkspace = (group: GroupEntry) => {
     selectGroup(group.jid);
@@ -256,10 +274,11 @@ export function ChatPage() {
           hamburger on the left and the new-conversation button. */}
       {showPhoneHome && (
         <div
+          ref={phoneHomeRef}
           data-hc-phone-home
           className="w-full overflow-y-auto overscroll-y-contain pb-[calc(83px+env(safe-area-inset-bottom,0px))]"
         >
-          <header className="sticky top-0 z-20 flex h-14 items-center gap-1 bg-background/85 px-2 backdrop-blur-xl">
+          <header className="glass sticky top-0 z-20 flex h-14 items-center gap-1 px-2">
             <NavDrawerButton />
             <div className="flex min-w-0 flex-1 items-center gap-2 px-1">
               {brand}

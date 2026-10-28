@@ -1,7 +1,9 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { Dialog as DialogPrimitive } from 'radix-ui';
-import { ChevronLeft, ChevronRight, X } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Download, X } from 'lucide-react';
+import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
+import { saveImage } from '../../utils/download';
 
 interface ImageLightboxProps {
   images: string[];
@@ -16,7 +18,8 @@ const viewerButtonClass =
  * Full-screen image viewer. A Radix dialog, so it traps focus, closes on Esc,
  * locks page scroll and returns focus to the thumbnail. ←/→ and the side
  * buttons switch images; on touch, swipe to switch, pull down to close and
- * double-tap to zoom.
+ * double-tap to zoom. Long-press opens the system image menu; the save
+ * button shares the file (Save Image on phones) or downloads it.
  */
 export function ImageLightbox({
   images,
@@ -113,6 +116,19 @@ export function ImageLightbox({
     }
   };
 
+  const [saving, setSaving] = useState(false);
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      await saveImage(images[currentIndex], `image-${Date.now()}`);
+    } catch (err) {
+      console.error('Save image failed:', err);
+      toast.error('图片保存失败');
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const visible = isOpen && !isClosing;
   const chromeStyle = {
     opacity: visible ? 1 : 0,
@@ -152,14 +168,30 @@ export function ImageLightbox({
             图片预览 {currentIndex + 1} / {images.length}
           </DialogPrimitive.Title>
 
-          <DialogPrimitive.Close
-            onClick={(e) => e.stopPropagation()}
-            className={cn(viewerButtonClass, 'absolute top-4 right-4 z-30')}
-            aria-label="关闭"
+          <div
+            className="absolute top-[max(1rem,env(safe-area-inset-top))] right-4 z-30 flex gap-2"
             style={chromeStyle}
           >
-            <X className="size-6" />
-          </DialogPrimitive.Close>
+            <button
+              type="button"
+              aria-label="保存图片"
+              disabled={saving}
+              onClick={(e) => {
+                e.stopPropagation();
+                void handleSave();
+              }}
+              className={viewerButtonClass}
+            >
+              <Download className="size-5" />
+            </button>
+            <DialogPrimitive.Close
+              onClick={(e) => e.stopPropagation()}
+              className={viewerButtonClass}
+              aria-label="关闭"
+            >
+              <X className="size-6" />
+            </DialogPrimitive.Close>
+          </div>
 
           {multiple && (
             <>
@@ -208,7 +240,7 @@ export function ImageLightbox({
             <img
               src={images[currentIndex]}
               alt={`${currentIndex + 1} / ${images.length}`}
-              className="max-h-full max-w-full object-contain select-none"
+              className="max-h-full max-w-full touch-callout-default object-contain select-none"
               style={imageStyle}
               draggable={false}
               onClick={(e) => e.stopPropagation()}

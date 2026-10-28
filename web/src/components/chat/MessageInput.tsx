@@ -968,10 +968,10 @@ export const MessageInput = memo(function MessageInput({
         dock
           ? // Floats over the conversation: 16px from the sides, 8px above
             // the safe area (or the keyboard), its top edge feathered into
-            // the page instead of a border.
-            'absolute inset-x-0 bottom-0 z-20 bg-[linear-gradient(to_bottom,transparent,var(--color-background)_1.5rem)] pt-6'
+            // a glass scrim instead of a border.
+            'absolute inset-x-0 bottom-0 z-20 bg-[linear-gradient(to_bottom,transparent,var(--glass-bg)_1.5rem)] pt-6'
           : !centered &&
-              'bg-background pt-1 pb-3 max-lg:border-t max-lg:border-surface-border max-lg:bg-background/80 max-lg:backdrop-blur-xl',
+              'bg-background pt-1 pb-3 max-lg:border-t max-lg:border-surface-border max-lg:glass',
       )}
       style={
         centered
@@ -1027,7 +1027,9 @@ export const MessageInput = memo(function MessageInput({
             ref={cardRef}
             data-composer-card
             className={cn(
-              'relative overflow-hidden border border-surface-border bg-surface-raised transition-[color,background-color,border-color,border-radius] focus-within:border-foreground/25 motion-reduce:transition-none',
+              'relative overflow-hidden border border-surface-border transition-[color,background-color,border-color,border-radius] focus-within:border-foreground/25 motion-reduce:transition-none',
+              // Docked on a phone the card is glass over the conversation.
+              dock ? 'glass glass-edge' : 'bg-surface-raised',
               !dock
                 ? 'rounded-[12px]'
                 : pill

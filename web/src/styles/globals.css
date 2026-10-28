@@ -225,8 +225,6 @@
 
   /* iOS keyboard height */
   --keyboard-height: 0px;
-
-  /* Liquid Glass design tokens */
 }
 
 /* =====================================================
@@ -525,6 +523,14 @@ html.font-anthropic .font-mono {
     0 8px 24px -4px rgb(0 0 0 / 0.1), 0 2px 6px -2px rgb(0 0 0 / 0.06);
   --floating-shadow:
     0 16px 48px -12px rgb(0 0 0 / 0.22), 0 4px 12px -4px rgb(0 0 0 / 0.08);
+  /* Glass material for bars and controls floating over content (the iOS 26
+     look): a tint of the page color, blurred and saturated content behind
+     it, and a hairline edge with a top highlight. */
+  --glass-bg: color-mix(in oklab, var(--background) 72%, transparent);
+  --glass-filter: blur(24px) saturate(1.8);
+  --glass-edge:
+    inset 0 1px 0 0 rgb(255 255 255 / 0.55),
+    0 0 0 0.5px color-mix(in oklab, var(--foreground) 12%, transparent);
 }
 
 .dark {
@@ -536,6 +542,28 @@ html.font-anthropic .font-mono {
     0 8px 24px -4px rgb(0 0 0 / 0.5), 0 2px 6px -2px rgb(0 0 0 / 0.3);
   --floating-shadow:
     0 16px 48px -12px rgb(0 0 0 / 0.6), 0 4px 12px -4px rgb(0 0 0 / 0.3);
+  --glass-bg: color-mix(in oklab, var(--background) 64%, transparent);
+  --glass-edge:
+    inset 0 1px 0 0 rgb(255 255 255 / 0.1),
+    0 0 0 0.5px color-mix(in oklab, var(--foreground) 14%, transparent);
+}
+
+/* Without a working blur, or when the user asks for less transparency, the
+   glass turns into the opaque page color. */
+@supports not (
+  (backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))
+) {
+  :root,
+  .dark {
+    --glass-bg: var(--background);
+  }
+}
+@media (prefers-reduced-transparency: reduce) {
+  :root,
+  .dark {
+    --glass-bg: var(--background);
+    --glass-filter: none;
+  }
 }
 
 /* =====================================================
@@ -964,6 +992,23 @@ pre code.language-diff .hljs-deletion {
   }
 }
 
+/* The glass material (tokens above): `glass` fills and blurs, `glass-edge`
+   adds the hairline and highlight for free-floating shapes. */
+@utility glass {
+  background-color: var(--glass-bg);
+  -webkit-backdrop-filter: var(--glass-filter);
+  backdrop-filter: var(--glass-filter);
+}
+@utility glass-edge {
+  box-shadow: var(--glass-edge);
+}
+
+/* Long-press on an image opens the system menu (Save Image, Copy, Share)
+   even in the installed PWA, whose body turns the callout off. */
+@utility touch-callout-default {
+  -webkit-touch-callout: default;
+}
+
 /* Bottom padding for content above floating nav — accounts for safe area */
 /* A utility (not a bare class) so responsive overrides such as lg:pb-0 win. */
 @utility pb-nav-safe {
@@ -997,12 +1042,11 @@ pre code.language-diff .hljs-deletion {
   align-items: center;
   gap: 2px;
   padding: 6px;
-  background: color-mix(in oklab, var(--background) 82%, transparent);
-  backdrop-filter: blur(20px) saturate(1.4);
-  -webkit-backdrop-filter: blur(20px) saturate(1.4);
-  border: 1px solid var(--surface-border);
+  background: var(--glass-bg);
+  -webkit-backdrop-filter: var(--glass-filter);
+  backdrop-filter: var(--glass-filter);
   border-radius: 9999px;
-  box-shadow: var(--menu-shadow);
+  box-shadow: var(--glass-edge), var(--menu-shadow);
   pointer-events: auto;
 }
 
