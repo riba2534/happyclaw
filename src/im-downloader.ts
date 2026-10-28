@@ -121,6 +121,42 @@ export function resolveImDownloadRoot(
 }
 
 /**
+ * 按 UTF-8 字节截断文件名：Linux NAME_MAX 为 255 字节（不是字符），
+ * 86 个 CJK 字符就会让 openSync 抛 ENAMETOOLONG。保留扩展名，按码点截断
+ * 不拆分多字节字符；预算默认 200 字节，为冲突后缀（`_HHMMSS_<ms>` ≤ 21 字节）留出空间。
+ */
+const MAX_SAFE_NAME_BYTES = 200;
+const MAX_KEPT_EXT_BYTES = 16;
+
+function truncateUtf8(s: string, maxBytes: number): string {
+  let out = '';
+  let bytes = 0;
+  for (const ch of s) {
+    const n = Buffer.byteLength(ch, 'utf8');
+    if (bytes + n > maxBytes) break;
+    out += ch;
+    bytes += n;
+  }
+  return out;
+}
+
+export function fitFilenameBytes(
+  name: string,
+  maxBytes: number = MAX_SAFE_NAME_BYTES,
+): string {
+  if (Buffer.byteLength(name, 'utf8') <= maxBytes) return name;
+  const ext = path.extname(name);
+  const keepExt = ext && Buffer.byteLength(ext, 'utf8') <= MAX_KEPT_EXT_BYTES;
+  const extPart = keepExt ? ext : '';
+  const base = keepExt ? name.slice(0, -ext.length) : name;
+  const head = truncateUtf8(
+    base,
+    maxBytes - Buffer.byteLength(extPart, 'utf8'),
+  ).trimEnd();
+  return `${head || 'file'}${extPart}`;
+}
+
+/**
  * 将 Buffer 写入 downloads/{channel}/{YYYY-MM-DD}/ 目录，
  * 返回 Agent 工作目录相对路径（如 downloads/feishu/2026-03-01/report.pdf）。
  * 工作目录为 resolveImDownloadRoot(groupFolder, routeJid)：通常是
@@ -162,6 +198,7 @@ export async function saveDownloadedFile(
   if (safeName === 'unnamed') {
     safeName = `file_${Date.now()}`;
   }
+  safeName = fitFilenameBytes(safeName);
 
   // 冲突处理：原方案只用 _HHmmss 后缀，同秒并发会让两个并发写入指向同一
   // 后缀名互相覆盖。改为 while 循环递增 -2 / -3 / ... 保证每次都拿到独立
