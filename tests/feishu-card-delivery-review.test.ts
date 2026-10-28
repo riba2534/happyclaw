@@ -4,6 +4,7 @@
  * HTTP 4xx rejects with an AxiosError whose `code` is 'ERR_BAD_REQUEST' and
  * whose Feishu business code sits in `response.data.code`.
  */
+import { spawnSync } from 'node:child_process';
 import { afterEach, describe, expect, test, vi } from 'vitest';
 
 import {
@@ -1230,6 +1231,42 @@ describe('P2-9 v1/legacy fence parsing and titles', () => {
     );
     expect(extractTitleAndBody('# 标题\n正文').title).toBe('标题');
   });
+
+  test('caps reopened fence info string on oversized opener', () => {
+    const script = [
+      "import { writeSync } from 'node:fs';",
+      "import { splitCodeBlockSafe } from './src/feishu-streaming-card.ts';",
+      "const opener = '```' + 'x'.repeat(5000);",
+      "const body = 'const line = 1;\\n'.repeat(300);",
+      "const text = opener + '\\n' + body + '```\\nafter';",
+      'const chunks = splitCodeBlockSafe(text, 4000);',
+      "writeSync(1, JSON.stringify(chunks) + '\\n');",
+      'process.exit(0);',
+    ].join('\n');
+    const child = spawnSync(
+      process.execPath,
+      ['--import', 'tsx', '--input-type=module', '-e', script],
+      {
+        cwd: process.cwd(),
+        env: { ...process.env, NODE_OPTIONS: '--max-old-space-size=512' },
+        encoding: 'utf8',
+        timeout: 15_000,
+        killSignal: 'SIGKILL',
+      },
+    );
+    expect(child.error).toBeUndefined();
+    expect(child.status).toBe(0);
+    const chunks = JSON.parse(child.stdout.trim()) as string[];
+    expect(chunks.length).toBeGreaterThan(1);
+    expect(chunks.length).toBeLessThan(10);
+    const reopened = chunks.slice(1).filter((c) => c.startsWith('```'));
+    expect(reopened.length).toBeGreaterThan(0);
+    for (const chunk of reopened) {
+      expect(chunk.startsWith('```' + 'x'.repeat(32) + '\n')).toBe(true);
+    }
+    expect(chunks.join('\n').match(/const line = 1;/g)?.length).toBe(300);
+    expect(chunks.at(-1)!.endsWith('```\nafter')).toBe(true);
+  }, 30_000);
 });
 
 describe('P2-12 single-column tables', () => {

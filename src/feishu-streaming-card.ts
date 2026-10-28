@@ -448,6 +448,8 @@ function surrogateSafeIndex(text: string, index: number): number {
   return index > 0 && code >= 0xd800 && code <= 0xdbff ? index - 1 : index;
 }
 
+const MAX_REOPENED_FENCE_INFO = 32;
+
 /**
  * Split text respecting fenced code block boundaries — never truncates inside
  * a code block without properly closing/reopening the fence.
@@ -480,11 +482,16 @@ export function splitCodeBlockSafe(text: string, maxLen: number): string[] {
         chunks.push(remaining.slice(0, idx).trimEnd());
         remaining = remaining.slice(idx).replace(/^\n+/, '');
       } else {
-        // Block starts too early to retreat — split inside but close/reopen fence
+        // Block starts too early to retreat — split inside but close/reopen fence.
+        // Cap the replayed info string so an opener near/above maxLen cannot
+        // keep `remaining` from shrinking across iterations.
         const chunk = remaining.slice(0, idx).trimEnd() + `\n${block.marker}`;
         chunks.push(chunk);
-        remaining =
-          `${block.opener}\n` + remaining.slice(idx).replace(/^\n/, '');
+        const infoStart =
+          block.opener.indexOf(block.marker) + block.marker.length;
+        const infoEnd = infoStart + MAX_REOPENED_FENCE_INFO;
+        const reopened = block.opener.slice(0, infoEnd);
+        remaining = `${reopened}\n` + remaining.slice(idx).replace(/^\n/, '');
       }
     } else {
       chunks.push(remaining.slice(0, idx).trimEnd());
