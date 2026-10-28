@@ -537,6 +537,83 @@ describe('phone dock', () => {
     outside.remove();
   });
 
+  test('a tap on the model pill keeps the card open on iOS', async () => {
+    // iOS does not focus a tapped button: the text blurs with no related
+    // target, then the click arrives. The card must not fold in between.
+    env.phone = true;
+    let expanded = false;
+    const view = () => (
+      <MessageInput
+        groupJid="web:g1"
+        onSend={vi.fn()}
+        modelSelector={
+          <button
+            type="button"
+            data-testid="model"
+            aria-expanded={expanded}
+            onClick={() => {
+              expanded = true;
+            }}
+          />
+        }
+      />
+    );
+    await render(view());
+    const dock = () =>
+      container!
+        .querySelector('[data-hc-composer]')!
+        .getAttribute('data-composer-dock');
+    const model = () =>
+      container!.querySelector<HTMLButtonElement>('[data-testid="model"]')!;
+    const iosTap = async (target: HTMLElement) => {
+      await act(async () => {
+        target.dispatchEvent(
+          new PointerEvent('pointerdown', { bubbles: true }),
+        );
+        editor().commands.blur();
+      });
+      // Folding here would move the pill out from under the finger.
+      expect(dock()).toBe('card');
+      await act(async () => {
+        target.click();
+      });
+      await render(view());
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+    };
+
+    await act(async () => {
+      editor().commands.focus();
+    });
+    expect(dock()).toBe('card');
+    await iosTap(model());
+    // The sheet opened: the card stays.
+    expect(expanded).toBe(true);
+    expect(dock()).toBe('card');
+
+    // A tap that opens nothing and leaves no focus folds once it is over.
+    expanded = false;
+    await render(view());
+    await act(async () => {
+      editor().commands.focus();
+    });
+    const plain = container!
+      .querySelector('[data-hc-composer]')!
+      .appendChild(document.createElement('span'));
+    await act(async () => {
+      plain.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+      editor().commands.blur();
+    });
+    expect(dock()).toBe('card');
+    await act(async () => {
+      plain.click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(dock()).toBe('pill');
+    plain.remove();
+  });
+
   test('publishes its height for the list it floats over', async () => {
     env.phone = true;
     container!.setAttribute('data-composer-dock-host', '');

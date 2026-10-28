@@ -836,6 +836,45 @@ export const MessageInput = memo(function MessageInput({
       setTextFocused(true);
     }
   };
+  // iOS does not focus a tapped button, so the text losing focus to the
+  // model pill or the + menu names no next element and reads as leaving:
+  // the card folded under the finger and the tap landed on the pill,
+  // entering the text again. A press inside the dock holds the card open
+  // until its tap is over; only then is the focus judged.
+  const pressInsideRef = useRef<number | null>(null);
+  const settleAfterPress = () => {
+    if (pressInsideRef.current !== null) {
+      window.clearTimeout(pressInsideRef.current);
+      pressInsideRef.current = null;
+    }
+    const root = rootRef.current;
+    if (!root) return;
+    if (root.contains(document.activeElement)) return;
+    if (root.querySelector('[aria-expanded="true"]')) return;
+    setTextFocused(false);
+  };
+  const notePressInside = () => {
+    if (pressInsideRef.current !== null) {
+      window.clearTimeout(pressInsideRef.current);
+    }
+    // A press that never becomes a click (a scroll, a cancelled touch)
+    // still settles.
+    pressInsideRef.current = window.setTimeout(settleAfterPress, 800);
+  };
+  const noteClickInside = () => {
+    if (pressInsideRef.current === null) return;
+    // After the click's own handlers: a sheet it opened has its trigger
+    // expanded by then.
+    window.setTimeout(settleAfterPress, 0);
+  };
+  useEffect(
+    () => () => {
+      if (pressInsideRef.current !== null) {
+        window.clearTimeout(pressInsideRef.current);
+      }
+    },
+    [],
+  );
   const noteFocusOut = (event: React.FocusEvent<HTMLDivElement>) => {
     // Focus moving inside a portal the dock opened bubbles here through
     // React; only the dock's own elements losing focus count.
@@ -843,6 +882,7 @@ export const MessageInput = memo(function MessageInput({
     const next = event.relatedTarget as Node | null;
     if (next && event.currentTarget.contains(next)) return;
     if (event.currentTarget.querySelector('[aria-expanded="true"]')) return;
+    if (pressInsideRef.current !== null) return;
     setTextFocused(false);
   };
 
@@ -963,6 +1003,8 @@ export const MessageInput = memo(function MessageInput({
       data-composer-dock={dock ? (pill ? 'pill' : 'card') : undefined}
       onFocus={dock ? noteFocusIn : undefined}
       onBlur={dock ? noteFocusOut : undefined}
+      onPointerDownCapture={dock ? notePressInside : undefined}
+      onClickCapture={dock ? noteClickInside : undefined}
       className={cn(
         'relative w-full',
         dock
