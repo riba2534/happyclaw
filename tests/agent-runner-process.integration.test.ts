@@ -214,7 +214,13 @@ function answerMemoryRequests(tasksDir: string): void {
 
 async function runRunner(options: {
   name: string;
-  reply: (call: number) => ReplyBlock[];
+  reply?: (call: number) => ReplyBlock[];
+  /** Optional async handler for main model calls; overrides `reply` when set. */
+  handle?: (ctx: {
+    call: number;
+    body: { tools?: unknown[]; messages?: unknown[] };
+    writeInput: (index: number, text: string) => void;
+  }) => Promise<ReplyBlock[]> | ReplyBlock[];
   /** Stop reason of each main call; derived from its blocks by default. */
   stopReason?: (call: number) => string | undefined;
   /**
@@ -307,10 +313,22 @@ async function runRunner(options: {
         response.end(JSON.stringify(rejection.body));
         return;
       }
+      if (options.handle) {
+        void Promise.resolve(options.handle({ call, body, writeInput })).then(
+          (blocks) =>
+            sendMessage(
+              response,
+              `msg_main_${call}`,
+              blocks,
+              options.stopReason?.(call),
+            ),
+        );
+        return;
+      }
       sendMessage(
         response,
         `msg_main_${call}`,
-        options.reply(call),
+        options.reply!(call),
         options.stopReason?.(call),
       );
     });
@@ -747,5 +765,65 @@ describe('Agent Runner process against a fake Anthropic endpoint', () => {
       providerFailureClass: 'account',
       providerErrorText: notice,
     });
+  }, 60_000);
+
+  test('context-overflow retry requeues a follow-up drained during the failed query so it is answered as its own turn', async () => {
+    const receiptIds = (frame: Frame): string[] =>
+      (frame.ipcReceipts ?? []).map(
+        (receipt: { deliveryId: string }) => receipt.deliveryId,
+      );
+    const run = await runRunner({
+      name: 'context-overflow-requeues-later-turn',
+      handle: async ({ call, writeInput }) => {
+        if (call === 1) {
+          writeInput(2, 'SECOND_QUESTION_M2');
+          await new Promise((resolve) => setTimeout(resolve, 2_500));
+          return [{ type: 'text', text: 'Prompt is too long' }];
+        }
+        if (call === 2) {
+          return [{ type: 'text', text: 'PIPED_DURING_OVERFLOW_DISCARDED' }];
+        }
+        if (call === 3) {
+          return [{ type: 'text', text: 'TURN_1_RETRIED_ANSWER' }];
+        }
+        return [{ type: 'text', text: 'M2_ANSWERED_SEPARATELY' }];
+      },
+      settled: (frame) =>
+        isFinalResult(frame) &&
+        (frame.result === 'M2_ANSWERED_SEPARATELY' ||
+          receiptIds(frame).includes('delivery-2')),
+    });
+
+    expect(run.exitCode).toBe(0);
+    expect(run.mainRequests.length).toBeGreaterThanOrEqual(4);
+    expect(JSON.stringify(run.mainRequests[2])).not.toContain(
+      'SECOND_QUESTION_M2',
+    );
+    expect(JSON.stringify(run.mainRequests.at(-1))).toContain(
+      'SECOND_QUESTION_M2',
+    );
+
+    const finals = run.frames.filter(
+      (frame) => frame.status === 'success' && frame.sourceKind === 'sdk_final',
+    );
+    expect(finals).toHaveLength(2);
+    expect(finals[0]).toMatchObject({
+      result: 'TURN_1_RETRIED_ANSWER',
+      inputTurnCompleted: true,
+      inputTurnId: 'delivery-1',
+    });
+    expect(receiptIds(finals[0]!)).toEqual(['delivery-1']);
+    expect(finals[1]).toMatchObject({
+      result: 'M2_ANSWERED_SEPARATELY',
+      inputTurnCompleted: true,
+      inputTurnId: 'delivery-2',
+    });
+    expect(receiptIds(finals[1]!)).toEqual(['delivery-2']);
+    expect(
+      runnerLines(
+        run.stderr,
+        'Re-enqueued 1 later IPC message(s) before context-overflow retry',
+      ),
+    ).toHaveLength(1);
   }, 60_000);
 });

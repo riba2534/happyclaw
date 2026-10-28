@@ -1828,6 +1828,7 @@ async function runQueryAttempt(
   lastAssistantUuid?: string;
   closedDuringQuery: boolean;
   contextOverflow?: boolean;
+  overflowLaterIpcMessages?: IpcInputMessage[];
   unrecoverableTranscriptError?: boolean;
   interruptedDuringQuery: boolean;
   cancelledIpcReceipts?: IpcDeliveryReceipt[];
@@ -4223,6 +4224,7 @@ async function runQueryAttempt(
             lastAssistantUuid,
             closedDuringQuery,
             contextOverflow: true,
+            overflowLaterIpcMessages: ipcDeliveryTracker.laterTurnMessages,
             interruptedDuringQuery,
             pipedMessagesDuringQuery,
           };
@@ -4572,6 +4574,7 @@ async function runQueryAttempt(
         lastAssistantUuid,
         closedDuringQuery,
         contextOverflow: true,
+        overflowLaterIpcMessages: ipcDeliveryTracker.laterTurnMessages,
         interruptedDuringQuery,
         cancelledIpcReceipts,
         pipedMessagesDuringQuery,
@@ -5135,6 +5138,18 @@ async function main(): Promise<void> {
             newSessionId: sessionId,
           });
           process.exit(1);
+        }
+
+        const later = queryResult.overflowLaterIpcMessages ?? [];
+        if (later.length > 0) {
+          const laterSet = new Set(later);
+          currentIpcMessages = currentIpcMessages.filter(
+            (m) => !laterSet.has(m),
+          );
+          requeueIpcInputMessages(IPC_INPUT_DIR, later);
+          log(
+            `Re-enqueued ${later.length} later IPC message(s) before context-overflow retry`,
+          );
         }
 
         // Claude Code compacts on an overflow by itself and asks again; one
