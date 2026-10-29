@@ -1639,14 +1639,16 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
       )}
 
       <Sheet open={mobileContextOpen} onOpenChange={setMobileContextOpen}>
-        {/* It opens at half the screen and drags to full (cindy's context
-            sheet). Before the detent applies, the height must carry the same
+        {/* It opens at full and drags down to half (cindy's context sheet
+            detents). At half the fixed rows above and below the file list
+            leave it about one row on a phone, so it starts with the room.
+            Before the detent applies, the height must carry the same
             `data-[side=bottom]` variant as the default it replaces: an
             unvariated `h-[80dvh]` loses on specificity, leaving the sheet at
             `h-auto` — it then grows with the file list and cannot scroll. */}
         <SheetContent
           side="bottom"
-          detents
+          detents="full"
           data-testid="mobile-context-sheet"
           className="gap-0 p-0 data-[side=bottom]:h-[80dvh]"
         >

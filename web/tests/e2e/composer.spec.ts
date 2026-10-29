@@ -1223,27 +1223,33 @@ test.describe('touch composer', () => {
     await expect(sheet).toHaveCount(0);
   });
 
-  test('the context sheet opens at half the screen and drags to full', async ({
+  test('the context sheet opens at full and drags down to half', async ({
     page,
   }) => {
     await openHarness(page);
     await page.getByRole('button', { name: '展开上下文面板' }).click();
     const sheet = page.getByTestId('mobile-context-sheet');
-    await expect(sheet).toHaveAttribute('data-snap', 'half');
+    await expect(sheet).toHaveAttribute('data-snap', 'full');
     const viewport = page.viewportSize()!;
     const height = async () => Math.round((await sheet.boundingBox())!.height);
-    await expect.poll(height).toBe(Math.round(viewport.height * 0.56));
+    await expect.poll(height).toBe(viewport.height - 64);
 
     await settleAnimations(sheet);
     const handle = (await sheet.locator('[data-sheet-handle]').boundingBox())!;
-    await page.mouse.move(handle.x + handle.width / 2, handle.y + 10);
+    const x = handle.x + handle.width / 2;
+    await page.mouse.move(x, handle.y + 10);
     await page.mouse.down();
-    await page.mouse.move(handle.x + handle.width / 2, handle.y - 300, {
-      steps: 10,
-    });
+    // Past the midpoint between the detents, slowly: a flick would close it.
+    for (let step = 1; step <= 10; step += 1) {
+      await page.mouse.move(x, handle.y + 10 + step * 25);
+      await page.waitForTimeout(80);
+    }
+    await page.waitForTimeout(150);
     await page.mouse.up();
-    await expect(sheet).toHaveAttribute('data-snap', 'full');
-    await expect.poll(height).toBe(viewport.height - 64);
+    await expect(sheet).toHaveAttribute('data-snap', 'half');
+    await expect
+      .poll(height)
+      .toBe(Math.max(320, Math.round(viewport.height * 0.56)));
   });
 
   test('a phone composer rests as a pill and opens into the card on tap', async ({

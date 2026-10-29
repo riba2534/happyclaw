@@ -74,7 +74,8 @@ export function FileUploadZone({ groupJid }: FileUploadZoneProps) {
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
       className={cn(
-        'relative rounded-lg border border-dashed p-3 transition-colors',
+        // Touch screens cannot drop files: no drop prompt, just the buttons.
+        'relative rounded-lg border border-dashed p-3 transition-colors pointer-coarse:border-0 pointer-coarse:p-0',
         isDragging ? 'border-primary bg-primary/5' : 'border-surface-border',
       )}
     >
@@ -137,7 +138,7 @@ export function FileUploadZone({ groupJid }: FileUploadZoneProps) {
       ) : (
         /* Idle state */
         <div className="flex flex-col items-center gap-2 text-center">
-          <p className="text-caption text-muted-foreground">
+          <p className="text-caption text-muted-foreground pointer-coarse:hidden">
             {isDragging ? '释放以上传' : '拖拽文件到这里，或'}
           </p>
           <div className="flex items-center gap-2">

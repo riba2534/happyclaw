@@ -169,6 +169,21 @@ test('idle scroll affordance is scoped and context nav follows scroll direction'
   );
 });
 
+test('context sheet opens at full so the file list has room', async ({
+  page,
+}) => {
+  await prepareHarness(page);
+  const sheet = await openContextSheet(page);
+  await expect(sheet).toHaveAttribute('data-snap', 'full');
+  const viewport = page.viewportSize()!;
+  const sheetBox = (await sheet.boundingBox())!;
+  expect(sheetBox.height).toBeGreaterThan(viewport.height * 0.8);
+  // At half, the rows above and below left it about one row tall.
+  const listBox = (await sheet.getByTestId('file-list-scroll').boundingBox())!;
+  expect(listBox.height).toBeGreaterThan(200);
+  await page.screenshot({ path: test.info().outputPath('context-sheet.png') });
+});
+
 test('markdown preview keeps focus and scroll inside nested modal layers', async ({
   page,
 }) => {

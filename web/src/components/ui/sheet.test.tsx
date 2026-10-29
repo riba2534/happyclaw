@@ -31,7 +31,7 @@ afterEach(() => {
 function render(
   onOpenChange: (open: boolean) => void,
   ref?: unknown,
-  detents = false,
+  detents: boolean | 'half' | 'full' = false,
 ) {
   container = document.body.appendChild(document.createElement('div'));
   root = createRoot(container);
@@ -151,5 +151,39 @@ describe('the bottom sheet', () => {
 
     await drag(handle, 100, 700, true);
     expect(onOpenChange).toHaveBeenCalledWith(false);
+  });
+
+  test("detents='full' opens at full and drags down to half", async () => {
+    vi.spyOn(window, 'innerHeight', 'get').mockReturnValue(844);
+    vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockImplementation(
+      function (this: HTMLElement) {
+        return Number.parseFloat(this.style.height) || 700;
+      },
+    );
+    const { content, handle } = render(vi.fn(), undefined, 'full');
+    expect(content.dataset.snap).toBe('full');
+    expect(content.style.height).toBe('780px');
+
+    // Down past the midpoint and held still before letting go: no flick.
+    const fire = (type: string, clientY: number) =>
+      act(() => {
+        handle.dispatchEvent(
+          new PointerEvent(type, {
+            bubbles: true,
+            pointerId: 1,
+            pointerType: 'touch',
+            clientY,
+          }),
+        );
+      });
+    const pause = () => new Promise((resolve) => setTimeout(resolve, 150));
+    fire('pointerdown', 100);
+    for (const clientY of [160, 220, 280, 280]) {
+      await pause();
+      fire('pointermove', clientY);
+    }
+    fire('pointerup', 280);
+    expect(content.dataset.snap).toBe('half');
+    expect(content.style.height).toBe('473px');
   });
 });

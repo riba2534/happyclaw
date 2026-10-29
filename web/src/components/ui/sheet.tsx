@@ -105,9 +105,9 @@ function SheetCloseButton() {
 
 /**
  * The phone bottom sheet: a rounded top with a drag handle. With `detents`
- * it opens at half the screen and drags between half and full; without, it
- * keeps the height its content and classes give it. Dragging the handle
- * down closes it either way.
+ * it drags between half the screen and full, opening at half (`true`) or at
+ * the detent named; without, it keeps the height its content and classes
+ * give it. Dragging the handle down closes it either way.
  */
 function BottomSheetContent({
   className,
@@ -118,14 +118,16 @@ function BottomSheetContent({
   ...props
 }: React.ComponentProps<typeof SheetPrimitive.Content> & {
   showCloseButton: boolean;
-  detents: boolean;
+  detents: boolean | Snap;
 }) {
   const contentRef = React.useRef<HTMLDivElement | null>(null);
   // A caller's ref (often present but undefined) must not replace ours.
   const setContentRef = useComposedRefs(ref, contentRef);
   const closeRef = React.useRef<HTMLButtonElement>(null);
   const dragRef = React.useRef<DragState | null>(null);
-  const [snap, setSnap] = React.useState<Snap | null>(detents ? 'half' : null);
+  const [snap, setSnap] = React.useState<Snap | null>(
+    detents === true ? 'half' : detents || null,
+  );
 
   // The snapped height is written here, not through React's style prop, so
   // a drag can move it frame by frame and hand it back on release. It
@@ -262,8 +264,11 @@ function SheetContent({
 }: React.ComponentProps<typeof SheetPrimitive.Content> & {
   side?: 'top' | 'right' | 'bottom' | 'left';
   showCloseButton?: boolean;
-  /** A bottom sheet that opens at half the screen and drags to full. */
-  detents?: boolean;
+  /**
+   * A bottom sheet that drags between half the screen and full. `true` opens
+   * it at half; `'full'` opens it at full, for content that needs the room.
+   */
+  detents?: boolean | Snap;
 }) {
   return (
     <SheetPortal>
