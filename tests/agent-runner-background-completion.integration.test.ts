@@ -12,6 +12,7 @@ import {
   isMergedBackgroundCompletionPlaceholder,
   isSdkBookkeepingFrame,
 } from '../container/agent-runner/src/background-task-drain.js';
+import { commandLifecycleStartedUuid } from '../container/agent-runner/src/background-handoff.js';
 import {
   IpcTurnDeliveryTracker,
   sdkResultAnsweredUserMessageUuids,
@@ -559,4 +560,163 @@ describe('Claude Code merged background-task completions', () => {
     expect(completions).toEqual([['delivery-a'], ['delivery-b', 'delivery-c']]);
     expect(tracker.pendingTurnCount).toBe(0);
   }, 40_000);
+
+  test('a user message starts its own turn while a background task keeps running', async () => {
+    const marker = path.join(markerDir, 'handoff-task');
+    fs.mkdirSync(cwd, { recursive: true });
+    fs.mkdirSync(configDir, { recursive: true });
+    fs.mkdirSync(markerDir, { recursive: true });
+    fs.rmSync(marker, { force: true });
+
+    let mainCalls = 0;
+    const server = http.createServer((request, response) => {
+      const chunks: Buffer[] = [];
+      request.on('data', (chunk) => chunks.push(Buffer.from(chunk)));
+      request.on('end', () => {
+        const url = request.url ?? '';
+        if (!url.includes('/v1/messages') || url.includes('count_tokens')) {
+          response.writeHead(200, { 'content-type': 'application/json' });
+          response.end(JSON.stringify({ input_tokens: 1 }));
+          return;
+        }
+        let body: { tools?: unknown[] } = {};
+        try {
+          body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+        } catch {
+          // Answered below as an auxiliary call.
+        }
+        if (!Array.isArray(body.tools) || body.tools.length === 0) {
+          sendMessage(
+            response,
+            'msg_aux',
+            [{ type: 'text', text: 'aux' }],
+            'end_turn',
+          );
+          return;
+        }
+        mainCalls += 1;
+        const call = mainCalls;
+        if (call === 1) {
+          sendMessage(
+            response,
+            'msg_start_background',
+            [
+              {
+                type: 'tool_use',
+                id: 'toolu_handoff_background',
+                name: 'Bash',
+                input: {
+                  command: `sleep 4; echo done > ${marker}`,
+                  description: 'background handoff',
+                  run_in_background: true,
+                },
+              },
+            ],
+            'tool_use',
+          );
+          return;
+        }
+        const text =
+          call === 2 ? 'A_ANSWERED' : call === 3 ? 'B_ANSWERED' : 'SUMMARY';
+        sendMessage(
+          response,
+          `msg_${call}`,
+          [{ type: 'text', text }],
+          'end_turn',
+        );
+      });
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(0, '127.0.0.1', () => resolve());
+    });
+    const address = server.address();
+    if (!address || typeof address === 'string') {
+      throw new Error('fake Anthropic server did not expose a TCP port');
+    }
+
+    const uuidA = randomUUID();
+    const uuidB = randomUUID();
+    let pushB: () => void = () => {};
+    const bPushed = new Promise<void>((resolve) => {
+      pushB = resolve;
+    });
+    let closeInput: () => void = () => {};
+    const inputClosed = new Promise<void>((resolve) => {
+      closeInput = resolve;
+    });
+    async function* input() {
+      yield {
+        type: 'user' as const,
+        message: { role: 'user' as const, content: 'start a background job' },
+        parent_tool_use_id: null,
+        session_id: '',
+        uuid: uuidA as `${string}-${string}-${string}-${string}-${string}`,
+      };
+      await bPushed;
+      yield {
+        type: 'user' as const,
+        message: { role: 'user' as const, content: 'a new question' },
+        parent_tool_use_id: null,
+        session_id: '',
+        uuid: uuidB as `${string}-${string}-${string}-${string}-${string}`,
+      };
+      await inputClosed;
+    }
+
+    const events: string[] = [];
+    const guard = setTimeout(() => closeInput(), 30_000);
+    try {
+      const conversation = runnerSdk.query({
+        prompt: input(),
+        options: {
+          pathToClaudeCodeExecutable: runnerClaudeExecutable,
+          cwd,
+          model: 'claude-sonnet-4-5-20250929',
+          env: fakeProviderEnv(`http://127.0.0.1:${address.port}`),
+          allowedTools: ['Bash'],
+          permissionMode: 'bypassPermissions',
+          allowDangerouslySkipPermissions: true,
+          settingSources: [],
+        },
+      });
+      for await (const message of conversation) {
+        const started = commandLifecycleStartedUuid(message);
+        if (started === uuidB) events.push('B started');
+        if (
+          message.type === 'system' &&
+          message.subtype === 'task_notification'
+        ) {
+          events.push(`notification ${message.status}`);
+        }
+        if (message.type !== 'result') continue;
+        const result = message as unknown as Record<string, unknown>;
+        events.push(`result ${String(result.result)}`);
+        if (result.result === 'A_ANSWERED') pushB();
+        if (
+          (result.origin as { kind?: string } | undefined)?.kind ===
+          'task-notification'
+        ) {
+          closeInput();
+        }
+      }
+    } finally {
+      clearTimeout(guard);
+      pushB();
+      closeInput();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+
+    // B runs at once as its own turn (the runner hands A's background work
+    // over on `B started`); the task is neither killed nor stopped, and its
+    // completion still reaches the main Agent afterwards.
+    expect(events).toEqual([
+      'result A_ANSWERED',
+      'B started',
+      'result B_ANSWERED',
+      'notification completed',
+      'result SUMMARY',
+    ]);
+    expect(fs.existsSync(marker)).toBe(true);
+  }, 45_000);
 });

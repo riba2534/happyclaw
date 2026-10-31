@@ -60,6 +60,12 @@ export interface ContainerOutput {
   pendingBgTasks?: number;
   inputTurnCompleted?: boolean;
   queryIdle?: boolean;
+  /** Answered, but held open only by live background tasks; the Runner
+   * accepts the next input without stopping them. */
+  backgroundOnly?: boolean;
+  /** Lifecycle-only completion of a background-held input whose background
+   * work a later input took over. */
+  backgroundHandoff?: boolean;
   ipcReceipts?: RuntimeIpcReceipt[];
   activeIpcReceipts?: RuntimeIpcReceipt[];
 }

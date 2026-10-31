@@ -255,6 +255,11 @@ interface GroupState {
   /** The last idle came from a truncation/auto continuation, which may still
    * be finishing inside the runner. Never reclaimed then. */
   idleFromContinuation?: boolean;
+  /** Query that went idle with only the runner's background tasks left (see
+   * markRunnerBackgroundOnly). An explicit stop still reaches those tasks
+   * through it; the runner is neither reclaimed nor closed after its query
+   * while it is set. Null otherwise. */
+  backgroundQueryId?: string | null;
   /**
    * The runner was asked to exit and takes no further query: `reclaim` freed
    * its idle container slot for waiting work, `after_query` closes it once
@@ -1236,6 +1241,7 @@ export class GroupQueue {
       !state.queryInFlight &&
       state.idleSince != null &&
       !state.idleFromContinuation &&
+      !state.backgroundQueryId &&
       !state.closing &&
       !state.stopRequested &&
       !state.restarting &&
@@ -1299,7 +1305,9 @@ export class GroupQueue {
     state.closing = 'after_query';
     // Repeated deferrals in one turn all want the same clean-up once.
     state.afterRunnerExit ??= onRunnerExit;
-    if (!state.queryInFlight) this.closeStdin(runnerJid);
+    if (!state.queryInFlight && !state.backgroundQueryId) {
+      this.closeStdin(runnerJid);
+    }
   }
 
   /** Reset per-runner close bookkeeping and run the after-exit callbacks. */
@@ -1309,6 +1317,7 @@ export class GroupQueue {
     state.closing = null;
     state.idleSince = null;
     state.idleFromContinuation = false;
+    state.backgroundQueryId = null;
     try {
       callback?.(groupJid);
     } catch (err) {
@@ -1529,7 +1538,7 @@ export class GroupQueue {
 
   markRunnerQueryIdle(
     groupJid: string,
-    options?: { preserveIpcDebt?: boolean },
+    options?: { preserveIpcDebt?: boolean; backgroundWork?: boolean },
   ): void {
     const state = this.resolveActiveState(groupJid);
     if (!state?.active || !state.queryInFlight) return;
@@ -1554,7 +1563,11 @@ export class GroupQueue {
     state.currentQueryCoveredMessageIds = new Set();
     state.idleSince = Date.now();
     state.idleFromContinuation = options?.preserveIpcDebt === true;
-    if (state.closing === 'after_query') this.closeStdin(groupJid);
+    state.backgroundQueryId =
+      options?.backgroundWork === true ? completedQueryId : null;
+    if (state.closing === 'after_query' && !state.backgroundQueryId) {
+      this.closeStdin(groupJid);
+    }
     if (!completedQueryId) return;
     // Publish the terminal event before the legacy idle callback. The callback
     // may synchronously reserve/announce the next queued query; ordering the
@@ -1567,6 +1580,34 @@ export class GroupQueue {
     }
     // Work already waiting for a container slot can take this one now.
     if (this.waitingGroups.size > 0) this.reclaimIdleContainerRunner();
+  }
+
+  /**
+   * The runner answered `inputTurnId` and only its background tasks keep that
+   * input open. End the query for the lane, so the next input is delivered
+   * now instead of waiting for every task, while the input itself stays
+   * unacknowledged until the runner settles it. Refused once the host has
+   * published a later input under the current query: then that input, not
+   * the held one, is what the query is waiting on.
+   */
+  markRunnerBackgroundOnly(groupJid: string, inputTurnId: string): boolean {
+    const state = this.resolveActiveState(groupJid);
+    if (!state?.active || !state.queryInFlight || !state.queryId) return false;
+    for (const [deliveryId, queryId] of state.pendingIpcQueryIds ?? []) {
+      if (queryId === state.queryId && deliveryId !== inputTurnId) {
+        return false;
+      }
+    }
+    this.markRunnerQueryIdle(groupJid, { backgroundWork: true });
+    return true;
+  }
+
+  /** Query whose input is answered but still held open by background tasks
+   * while no query is in flight; null otherwise. */
+  getBackgroundQueryId(groupJid: string): string | null {
+    const state = this.resolveActiveState(groupJid);
+    if (!state?.active || state.queryInFlight) return null;
+    return state.backgroundQueryId ?? null;
   }
 
   getActiveQueryId(groupJid: string): string | null {
@@ -2692,8 +2733,16 @@ export class GroupQueue {
       ownState?.active && ownState.queryInFlight
         ? ownState
         : this.resolveActiveState(groupJid);
-    if (!state || !state.queryInFlight) return false;
-    if (expectedQueryId && state.queryId !== expectedQueryId) return false;
+    if (!state) return false;
+    // An explicit stop also reaches background tasks that outlived their
+    // answered query; a steer has nothing to redirect there.
+    const backgroundQueryId =
+      !state.queryInFlight && reason === 'stop' && state.groupFolder
+        ? (state.backgroundQueryId ?? null)
+        : null;
+    if (!state.queryInFlight && !backgroundQueryId) return false;
+    const targetQueryId = backgroundQueryId ?? state.queryId;
+    if (expectedQueryId && targetQueryId !== expectedQueryId) return false;
 
     // 只取消等待中的 retry 定时器（如果有），不重置 retryCount —— 不让用户
     // 中断把已积累的 backoff 进度归零。
@@ -2725,7 +2774,7 @@ export class GroupQueue {
       // Bind the sentinel to this exact host query. The runner may start after
       // a long cold-image delay, while an old file can survive a host crash;
       // query identity—not mtime—distinguishes those cases safely.
-      const queryId = state.queryId ?? '';
+      const queryId = targetQueryId ?? '';
       if (reason === 'stop') {
         // Before `_interrupt`: the runner reads the reason once it sees it.
         // A steer leaves a stop not yet consumed for this query in place.
@@ -3146,6 +3195,7 @@ export class GroupQueue {
       state.ipcOwedSinceAt = null;
       state.lastActivityAt = null;
       state.queryInFlight = false;
+      state.backgroundQueryId = null;
       state.queryId = null;
       state.queryStartedAt = null;
       state.announcedQueryId = null;
@@ -3323,6 +3373,7 @@ export class GroupQueue {
       state.lastActivityAt = null;
       state.ipcOwedSinceAt = null;
       state.queryInFlight = false;
+      state.backgroundQueryId = null;
       state.queryId = null;
       state.queryStartedAt = null;
       state.announcedQueryId = null;

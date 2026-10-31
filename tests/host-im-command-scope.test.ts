@@ -339,6 +339,7 @@ function runtimeControlLane(groups: Record<string, any>) {
     FRESH_WINDOW_FAILURE_REPLY: 'FRESH_FAILED',
     queue: {
       getActiveQueryId: vi.fn(() => 'run-active'),
+      getBackgroundQueryId: vi.fn(() => null),
       interruptQuery: vi.fn(() => true),
     },
     sessions: {},
@@ -530,10 +531,11 @@ describe('Feishu runtime /clear and /fresh (P1-3, P1-4)', () => {
 
 function recalledLane(
   rows: any[],
-  options: { pending: any[]; active?: string },
+  options: { pending: any[]; active?: string; background?: string },
 ) {
   const queue = {
     getActiveQueryId: vi.fn(() => options.active ?? null),
+    getBackgroundQueryId: vi.fn(() => options.background ?? null),
     interruptQuery: vi.fn(() => true),
   };
   const session = { isActive: () => true, abort: vi.fn(async () => {}) };
@@ -617,6 +619,22 @@ describe('a recalled Feishu message is withdrawn (prod P2-4)', () => {
       'web:ws#agent:s1',
       'om_recalled',
     );
+  });
+
+  test('an answered input held open by background tasks is stopped like /break', () => {
+    const l = recalledLane([row(null)], {
+      pending: [{ id: 'om_recalled' }],
+      background: 'run-bg',
+    });
+    l.recalled(chat, 'om_recalled');
+    expect(l.queue.interruptQuery).toHaveBeenCalledWith(
+      'web:ws#agent:s1',
+      'run-bg',
+      'stop',
+    );
+    expect(
+      l.globals.recallStoppedSessions.get('web:ws#agent:s1')?.messageId,
+    ).toBe('om_recalled');
   });
 
   test('one input of a larger executing batch is left running', () => {
