@@ -188,6 +188,12 @@ export const ChannelMountInteractionModePatchSchema = z
   })
   .strict();
 
+export const ChannelMountDelegatePutSchema = z
+  .object({
+    enabled: z.boolean(),
+  })
+  .strict();
+
 export const AdditionalMountCreateSchema = z
   .object({
     host_path: z.string().trim().min(1).max(4096),

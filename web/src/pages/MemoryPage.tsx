@@ -156,6 +156,9 @@ function formatTime(value: string | null | undefined): string {
 function provenanceLabel(source: WorkspaceMemoryProvenance): string {
   const typeLabel =
     SOURCE_TYPE_LABELS[source.sourceType] || source.sourceType || '未知来源';
+  // Written by an owner-trusted delegate's direct chat (workspace delegate).
+  if (source.sourceId?.startsWith('delegate:'))
+    return `${typeLabel} · 委托对象私聊`;
   if (source.sessionId) return `${typeLabel} · Session ${source.sessionId}`;
   if (source.sourceId) return `${typeLabel} · ${source.sourceId}`;
   return typeLabel;

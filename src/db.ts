@@ -1140,6 +1140,14 @@ export function initDatabase(
       ON users(guest_owner_id);
   `);
 
+  // v86 -> v87: the owner may trust a session binding's direct-chat
+  // counterpart as a delegate for that one workspace. channel_mounts holds
+  // the setting; agent_channel_mounts mirrors it like every other mount field.
+  // Existing bindings start untrusted.
+  for (const table of ['channel_mounts', 'agent_channel_mounts']) {
+    ensureColumn(table, 'delegate_enabled', 'INTEGER NOT NULL DEFAULT 0');
+  }
+
   // Top-level Agent Profiles: runtime identities/personas that own workspaces.
   // Do not confuse this with the legacy `agents` table above, which stores
   // workspace-scoped conversation/task/spawn agents.
@@ -7852,8 +7860,9 @@ function syncAgentChannelMountFromMount(mount: ChannelMount): void {
   prepareCached(`INSERT INTO agent_channel_mounts (
       channel_jid, channel_account_id, agent_profile_id, owner_user_id, channel_type,
       workspace_jid, workspace_folder, session_id, routing_mode, reply_policy,
-      activation_mode, audience_mode, owner_im_id, interaction_mode_override, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      activation_mode, audience_mode, owner_im_id, interaction_mode_override,
+      delegate_enabled, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(channel_jid) DO UPDATE SET
       channel_account_id = excluded.channel_account_id,
       agent_profile_id = excluded.agent_profile_id,
@@ -7868,6 +7877,7 @@ function syncAgentChannelMountFromMount(mount: ChannelMount): void {
       audience_mode = excluded.audience_mode,
       owner_im_id = excluded.owner_im_id,
       interaction_mode_override = excluded.interaction_mode_override,
+      delegate_enabled = excluded.delegate_enabled,
       updated_at = excluded.updated_at`).run(
     mount.channel_jid,
     mount.channel_account_id ?? null,
@@ -7883,6 +7893,7 @@ function syncAgentChannelMountFromMount(mount: ChannelMount): void {
     mount.audience_mode,
     mount.owner_im_id ?? null,
     mount.interaction_mode_override ?? null,
+    mount.delegate_enabled === true ? 1 : 0,
     mount.created_at,
     mount.updated_at,
   );
@@ -8718,6 +8729,7 @@ export function setRegisteredGroup(jid: string, group: RegisteredGroup): void {
     syncWorkspaceFromRegisteredGroup(jid, group);
     syncChannelMountFromRegisteredGroup(jid, group);
     if (jid.startsWith('web:')) {
+      if (group.executionMode === 'host') clearWorkspaceDelegates(jid);
       if (existing?.folder && existing.folder !== group.folder) {
         syncWorkspaceRuntimeSessionsForFolder(existing.folder);
       }
@@ -8930,6 +8942,9 @@ function forceRuntimesToHostForFolderQuery(
      WHERE folder IN (${folderQuery})
        AND COALESCE(execution_mode, 'container') <> 'host'`,
   ).run(...params);
+  for (const group of affectedGroups) {
+    if (group.jid.startsWith('web:')) clearWorkspaceDelegates(group.jid);
+  }
 
   return { affectedGroups, affectedFolders };
 }
@@ -9040,6 +9055,7 @@ type ChannelMountRow = {
   audience_mode: string | null;
   owner_im_id: string | null;
   interaction_mode_override: string | null;
+  delegate_enabled?: number | null;
   created_at: string;
   updated_at: string;
 };
@@ -9062,6 +9078,7 @@ function parseChannelMountRow(row: ChannelMountRow): ChannelMount {
       row.interaction_mode_override === 'proactive'
         ? row.interaction_mode_override
         : null,
+    delegate_enabled: Number(row.delegate_enabled ?? 0) === 1,
     created_at: row.created_at,
     updated_at: row.updated_at,
   };
@@ -9135,19 +9152,31 @@ export function upsertChannelMount(
     const existing = getChannelMount(mount.channel_jid);
     // Legacy group projections do not own this setting. Preserve it across
     // renames/activation changes; a new binding starts by inheriting its target.
+    const sameBinding =
+      existing?.workspace_jid === mount.workspace_jid &&
+      (existing.session_id ?? null) === (mount.session_id ?? null);
     const interactionModeOverride =
       mount.interaction_mode_override !== undefined
         ? mount.interaction_mode_override
-        : existing?.workspace_jid === mount.workspace_jid &&
-            (existing.session_id ?? null) === (mount.session_id ?? null)
+        : sameBinding
           ? (existing.interaction_mode_override ?? null)
           : null;
+    // The delegate grant names one counterpart in one workspace session: any
+    // rebind (another workspace or session) drops it. Legacy group projections
+    // never pass it; only the owner toggle (setChannelMountDelegateEnabled)
+    // turns it on, and the projection rebuild carries it over explicitly.
+    const delegateEnabled =
+      mount.routing_mode === 'single_session' &&
+      (mount.delegate_enabled !== undefined
+        ? mount.delegate_enabled
+        : sameBinding && existing.delegate_enabled === true);
     const createdAt = mount.created_at ?? existing?.created_at ?? now;
     const updatedAt = mount.updated_at ?? now;
     prepareCached(`INSERT INTO channel_mounts (
         channel_jid, channel_account_id, channel_type, workspace_jid, session_id, routing_mode,
-        reply_policy, activation_mode, audience_mode, owner_im_id, interaction_mode_override, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        reply_policy, activation_mode, audience_mode, owner_im_id, interaction_mode_override,
+        delegate_enabled, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(channel_jid) DO UPDATE SET
         channel_account_id = excluded.channel_account_id,
         channel_type = excluded.channel_type,
@@ -9159,6 +9188,7 @@ export function upsertChannelMount(
         audience_mode = excluded.audience_mode,
         owner_im_id = excluded.owner_im_id,
         interaction_mode_override = excluded.interaction_mode_override,
+        delegate_enabled = excluded.delegate_enabled,
         updated_at = excluded.updated_at`).run(
       mount.channel_jid,
       mount.channel_account_id ?? null,
@@ -9171,6 +9201,7 @@ export function upsertChannelMount(
       mount.audience_mode ?? 'everyone',
       mount.owner_im_id ?? null,
       interactionModeOverride,
+      delegateEnabled ? 1 : 0,
       createdAt,
       updatedAt,
     );
@@ -9285,6 +9316,7 @@ export function syncAllChannelMountsFromRegisteredGroups(): void {
         ...(sameBinding
           ? {
               interaction_mode_override: old.interaction_mode_override ?? null,
+              delegate_enabled: old.delegate_enabled === true,
               created_at: old.created_at,
             }
           : {}),
@@ -9314,6 +9346,49 @@ export function setChannelMountInteractionModeOverride(
       new Date().toISOString(),
       channelJid,
       workspaceJid,
+    );
+    if (!result.changes) return undefined;
+    const saved = getChannelMount(channelJid)!;
+    syncAgentChannelMountFromMount(saved);
+    return saved;
+  })();
+}
+
+/**
+ * Host workspaces never have delegates: a workspace switched to host drops
+ * every delegate grant on its bindings (both mount tables).
+ */
+function clearWorkspaceDelegates(workspaceJid: string): void {
+  for (const table of ['channel_mounts', 'agent_channel_mounts']) {
+    prepareCached(
+      `UPDATE ${table} SET delegate_enabled = 0
+       WHERE workspace_jid = ? AND delegate_enabled = 1`,
+    ).run(workspaceJid);
+  }
+}
+
+/**
+ * Owner toggle for the binding's delegate grant. Callers must have verified
+ * the workspace owner and that the bound conversation is a direct chat; the
+ * write only lands while the mount still points at this workspace session.
+ */
+export function setChannelMountDelegateEnabled(
+  channelJid: string,
+  workspaceJid: string,
+  sessionId: string | null,
+  enabled: boolean,
+): ChannelMount | undefined {
+  return db.transaction(() => {
+    const result = prepareCached(`UPDATE channel_mounts
+      SET delegate_enabled = ?, updated_at = ?
+      WHERE channel_jid = ? AND workspace_jid = ?
+        AND COALESCE(session_id, '') = ?
+        AND routing_mode = 'single_session'`).run(
+      enabled ? 1 : 0,
+      new Date().toISOString(),
+      channelJid,
+      workspaceJid,
+      sessionId ?? '',
     );
     if (!result.changes) return undefined;
     const saved = getChannelMount(channelJid)!;

@@ -695,7 +695,19 @@ Session 或 Memory，也不会绑定/复制 Home Workspace。用户必须在创�
 - `GET /api/workspaces/:jid/runtime-sessions`
 - `GET /api/workspaces/:jid/channel-mounts`
 
-这些接口是 `registered_groups` 兼容存储之上的只读产品投影。
+这些接口是 `registered_groups` 兼容存储之上的只读产品投影。mount 读模型带
+`delegate_capable`（结构上可识别对方的私聊、绑定到单个会话）、`delegate_enabled` 和
+`delegate_host_workspace`（绑定的工作区是 Host 模式，不能开启）。
+
+- `PUT /api/workspaces/:jid/channel-mounts/:channelJid/delegate`，body
+  `{ "enabled": boolean }`
+
+工作区主人（对工作区和该聊天都 `canModifyGroup`）打开或关闭「允许对方管理此工作区」。
+只接受 Docker 工作区上私聊的会话绑定：群聊、话题、无法从 JID 识别对方的会话（飞书私聊
+不支持）或 Host 工作区（`code: DELEGATE_HOST_WORKSPACE`）开启时返回 400；其他用户、
+访客或路径不匹配返回 404；绑定已变化返回 409。换绑、解绑或工作区切到 Host 会清除该开关。
+`GET /api/groups/:jid/im-groups` 的条目同样返回 `mount_workspace_jid`、
+`delegate_capable`、`delegate_enabled` 和 `delegate_host_workspace`。
 
 ### HappyClaw Owner Profile
 

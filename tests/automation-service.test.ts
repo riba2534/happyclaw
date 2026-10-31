@@ -62,6 +62,14 @@ const ownerTurn: AutomationActor = {
   sessionJid: `${WS}#agent:topic`,
   sourceRouteJid: 'feishu:oc_x#thread:omt_1',
 };
+const delegateTurn: AutomationActor = {
+  kind: 'delegate_turn',
+  ownerUserId: OWNER,
+  ownerIsAdmin: true,
+  workspaceJid: WS,
+  sessionJid: `${WS}#agent:topic`,
+  sourceRouteJid: 'qq:c2c:AAAA',
+};
 const memberTurn: AutomationActor = {
   kind: 'other_turn',
   workspaceJid: WS,
@@ -309,6 +317,130 @@ describe('agent turns', () => {
       });
     }
     expect(service.get(alice, a.id).status).toBe('active');
+  });
+
+  test("a delegate manages its workspace's automations; what it creates is the owner's", async () => {
+    const { service } = setup();
+    const created = await service.handleIpc(delegateTurn, {
+      type: 'automation_create',
+      requestId: 'c',
+      name: '吃药提醒',
+      prompt: '提醒吃药',
+      schedule: { kind: 'cron', cronExpr: '0 20 * * *' },
+      timestamp: '',
+    });
+    expect(created.success).toBe(true);
+    expect(created.automation).toMatchObject({
+      sessionMode: 'bound',
+      targetSessionJid: `${WS}#agent:topic`,
+      deliveryRouteJid: 'qq:c2c:AAAA',
+      createdBy: OWNER,
+      workspaceJid: WS,
+    });
+    const id = created.automation!.id;
+    // It shows on the owner's Web page.
+    expect(service.list(alice).map((a) => a.id)).toContain(id);
+    const ownersOwn = service.create(alice, {
+      workspaceJid: WS,
+      ...harness.draft(),
+    });
+    for (const request of [
+      { type: 'automation_list' },
+      { type: 'automation_list_runs', id },
+      {
+        type: 'automation_update',
+        id,
+        expectedRevision: created.automation!.revision,
+        patch: { name: '晚间吃药提醒' },
+      },
+      { type: 'automation_pause', id },
+      { type: 'automation_resume', id },
+      { type: 'automation_run_now', id: ownersOwn.id },
+      { type: 'automation_delete', id },
+    ] as const) {
+      const result = await service.handleIpc(delegateTurn, {
+        ...request,
+        requestId: request.type,
+        timestamp: '',
+      } as never);
+      expect(result).toMatchObject({ success: true });
+    }
+    expect(() => service.get(alice, id)).toThrow();
+  });
+
+  test('a delegate never touches host commands, Host workspaces or other workspaces', async () => {
+    const { service } = setup();
+    for (const extra of [
+      { preRunCheck: { command: 'true' } },
+      { execution: 'script', scriptCommand: 'echo hi' },
+    ]) {
+      const result = await service.handleIpc(delegateTurn, {
+        type: 'automation_create',
+        requestId: 'c',
+        name: 'x',
+        prompt: 'y',
+        schedule: { kind: 'manual' },
+        ...extra,
+        timestamp: '',
+      } as never);
+      expect(result).toMatchObject({ success: false });
+      expect(result.error).toContain('脚本与前置检查');
+    }
+    const plain = service.create(alice, {
+      workspaceJid: WS,
+      ...harness.draft(),
+    });
+    const patched = await service.handleIpc(delegateTurn, {
+      type: 'automation_update',
+      requestId: 'u',
+      id: plain.id,
+      expectedRevision: plain.revision,
+      patch: { preRunCheck: { command: 'true' } },
+      timestamp: '',
+    });
+    expect(patched.error).toContain('脚本与前置检查');
+
+    // An automation with a host command (made while the workspace ran on
+    // the host) stays the owner's to change.
+    const withCheck = service.create(aliceAdmin, {
+      workspaceJid: HOST_WS,
+      ...harness.draft({ preRunCheck: { command: 'true' } }),
+    });
+    const onHost: AutomationActor = { ...delegateTurn, workspaceJid: HOST_WS };
+    await expectError(
+      () => service.pause(onHost, withCheck.id),
+      403,
+      '宿主机工作区',
+    );
+    await expectError(
+      () =>
+        service.create(onHost, {
+          workspaceJid: HOST_WS,
+          ...harness.draft(),
+        }),
+      403,
+      '宿主机工作区',
+    );
+    // Seeded straight into the store: a container workspace row with a check.
+    store.insertAutomation({
+      ...service.get(alice, plain.id),
+      id: 'legacy-check',
+      preRunCheck: { command: 'true', timeoutMs: null },
+    });
+    await expectError(
+      () => service.pause(delegateTurn, 'legacy-check'),
+      403,
+      '脚本与前置检查',
+    );
+
+    const foreign = service.create(mallory, {
+      workspaceJid: OTHER_WS,
+      ...harness.draft(),
+    });
+    await expectError(() => service.pause(delegateTurn, foreign.id), 404);
+    expect(service.list(delegateTurn).every((a) => a.workspaceJid === WS)).toBe(
+      true,
+    );
   });
 
   test("a turn never sees another workspace's automations", async () => {

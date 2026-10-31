@@ -200,16 +200,19 @@ admin 没有跨 owner bypass。目标 Workspace/item 不存在或授权失败均
 
 Agent Runtime 的 Workspace Memory MCP 还叠加执行上下文策略：
 
-| 执行上下文                                       | 读取 | 创建、更新、忘记                   |
-| ------------------------------------------------ | ---- | ---------------------------------- |
-| 顶层 Main/Runtime Session，批次全部是 owner 输入 | 允许 | 按 Workspace ACL                   |
-| 顶层 Main/Runtime Session，含非 owner 输入       | 允许 | 只能创建/修改/忘记 `proposed` 条目 |
-| 自动化运行的轮次                                 | 允许 | 只能创建/修改/忘记 `proposed` 条目 |
-| Spawn/Task 会话、SDK Task Sub-Agent              | 允许 | 拒绝                               |
+| 执行上下文                                          | 读取 | 创建、更新、忘记                      |
+| --------------------------------------------------- | ---- | ------------------------------------- |
+| 顶层 Main/Runtime Session，批次全部是 owner 输入    | 允许 | 按 Workspace ACL                      |
+| 同上，批次是 owner 与委托对象的输入（至少一条委托） | 允许 | 直接写入，provenance `delegate:<jid>` |
+| 顶层 Main/Runtime Session，含非 owner 输入          | 允许 | 只能创建/修改/忘记 `proposed` 条目    |
+| 自动化运行的轮次                                    | 允许 | 只能创建/修改/忘记 `proposed` 条目    |
+| Spawn/Task 会话、SDK Task Sub-Agent                 | 允许 | 拒绝                                  |
 
 owner 输入的判定在宿主：Web 输入的 sender 等于 owner 用户 id；IM 输入的发送者 IM id
 必须等于该工作区注册中由宿主记录的 owner（claim source 为 `configured`、
-`trusted_direct` 或 `auto_feishu`）。写入一律要求 Runner 的 HMAC 写能力；proposed
+`trusted_direct` 或 `auto_feishu`）。委托对象的输入：来源私聊的会话绑定打开了
+`delegate_enabled`、绑定指向本工作区与本会话且属于同一 owner，发送者等于从私聊 JID
+推出的对方 id，且工作区不是 Host 模式（`src/workspace-delegate-auth.ts`）。写入一律要求 Runner 的 HMAC 写能力；proposed
 只有 owner 在 Web 确认后才生效。Sub-Agent 的只读限制由 PreToolUse hook 与主进程
 IPC broker 共同执行，不能由模型参数扩大权限。
 
@@ -253,6 +256,9 @@ read-only 投影按 host-issued turn ID 精确匹配当前或已接纳的 queued
 - `channel_account_id` 必须属于当前用户。
 - 账号编码在 JID 中时，必须与数据库记录一致。
 - 原生话题容器使用 `thread_map`，不能绑定到一个固定 Session 后吞并所有话题。
+- 「允许对方管理此工作区」（`PUT /api/workspaces/:jid/channel-mounts/:channelJid/delegate`）
+  只由工作区 owner 切换，只接受 Docker 工作区上私聊的会话绑定（飞书私聊不支持，Host
+  工作区 400）；访客与其他用户一律 404，换绑或切到 Host 时清除。
 - Unbind 必须原子恢复该 Bot 的默认工作区；无法解析默认目标时保留旧绑定并报错。
 
 ## 6. 系统和管理权限
@@ -383,6 +389,10 @@ Agent MCP 调用没有 Cookie，但必须携带由主进程创建的运行上下
 - 批次是某次自动化运行的输入：只能暂停、完成、删除、通知或静默它自己的自动化。
 - 批次完全来自工作区主人（与 `install_skill` 同一条主人轮次规则）：可以创建和修改，
   新建的自动化绑定当前会话和这条输入的来源路由（例如飞书话题）。
+- 批次全部来自主人或主人在私聊绑定上指定的委托对象（至少一条委托）：`delegate_turn`，
+  可列出、创建、修改、暂停、恢复、删除、立即运行本工作区的自动化；新建的归属主人。
+  不能设置或修改脚本与前置检查，不能操作带有它们的自动化，Host 工作区一律拒绝。
+  安装 Skill、Agent Builder、Owner Profile 不接受委托对象。
 - 其他轮次（群成员、混合批次）只能列出。
 - 旧的 `schedule_task` 等请求一律返回错误，提示改用自动化工具。
 

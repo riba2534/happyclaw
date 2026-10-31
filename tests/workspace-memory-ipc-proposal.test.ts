@@ -14,9 +14,10 @@ import {
 } from '../src/workspace-memory-capability.js';
 import {
   isWorkspaceMemoryMutation,
-  isWorkspaceMemoryOwnerTurn,
   workspaceMemoryWriteRejection,
+  workspaceTurnPrincipal,
 } from '../src/workspace-memory-ipc.js';
+import type { WorkspaceDelegateMount } from '../src/workspace-delegate-auth.js';
 import { createRuntimeSourceHarness } from './helpers/runtime-source.js';
 
 const FOLDER = 'team';
@@ -29,6 +30,26 @@ const registrations: Record<string, Record<string, unknown>> = {
     created_by: OWNER,
     owner_im_id: 'ou_owner',
     owner_claim_source: 'auto_feishu',
+  },
+  // Direct chats of someone else, bound to the Main Session.
+  'qq:c2c:AAAA': { folder: FOLDER, created_by: OWNER },
+  'qq:c2c:BBBB': { folder: FOLDER, created_by: OWNER },
+};
+
+const mounts: Record<string, WorkspaceDelegateMount> = {
+  'qq:c2c:AAAA': {
+    delegate_enabled: true,
+    workspace_folder: FOLDER,
+    owner_user_id: OWNER,
+    session_id: null,
+    routing_mode: 'single_session',
+  },
+  'qq:c2c:BBBB': {
+    delegate_enabled: false,
+    workspace_folder: FOLDER,
+    owner_user_id: OWNER,
+    session_id: null,
+    routing_mode: 'single_session',
   },
 };
 
@@ -57,14 +78,19 @@ function host(inputs: Record<string, AgentBuilderPersistedInput>) {
     WorkspaceMemoryServiceError,
     getJidsByFolder: () => Object.keys(registrations),
     getChannelType: (jid: string) =>
-      jid.startsWith('feishu:') ? 'feishu' : null,
+      jid.startsWith('feishu:')
+        ? 'feishu'
+        : jid.startsWith('qq:')
+          ? 'qq'
+          : null,
+    getAgentChannelMount: (jid: string) => mounts[jid],
     activeAgentBuilderTurns,
     agentBuilderTurnScope,
     getAgentBuilderInputMessage: (_chatJid: string, messageId: string) =>
       inputs[messageId] ?? null,
     getAgent: () => undefined,
     isWorkspaceMemoryMutation,
-    isWorkspaceMemoryOwnerTurn,
+    workspaceTurnPrincipal,
     workspaceMemoryWriteRejection,
     verifyAndConsumeWorkspaceMemoryMutation,
     createWorkspaceMemory,
@@ -174,6 +200,53 @@ describe('what a Workspace Memory write becomes on the host', () => {
       success: true,
       proposal: true,
     });
+  });
+
+  test("the owner's delegate writes directly and is recorded as such; an untrusted direct chat proposes", async () => {
+    const { create, start, createWorkspaceMemory } = host({
+      'qq-delegate': human('qq:AAAA', 'qq:c2c:AAAA'),
+      'qq-untrusted': human('qq:BBBB', 'qq:c2c:BBBB'),
+    });
+    start('qq:c2c:AAAA', 'qq-delegate');
+    expect(await create('qq-delegate')).toMatchObject({
+      success: true,
+      proposal: false,
+    });
+    expect(createWorkspaceMemory).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        proposal: false,
+        sourceType: 'agent_runtime',
+        provenance: expect.objectContaining({
+          sourceId: 'delegate:qq:c2c:AAAA',
+        }),
+      }),
+    );
+    start('qq:c2c:BBBB', 'qq-untrusted');
+    expect(await create('qq-untrusted')).toMatchObject({
+      success: true,
+      proposal: true,
+    });
+    expect(createWorkspaceMemory).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        provenance: expect.objectContaining({ sourceId: 'qq-untrusted' }),
+      }),
+    );
+  });
+
+  test('on a Host workspace the delegate only proposes, even with the flag still on', async () => {
+    const { create, start } = host({
+      'qq-delegate': human('qq:AAAA', 'qq:c2c:AAAA'),
+    });
+    registrations['web:team'].executionMode = 'host';
+    try {
+      start('qq:c2c:AAAA', 'qq-delegate');
+      expect(await create('qq-delegate')).toMatchObject({
+        success: true,
+        proposal: true,
+      });
+    } finally {
+      delete registrations['web:team'].executionMode;
+    }
   });
 
   test('an automation run proposes, and only with its signed capability', async () => {

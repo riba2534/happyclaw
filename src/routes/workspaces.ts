@@ -15,6 +15,7 @@ import {
   getChannelMount,
   getAgentChannelMount,
   setChannelMountInteractionModeOverride,
+  setChannelMountDelegateEnabled,
   getWorkspaceAgentProfileId,
   getWorkspaceInteractionMode,
   listAgentChannelMountsByWorkspace,
@@ -27,7 +28,9 @@ import {
 import {
   HappyClawOwnerProfileMutationSchema,
   ChannelMountInteractionModePatchSchema,
+  ChannelMountDelegatePutSchema,
 } from '../schemas.js';
+import { isDelegateCapableConversation } from '../workspace-delegate-auth.js';
 import {
   clearHappyClawOwnerPreferredAddress,
   getHappyClawOwnerProfileProjection,
@@ -99,6 +102,11 @@ function getAgentProfileSnapshot(
   };
 }
 
+function isHostWorkspaceJid(workspaceJid: string): boolean {
+  const workspace = getRegisteredGroup(workspaceJid);
+  return !!workspace && isHostExecutionGroup(workspace);
+}
+
 function serializeMount(mount: AgentChannelMountRecord) {
   return {
     channel_jid: mount.channel_jid,
@@ -115,6 +123,11 @@ function serializeMount(mount: AgentChannelMountRecord) {
     activation_mode: mount.activation_mode,
     audience_mode: mount.audience_mode,
     owner_im_id: mount.owner_im_id ?? null,
+    delegate_capable:
+      mount.routing_mode === 'single_session' &&
+      isDelegateCapableConversation(mount.channel_jid),
+    delegate_enabled: mount.delegate_enabled === true,
+    delegate_host_workspace: isHostWorkspaceJid(mount.workspace_jid),
     owner_user_id: mount.owner_user_id,
     agent_profile_id: mount.agent_profile_id,
     created_at: mount.created_at,
@@ -496,6 +509,80 @@ workspaceRoutes.patch(
         }
       },
     );
+  },
+);
+
+/**
+ * Owner switch: trust this direct chat's counterpart as a delegate of the
+ * workspace (automations without host commands, direct Workspace Memory
+ * writes). Read per request by the host, so no runner restart is needed.
+ */
+workspaceRoutes.put(
+  '/:jid/channel-mounts/:channelJid/delegate',
+  authMiddleware,
+  async (c) => {
+    const user = c.get('user') as AuthUser;
+    const jid = c.req.param('jid');
+    const channelJid = c.req.param('channelJid');
+    const workspace = listWorkspaceRecords().find(
+      (record) => record.jid === jid,
+    );
+    const access = workspace ? resolveWorkspaceAccess(user, workspace) : null;
+    const mount = getChannelMount(channelJid);
+    const channel = getRegisteredGroup(channelJid);
+    if (
+      user.role === 'guest' ||
+      !access ||
+      !mount ||
+      mount.workspace_jid !== jid ||
+      !channel ||
+      !canModifyGroup(user, access.group) ||
+      !canModifyGroup(user, { ...channel, jid: channelJid })
+    ) {
+      return c.json({ error: 'Channel mount not found' }, 404);
+    }
+    const parsed = ChannelMountDelegatePutSchema.safeParse(
+      await c.req.json().catch(() => null),
+    );
+    if (!parsed.success)
+      return c.json(
+        { error: 'Invalid request', details: parsed.error.format() },
+        400,
+      );
+    if (
+      parsed.data.enabled &&
+      (mount.routing_mode !== 'single_session' ||
+        !isDelegateCapableConversation(channelJid))
+    ) {
+      return c.json(
+        { error: 'Only direct-chat session bindings can have a delegate' },
+        400,
+      );
+    }
+    if (parsed.data.enabled && isHostExecutionGroup(access.group)) {
+      return c.json(
+        {
+          error: '宿主机工作区不支持委托，只有 Docker 工作区可以允许对方管理',
+          code: 'DELEGATE_HOST_WORKSPACE',
+        },
+        400,
+      );
+    }
+    const saved = setChannelMountDelegateEnabled(
+      channelJid,
+      jid,
+      mount.session_id ?? null,
+      parsed.data.enabled,
+    );
+    if (!saved) {
+      return c.json(
+        { error: 'Channel binding changed; reload and retry' },
+        409,
+      );
+    }
+    return c.json({
+      channel_mount: serializeMount(getAgentChannelMount(channelJid)!),
+    });
   },
 );
 

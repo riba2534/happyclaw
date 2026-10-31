@@ -42,7 +42,9 @@ import {
   listChannelMountsBySessions,
   getRegisteredGroupNames,
   getChannelAccount,
+  getChannelMount,
 } from '../db.js';
+import { isDelegateCapableConversation } from '../workspace-delegate-auth.js';
 import type {
   AudienceMode,
   AuthUser,
@@ -1096,12 +1098,20 @@ router.get('/:jid/im-groups', authMiddleware, async (c) => {
     require_mention?: boolean;
     owner_im_id?: string | null;
     sender_allowlist_locked?: boolean;
+    /** Workspace the channel mount points at (set for session bindings too). */
+    mount_workspace_jid: string | null;
+    /** A direct-chat session binding the owner may trust as a delegate. */
+    delegate_capable: boolean;
+    delegate_enabled: boolean;
+    /** The bound workspace runs on the host: delegates are refused there. */
+    delegate_host_workspace: boolean;
     added_at: string;
   }
 
   const candidates: ImGroupCandidate[] = [];
   for (const j of imJids) {
     const g = allGroups[j];
+    const mount = getChannelMount(j);
 
     // Resolve bound target name for display
     let boundTargetName: string | null = null;
@@ -1161,6 +1171,14 @@ router.get('/:jid/im-groups', authMiddleware, async (c) => {
           g.activation_mode === 'owner_mentioned') &&
         Array.isArray(g.sender_allowlist) &&
         g.sender_allowlist.length === 0,
+      mount_workspace_jid: mount?.workspace_jid ?? null,
+      delegate_capable:
+        mount?.routing_mode === 'single_session' &&
+        isDelegateCapableConversation(j),
+      delegate_enabled: mount?.delegate_enabled === true,
+      delegate_host_workspace: mount
+        ? getRegisteredGroup(mount.workspace_jid)?.executionMode === 'host'
+        : false,
       added_at: g.added_at,
     });
   }

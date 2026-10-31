@@ -217,6 +217,9 @@ describe('schema version head', () => {
     // and task_failure_notices are dropped (automation-migration.test.ts).
     // v86: users.guest_owner_id and guest_workspace_grants, read-only guest
     // accounts (schema-v86-guest-accounts.test.ts).
-    expect(db.CURRENT_SCHEMA_VERSION).toBe(86);
+    // v87: channel_mounts / agent_channel_mounts.delegate_enabled, the owner's
+    // workspace delegate switch on a direct-chat binding
+    // (schema-v87-channel-mount-delegate.test.ts).
+    expect(db.CURRENT_SCHEMA_VERSION).toBe(87);
   });
 });

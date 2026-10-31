@@ -155,6 +155,11 @@ export interface ChannelMount {
   reply_policy: 'source_only' | 'mirror';
   /** Null inherits the workspace mode; applies only to inputs from this mount. */
   interaction_mode_override?: InteractionMode | null;
+  /**
+   * The owner trusts this direct chat's counterpart as a delegate of the bound
+   * workspace (automations, direct Workspace Memory writes). Cleared on rebind.
+   */
+  delegate_enabled?: boolean;
   activation_mode:
     | 'auto'
     | 'always'

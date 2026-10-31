@@ -79,12 +79,15 @@ describe('schema v86 guest accounts', () => {
   test('backs up the v85 database and adds the guest column and grants table', () => {
     process.env.HAPPYCLAW_MIGRATION_BACKUP_DIR = backupDir;
     db.initDatabase();
-    expect(db.CURRENT_SCHEMA_VERSION).toBe(86);
-    expect(db.getRouterState('schema_version')).toBe('86');
+    expect(db.getRouterState('schema_version')).toBe(
+      String(db.CURRENT_SCHEMA_VERSION),
+    );
 
     const backupName = fs
       .readdirSync(backupDir)
-      .find((name) => name.startsWith('messages-v85-to-v86-'));
+      .find((name) =>
+        name.startsWith(`messages-v85-to-v${db.CURRENT_SCHEMA_VERSION}-`),
+      );
     expect(backupName).toBeDefined();
     const backup = new Database(path.join(backupDir, backupName!), {
       readonly: true,

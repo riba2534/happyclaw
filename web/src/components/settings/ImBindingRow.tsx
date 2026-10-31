@@ -6,13 +6,16 @@ import {
   RotateCcw,
   AlertTriangle,
   Trash2,
+  Info,
 } from 'lucide-react';
+import { InfoTip } from '@/components/common/InfoTip';
 import { Button } from '@/components/ui/button';
 import {
   NativeSelect,
   NativeSelectOption,
 } from '@/components/ui/native-select';
 import { IconButton } from '@/components/common/IconButton';
+import { Switch } from '@/components/ui/switch';
 import type { AvailableImGroup } from '../../types';
 import { ChannelAccountBadge, ChannelBadge } from './channel-meta';
 import {
@@ -33,9 +36,13 @@ interface ImBindingRowProps {
   onResetAllowlist: (group: AvailableImGroup) => void;
   onActivationModeChange: (jid: string, mode: string) => void;
   onAudienceModeChange: (jid: string, mode: 'everyone' | 'owner_only') => void;
+  /** Owner trusts this direct chat's counterpart as a workspace delegate. */
+  onDelegateChange?: (group: AvailableImGroup, enabled: boolean) => void;
   onDelete: (group: AvailableImGroup) => void;
 }
 
+const DELEGATE_HELP_TEXT =
+  '仅限私聊。开启后，对方在这个工作区的会话里可以创建和修改自动化（不含脚本与前置检查）、直接写入工作区记忆；不能安装 Skill 或修改智能体。';
 export function ImBindingRow({
   group,
   isActioning,
@@ -44,6 +51,7 @@ export function ImBindingRow({
   onResetAllowlist,
   onActivationModeChange,
   onAudienceModeChange,
+  onDelegateChange,
   onDelete,
 }: ImBindingRowProps) {
   const boundSessionId = group.bound_session_id ?? group.bound_agent_id;
@@ -86,6 +94,21 @@ export function ImBindingRow({
     }
     return '未绑定';
   };
+
+  // Only a direct chat bound to a session can name its counterpart as a
+  // delegate; the server re-checks ownership and the conversation kind.
+  const showDelegate =
+    !!onDelegateChange &&
+    hasBound &&
+    !policyMismatch &&
+    group.conversation_kind === 'direct' &&
+    group.delegate_capable === true &&
+    !!group.mount_workspace_jid &&
+    // Host workspaces don't support delegates: hide the switch, except to let
+    // the owner turn off a grant left over from before the switch to Host.
+    (group.delegate_host_workspace !== true || group.delegate_enabled === true);
+  const delegateSwitchId = `im-delegate-${group.jid}`;
+  const delegateHostWorkspace = group.delegate_host_workspace === true;
 
   const showAudience =
     group.channel_type === 'feishu' &&
@@ -279,6 +302,40 @@ export function ImBindingRow({
                 </NativeSelectOption>
               ))}
             </NativeSelect>
+          )}
+        </div>
+      )}
+
+      {showDelegate && (
+        <div className="mt-2.5 flex items-center gap-2 sm:pl-11">
+          <Switch
+            id={delegateSwitchId}
+            checked={group.delegate_enabled === true}
+            onCheckedChange={(checked) => onDelegateChange?.(group, checked)}
+            disabled={
+              isActioning ||
+              (delegateHostWorkspace && group.delegate_enabled !== true)
+            }
+          />
+          <label
+            htmlFor={delegateSwitchId}
+            className="text-label font-medium text-foreground"
+          >
+            允许对方管理此工作区
+          </label>
+          <InfoTip content={DELEGATE_HELP_TEXT}>
+            <button
+              type="button"
+              aria-label="允许对方管理此工作区的说明"
+              className="inline-flex size-5 shrink-0 cursor-help items-center justify-center rounded-full text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/40"
+            >
+              <Info className="size-3.5" />
+            </button>
+          </InfoTip>
+          {delegateHostWorkspace && (
+            <span className="text-caption text-warning">
+              宿主机工作区不支持委托，请关闭
+            </span>
           )}
         </div>
       )}

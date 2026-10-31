@@ -21,6 +21,11 @@ import type {
  * - `web`: a signed-in Web user (REST).
  * - `owner_turn`: an agent turn whose whole input batch came from the
  *   workspace owner (same rule as install_skill).
+ * - `delegate_turn`: an agent turn whose whole input batch came from the
+ *   owner and/or the delegate the owner trusted on a direct-chat binding of
+ *   this workspace (workspace-delegate-auth.ts). It may manage the automations
+ *   of its own workspace like the owner, except host commands (scripts and
+ *   pre-run checks) and Host workspaces; what it creates belongs to the owner.
  * - `automation_run`: an agent turn executing automation `automationId`,
  *   run `runId`. It may pause, complete, delete, notify or silence only its
  *   own automation.
@@ -40,6 +45,16 @@ export type AutomationActor =
       /** Session the turn runs in: `web:<ws>` or `web:<ws>#agent:<id>`. */
       sessionJid: string;
       /** Full source route of the turn's input (IM incl. thread/root), or null for Web. */
+      sourceRouteJid: string | null;
+    }
+  | {
+      kind: 'delegate_turn';
+      /** Workspace owner: created automations are theirs. */
+      ownerUserId: string;
+      /** Informational only; a delegate never gains host-command rights. */
+      ownerIsAdmin: boolean;
+      workspaceJid: string;
+      sessionJid: string;
       sourceRouteJid: string | null;
     }
   | {

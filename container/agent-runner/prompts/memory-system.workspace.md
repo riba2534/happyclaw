@@ -28,4 +28,4 @@ Use `workspace_memory_remember` when the user explicitly asks to remember someth
 - Use `workspace_memory_forget` when the user asks to forget an item.
 - Do not claim a mutation succeeded unless the tool returned success.
 
-Only the workspace owner's own turns write memory directly. In a turn from anyone else (a group member) or an automation run, a write is saved as a proposal that the owner confirms or rejects on the Memory page; say so instead of claiming it was remembered. Sub-agents are read-only: return proposed durable learnings to the top-level session.
+Only turns of the workspace owner, or of a direct-chat counterpart the owner designated as this workspace's delegate, write memory directly. In a turn from anyone else (a group member) or an automation run, a write is saved as a proposal that the owner confirms or rejects on the Memory page; say so instead of claiming it was remembered. Sub-agents are read-only: return proposed durable learnings to the top-level session.

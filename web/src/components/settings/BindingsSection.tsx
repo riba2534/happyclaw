@@ -47,6 +47,7 @@ export function BindingsSection() {
     rebind,
     bindTarget,
     resetAllowlist,
+    setDelegate,
     error: hookError,
     clearError: clearHookError,
   } = useImBindings();
@@ -249,6 +250,17 @@ export function BindingsSection() {
       if (err) setLocalError(err);
     },
     [rebind],
+  );
+
+  const handleDelegateChange = useCallback(
+    async (group: AvailableImGroup, enabled: boolean) => {
+      setActioningJid(group.jid);
+      setLocalError(null);
+      const err = await setDelegate(group, enabled);
+      setActioningJid(null);
+      if (err) setLocalError(err);
+    },
+    [setDelegate],
   );
 
   const confirmUnbind = useCallback(async () => {
@@ -483,6 +495,7 @@ export function BindingsSection() {
                         onResetAllowlist={handleResetAllowlist}
                         onActivationModeChange={handleActivationModeChange}
                         onAudienceModeChange={handleAudienceModeChange}
+                        onDelegateChange={handleDelegateChange}
                         onDelete={handleDelete}
                       />
                     ))}

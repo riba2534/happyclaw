@@ -4,6 +4,11 @@ import {
   type AgentBuilderPersistedInput,
 } from './agent-builder-turn-auth.js';
 import type { WorkspaceMemoryActor } from './memory-service.js';
+import {
+  classifyWorkspaceTurnPrincipal,
+  type WorkspaceDelegateContext,
+  type WorkspaceTurnPrincipal,
+} from './workspace-delegate-auth.js';
 import type { WorkspaceMemorySourceType } from './memory-store.js';
 
 export type WorkspaceMemoryIpcOperation =
@@ -95,9 +100,10 @@ export function workspaceOwnerImIds(
  * Whether the active batch is the owner's alone: `requireActiveOwnerTurn`
  * throws unless every input in it is a human message `isOwnerInput` accepts.
  * A Web input is the owner's by user id; an IM input by the sender's IM id.
- * Only such a turn writes memory directly; any other turn (a group member's,
- * a batch with anyone but the owner in it, an automation run) only proposes,
- * and the owner confirms or rejects the proposal on the Memory page.
+ * Such a turn (or one of the owner's delegate, see workspaceTurnPrincipal)
+ * writes memory directly; any other turn (a group member's, a batch with
+ * anyone else in it, an automation run) only proposes, and the owner confirms
+ * or rejects the proposal on the Memory page.
  */
 export function isWorkspaceMemoryOwnerTurn(
   input: WorkspaceOwnerLookup & {
@@ -119,6 +125,33 @@ export function isWorkspaceMemoryOwnerTurn(
   } catch {
     return false;
   }
+}
+
+/**
+ * Like {@link isWorkspaceMemoryOwnerTurn}, but also recognises a turn of the
+ * workspace's delegate (see workspace-delegate-auth.ts). Only Workspace
+ * Memory and automations use this; owner-only capabilities must keep using
+ * {@link isWorkspaceMemoryOwnerTurn}.
+ */
+export function workspaceTurnPrincipal(
+  input: WorkspaceOwnerLookup & {
+    delegate: Omit<WorkspaceDelegateContext, 'ownerUserId'>;
+    requireTurn: (
+      predicate: (persisted: AgentBuilderPersistedInput) => boolean,
+    ) => unknown;
+  },
+): WorkspaceTurnPrincipal {
+  return classifyWorkspaceTurnPrincipal({
+    isOwnerInput: (persisted) =>
+      isOwnerProfileOwnerInput(
+        persisted,
+        input.ownerUserId,
+        input.registration,
+        (provider) => workspaceOwnerImIds({ ...input, provider }),
+      ),
+    delegate: { ...input.delegate, ownerUserId: input.ownerUserId },
+    requireTurn: input.requireTurn,
+  });
 }
 
 export function workspaceMemoryWriteRejection(input: {

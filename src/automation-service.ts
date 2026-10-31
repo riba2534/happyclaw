@@ -7,8 +7,9 @@
  * Permissions: the Web sees only the automations a user created (404 for
  * anyone else's, no admin bypass) and Host workspaces need an admin. Agent
  * turns see the automations of their own workspace: owner turns may change
- * them, a run may pause/complete/delete only its own automation, any other
- * turn may only list. Errors are Chinese and never carry a raw JID.
+ * them, delegate turns too (no host commands, no Host workspaces, created
+ * automations belong to the owner), a run may pause/complete/delete only its
+ * own automation, any other turn may only list. Errors are Chinese and never carry a raw JID.
  */
 import crypto from 'node:crypto';
 
@@ -78,6 +79,10 @@ const RUN_CANNOT_CREATE_ERROR = '自动化运行中不能再创建新的自动�
 const NOT_FOUND_ERROR = '自动化不存在';
 const WORKSPACE_NOT_FOUND_ERROR = '工作区不存在';
 const HOST_ADMIN_ERROR = '宿主机工作区的自动化需要管理员权限';
+const DELEGATE_HOST_ERROR =
+  '宿主机工作区的自动化只能由工作区主人管理，被委托的对象不能操作';
+const DELEGATE_COMMAND_ERROR =
+  '被委托的对象不能设置或修改脚本与前置检查，也不能操作带有脚本或前置检查的自动化，请让工作区主人处理';
 const STALE_REVISION_ERROR = '自动化已被修改，请刷新后重试';
 const NOT_A_RUN_ERROR = '当前不是自动化运行，无法使用这个工具';
 const SESSION_REQUIRED_ERROR = '请选择要绑定的会话';
@@ -114,6 +119,19 @@ function belongsToWorkspace(sessionJid: string, workspaceJid: string): boolean {
   return (
     sessionJid === workspaceJid ||
     sessionJid.startsWith(`${workspaceJid}#agent:`)
+  );
+}
+
+function hasHostCommands(
+  draft: Pick<
+    Partial<AutomationDraft>,
+    'preRunCheck' | 'execution' | 'scriptCommand'
+  >,
+): boolean {
+  return (
+    !!draft.preRunCheck ||
+    draft.execution === 'script' ||
+    !!draft.scriptCommand?.trim()
   );
 }
 
@@ -154,6 +172,11 @@ export function createAutomationCore(
     actor: AutomationActor,
     workspaceJid: string,
   ): void {
+    if (actor.kind === 'delegate_turn') {
+      if (isHostWorkspace(workspaceJid))
+        throw new AutomationError(403, DELEGATE_HOST_ERROR);
+      return;
+    }
     if (actor.kind !== 'web' && actor.kind !== 'owner_turn') return;
     if (!actor.isAdmin && isHostWorkspace(workspaceJid))
       throw new AutomationError(403, HOST_ADMIN_ERROR);
@@ -170,6 +193,11 @@ export function createAutomationCore(
       case 'web':
       case 'owner_turn':
         assertHostAllowed(actor, automation.workspaceJid);
+        return automation;
+      case 'delegate_turn':
+        assertHostAllowed(actor, automation.workspaceJid);
+        if (hasHostCommands(automation))
+          throw new AutomationError(403, DELEGATE_COMMAND_ERROR);
         return automation;
       case 'automation_run':
         if (
@@ -368,6 +396,8 @@ export function createAutomationCore(
     patch: AutomationPatch,
   ): Automation {
     const current = loadForWrite(actor, id, 'update');
+    if (actor.kind === 'delegate_turn' && hasHostCommands(patch))
+      throw new AutomationError(403, DELEGATE_COMMAND_ERROR);
     if (current.revision !== expectedRevision)
       throw new AutomationError(409, STALE_REVISION_ERROR);
     const has = (key: keyof AutomationPatch) =>
@@ -546,10 +576,13 @@ export function createAutomationCore(
       if (actor.kind === 'other_turn')
         throw new AutomationError(403, OWNER_ONLY_ERROR);
       if (actor.kind === 'viewer') throw new AutomationError(403, VIEWER_ERROR);
+      if (actor.kind === 'delegate_turn' && hasHostCommands(input))
+        throw new AutomationError(403, DELEGATE_COMMAND_ERROR);
       return insert(
         actor,
         { ...input, workspaceJid: actor.workspaceJid },
-        actor.userId,
+        // A delegate's automation is the owner's: it shows on their Web page.
+        actor.kind === 'delegate_turn' ? actor.ownerUserId : actor.userId,
         input.sessionMode === 'bound' || isImRoute(actor.sourceRouteJid)
           ? actor.sourceRouteJid
           : null,

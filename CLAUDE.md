@@ -313,7 +313,12 @@ preset 的身份和默认风格，只低于平台的安全、权限、工具和�
   运行中的 Agent 自己调用 `install_skill` 时，本轮结果送达后才重置。安装、卸载 Skill
   只接受工作区主人亲自发起的轮次。
 - Workspace Memory 只有整批输入都来自工作区主人的互动轮次才直接写入；群成员轮次与自动化
-  运行的写入存为 `proposed`，在记忆页确认后才参与召回。每轮按用户本人正文的词项召回
+  运行的写入存为 `proposed`，在记忆页确认后才参与召回。主人可在私聊的会话绑定上打开
+  「允许对方管理此工作区」（`channel_mounts.delegate_enabled`，换绑即清除）：该私聊对方
+  的轮次（`src/workspace-delegate-auth.ts`）可直接写记忆（provenance `delegate:<jid>`），
+  并以 `delegate_turn` 管理本工作区的自动化（归属主人，不含脚本与前置检查）；安装
+  Skill、Agent Builder、Owner Profile 仍只认主人。只限 Docker 工作区：Host 工作区拒绝
+  开启、切到 Host 时清除，判定也对 Host 一律不认。飞书私聊无法从 JID 识别对方，不支持。每轮按用户本人正文的词项召回
   相关条目（`workspace_memory_recall_fts`），全部条目的标题目录随每轮笔记增量注入。
 - 禁用、删除或缺失的精确选择能力必须让配置失败，不得静默替换。
 - Prompt 或能力身份变化后必须失效旧的暖 Runner。

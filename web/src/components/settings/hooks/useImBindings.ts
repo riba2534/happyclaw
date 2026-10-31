@@ -250,6 +250,29 @@ export function useImBindings() {
     [loadBindings],
   );
 
+  const setDelegate = useCallback(
+    async (
+      group: AvailableImGroup,
+      enabled: boolean,
+    ): Promise<string | null> => {
+      if (!group.mount_workspace_jid) return '这个渠道还没有绑定会话';
+      setError(null);
+      try {
+        await api.put(
+          `/api/workspaces/${encodeURIComponent(group.mount_workspace_jid)}/channel-mounts/${encodeURIComponent(group.jid)}/delegate`,
+          { enabled },
+        );
+        await loadBindings();
+        return null;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : '保存失败，请重试';
+        setError(msg);
+        return msg;
+      }
+    },
+    [loadBindings],
+  );
+
   const clearError = useCallback(() => setError(null), []);
 
   return {
@@ -264,6 +287,7 @@ export function useImBindings() {
     rebind,
     bindTarget,
     resetAllowlist,
+    setDelegate,
     error,
     clearError,
   };

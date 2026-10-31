@@ -492,6 +492,13 @@ export interface AvailableImGroup {
   is_thread_capable?: boolean;
   conversation_kind?: 'direct' | 'group' | 'topic' | 'unknown';
   sender_allowlist_locked?: boolean;
+  /** Workspace the channel mount points at (session bindings included). */
+  mount_workspace_jid?: string | null;
+  /** Direct-chat session binding whose counterpart may become a delegate. */
+  delegate_capable?: boolean;
+  delegate_enabled?: boolean;
+  /** The bound workspace runs on the host, where delegates are refused. */
+  delegate_host_workspace?: boolean;
 }
 
 export interface WorkspaceDeleteBindingGroup {

@@ -79,6 +79,8 @@ export * from './automation-run-ledger.js';
  *   a batch mixing runs or runs and other inputs is `other_turn`).
  * - The executing turn is the owner's own (the install_skill rule) →
  *   `owner_turn`, bound to this session and the source route of its input.
+ * - Every input is the owner's or the workspace delegate's (at least one
+ *   delegate) → `delegate_turn`, bound like `owner_turn`.
  * - Anything else → `other_turn`.
  */
 export function deriveAutomationActor(input: {
@@ -94,6 +96,8 @@ export function deriveAutomationActor(input: {
   ) => (AgentBuilderPersistedInput & { attachments?: string | null }) | null;
   /** The install_skill owner-turn rule for this runtime. */
   isOwnerTurn: () => boolean;
+  /** The workspace-delegate rule (workspaceTurnPrincipal) for this runtime. */
+  isDelegateTurn?: () => boolean;
 }): AutomationActor {
   const other: AutomationActor = {
     kind: 'other_turn',
@@ -134,19 +138,31 @@ export function deriveAutomationActor(input: {
     };
   }
   const owner = input.owner;
-  if (!owner || owner.status !== 'active' || !input.isOwnerTurn()) {
-    return other;
+  if (!owner || owner.status !== 'active') return other;
+  const sourceRouteJid = resolveInputChannelReplySource(
+    observed[observed.length - 1]?.input?.source_jid,
+  );
+  if (input.isOwnerTurn()) {
+    return {
+      kind: 'owner_turn',
+      userId: owner.id,
+      isAdmin: owner.role === 'admin',
+      workspaceJid: input.workspaceJid,
+      sessionJid: input.sessionJid,
+      sourceRouteJid,
+    };
   }
-  return {
-    kind: 'owner_turn',
-    userId: owner.id,
-    isAdmin: owner.role === 'admin',
-    workspaceJid: input.workspaceJid,
-    sessionJid: input.sessionJid,
-    sourceRouteJid: resolveInputChannelReplySource(
-      observed[observed.length - 1]?.input?.source_jid,
-    ),
-  };
+  if (input.isDelegateTurn?.()) {
+    return {
+      kind: 'delegate_turn',
+      ownerUserId: owner.id,
+      ownerIsAdmin: owner.role === 'admin',
+      workspaceJid: input.workspaceJid,
+      sessionJid: input.sessionJid,
+      sourceRouteJid,
+    };
+  }
+  return other;
 }
 
 // ─── Agent tools over IPC ──────────────────────────────────────────────

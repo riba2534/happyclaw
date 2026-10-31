@@ -21,6 +21,8 @@ import {
   handleAutomationIpc,
 } from '../src/automation-runtime.js';
 import { skillMutationTurnRejection } from '../src/skill-ipc-authorization.js';
+import type { WorkspaceDelegateMount } from '../src/workspace-delegate-auth.js';
+import { workspaceTurnPrincipal } from '../src/workspace-memory-ipc.js';
 import { createRuntimeSourceHarness } from './helpers/runtime-source.js';
 
 const OWNER = 'owner-1';
@@ -30,6 +32,8 @@ const GROUP = 'feishu:oc_team';
 const TOPIC_ROUTE = `${GROUP}#thread:omt_1#root:om_root`;
 const SESSION_ID = 'topic-session';
 const SESSION = `${WORKSPACE}#agent:${SESSION_ID}`;
+const DELEGATE_DM = 'qq:c2c:AAAA';
+const OTHER_DM = 'qq:c2c:BBBB';
 
 const registrations: Record<string, Record<string, unknown>> = {
   [WORKSPACE]: { folder: FOLDER, created_by: OWNER },
@@ -39,7 +43,37 @@ const registrations: Record<string, Record<string, unknown>> = {
     owner_im_id: 'ou_owner',
     owner_claim_source: 'configured',
   },
+  // Someone else's direct chats, bound to the topic session.
+  [DELEGATE_DM]: { folder: FOLDER, created_by: OWNER },
+  [OTHER_DM]: { folder: FOLDER, created_by: OWNER },
 };
+
+const mounts: Record<string, WorkspaceDelegateMount> = {
+  [DELEGATE_DM]: {
+    delegate_enabled: true,
+    workspace_folder: FOLDER,
+    owner_user_id: OWNER,
+    session_id: SESSION_ID,
+    routing_mode: 'single_session',
+  },
+  // Trusted, but for another session of the workspace.
+  [OTHER_DM]: {
+    delegate_enabled: true,
+    workspace_folder: FOLDER,
+    owner_user_id: OWNER,
+    session_id: 'another-session',
+    routing_mode: 'single_session',
+  },
+};
+
+const dmInput = (dm: string): AgentBuilderPersistedInput => ({
+  content: '每天晚上 8 点提醒我吃药',
+  sender: dm.replace('qq:c2c:', 'qq:'),
+  source_jid: dm,
+  is_from_me: 0,
+  source_kind: null,
+  automation_run_id: null,
+});
 
 const humanInput = (sender: string): AgentBuilderPersistedInput => ({
   content: '每个工作日早上 9 点提醒我看日报',
@@ -105,7 +139,13 @@ function ipcHost(
     getRegisteredGroup: (jid: string) => registrations[jid],
     getJidsByFolder: () => Object.keys(registrations),
     getChannelType: (jid: string) =>
-      jid.startsWith('feishu:') ? 'feishu' : null,
+      jid.startsWith('feishu:')
+        ? 'feishu'
+        : jid.startsWith('qq:')
+          ? 'qq'
+          : null,
+    getAgentChannelMount: (jid: string) => mounts[jid],
+    workspaceTurnPrincipal,
     findWebJidForFolder: () => WORKSPACE,
     getAgent: (id: string) =>
       id === SESSION_ID
@@ -187,6 +227,62 @@ describe('automation tools over task IPC', () => {
       workspaceJid: WORKSPACE,
       sessionJid: SESSION,
     });
+  });
+
+  test("the owner's delegate in a trusted direct chat acts as delegate_turn", async () => {
+    const host = ipcHost({ d1: dmInput(DELEGATE_DM) });
+    await host.send({ type: 'automation_list' });
+    expect(host.handleIpc.mock.calls[0][0]).toEqual({
+      kind: 'delegate_turn',
+      ownerUserId: OWNER,
+      ownerIsAdmin: false,
+      workspaceJid: WORKSPACE,
+      sessionJid: SESSION,
+      sourceRouteJid: DELEGATE_DM,
+    });
+  });
+
+  test('owner plus delegate in one batch is a delegate turn', async () => {
+    const mixed = ipcHost({
+      m1: humanInput('ou_owner'),
+      d1: dmInput(DELEGATE_DM),
+    });
+    await mixed.send({ type: 'automation_list' });
+    expect(mixed.handleIpc.mock.calls[0][0]).toMatchObject({
+      kind: 'delegate_turn',
+    });
+  });
+
+  test('delegate plus a group member is an other_turn', async () => {
+    const withMember = ipcHost({
+      d1: dmInput(DELEGATE_DM),
+      m1: humanInput('ou_member'),
+    });
+    await withMember.send({ type: 'automation_list' });
+    expect(withMember.handleIpc.mock.calls[0][0]).toMatchObject({
+      kind: 'other_turn',
+    });
+  });
+
+  test('a delegate trusted for another session is an other_turn here', async () => {
+    const otherSession = ipcHost({ d1: dmInput(OTHER_DM) });
+    await otherSession.send({ type: 'automation_list' });
+    expect(otherSession.handleIpc.mock.calls[0][0]).toMatchObject({
+      kind: 'other_turn',
+    });
+  });
+
+  test('on a Host workspace a delegate is an ordinary other_turn', async () => {
+    registrations[WORKSPACE].executionMode = 'host';
+    try {
+      const host = ipcHost({ d1: dmInput(DELEGATE_DM) });
+      await host.send({ type: 'automation_list' });
+      expect(host.handleIpc.mock.calls[0][0]).toMatchObject({
+        kind: 'other_turn',
+      });
+    } finally {
+      delete registrations[WORKSPACE].executionMode;
+    }
   });
 
   test('an automation run turn acts as that run', async () => {

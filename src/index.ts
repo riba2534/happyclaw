@@ -189,6 +189,7 @@ import {
   updateChatName,
   createAgent,
   getAgent,
+  getAgentChannelMount,
   updateAgentStatus,
   updateAgentLastImJid,
   updateAgentInfo,
@@ -276,9 +277,9 @@ import {
 import {
   buildWorkspaceMemoryUpdateInput,
   isWorkspaceMemoryMutation,
-  isWorkspaceMemoryOwnerTurn,
   workspaceMemoryWriteRejection,
   workspaceOwnerImIds,
+  workspaceTurnPrincipal,
 } from './workspace-memory-ipc.js';
 import {
   grantWorkspaceMemoryTurnToCurrentRunner,
@@ -13692,7 +13693,8 @@ const STALE_AUTOMATION_TURN_ERROR = '这个请求来自已经结束的一轮，�
  * Who is calling an automation tool, from the turn executing in the calling
  * runtime (never from the request): the run of an automation input, the
  * workspace owner's own turn (the install_skill rule, bound to this session
- * and the input's source route, e.g. a Feishu topic), or anyone else.
+ * and the input's source route, e.g. a Feishu topic), a turn of the owner's
+ * delegate for this workspace, or anyone else.
  */
 function resolveIpcAutomationActor(
   sourceGroup: string,
@@ -13739,6 +13741,33 @@ function resolveIpcAutomationActor(
         getFolderJids: getJidsByFolder,
         getChannelType,
       }),
+    // Automations also accept the workspace's delegate (owner-trusted direct
+    // chat). Install/uninstall Skill above stays owner-only.
+    isDelegateTurn: () =>
+      !!ownerUserId &&
+      workspaceTurnPrincipal({
+        ownerUserId,
+        workspaceJids: getJidsByFolder(sourceGroup),
+        channelType: getChannelType,
+        registration: (jid) => registeredGroups[jid] ?? getRegisteredGroup(jid),
+        delegate: {
+          workspaceFolder: sourceGroup,
+          runtimeAgentId: ipcAgentId,
+          // Fail closed: any host registration of the folder.
+          hostWorkspace: getJidsByFolder(sourceGroup).some(
+            (jid) =>
+              (registeredGroups[jid] ?? getRegisteredGroup(jid))
+                ?.executionMode === 'host',
+          ),
+          getMount: getAgentChannelMount,
+        },
+        requireTurn: (predicate) =>
+          activeAgentBuilderTurns.requireOwnerHumanTurn(
+            turnScope,
+            getAgentBuilderInputMessage,
+            predicate,
+          ),
+      }).kind === 'delegate',
   });
 }
 
@@ -14188,26 +14217,43 @@ async function processTaskIpc(
           },
         };
         const mutationOperation = isWorkspaceMemoryMutation(data.operation);
-        // Only the owner's own interactive turns write directly; a group
-        // member's turn or an automation run only proposes.
-        const proposal = !(
-          mutationOperation &&
-          hostTurnKind === 'interactive' &&
-          isWorkspaceMemoryOwnerTurn({
-            ownerUserId: actor.id,
-            workspaceJids: siblingJids,
-            channelType: getChannelType,
-            registration: (jid) =>
-              registeredGroups[jid] ?? getRegisteredGroup(jid),
-            requireActiveOwnerTurn: (isOwnerInput) =>
-              activeAgentBuilderTurns.requireExactActiveOwnerHumanTurn(
-                agentBuilderTurnScope(sourceGroup, ipcAgentId),
-                data.inputTurnId,
-                getAgentBuilderInputMessage,
-                isOwnerInput,
-              ),
-          })
-        );
+        // Only interactive turns of the owner, or of the delegate the owner
+        // trusted on this workspace's direct-chat binding, write directly; a
+        // group member's turn or an automation run only proposes.
+        const principal =
+          mutationOperation && hostTurnKind === 'interactive'
+            ? workspaceTurnPrincipal({
+                ownerUserId: actor.id,
+                workspaceJids: siblingJids,
+                channelType: getChannelType,
+                registration: (jid) =>
+                  registeredGroups[jid] ?? getRegisteredGroup(jid),
+                delegate: {
+                  workspaceFolder: sourceGroup,
+                  runtimeAgentId: ipcAgentId,
+                  // Fail closed: any host registration of the folder.
+                  hostWorkspace: siblingJids.some(
+                    (jid) =>
+                      (registeredGroups[jid] ?? getRegisteredGroup(jid))
+                        ?.executionMode === 'host',
+                  ),
+                  getMount: getAgentChannelMount,
+                },
+                requireTurn: (predicate) =>
+                  activeAgentBuilderTurns.requireExactActiveOwnerHumanTurn(
+                    agentBuilderTurnScope(sourceGroup, ipcAgentId),
+                    data.inputTurnId,
+                    getAgentBuilderInputMessage,
+                    predicate,
+                  ),
+              })
+            : ({ kind: 'other' } as const);
+        const proposal = principal.kind === 'other';
+        if (principal.kind === 'delegate') {
+          // Provenance shows the owner which delegate chat wrote the item.
+          mutation.provenance.sourceId =
+            `delegate:${principal.conversationJids.join(',')}`.slice(0, 512);
+        }
         const capabilityValid =
           mutationOperation &&
           (!ipcAgentId || runtimeAgentKind === 'conversation') &&

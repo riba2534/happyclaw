@@ -270,7 +270,7 @@ export function createAutomationTools(
 - 只在缺少会实质改变目标的信息（做什么、何时）时才问；用户已说清的不要重复问。
 - prompt 写成每次运行要执行的指令，保留用户的目标、限制和停止条件；频率由 schedule 表达，不要写进 prompt。
 - 检查类任务设 silentWhenIdle；轮询类任务建议加 preRunCheck，没有新情况时直接跳过。
-- 只有工作区主人发起的轮次能创建或修改，宿主拒绝时照实告诉用户。`,
+- 只有工作区主人（或主人指定的私聊委托对象，不含脚本与前置检查）发起的轮次能创建或修改，宿主拒绝时照实告诉用户。`,
       strict({
         name: z.string().describe('简短名称，显示在列表和通知里'),
         prompt: z
