@@ -199,6 +199,10 @@ import {
   QuiescentResultGate,
   shouldFailIncompleteQueryExit,
 } from './background-task-drain.js';
+import {
+  BackgroundHandoff,
+  commandLifecycleStartedUuid,
+} from './background-handoff.js';
 import { IpcInputClaimStore } from './ipc-input-claims.js';
 import { QueryStartupTiming } from './query-timing.js';
 import { QueryCacheUsage } from './cache-rate.js';
@@ -1425,15 +1429,22 @@ function isInterruptRelatedError(err: unknown): boolean {
 /**
  * Check for _interrupt sentinel (graceful query interruption) and say why
  * the host interrupted; null when there is no current interrupt.
+ * `isAcceptedQueryRunId` names further host queries whose input this query
+ * has accepted but not started yet: an input admitted while the previous one
+ * waits only on background tasks is the host's active query before it owns
+ * Runner output.
  */
-function shouldInterrupt(): InterruptReason | null {
+function shouldInterrupt(
+  isAcceptedQueryRunId: (queryRunId: string) => boolean = () => false,
+): InterruptReason | null {
   const interrupt = consumeInterruptSentinel(IPC_INPUT_DIR);
   if (!interrupt) return null;
   const sentinelQueryRunId = interrupt.queryRunId;
   if (
     sentinelQueryRunId &&
     activeInterruptQueryRunId &&
-    sentinelQueryRunId !== activeInterruptQueryRunId
+    sentinelQueryRunId !== activeInterruptQueryRunId &&
+    !isAcceptedQueryRunId(sentinelQueryRunId)
   ) {
     log(
       `Ignoring interrupt for stale query ${sentinelQueryRunId} (active ${activeInterruptQueryRunId})`,
@@ -2426,7 +2437,9 @@ async function runQueryAttempt(
       ipcQueryWatcher.close();
       return;
     }
-    const interruptReason = shouldInterrupt();
+    const interruptReason = shouldInterrupt((queryRunId) =>
+      ipcDeliveryTracker.hasTurnFromQueryRun(queryRunId),
+    );
     if (interruptReason) {
       log(
         `Interrupt sentinel detected (${interruptReason}), interrupting current query`,
@@ -2740,16 +2753,24 @@ async function runQueryAttempt(
     completedAssistantUuid?: string;
   };
   let pendingBackgroundResult: BackgroundResultCandidate | undefined;
+  const backgroundHandoff = new BackgroundHandoff<BackgroundResultCandidate>();
   cancelBackgroundResultCompletion = () => {
     backgroundResultGate.activityObserved();
     pendingBackgroundResult = undefined;
+    backgroundHandoff.release();
     processor.invalidateObservedBackgroundResult();
   };
 
   const publishResultCandidate = (
     candidate: BackgroundResultCandidate,
     inputTurnCompleted: boolean,
+    mode: { backgroundOnly?: boolean; backgroundHandoff?: boolean } = {},
   ): void => {
+    if (mode.backgroundOnly && !inputTurnCompleted) {
+      backgroundHandoff.hold(candidate);
+    } else {
+      backgroundHandoff.release();
+    }
     if (inputTurnCompleted) {
       clearBackgroundProtocolDebtWatchdog();
       if (!candidate.suspectTruncated) compactionAwaitingCompletion = false;
@@ -2790,6 +2811,10 @@ async function runQueryAttempt(
       pendingBgTasks: candidate.pendingBgTasks,
       inputTurnCompleted,
       queryIdle,
+      ...(mode.backgroundOnly && !inputTurnCompleted
+        ? { backgroundOnly: true }
+        : {}),
+      ...(mode.backgroundHandoff ? { backgroundHandoff: true } : {}),
       ...(ipcReceipts && ipcReceipts.length > 0 ? { ipcReceipts } : {}),
       ...(activeIpcReceipts && activeIpcReceipts.length > 0
         ? { activeIpcReceipts }
@@ -2824,6 +2849,28 @@ async function runQueryAttempt(
     activateCurrentInputTurn(containerInput.turnId);
     log(
       `Result completed after background drain; keeping stream open for ${ipcDeliveryTracker.pendingTurnCount} accepted follow-up turn(s)`,
+    );
+  };
+
+  /**
+   * A later accepted input has started its own CLI turn while the current
+   * input waited only on background tasks: settle the current input without
+   * new text and let the later one own the output and the background work.
+   */
+  const handOffBackgroundWork = (startedSdkUuids: readonly string[]): void => {
+    const held = backgroundHandoff.takeForStartedInput(
+      startedSdkUuids,
+      (sdkUuid) => ipcDeliveryTracker.isLaterTurnSdkUuid(sdkUuid),
+    );
+    if (!held) return;
+    const pendingBgTasks = processor.getBlockingPendingSdkTaskCount();
+    log(
+      `A later input started while the current input waited only on ${pendingBgTasks} background task(s); settling it and handing the background work over`,
+    );
+    publishResultCandidate(
+      { ...held, finalText: null, suspectTruncated: false, pendingBgTasks },
+      true,
+      { backgroundHandoff: true },
     );
   };
 
@@ -3333,6 +3380,10 @@ async function runQueryAttempt(
       // frame changes no drain state, so restart it or the Result waits for
       // the idle close.
       if (bookkeepingFrame) scheduleBackgroundResultCompletion();
+      const startedSdkUuid = commandLifecycleStartedUuid(message);
+      if (startedSdkUuid && !suppressOutputAfterInterrupt) {
+        handOffBackgroundWork([startedSdkUuid]);
+      }
       if (providerFailurePublished) {
         continue;
       }
@@ -3884,6 +3935,9 @@ async function runQueryAttempt(
         );
         const resultMsg = message as unknown as Record<string, unknown>;
         const answeredSdkUuids = sdkResultAnsweredUserMessageUuids(resultMsg);
+        // A CLI that reports no `started` frame: a Result answering a later
+        // input is the first sign it took over the background work.
+        handOffBackgroundWork(answeredSdkUuids);
         ipcDeliveryTracker.observeAnsweredSdkUuids(answeredSdkUuids);
         turnNotes.observeAnswered(answeredSdkUuids);
         const limitDecision = decideProviderLimitAction({
@@ -4247,7 +4301,17 @@ async function runQueryAttempt(
           // work remains. Completion debt without a live task is withheld so
           // an old result cannot be mistaken for the final summary.
           pendingBackgroundResult = undefined;
-          publishResultCandidate(candidate, false);
+          // Answered, with only background tasks left: the next input may
+          // start in this stream now instead of waiting for every task.
+          publishResultCandidate(candidate, false, {
+            backgroundOnly:
+              pendingBgTasks > 0 &&
+              !suspectTruncated &&
+              shouldAcceptIpcMessagesDuringQuery(
+                emitOutput,
+                acceptIpcMessagesDuringQuery,
+              ),
+          });
         } else {
           // Retain the boundary while protocol debt is unresolved. A normal
           // notification-driven query will invalidate it before producing its

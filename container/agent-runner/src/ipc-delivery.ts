@@ -328,6 +328,23 @@ export class IpcTurnDeliveryTracker {
     }
   }
 
+  /** True when `sdkUuid` carries an accepted turn after the current one. */
+  isLaterTurnSdkUuid(sdkUuid: string): boolean {
+    return this.turns
+      .slice(1)
+      .some((turn) =>
+        turn.some((message) => this.sdkUuidByMessage.get(message) === sdkUuid),
+      );
+  }
+
+  /** True when an accepted, unfinished turn was admitted by host query
+   * `queryRunId`. */
+  hasTurnFromQueryRun(queryRunId: string): boolean {
+    return this.turns.some((turn) =>
+      turn.some((message) => message.queryRunId === queryRunId),
+    );
+  }
+
   /** Record `user_message_uuids` from a finished SDK turn. The CLI merges
    * user messages queued while it is busy into one turn, so one result can
    * answer several accepted IPC turns. */

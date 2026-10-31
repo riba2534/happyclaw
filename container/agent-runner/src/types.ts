@@ -442,6 +442,14 @@ export interface ContainerOutput {
    * waiting in the same streaming query. Hosts use this—not merely a result—to
    * release the next durable queued follow-up. */
   queryIdle?: boolean;
+  /** The main Agent has answered this input and only live background tasks
+   * keep it open. The input stays unacknowledged, but the Runner accepts the
+   * next input into the same SDK stream without stopping those tasks. */
+  backgroundOnly?: boolean;
+  /** Lifecycle-only completion of an input that was held only by background
+   * tasks: a later input has started in the same SDK stream and takes over
+   * the background work. Carries no reply text. */
+  backgroundHandoff?: boolean;
   ipcReceipts?: Array<{
     deliveryId: string;
     chatJid: string;

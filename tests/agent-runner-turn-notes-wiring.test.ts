@@ -53,6 +53,7 @@ function resultPath(turnNotes: TurnNoteLedger) {
     generateTurnId: () => 'turn-next',
     providerFallbackTurns: { completeHealthyTurn: vi.fn() },
     resultReceivedAt: null,
+    backgroundHandoff: { hold: vi.fn(), release: vi.fn() },
     sawPendingBackgroundTasks: false,
     backgroundSummaryForceAttempts: 0,
     activateCurrentInputTurn: vi.fn(),

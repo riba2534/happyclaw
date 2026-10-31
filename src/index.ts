@@ -8209,6 +8209,53 @@ async function processGroupMessages(
     streamingAccumulatedThinking = '';
     streamingSession = undefined;
   };
+  // 挂起中的输入只剩后台任务、后续输入已在同一 SDK 流里开始：以已送达的挂起
+  // 回复定稿并结算这条输入（不带新正文），后台任务及其汇总转由后续输入承接。
+  const settleBackgroundHandoff = async (
+    result: ContainerOutput,
+  ): Promise<void> => {
+    const inputTurnId = resolveContainerOutputInputTurnId(
+      result,
+      lastProcessed.id,
+    );
+    const inputIds = result.ipcReceipts?.length
+      ? result.ipcReceipts.map((receipt) => receipt.deliveryId)
+      : [inputTurnId];
+    const heldSession =
+      channelStreamingSessionsByInput.get(inputTurnId)?.session ??
+      streamingSession;
+    const heldText = heldCardParts.join(HELD_TURN_DIVIDER);
+    heldCardParts = [];
+    heldDbTurnId = null;
+    let heldCardCompleted = false;
+    if (heldText && heldSession?.isActive()) {
+      try {
+        await heldSession.complete(heldText);
+        heldCardCompleted = true;
+      } catch {
+        await heldSession.abort('').catch(() => {});
+      }
+    }
+    for (const inputId of inputIds) {
+      if (
+        heldCardCompleted ||
+        channelNonTerminalDeliveryAckByInput.get(inputId) === true
+      ) {
+        channelPhysicalDeliveryAckByInput.set(inputId, true);
+      }
+      genuineReplyDeliveredByInput.set(inputId, true);
+    }
+    if (!(await completeChannelRuntimesForOutput(result))) {
+      throw new Error(
+        'host_turn_settlement_failed: background hand-off did not reach a durable terminal state',
+      );
+    }
+    commitCursor(inputTurnId);
+    logger.info(
+      { chatJid, inputTurnId, pendingBgTasks: result.pendingBgTasks },
+      'Background-held input settled; a later input took over its background tasks',
+    );
+  };
   logger.info(
     { chatJid, streamingSessionJid, hasSession: !!streamingSession },
     'Streaming session creation result',
@@ -9170,6 +9217,14 @@ async function processGroupMessages(
               { chatJid, turnId: outputTurnId, status: result.status },
               'Superseded terminal projection suppressed after lifecycle settlement',
             );
+            return;
+          }
+          if (
+            result.backgroundHandoff === true &&
+            result.inputTurnCompleted === true
+          ) {
+            await settleBackgroundHandoff(result);
+            resetIdleTimer();
             return;
           }
           // 流式事件处理 - 广播 WebSocket + 持久化 SDK Task 生命周期到 DB
@@ -11826,6 +11881,8 @@ async function runAgent(
         output.sourceKind === 'truncation_continue' ||
         output.sourceKind === 'auto_continue';
       queue.markRunnerQueryIdle(chatJid, { preserveIpcDebt });
+    } else if (output.backgroundOnly === true && output.inputTurnId) {
+      queue.markRunnerBackgroundOnly(chatJid, output.inputTurnId);
     }
     settleMainConversationOutput(
       group,
@@ -16340,6 +16397,51 @@ async function processAgentConversation(
       );
     }
   };
+  // 挂起中的输入只剩后台任务、后续输入已在同一 SDK 流里开始：以已送达的挂起
+  // 回复定稿并结算这条输入（不带新正文），后台任务及其汇总转由后续输入承接。
+  const settleAgentBackgroundHandoff = async (
+    output: ContainerOutput,
+  ): Promise<void> => {
+    const inputTurnId = output.inputTurnId ?? activeAgentInputTurnId;
+    const inputIds = output.ipcReceipts?.length
+      ? output.ipcReceipts.map((receipt) => receipt.deliveryId)
+      : [inputTurnId];
+    const heldSession =
+      agentStreamingSessionsByInput.get(inputTurnId)?.session ??
+      agentStreamingSession;
+    const heldText = heldAgentParts.join(HELD_TURN_DIVIDER);
+    heldAgentParts = [];
+    heldAgentDbMsgId = null;
+    heldAgentDbTurnId = null;
+    let heldCardCompleted = false;
+    if (heldText && heldSession?.isActive()) {
+      try {
+        await heldSession.complete(heldText);
+        heldCardCompleted = true;
+      } catch {
+        await heldSession.abort('').catch(() => {});
+      }
+    }
+    for (const inputId of inputIds) {
+      if (
+        heldCardCompleted ||
+        agentNonTerminalDeliveryAckByInput.get(inputId) === true
+      ) {
+        agentPhysicalDeliveryAckByInput.set(inputId, true);
+      }
+      agentGenuineReplyDeliveredByInput.set(inputId, true);
+    }
+    if (!(await completeAgentChannelRuntimesForOutput(output))) {
+      throw new Error(
+        'host_turn_settlement_failed: background hand-off did not reach a durable terminal state',
+      );
+    }
+    commitCursor(inputTurnId);
+    logger.info(
+      { chatJid, agentId, inputTurnId, pendingBgTasks: output.pendingBgTasks },
+      'Background-held agent input settled; a later input took over its background tasks',
+    );
+  };
   if (agentStreamingSession && streamingSessionJid) {
     registerStreamingSession(streamingSessionJid, agentStreamingSession);
     agentStreamingSessionsByInput.set(lastProcessed.id, {
@@ -17067,6 +17169,8 @@ async function processAgentConversation(
         output.sourceKind === 'truncation_continue' ||
         output.sourceKind === 'auto_continue';
       queue.markRunnerQueryIdle(virtualJid, { preserveIpcDebt });
+    } else if (output.backgroundOnly === true && output.inputTurnId) {
+      queue.markRunnerBackgroundOnly(virtualJid, output.inputTurnId);
     }
 
     // #549: a provider switch surfaced as a failure clears the agent session so
@@ -17154,6 +17258,15 @@ async function processAgentConversation(
         },
         'Superseded agent terminal projection suppressed after lifecycle settlement',
       );
+      return;
+    }
+
+    if (
+      output.backgroundHandoff === true &&
+      output.inputTurnCompleted === true
+    ) {
+      await settleAgentBackgroundHandoff(output);
+      resetIdleTimer();
       return;
     }
 
@@ -21236,7 +21349,11 @@ function interruptActiveSessionRun(
   label: string,
   options: { silentCard?: boolean } = {},
 ): { activeRunId: string | null; interrupted: boolean } {
-  const activeRunId = queue.getActiveQueryId(targetJid) ?? null;
+  // Answered input still running background tasks: stopping ends them.
+  const activeRunId =
+    queue.getActiveQueryId(targetJid) ??
+    queue.getBackgroundQueryId(targetJid) ??
+    null;
   const interrupted = activeRunId
     ? queue.interruptQuery(targetJid, activeRunId, 'stop')
     : false;
@@ -21403,7 +21520,10 @@ function handleChannelMessageRecalled(
       lastAgentTimestamp[logicalJid] || EMPTY_CURSOR,
     );
     if (!pending.some((message) => message.id === messageId)) continue;
-    const activeRunId = queue.getActiveQueryId(logicalJid);
+    // An answered input still held open by background tasks is executing.
+    const activeRunId =
+      queue.getActiveQueryId(logicalJid) ??
+      queue.getBackgroundQueryId(logicalJid);
     if (!activeRunId) {
       withdrawBeforeExecution(row);
       continue;
