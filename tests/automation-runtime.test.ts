@@ -47,6 +47,9 @@ import type { NewMessage } from '../src/types.js';
 
 const OWNER = 'owner-1';
 const WORKSPACE = 'web:auto-ws';
+const SESSION_ID = 'auto-session';
+/** The session bound automations of this file run in. */
+const SESSION = `${WORKSPACE}#agent:${SESSION_ID}`;
 const FOLDER = 'auto-ws';
 const TOPIC_ROUTE = 'feishu:oc_group#thread:omt_topic#root:om_root';
 
@@ -63,7 +66,7 @@ function automation(overrides: Partial<Automation> = {}): Automation {
     schedule: { kind: 'manual' },
     endAt: null,
     sessionMode: 'bound',
-    targetSessionJid: WORKSPACE,
+    targetSessionJid: SESSION,
     deliveryRouteJid: null,
     silentWhenIdle: false,
     preRunCheck: null,
@@ -88,7 +91,7 @@ function run(id: string): AutomationRun {
     automationId: 'auto-1',
     trigger: 'manual',
     status: 'queued',
-    sessionJid: WORKSPACE,
+    sessionJid: SESSION,
     inputMessageId: null,
     scheduledFor: now,
     firedAt: now,
@@ -153,6 +156,21 @@ beforeAll(() => {
     executionMode: 'container',
     created_by: OWNER,
   });
+  db.createAgent({
+    id: SESSION_ID,
+    group_folder: FOLDER,
+    chat_jid: WORKSPACE,
+    name: 'Bound session',
+    prompt: '',
+    status: 'idle',
+    kind: 'conversation',
+    created_by: OWNER,
+    created_at: new Date().toISOString(),
+    completed_at: null,
+    result_summary: null,
+    last_im_jid: null,
+    spawned_from_jid: null,
+  });
   webContext.setWebDeps({
     broadcastAgentStatus: vi.fn(),
     broadcastAgentRemoved: vi.fn(),
@@ -172,7 +190,7 @@ afterAll(() => {
 async function inject(
   deps: ReturnType<typeof runtime.createAutomationRuntimeDeps>,
   runId: string,
-  sessionJid = WORKSPACE,
+  sessionJid = SESSION,
   deliveryRouteJid: string | null = null,
 ) {
   return deps.injectAutomationInput({
@@ -190,15 +208,10 @@ describe('injecting an automation run input', () => {
     const h = hooks();
     const deps = runtime.createAutomationRuntimeDeps(h);
     const runId = nextRunId();
-    const { inputMessageId } = await inject(
-      deps,
-      runId,
-      WORKSPACE,
-      TOPIC_ROUTE,
-    );
+    const { inputMessageId } = await inject(deps, runId, SESSION, TOPIC_ROUTE);
 
     const [row] = db
-      .getMessagesSince(WORKSPACE, { timestamp: '', id: '' })
+      .getMessagesSince(SESSION, { timestamp: '', id: '' })
       .filter((message) => message.id === inputMessageId);
     expect(row).toMatchObject({
       source_kind: 'automation_prompt',
@@ -227,7 +240,7 @@ describe('injecting an automation run input', () => {
     expect(broadcast.attachments).toBeUndefined();
     expect(JSON.stringify(broadcast)).not.toContain('自动化运行上下文');
     expect(h.wake).toHaveBeenCalledWith(
-      expect.objectContaining({ laneJid: WORKSPACE, agentId: null }),
+      expect.objectContaining({ laneJid: SESSION, agentId: SESSION_ID }),
     );
   });
 
@@ -236,7 +249,7 @@ describe('injecting an automation run input', () => {
     const deps = runtime.createAutomationRuntimeDeps(h);
     await inject(deps, nextRunId());
     expect(h.admitInput).toHaveBeenCalledWith(
-      expect.objectContaining({ laneJid: WORKSPACE, sourceJid: WORKSPACE }),
+      expect.objectContaining({ laneJid: SESSION, sourceJid: SESSION }),
     );
     expect(h.wake).not.toHaveBeenCalled();
   });
@@ -277,6 +290,20 @@ describe('injecting an automation run input', () => {
     expect(deps.sessionExists(sessionJid)).toBe(true);
   });
 
+  test('a workspace JID is no session: nothing is injected into it', async () => {
+    const h = hooks();
+    const deps = runtime.createAutomationRuntimeDeps(h);
+    expect(runtime.resolveAutomationSession(WORKSPACE, h.getGroup)).toBeNull();
+    expect(deps.sessionExists(WORKSPACE)).toBe(false);
+    await expect(inject(deps, nextRunId(), WORKSPACE)).rejects.toThrow(
+      '自动化的目标会话不存在',
+    );
+    expect(db.getMessagesSince(WORKSPACE, { timestamp: '', id: '' })).toEqual(
+      [],
+    );
+    expect(h.wake).not.toHaveBeenCalled();
+  });
+
   test('re-injecting a run is idempotent', async () => {
     const deps = runtime.createAutomationRuntimeDeps(hooks());
     const runId = nextRunId();
@@ -285,7 +312,7 @@ describe('injecting an automation run input', () => {
     expect(second.inputMessageId).toBe(first.inputMessageId);
     expect(
       db
-        .getMessagesSince(WORKSPACE, { timestamp: '', id: '' })
+        .getMessagesSince(SESSION, { timestamp: '', id: '' })
         .filter((message) => message.automation_run_id === runId),
     ).toHaveLength(1);
   });
@@ -294,8 +321,8 @@ describe('injecting an automation run input', () => {
 describe('an automation input is a turn of its own', () => {
   const user = (id: string): NewMessage => ({
     id,
-    chat_jid: WORKSPACE,
-    source_jid: WORKSPACE,
+    chat_jid: SESSION,
+    source_jid: SESSION,
     sender: OWNER,
     sender_name: 'Owner',
     content: id,
@@ -424,12 +451,17 @@ describe('run lifecycle reports', () => {
     const cleared = nextRunId();
     await inject(deps, cleared);
 
-    await executeSessionReset(WORKSPACE, FOLDER, {
-      queue: { stopGroup: vi.fn(async () => {}) },
-      sessions: {},
-      broadcast: vi.fn(),
-      setLastAgentTimestamp: vi.fn(),
-    });
+    await executeSessionReset(
+      WORKSPACE,
+      FOLDER,
+      {
+        queue: { stopGroup: vi.fn(async () => {}) },
+        sessions: {},
+        broadcast: vi.fn(),
+        setLastAgentTimestamp: vi.fn(),
+      },
+      SESSION_ID,
+    );
     expect(settled).toContainEqual([
       cleared,
       { status: 'cancelled', reason: 'clear' },
@@ -450,7 +482,7 @@ describe('run lifecycle reports', () => {
         broadcast: vi.fn(),
         setLastAgentTimestamp: vi.fn(),
       },
-      undefined,
+      SESSION_ID,
       { mode: 'fresh' },
     );
     expect(settled.at(-1)).toEqual([
@@ -609,7 +641,7 @@ describe('who is calling an automation tool', () => {
     const actor = {
       kind: 'other_turn',
       workspaceJid: WORKSPACE,
-      sessionJid: WORKSPACE,
+      sessionJid: SESSION,
     } as const;
     await expect(
       runtime.handleAutomationIpc(

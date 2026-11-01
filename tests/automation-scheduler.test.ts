@@ -39,6 +39,8 @@ import type { AutomationActor } from '../src/automation-contract.js';
 import type { AutomationEngine } from '../src/automation-scheduler.js';
 
 const WS = 'web:sched';
+/** The session bound automations of this file run in. */
+const BOUND = `${WS}#agent:bound`;
 const OWNER = 'owner-1';
 const web: AutomationActor = { kind: 'web', userId: OWNER, isAdmin: true };
 
@@ -64,7 +66,7 @@ function setup(
 ) {
   const clock = new harness.FakeClock(Date.parse(start));
   const runtime = harness.createFakeRuntime(overrides);
-  runtime.sessions.add(WS);
+  runtime.sessions.add(BOUND);
   const core = createAutomationCore(runtime.deps, {
     now: clock.now,
     scriptIdleTimeoutMs: () => 5_000,
@@ -230,7 +232,8 @@ describe('firing', () => {
       '2026-10-31T01:00:00.000Z',
     );
     expect(store.getLiveAutomationRun(a.id)).toBeNull();
-    expect(runtime.notices).toHaveLength(1);
+    // No IM route: the failure is in the run record, no notice anywhere.
+    expect(runtime.notices).toHaveLength(0);
   });
 
   test('a fire while a run is live is recorded as skipped', async () => {
@@ -408,13 +411,13 @@ describe('firing', () => {
       userId: OWNER,
       isAdmin: true,
       workspaceJid: WS,
-      sessionJid: WS,
+      sessionJid: BOUND,
       sourceRouteJid: route,
     };
     const bound = service.create(owner, {
       workspaceJid: WS,
       ...harness.draft({ sessionMode: 'bound' }),
-      targetSessionJid: WS,
+      targetSessionJid: BOUND,
     });
     expect(bound.deliveryRouteJid).toBe(route);
     const fresh = service.create(owner, {
@@ -429,7 +432,7 @@ describe('firing', () => {
       runtime.injected.map((i) => [i.automation.id, i]),
     );
     expect(byAutomation.get(bound.id)).toMatchObject({
-      sessionJid: WS,
+      sessionJid: BOUND,
       deliveryRouteJid: route,
     });
     expect(byAutomation.get(fresh.id)?.deliveryRouteJid).toBeNull();
@@ -540,7 +543,7 @@ describe('notices', () => {
         userId: OWNER,
         isAdmin: true,
         workspaceJid: WS,
-        sessionJid: WS,
+        sessionJid: BOUND,
         sourceRouteJid: route,
       },
       { workspaceJid: WS, ...harness.draft({ schedule: { kind: 'manual' } }) },
@@ -579,7 +582,7 @@ describe('notices', () => {
         userId: OWNER,
         isAdmin: true,
         workspaceJid: WS,
-        sessionJid: WS,
+        sessionJid: BOUND,
         sourceRouteJid: 'feishu:oc_3',
       },
       {
@@ -609,7 +612,7 @@ describe('notices', () => {
       {
         kind: 'automation_run',
         workspaceJid: WS,
-        sessionJid: loud.sessionJid ?? WS,
+        sessionJid: loud.sessionJid ?? BOUND,
         automationId: a.id,
         runId: loud.id,
       },
@@ -787,7 +790,7 @@ describe('host commands', () => {
         sessionMode: 'bound',
         schedule: { kind: 'manual' },
       }),
-      targetSessionJid: WS,
+      targetSessionJid: BOUND,
     });
     const bad = service.create(web, {
       workspaceJid: WS,
@@ -799,7 +802,7 @@ describe('host commands', () => {
         sessionMode: 'bound',
         schedule: { kind: 'manual' },
       }),
-      targetSessionJid: WS,
+      targetSessionJid: BOUND,
     });
     await service.runNow(web, ok.id);
     await service.runNow(web, bad.id);
@@ -830,7 +833,7 @@ describe('host commands', () => {
         sessionMode: 'bound',
         schedule: { kind: 'manual' },
       }),
-      targetSessionJid: WS,
+      targetSessionJid: BOUND,
     });
     const run = await service.runNow(web, a.id);
     await vi.waitFor(() =>
@@ -932,11 +935,11 @@ describe('run lifecycle fixes', () => {
         sessionMode: 'bound',
         preRunCheck: { command: 'exit 2' },
       }),
-      targetSessionJid: WS,
+      targetSessionJid: BOUND,
     });
     await service.runNow(web, a.id);
     await engine.idle();
-    expect(workdirs).toEqual([WS]);
+    expect(workdirs).toEqual([BOUND]);
   });
 
   test('a billing denial creates no session', async () => {
@@ -1029,18 +1032,18 @@ describe('run lifecycle fixes', () => {
       userId: OWNER,
       isAdmin: true,
       workspaceJid: WS,
-      sessionJid: WS,
+      sessionJid: BOUND,
       sourceRouteJid: 'feishu:oc_old',
     };
     const bound = service.create(owner, {
       workspaceJid: WS,
       ...harness.draft({ sessionMode: 'bound', schedule: { kind: 'manual' } }),
-      targetSessionJid: WS,
+      targetSessionJid: BOUND,
     });
     const run = await service.runNow(web, bound.id);
     await engine.idle();
     expect(runtime.injected[0].deliveryRouteJid).toBe('feishu:oc_new');
-    expect(calls[0]).toEqual({ sessionJid: WS, preferred: 'feishu:oc_old' });
+    expect(calls[0]).toEqual({ sessionJid: BOUND, preferred: 'feishu:oc_old' });
     service.runSink.onRunInputSettled(run.id, {
       status: 'failed',
       error: 'boom',
@@ -1048,7 +1051,8 @@ describe('run lifecycle fixes', () => {
     await new Promise((resolve) => setImmediate(resolve));
     expect(runtime.notices.at(-1)?.routeJid).toBe('feishu:oc_new');
 
-    // Unbound meanwhile: the notice falls back into the session.
+    // Unbound meanwhile: the failure stays in the run record, and nothing is
+    // written into any session.
     resolved = null;
     const fresh = service.create(owner, {
       workspaceJid: WS,
@@ -1057,15 +1061,18 @@ describe('run lifecycle fixes', () => {
     clock.advance(60_000);
     const freshRun = await service.runNow(web, fresh.id);
     await engine.idle();
+    const noticesBeforeFailure = runtime.notices.length;
     service.runSink.onRunInputSettled(freshRun.id, {
       status: 'failed',
       error: 'boom',
     });
     await new Promise((resolve) => setImmediate(resolve));
-    expect(runtime.notices.at(-1)?.routeJid).toBe(
-      store.getAutomationRun(freshRun.id)?.sessionJid,
-    );
-    // No IM route: a fresh success sends no result notice.
+    expect(runtime.notices).toHaveLength(noticesBeforeFailure);
+    expect(store.getAutomationRun(freshRun.id)).toMatchObject({
+      status: 'failed',
+      error: 'boom',
+    });
+    // No IM route: neither the recovery nor a fresh result is announced.
     const before = runtime.notices.length;
     clock.advance(60_000);
     const ok = await service.runNow(web, fresh.id);
@@ -1075,8 +1082,6 @@ describe('run lifecycle fixes', () => {
       resultText: 'done',
     });
     await new Promise((resolve) => setImmediate(resolve));
-    expect(runtime.notices.slice(before).map((n) => n.text)).toEqual([
-      '自动化「f」已恢复正常',
-    ]);
+    expect(runtime.notices.slice(before)).toEqual([]);
   });
 });
