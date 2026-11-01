@@ -83,7 +83,7 @@ vi.mock('../src/agent-capabilities.js', () => ({
 }));
 
 const db = await import('../src/db.js');
-const { buildVolumeMounts, runHostAgent } =
+const { buildVolumeMounts, runHostAgent, writeGroupsSnapshot } =
   await import('../src/container-runner.js');
 
 const DATA_DIR = path.join(SHARED_TMP, 'data');
@@ -218,5 +218,27 @@ describe('session runtime layout', () => {
       claude: string;
     };
     expectSessionLayout(folder, saw);
+  });
+
+  test("the available-groups snapshot lands in the session's IPC root", () => {
+    const folder = 'layout-snapshot';
+    const groups = [
+      { jid: 'feishu:oc_a', name: 'A', lastActivity: '', isRegistered: true },
+    ];
+    writeGroupsSnapshot(folder, SESSION, true, groups);
+    const file = path.join(
+      DATA_DIR,
+      'ipc',
+      folder,
+      'agents',
+      SESSION,
+      'available_groups.json',
+    );
+    expect(JSON.parse(fs.readFileSync(file, 'utf8')).groups).toEqual(groups);
+    expect(
+      fs.existsSync(
+        path.join(DATA_DIR, 'ipc', folder, 'available_groups.json'),
+      ),
+    ).toBe(false);
   });
 });
