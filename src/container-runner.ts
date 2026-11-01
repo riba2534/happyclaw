@@ -3508,16 +3508,23 @@ export interface AvailableGroup {
 }
 
 /**
- * Write available groups snapshot for the container to read.
- * Only admin home can see all available groups (for activation).
- * Other groups see nothing (they can't activate groups).
+ * Write the available groups snapshot into a session's IPC root (the runner's
+ * /workspace/ipc). Only admin home sees all available groups (for
+ * activation); other workspaces see nothing (they can't activate groups).
  */
 export function writeGroupsSnapshot(
   groupFolder: string,
+  agentId: string,
   isAdminHome: boolean,
   groups: AvailableGroup[],
 ): void {
-  const groupIpcDir = path.join(DATA_DIR, 'ipc', groupFolder);
+  const groupIpcDir = path.join(
+    DATA_DIR,
+    'ipc',
+    groupFolder,
+    'agents',
+    agentId,
+  );
   fs.mkdirSync(groupIpcDir, { recursive: true });
 
   // Admin home sees all groups; others see nothing (they can't activate groups)

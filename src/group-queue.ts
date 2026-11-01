@@ -257,7 +257,13 @@ interface GroupState {
   afterRunnerExit?: ((runnerJid: string) => void) | null;
 }
 
-type ActiveGroupState = GroupState & { groupFolder: string };
+/** A session's IPC input directory: data/ipc/{folder}/agents/{id}/input/ */
+function sessionIpcInputDir(groupFolder: string, agentId: string): string {
+  return path.join(DATA_DIR, 'ipc', groupFolder, 'agents', agentId, 'input');
+}
+
+/** A lane whose runner has registered: it always serves one session. */
+type ActiveGroupState = GroupState & { groupFolder: string; agentId: string };
 
 export interface QueueGroupStatus {
   jid: string;
@@ -1372,40 +1378,29 @@ export class GroupQueue {
 
   /**
    * Write _drain to the runner serving this lane. A session runner is drained
-   * only through its own JID; a runner registered without a session can also
-   * be reached through a sibling JID sharing its serialization key.
+   * only through its own JID.
    */
   private requestDrainForActiveRunner(
     groupJid: string,
     reason: string,
   ): boolean {
-    const directState = this.groups.get(groupJid);
-    const exactConversationRunner =
-      directState?.active &&
-      directState.agentId !== null &&
-      groupJid.endsWith(`#agent:${directState.agentId}`);
-    const activeRunner = exactConversationRunner
-      ? groupJid
-      : this.findActiveRunnerFor(groupJid);
-    if (!activeRunner) return false;
-
-    const runnerState = this.getGroup(activeRunner);
+    const state = this.groups.get(groupJid);
     if (
-      !runnerState.active ||
-      !runnerState.groupFolder ||
-      (runnerState.agentId !== null && !exactConversationRunner)
+      !state?.active ||
+      !state.groupFolder ||
+      !state.agentId ||
+      !groupJid.endsWith(`#agent:${state.agentId}`)
     ) {
       return false;
     }
 
-    if (runnerState.drainSentinelWritten) {
+    if (state.drainSentinelWritten) {
       return true;
     }
 
-    const wrote = this.writeDrainSentinel(runnerState as ActiveGroupState);
-    if (!wrote) return false;
-    runnerState.drainSentinelWritten = true;
-    logger.info({ groupJid, activeRunner }, reason);
+    if (!this.writeDrainSentinel(state as ActiveGroupState)) return false;
+    state.drainSentinelWritten = true;
+    logger.info({ groupJid }, reason);
     return true;
   }
 
@@ -1960,7 +1955,7 @@ export class GroupQueue {
       containerName: string | null;
       groupFolder?: string;
       displayName?: string;
-      agentId?: string;
+      agentId: string;
       selectedProviderId?: string | null;
       feishuCliAccountId?: string | null;
       interactionMode?: InteractionMode;
@@ -1973,7 +1968,7 @@ export class GroupQueue {
     state.runnerRuntime = opts.containerName === null ? 'host' : 'container';
     state.displayName = opts.displayName || null;
     if (opts.groupFolder) state.groupFolder = opts.groupFolder;
-    state.agentId = opts.agentId || null;
+    state.agentId = opts.agentId;
     state.selectedProviderId = opts.selectedProviderId ?? null;
     state.feishuCliAccountId = opts.feishuCliAccountId ?? null;
     state.interactionMode = opts.interactionMode ?? null;
@@ -2009,22 +2004,9 @@ export class GroupQueue {
     if (state.closing && !state.queryInFlight) this.closeStdin(groupJid);
   }
 
-  /**
-   * Resolve IPC input directory for a group state.
-   * Sub-agents use a nested path: data/ipc/{folder}/agents/{agentId}/input/
-   */
+  /** The session's IPC input directory: data/ipc/{folder}/agents/{id}/input/ */
   private resolveIpcInputDir(state: ActiveGroupState): string {
-    if (state.agentId) {
-      return path.join(
-        DATA_DIR,
-        'ipc',
-        state.groupFolder,
-        'agents',
-        state.agentId,
-        'input',
-      );
-    }
-    return path.join(DATA_DIR, 'ipc', state.groupFolder, 'input');
+    return sessionIpcInputDir(state.groupFolder, state.agentId);
   }
 
   /**
@@ -2291,11 +2273,10 @@ export class GroupQueue {
    */
   private cleanupIpcSentinels(
     groupFolder: string,
-    agentId?: string | null,
+    agentId: string | null,
   ): void {
-    const inputDir = agentId
-      ? path.join(DATA_DIR, 'ipc', groupFolder, 'agents', agentId, 'input')
-      : path.join(DATA_DIR, 'ipc', groupFolder, 'input');
+    if (!agentId) return;
+    const inputDir = sessionIpcInputDir(groupFolder, agentId);
     for (const name of [
       '_drain',
       '_close',
@@ -2457,13 +2438,11 @@ export class GroupQueue {
 
   private hasRemainingIpcMessages(
     groupFolder: string,
-    agentId?: string | null,
+    agentId: string | null,
   ): boolean {
-    const inputDir = agentId
-      ? path.join(DATA_DIR, 'ipc', groupFolder, 'agents', agentId, 'input')
-      : path.join(DATA_DIR, 'ipc', groupFolder, 'input');
+    if (!agentId) return false;
     try {
-      const files = fs.readdirSync(inputDir);
+      const files = fs.readdirSync(sessionIpcInputDir(groupFolder, agentId));
       return files.some(isIpcInputPayloadFilename);
     } catch {
       return false;
@@ -3280,17 +3259,8 @@ export class GroupQueue {
     // 写入后 agent 看到 sentinel 自然 break loop、走 finally 清理、conversation
     // archive 完成。和 closeAllActiveForCredentialRefresh 的策略一致。
     for (const [, state] of this.groups) {
-      if (!state.active || !state.groupFolder) continue;
-      const inputDir = state.agentId
-        ? path.join(
-            DATA_DIR,
-            'ipc',
-            state.groupFolder,
-            'agents',
-            state.agentId,
-            'input',
-          )
-        : path.join(DATA_DIR, 'ipc', state.groupFolder, 'input');
+      if (!state.active || !state.groupFolder || !state.agentId) continue;
+      const inputDir = sessionIpcInputDir(state.groupFolder, state.agentId);
       try {
         fs.mkdirSync(inputDir, { recursive: true });
         fs.writeFileSync(path.join(inputDir, '_close'), '');

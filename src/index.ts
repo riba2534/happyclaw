@@ -9911,6 +9911,7 @@ async function processTaskIpc(
         sourceGroup,
         sourceGroupEntry,
         isAdminHome,
+        tasksDir,
       );
       break;
 
@@ -10087,7 +10088,12 @@ async function processTaskIpc(
         );
         await syncGroupMetadata(true);
         // Write updated snapshot immediately
-        writeGroupsSnapshot(sourceGroup, true, getAvailableGroups());
+        writeGroupsSnapshot(
+          sourceGroup,
+          ipcAgentId,
+          true,
+          getAvailableGroups(),
+        );
       } else {
         logger.warn(
           { sourceGroup },
@@ -10151,7 +10157,6 @@ async function processTaskIpc(
           );
           break;
         }
-        const tasksDir = path.join(DATA_DIR, 'ipc', sourceGroup, 'tasks');
         const tasksDirResolved = path.resolve(tasksDir);
         const resultFileName = `install_skill_result_${requestId}.json`;
         const resultFilePath = path.resolve(tasksDir, resultFileName);
@@ -10243,7 +10248,6 @@ async function processTaskIpc(
           );
           break;
         }
-        const tasksDir = path.join(DATA_DIR, 'ipc', sourceGroup, 'tasks');
         const tasksDirResolved = path.resolve(tasksDir);
         const resultFileName = `uninstall_skill_result_${requestId}.json`;
         const resultFilePath = path.resolve(tasksDir, resultFileName);
@@ -10618,6 +10622,7 @@ async function handleDiscordIpcRequest(
   sourceGroup: string,
   sourceGroupEntry: RegisteredGroup | undefined,
   isAdminHome: boolean,
+  tasksDir: string,
 ): Promise<void> {
   const requestId = data.requestId;
   if (!requestId || !SAFE_REQUEST_ID_RE.test(requestId)) {
@@ -10628,7 +10633,6 @@ async function handleDiscordIpcRequest(
     return;
   }
 
-  const tasksDir = path.join(DATA_DIR, 'ipc', sourceGroup, 'tasks');
   const tasksDirResolved = path.resolve(tasksDir);
   const resultFileName = `${data.type}_result_${requestId}.json`;
   const resultFilePath = path.resolve(tasksDir, resultFileName);
@@ -14015,7 +14019,12 @@ async function processAgentConversation(
 
     // Write the groups snapshot
     const availableGroups = isAdminHome ? getAvailableGroups() : [];
-    writeGroupsSnapshot(effectiveGroup.folder, isAdminHome, availableGroups);
+    writeGroupsSnapshot(
+      effectiveGroup.folder,
+      agentId,
+      isAdminHome,
+      availableGroups,
+    );
 
     const ownerHomeFolder = resolveOwnerHomeFolder(effectiveGroup);
 
