@@ -648,8 +648,8 @@ agentProfileRoutes.post('/generate', authMiddleware, async (c) => {
 /**
  * The connection, model and effort a run of this Agent uses, and which step
  * of the order chose it (resolveModelBinding, the same function a launch
- * calls). With a Workspace this is its main Session, so a conversation pick
- * and the Workspace's own provider environment count.
+ * calls), for a session that picked nothing. With a Workspace its own
+ * provider environment counts.
  */
 function resolveAgentModelResolution(
   profile: Pick<
@@ -661,8 +661,8 @@ function resolveAgentModelResolution(
   const folder = workspace?.folder ?? '';
   const binding = resolveModelBinding(
     { modelConfigId: profile.model_config_id, model: profile.model },
-    workspace ? { groupFolder: folder, agentId: null } : undefined,
-    { ownerUserId: profile.owner_user_id },
+    workspace ? { groupFolder: folder } : undefined,
+    { ownerUserId: profile.owner_user_id, includeSession: false },
   );
   const summary = summarizeModelBinding(
     binding,

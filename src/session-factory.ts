@@ -18,8 +18,10 @@ import {
   deleteMessagesForChatJid,
   deleteSession,
   ensureChatExists,
+  getGroupsByTargetAgent,
   updateAgentStatus,
 } from './db.js';
+import { refreshChannelMountCache } from './channel-mount-service.js';
 import { logger } from './logger.js';
 import { onTeamSessionDeleted } from './work-item-service.js';
 import {
@@ -127,7 +129,8 @@ export function archiveConversationSession(
 
 /**
  * Stop a session's runner and delete its directories, transcript and rows.
- * The caller has already settled the session's worktree.
+ * Chats still bound to it are left unbound, in the database and the live
+ * cache. The caller has already settled the session's worktree.
  */
 export async function deleteConversationSession(input: {
   workspaceJid: string;
@@ -153,7 +156,10 @@ export async function deleteConversationSession(input: {
   if (session.kind === 'conversation') deleteMessagesForChatJid(laneJid);
   deleteSession(group.folder, session.id);
   clearSessionChannelOwner(group.folder, session.id);
+  const boundChats = getGroupsByTargetAgent(session.id).map(({ jid }) => jid);
+  // Unbinds those chats in the same transaction as the row.
   deleteAgent(session.id);
+  refreshChannelMountCache(boundChats);
   forgetSessionWorktree(session.id);
   // Bound automations of the session pause; persistent ones rebind next run.
   getAutomationService()?.onSessionDeleted(laneJid);

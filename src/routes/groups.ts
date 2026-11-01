@@ -37,6 +37,7 @@ import {
 } from '../group-acl.js';
 import { MAX_GROUP_NAME_LEN } from '../group-constants.js';
 import { realpathBestEffort } from '../utils.js';
+import { sessionActivityAt } from '../session-order.js';
 import {
   dirtyWorktreesConflict,
   findDirtySessionWorktrees,
@@ -70,8 +71,6 @@ import {
   getMessagesPage,
   getMessagesAfter,
   getLatestMessagePreviewPerChat,
-  getMessagesPageMulti,
-  getMessagesAfterMulti,
   getAgent,
   listAgentsByJid,
   getGroupsByTargetAgent,
@@ -204,11 +203,10 @@ type RegisteredGroupWithJid = RegisteredGroup & { jid: string };
 /**
  * Resolve the workspace that owns execution for a physical message JID.
  *
- * Home's merged history keeps each message's physical IM chat_jid. Those IM
- * rows commonly retain container defaults even when the Home workspace is
- * host-mode, so authorization must follow the same binding/folder attribution
- * as message display and broadcasts. A declared but stale binding fails
- * closed: we cannot safely infer which workspace's execution policy applies.
+ * An IM chat row commonly retains container defaults even when the workspace
+ * it is bound to is host-mode, so authorization follows the same binding
+ * attribution as broadcasts. A declared but stale binding fails closed: we
+ * cannot safely infer which workspace's execution policy applies.
  */
 export function resolveMessageExecutionGroup(
   physicalJid: string,
@@ -226,61 +224,9 @@ export function resolveMessageExecutionGroup(
   if (boundJid) return getRegisteredGroup(boundJid) ?? null;
   if (hasBoundWorkspaceReference(physicalJid, attributionDeps)) return null;
 
-  for (const siblingJid of getJidsByFolder(physicalGroup.folder)) {
-    if (!siblingJid.startsWith('web:')) continue;
-    const sibling = getRegisteredGroup(siblingJid);
-    if (!sibling?.is_home) continue;
-    if (
-      physicalGroup.created_by &&
-      sibling.created_by !== physicalGroup.created_by
-    ) {
-      continue;
-    }
-    return sibling;
-  }
-
-  // Standalone legacy IM rows have no workspace projection. Preserve their
+  // Unbound legacy IM rows have no workspace projection. Preserve their
   // own access/execution contract rather than making historical data undeletable.
   return physicalGroup;
-}
-
-/**
- * The chat JIDs whose messages a workspace's history shows: the workspace
- * itself plus, for a home group, the IM chats of the same owner and folder.
- * An IM chat bound to another workspace must stay out: its folder/created_by
- * still point at the channel account's owner, so merging by folder + owner
- * alone would surface another workspace's conversation in the owner's Home
- * history.
- */
-export function resolveMessageQueryJids(
-  jid: string,
-  group: RegisteredGroupWithJid,
-): string[] {
-  const queryJids = [jid];
-  if (!group.is_home) return queryJids;
-  for (const siblingJid of getJidsByFolder(group.folder)) {
-    if (siblingJid === jid) continue;
-    const siblingGroup = getRegisteredGroup(siblingJid);
-    if (!siblingGroup) continue;
-    const ownerMatch =
-      group.created_by && siblingGroup.created_by === group.created_by;
-    if (!ownerMatch) continue;
-    const attributionDeps = {
-      getRegisteredGroup,
-      getAgent,
-      getJidsByFolder,
-      getChannelMount,
-    };
-    const boundJid = resolveBoundWorkspaceJid(siblingJid, attributionDeps);
-    if (
-      (boundJid && boundJid !== jid) ||
-      (!boundJid && hasBoundWorkspaceReference(siblingJid, attributionDeps))
-    ) {
-      continue;
-    }
-    queryJids.push(siblingJid);
-  }
-  return queryJids;
 }
 
 function normalizeGroupName(name: unknown): string {
@@ -294,7 +240,7 @@ interface WorkspaceDeleteBindingSummary {
     sessionName: string;
     imGroups: Array<{ jid: string; name: string }>;
   }>;
-  mainImGroups: Array<{ jid: string; name: string }>;
+  workspaceImGroups: Array<{ jid: string; name: string }>;
   threadContextBindings: Array<{
     jid: string;
     name: string;
@@ -320,7 +266,7 @@ function collectWorkspaceDeleteBindings(
     string,
     Map<string, { jid: string; name: string }>
   >();
-  const mainBindings = new Map<string, { jid: string; name: string }>();
+  const workspaceBindings = new Map<string, { jid: string; name: string }>();
 
   for (const mount of listChannelMountsByWorkspace(jid)) {
     const imGroup = getRegisteredGroup(mount.channel_jid);
@@ -333,7 +279,7 @@ function collectWorkspaceDeleteBindings(
       items.set(item.jid, item);
       sessionBindings.set(mount.session_id, items);
     } else {
-      mainBindings.set(item.jid, item);
+      workspaceBindings.set(item.jid, item);
     }
   }
 
@@ -346,12 +292,14 @@ function collectWorkspaceDeleteBindings(
     if (items.size > 0) sessionBindings.set(agent.id, items);
   }
 
-  const legacyMainJid = `web:${existing.folder}`;
-  const mainBoundByJid = getGroupsByTargetMainJid(jid);
-  const mainBoundByFolder =
-    legacyMainJid !== jid ? getGroupsByTargetMainJid(legacyMainJid) : [];
-  for (const linked of [...mainBoundByJid, ...mainBoundByFolder]) {
-    mainBindings.set(linked.jid, {
+  const legacyWorkspaceJid = `web:${existing.folder}`;
+  const workspaceBoundByJid = getGroupsByTargetMainJid(jid);
+  const workspaceBoundByFolder =
+    legacyWorkspaceJid !== jid
+      ? getGroupsByTargetMainJid(legacyWorkspaceJid)
+      : [];
+  for (const linked of [...workspaceBoundByJid, ...workspaceBoundByFolder]) {
+    workspaceBindings.set(linked.jid, {
       jid: linked.jid,
       name: linked.group.name,
     });
@@ -364,7 +312,7 @@ function collectWorkspaceDeleteBindings(
       imGroups: Array.from(imGroups.values()),
     }),
   );
-  const mainImGroups = Array.from(mainBindings.values());
+  const workspaceImGroups = Array.from(workspaceBindings.values());
   const threadContextBindings = listImContextBindingsByWorkspace(jid).map(
     (binding) => {
       const imGroup = getRegisteredGroup(binding.source_jid);
@@ -377,7 +325,7 @@ function collectWorkspaceDeleteBindings(
   );
   const mountedChannelJids = Array.from(
     new Set([
-      ...mainImGroups.map((item) => item.jid),
+      ...workspaceImGroups.map((item) => item.jid),
       ...boundSessions.flatMap((session) =>
         session.imGroups.map((item) => item.jid),
       ),
@@ -390,7 +338,7 @@ function collectWorkspaceDeleteBindings(
 
   return {
     boundSessions,
-    mainImGroups,
+    workspaceImGroups,
     threadContextBindings,
     mountedChannelJids,
     channelBindingCount: allChannelJids.size,
@@ -411,7 +359,7 @@ function workspaceDeleteImpactPayload(
       agentName: session.sessionName,
       imGroups: session.imGroups,
     })),
-    bound_main_im_groups: summary.mainImGroups,
+    bound_main_im_groups: summary.workspaceImGroups,
     bound_thread_contexts: summary.threadContextBindings,
   };
 }
@@ -472,8 +420,7 @@ function buildGroupsPayload(user: AuthUser): Record<string, GroupPayloadItem> {
   for (const [jid, group] of Object.entries(groups)) {
     if (guestGrants) {
       // Guests see exactly the owner's workspaces they were granted
-      // (including a host-mode Home). IM rows are merged into their
-      // workspace's message view, so they are not listed separately.
+      // (including a host-mode Home), never IM rows.
       if (guestGrants.has(jid)) visibleEntries.push([jid, group]);
       continue;
     }
@@ -481,8 +428,8 @@ function buildGroupsPayload(user: AuthUser): Record<string, GroupPayloadItem> {
     const isWeb = jid.startsWith('web:');
     const isHost = isHostExecutionGroup(group);
 
-    // Hide IM channels that belong to a home folder.
-    // These are merged into the home conversation in UI and message APIs.
+    // Hide IM channels that belong to a home folder: a chat is not a
+    // workspace, it reaches one through its binding.
     if (!isWeb && !isHome && homeFolders.has(group.folder)) continue;
 
     // Hide other users' home groups from the chat sidebar.
@@ -501,9 +448,47 @@ function buildGroupsPayload(user: AuthUser): Record<string, GroupPayloadItem> {
     visibleEntries.push([jid, group]);
   }
 
+  // A workspace is as recent as its most recent session: the latest message
+  // over its sessions and their own activity. An IM row has its own chat.
+  const sessionsByWorkspace = new Map(
+    visibleEntries
+      .filter(([jid]) => jid.startsWith('web:'))
+      .map(([jid]) => [
+        jid,
+        listAgentsByJid(jid).filter((a) => a.kind === 'conversation'),
+      ]),
+  );
+  const previewJids = visibleEntries.flatMap(
+    ([jid]) =>
+      sessionsByWorkspace.get(jid)?.map((s) => `${jid}#agent:${s.id}`) ?? [jid],
+  );
   // 每个 jid 各取最新一条（分区窗口，不再被高频群吃光全局窗口）
-  const visibleJids = visibleEntries.map(([jid]) => jid);
-  const latestByJid = getLatestMessagePreviewPerChat(visibleJids);
+  const previewByJid = getLatestMessagePreviewPerChat(previewJids);
+  const later = (a: string | undefined, b: string | undefined) =>
+    !b || (!!a && Date.parse(a) > Date.parse(b)) ? a : b;
+  const latestOf = (
+    jid: string,
+  ): { content?: string; timestamp?: string } | undefined => {
+    const sessions = sessionsByWorkspace.get(jid);
+    if (!sessions) return previewByJid.get(jid);
+    let message: { content: string; timestamp: string } | undefined;
+    let activity: string | undefined;
+    for (const session of sessions) {
+      const preview = previewByJid.get(`${jid}#agent:${session.id}`);
+      if (
+        preview &&
+        (!message ||
+          Date.parse(preview.timestamp) > Date.parse(message.timestamp))
+      ) {
+        message = preview;
+      }
+      activity = later(sessionActivityAt(session), activity);
+    }
+    return {
+      content: message?.content,
+      timestamp: later(message?.timestamp, activity),
+    };
+  };
 
   // Fetch user's pinned groups
   const pins = getUserPinnedGroups(user.id);
@@ -512,7 +497,7 @@ function buildGroupsPayload(user: AuthUser): Record<string, GroupPayloadItem> {
     const isHome = !!group.is_home;
     const isWeb = jid.startsWith('web:');
 
-    const latest = latestByJid.get(jid);
+    const latest = latestOf(jid);
     // 只读投影：列表 GET 不允许因为某个工作区绑定缺失而顺手开写事务修复
     // （那属于启动 backfill 和运行时解析的职责）。
     const agentProfile = isWeb
@@ -1327,20 +1312,7 @@ groupRoutes.post('/', authMiddleware, async (c) => {
             throw err;
           }
         });
-        // Hold the system policy lock through container prewarm. If host-only
-        // mode is enabled concurrently, its snapshot can only run after this
-        // workspace is fully published and will therefore quiesce the new
-        // container before committing the policy.
-        if (profile && executionMode === 'container') {
-          try {
-            deps.ensureTerminalContainerStarted(jid);
-          } catch (err) {
-            logger.warn(
-              { err, jid },
-              'Workspace created but container prewarm could not be started',
-            );
-          }
-        }
+        // A workspace has no runner of its own: its sessions start theirs.
         return profile;
       },
     );
@@ -1636,7 +1608,6 @@ groupRoutes.patch('/:jid', authMiddleware, async (c) => {
         // into a container, or an assistant/proactive transcript across output
         // authorities, after the old runner is stopped.
         deleteWorkspaceSessions(existing.folder);
-        delete deps.sessions[existing.folder];
       }
     };
 
@@ -2173,7 +2144,6 @@ groupRoutes.delete('/:jid', authMiddleware, async (c) => {
     }
 
     delete registeredGroups[jid];
-    delete deps.getSessions()[freshExisting.folder];
     deps.setLastAgentTimestamp(jid, { timestamp: '', id: '' });
 
     removeFlowArtifacts(freshExisting.folder);
@@ -2299,7 +2269,7 @@ groupRoutes.post('/:jid/interrupt', authMiddleware, async (c) => {
 });
 
 // POST /api/groups/:jid/reset-session - 重置会话上下文
-// Optional body: { agentId?: string } — when provided, only reset that agent's session
+// Body: { agentId: string } — the session to reset
 groupRoutes.post('/:jid/reset-session', authMiddleware, async (c) => {
   const deps = getWebDeps();
   if (!deps) return c.json({ error: 'Server not initialized' }, 500);
@@ -2320,38 +2290,20 @@ groupRoutes.post('/:jid/reset-session', authMiddleware, async (c) => {
     );
   }
 
-  // Read optional agentId from request body
-  let agentId: string | undefined;
-  try {
-    const body = await c.req.json().catch(() => ({}));
-    if (body && typeof body.agentId === 'string' && body.agentId) {
-      agentId = body.agentId;
-    }
-  } catch {
-    /* no body or invalid JSON — treat as main session reset */
+  const body = (await c.req.json().catch(() => ({}))) as { agentId?: unknown };
+  const agentId =
+    typeof body?.agentId === 'string' && body.agentId ? body.agentId : null;
+  if (!agentId) {
+    return c.json({ error: 'Session required', code: 'session_required' }, 400);
+  }
+  const agent = getAgent(agentId);
+  if (!agent || agent.chat_jid !== jid) {
+    return c.json({ error: 'Agent not found' }, 404);
   }
 
-  // Validate agentId belongs to this group
-  if (agentId) {
-    const agent = getAgent(agentId);
-    if (!agent || agent.chat_jid !== jid) {
-      return c.json({ error: 'Agent not found' }, 404);
-    }
-  }
-
-  // 1. Stop running processes
+  // 1. Stop the session's runner
   try {
-    if (agentId) {
-      // Agent-specific: only stop the agent's virtual JID process
-      const virtualJid = `${jid}#agent:${agentId}`;
-      await deps.queue.stopGroup(virtualJid, { force: true });
-    } else {
-      // Main session: stop ALL processes for this folder
-      const siblingJids = getJidsByFolder(group.folder);
-      await Promise.all(
-        siblingJids.map((j) => deps.queue.stopGroup(j, { force: true })),
-      );
-    }
+    await deps.queue.stopGroup(`${jid}#agent:${agentId}`, { force: true });
   } catch (err) {
     logger.error(
       { jid, agentId, err },
@@ -2381,10 +2333,7 @@ groupRoutes.post('/:jid/reset-session', authMiddleware, async (c) => {
   try {
     deleteSession(group.folder, agentId);
     clearSessionChannelOwner(group.folder, agentId);
-    if (!agentId) {
-      delete deps.getSessions()[group.folder];
-    }
-    notifyConversationContextCleared(group.folder, agentId ?? null);
+    notifyConversationContextCleared(group.folder, agentId);
   } catch (err) {
     logger.error(
       { jid, folder: group.folder, agentId, err },
@@ -2397,7 +2346,7 @@ groupRoutes.post('/:jid/reset-session', authMiddleware, async (c) => {
   }
 
   // 4. Insert system divider message into the correct JID (best-effort).
-  const targetJid = agentId ? `${jid}#agent:${agentId}` : jid;
+  const targetJid = `${jid}#agent:${agentId}`;
   const dividerMessageId = crypto.randomUUID();
   const timestamp = new Date().toISOString();
   try {
@@ -2460,7 +2409,7 @@ groupRoutes.post('/:jid/reset-session', authMiddleware, async (c) => {
 
 type SessionModelSelectionScope =
   | { error: Response }
-  | { group: RegisteredGroup; agentId: string | null };
+  | { group: RegisteredGroup; agentId: string };
 
 function resolveSessionModelSelectionScope(
   c: Context<{ Variables: Variables }>,
@@ -2493,14 +2442,20 @@ function resolveSessionModelSelectionScope(
       ),
     };
   }
-  const agentId = agentIdInput || null;
-  if (agentId) {
-    const agent = getAgent(agentId);
-    if (!agent || agent.chat_jid !== jid) {
-      return { error: c.json({ error: 'Agent not found' }, 404) };
-    }
+  // A model pick belongs to a session; a workspace has none.
+  if (!agentIdInput) {
+    return {
+      error: c.json(
+        { error: 'Session required', code: 'session_required' },
+        400,
+      ),
+    };
   }
-  return { group, agentId };
+  const agent = getAgent(agentIdInput);
+  if (!agent || agent.chat_jid !== jid) {
+    return { error: c.json({ error: 'Agent not found' }, 404) };
+  }
+  return { group, agentId: agentIdInput };
 }
 
 /**
@@ -2521,7 +2476,7 @@ function agentModelOn(
 
 function buildSessionModelSelectionPayload(
   group: RegisteredGroup,
-  agentId: string | null,
+  agentId: string,
   chooser: AuthUser,
 ) {
   const providers = getProviders();
@@ -2642,7 +2597,7 @@ function buildSessionModelSelectionPayload(
 function applySessionChoiceChange(
   deps: NonNullable<ReturnType<typeof getWebDeps>>,
   group: RegisteredGroup,
-  agentId: string | null,
+  agentId: string,
   jid: string,
   previous: SessionModelSelectionDetail | null,
   next: {
@@ -2670,9 +2625,7 @@ function applySessionChoiceChange(
         : (choice.model ?? agentModel ?? provider.anthropicModel);
     return `${choice.modelConfigId}\u0000${model}`;
   };
-  const jids = agentId
-    ? [`${jid}#agent:${agentId}`]
-    : getJidsByFolder(group.folder);
+  const jids = [`${jid}#agent:${agentId}`];
   const effortChanged = (previous?.effort ?? null) !== next.effort;
   let drained = 0;
   if (launchKey(previous) !== launchKey(next)) {
@@ -2930,7 +2883,6 @@ groupRoutes.post('/:jid/clear-history', authMiddleware, async (c) => {
     // refresh failure must not turn a successfully committed rebuild into a
     // misleading 500 response: the authoritative state is already in SQLite.
     try {
-      delete deps.getSessions()[group.folder];
       for (const siblingJid of siblingJids) {
         deps.setLastAgentTimestamp(siblingJid, { timestamp: '', id: '' });
       }
@@ -3071,111 +3023,42 @@ groupRoutes.get('/:jid/messages', authMiddleware, async (c) => {
     200,
   );
 
-  // Agent conversation: query messages from the virtual chat_jid
-  if (agentIdParam) {
-    const agent = getAgent(agentIdParam);
-    if (!agent || agent.chat_jid !== jid) {
-      return c.json({ error: 'Agent not found' }, 404);
-    }
-
-    const virtualJid = `${jid}#agent:${agentIdParam}`;
-    const agentExposure = resolveTurnTraceExposure(group.folder, {
-      agentKind: agent.kind,
-    });
-    if (afterSequence !== undefined || after) {
-      const messages = await presentWebMessages(
-        markMessagesWithTrace(
-          attachSessionWorkflowRuns(
-            getMessagesAfter(virtualJid, after, limit, afterSequence),
-            { groupFolder: group.folder, agentId: agentIdParam },
-          ),
-          agentExposure,
-        ),
-        authUser,
-      );
-      return c.json({ messages });
-    }
-    const rows = getMessagesPage(virtualJid, before, limit + 1, beforeSequence);
-    const hasMore = rows.length > limit;
-    const messages = await presentWebMessages(
-      markMessagesWithTrace(
-        attachSessionWorkflowRuns(hasMore ? rows.slice(0, limit) : rows, {
-          groupFolder: group.folder,
-          agentId: agentIdParam,
-        }),
-        agentExposure,
-      ),
-      authUser,
-    );
-    return c.json({ messages, hasMore });
+  // A session's history lives under its own address; the workspace JID is
+  // no session.
+  if (!agentIdParam) {
+    return c.json({ error: 'Session required', code: 'session_required' }, 400);
+  }
+  const agent = getAgent(agentIdParam);
+  if (!agent || agent.chat_jid !== jid) {
+    return c.json({ error: 'Agent not found' }, 404);
   }
 
-  // is_home 群组合并查询：将同一 owner、同 folder 下的 Web 与 IM 消息合并展示。
-  const queryJids = resolveMessageQueryJids(jid, group);
-
-  // A turn's stored thinking/trace follows the workspace's current contract
-  // (a proactive workspace set to `hidden` lists only the turns whose progress
-  // statements it shows).
-  const exposure = resolveTurnTraceExposure(group.folder);
-
-  if (queryJids.length === 1) {
-    // 单 JID 走原路径
-    if (afterSequence !== undefined || after) {
-      const messages = await presentWebMessages(
-        markMessagesWithTrace(
-          attachSessionWorkflowRuns(
-            getMessagesAfter(jid, after, limit, afterSequence),
-            { groupFolder: group.folder, agentId: null },
-          ),
-          exposure,
-        ),
-        authUser,
-      );
-      return c.json({ messages });
-    }
-    const rows = getMessagesPage(jid, before, limit + 1, beforeSequence);
-    const hasMore = rows.length > limit;
-    const messages = await presentWebMessages(
-      markMessagesWithTrace(
-        attachSessionWorkflowRuns(hasMore ? rows.slice(0, limit) : rows, {
-          groupFolder: group.folder,
-          agentId: null,
-        }),
-        exposure,
-      ),
-      authUser,
-    );
-    return c.json({ messages, hasMore });
-  }
-
-  // 多 JID 合并查询
+  const virtualJid = `${jid}#agent:${agentIdParam}`;
+  const agentExposure = resolveTurnTraceExposure(group.folder, {
+    agentKind: agent.kind,
+  });
   if (afterSequence !== undefined || after) {
     const messages = await presentWebMessages(
       markMessagesWithTrace(
         attachSessionWorkflowRuns(
-          getMessagesAfterMulti(queryJids, after, limit, afterSequence),
-          { groupFolder: group.folder, agentId: null },
+          getMessagesAfter(virtualJid, after, limit, afterSequence),
+          { groupFolder: group.folder, agentId: agentIdParam },
         ),
-        exposure,
+        agentExposure,
       ),
       authUser,
     );
     return c.json({ messages });
   }
-  const rows = getMessagesPageMulti(
-    queryJids,
-    before,
-    limit + 1,
-    beforeSequence,
-  );
+  const rows = getMessagesPage(virtualJid, before, limit + 1, beforeSequence);
   const hasMore = rows.length > limit;
   const messages = await presentWebMessages(
     markMessagesWithTrace(
       attachSessionWorkflowRuns(hasMore ? rows.slice(0, limit) : rows, {
         groupFolder: group.folder,
-        agentId: null,
+        agentId: agentIdParam,
       }),
-      exposure,
+      agentExposure,
     ),
     authUser,
   );

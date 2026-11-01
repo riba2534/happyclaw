@@ -347,14 +347,15 @@ describe('DELETE /:jid/messages/:messageId host execution gate', () => {
     expect(db.getMessage(HOST_VIRTUAL_JID, 'msg-host-2')).not.toBeNull();
   });
 
-  test('a non-admin owner is denied through a container-default Home IM sibling', async () => {
+  test('an unbound IM chat keeps its own execution contract, not its folder Home', async () => {
     seedMessage('msg-host-home-im', HOST_IM_JID, OWNER_ID);
     asUser(OWNER_ID, 'member');
 
     const res = await del(HOST_IM_JID, 'msg-host-home-im');
 
-    expect(res.status).toBe(403);
-    expect(db.getMessage(HOST_IM_JID, 'msg-host-home-im')).not.toBeNull();
+    // The chat is no session of the host Home that shares its folder.
+    expect(res.status).toBe(200);
+    expect(db.getMessage(HOST_IM_JID, 'msg-host-home-im')).toBeNull();
   });
 
   test('a non-admin owner is denied through an IM chat bound to a host workspace', async () => {

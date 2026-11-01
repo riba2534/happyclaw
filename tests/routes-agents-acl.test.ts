@@ -9,6 +9,7 @@
  * Mirrors tests/routes-workspace-config-acl.test.ts. web.js's broadcast is
  * mocked so the success path doesn't pull in the full Hono app / WebSocket.
  */
+import crypto from 'crypto';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -22,6 +23,10 @@ import {
   test,
   vi,
 } from 'vitest';
+
+import { buildNativeThreadRouteJid } from '../src/channel-native-context.js';
+import type { RegisteredGroup } from '../src/types.js';
+import { createRuntimeSourceHarness } from './helpers/runtime-source.js';
 
 const SHARED_TMP =
   process.env.HAPPYCLAW_TEST_DATA_DIR ??
@@ -72,6 +77,7 @@ const agentRoutesModule = await import('../src/routes/agents.js');
 const db = await import('../src/db.js');
 const mountService = await import('../src/channel-mount-service.js');
 const webContext = await import('../src/web-context.js');
+const ledger = await import('../src/automation-run-ledger.js');
 
 const agentRoutes = agentRoutesModule.default;
 
@@ -107,6 +113,7 @@ beforeEach(() => {
     getRegisteredGroups: () => ({}),
     broadcastAgentStatus: vi.fn(),
     broadcastAgentRemoved: vi.fn(),
+    queue: { stopGroup: vi.fn(async () => {}) },
   } as unknown as Parameters<typeof webContext.setWebDeps>[0]);
   try {
     db.deleteRegisteredGroup(GROUP_JID);
@@ -153,12 +160,34 @@ async function postSession(
   return { status: res.status, body: await res.json().catch(() => ({})) };
 }
 
+async function newSessionId(name = 'Bound session'): Promise<string> {
+  const created = await postSession({ name });
+  expect(created.status).toBe(200);
+  return created.body.session.id as string;
+}
+
 async function deleteSessionRoute(
   sessionId: string,
+  query = '',
+): Promise<{ status: number; body: any }> {
+  const res = await agentRoutes.request(
+    `/${encodeURIComponent(GROUP_JID)}/sessions/${sessionId}${query}`,
+    { method: 'DELETE' },
+  );
+  return { status: res.status, body: await res.json().catch(() => ({})) };
+}
+
+async function patchSession(
+  sessionId: string,
+  body: unknown,
 ): Promise<{ status: number; body: any }> {
   const res = await agentRoutes.request(
     `/${encodeURIComponent(GROUP_JID)}/sessions/${sessionId}`,
-    { method: 'DELETE' },
+    {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    },
   );
   return { status: res.status, body: await res.json().catch(() => ({})) };
 }
@@ -276,12 +305,10 @@ describe('formal sessions API', () => {
     });
   });
 
-  test('DELETE /sessions/:id is blocked by channel_mounts session binding', async () => {
+  test('a session with bindings answers 409 with every chat, topic and automation it takes', async () => {
     seedTestGroup();
     asUser(OWNER_ID);
-
-    const created = await postSession({ name: 'Bound session' });
-    const sessionId = created.body.session.id as string;
+    const sessionId = await newSessionId();
     db.setRegisteredGroup('telegram:bound-session', {
       name: 'Bound Telegram',
       folder: 'owner-home',
@@ -289,15 +316,389 @@ describe('formal sessions API', () => {
       created_by: OWNER_ID,
       target_agent_id: sessionId,
     } as any);
+    db.upsertImContextBinding({
+      source_jid: 'telegram:bound-session',
+      context_type: 'thread',
+      context_id: 'topic-9',
+      workspace_jid: GROUP_JID,
+      agent_id: sessionId,
+      root_message_id: 'root-9',
+      title: 'Topic',
+      last_active_at: new Date().toISOString(),
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    });
+    const service = {
+      listForSession: vi.fn(() => [
+        { id: 'auto-1', name: '日报', status: 'active' },
+        { id: 'auto-2', name: '旧任务', status: 'completed' },
+      ]),
+      onSessionDeleted: vi.fn(),
+    };
+    ledger.setAutomationRuntimeService(service as never);
+    try {
+      expect(await deleteSessionRoute(sessionId)).toEqual({
+        status: 409,
+        body: {
+          error: 'Session has channel bindings or automations',
+          code: 'session_has_bindings',
+          linked_im_groups: [
+            { jid: 'telegram:bound-session', name: 'Bound Telegram' },
+          ],
+          thread_bindings: [
+            {
+              jid: 'telegram:bound-session',
+              name: 'Bound Telegram',
+              context_id: 'topic-9',
+            },
+          ],
+          automations: [{ id: 'auto-1', name: '日报' }],
+        },
+      });
+      expect(service.listForSession).toHaveBeenCalledWith(
+        `${GROUP_JID}#agent:${sessionId}`,
+      );
+      expect(db.getAgent(sessionId)).toBeDefined();
 
-    const { status, body } = await deleteSessionRoute(sessionId);
-    expect(status).toBe(409);
-    expect(body.linked_im_groups).toEqual([
-      { jid: 'telegram:bound-session', name: 'Bound Telegram' },
-    ]);
+      // Confirmed: the chats are left unbound, the topic binding goes, the
+      // bound automations pause through onSessionDeleted.
+      const cache: Record<string, RegisteredGroup> = {
+        'telegram:bound-session': db.getRegisteredGroup(
+          'telegram:bound-session',
+        )!,
+      };
+      mountService.injectChannelMountRuntimePort({
+        getRegisteredGroups: () => cache,
+      });
+      expect(
+        await deleteSessionRoute(sessionId, '?confirm_bindings=true'),
+      ).toEqual({ status: 200, body: { success: true } });
+      expect(db.getAgent(sessionId)).toBeUndefined();
+      expect(
+        db.getRegisteredGroup('telegram:bound-session')?.target_agent_id,
+      ).toBeUndefined();
+      expect(cache['telegram:bound-session'].target_agent_id).toBeUndefined();
+      expect(db.getChannelMount('telegram:bound-session')).toBeUndefined();
+      expect(db.listImContextBindingsByAgent(sessionId)).toEqual([]);
+      expect(service.onSessionDeleted).toHaveBeenCalledWith(
+        `${GROUP_JID}#agent:${sessionId}`,
+      );
+    } finally {
+      ledger.setAutomationRuntimeService(null);
+      mountService.injectChannelMountRuntimePort(null);
+      db.deleteRegisteredGroup('telegram:bound-session');
+    }
   });
 
-  test('native-thread sessions have read-only titles and cannot be deleted directly', async () => {
+  test('a session without bindings or automations is deleted at once', async () => {
+    seedTestGroup();
+    asUser(OWNER_ID);
+    const sessionId = await newSessionId();
+    expect(await deleteSessionRoute(sessionId)).toEqual({
+      status: 200,
+      body: { success: true },
+    });
+    expect(db.getAgent(sessionId)).toBeUndefined();
+  });
+
+  test('rebind_to moves every bound chat to the other session before deleting', async () => {
+    seedTestGroup();
+    asUser(OWNER_ID);
+    const doomed = await newSessionId('Doomed');
+    const target = await newSessionId('Target');
+    const chats = ['telegram:rebind-a', 'telegram:rebind-b'];
+    for (const jid of chats) {
+      db.setRegisteredGroup(jid, {
+        name: jid,
+        folder: 'owner-home',
+        added_at: new Date().toISOString(),
+        created_by: OWNER_ID,
+        target_agent_id: doomed,
+        activation_mode: 'always',
+      } as any);
+    }
+    const cache: Record<string, RegisteredGroup> = Object.fromEntries(
+      chats.map((jid) => [jid, db.getRegisteredGroup(jid)!]),
+    );
+    mountService.injectChannelMountRuntimePort({
+      getRegisteredGroups: () => cache,
+    });
+    try {
+      expect(
+        await deleteSessionRoute(
+          doomed,
+          `?confirm_bindings=true&rebind_to=${target}`,
+        ),
+      ).toEqual({ status: 200, body: { success: true } });
+      expect(db.getAgent(doomed)).toBeUndefined();
+      for (const jid of chats) {
+        expect(db.getRegisteredGroup(jid)).toMatchObject({
+          target_agent_id: target,
+          activation_mode: 'always',
+        });
+        expect(db.getChannelMount(jid)).toMatchObject({
+          session_id: target,
+          workspace_jid: GROUP_JID,
+        });
+        expect(cache[jid].target_agent_id).toBe(target);
+      }
+    } finally {
+      mountService.injectChannelMountRuntimePort(null);
+      for (const jid of chats) db.deleteRegisteredGroup(jid);
+    }
+  });
+
+  test('rebinding several chats is one transaction: a failing chat moves none', () => {
+    seedTestGroup();
+    const sessions = ['tx-old', 'tx-new'];
+    for (const id of sessions) {
+      db.createAgent({
+        id,
+        group_folder: GROUP_FOLDER,
+        chat_jid: GROUP_JID,
+        name: id,
+        prompt: '',
+        status: 'idle',
+        kind: 'conversation',
+        created_by: OWNER_ID,
+        created_at: new Date().toISOString(),
+        completed_at: null,
+        result_summary: null,
+        last_im_jid: null,
+        spawned_from_jid: null,
+      });
+    }
+    const chats = ['telegram:tx-a', 'telegram:tx-b'];
+    for (const jid of chats) {
+      db.setRegisteredGroup(jid, {
+        name: jid,
+        folder: 'owner-home',
+        added_at: new Date().toISOString(),
+        created_by: OWNER_ID,
+        target_agent_id: 'tx-old',
+      } as any);
+    }
+    try {
+      const [a, b] = chats.map((jid) => db.getRegisteredGroup(jid)!);
+      expect(() =>
+        mountService.commitChannelMountUpdates([
+          [chats[0], mountService.buildSessionMountUpdate(a, 'tx-new')],
+          [
+            chats[1],
+            {
+              ...mountService.buildSessionMountUpdate(b, 'tx-new'),
+              containerConfigError: 'broken',
+            },
+          ],
+        ]),
+      ).toThrow();
+      for (const jid of chats) {
+        expect(db.getRegisteredGroup(jid)?.target_agent_id).toBe('tx-old');
+        expect(db.getChannelMount(jid)?.session_id).toBe('tx-old');
+      }
+    } finally {
+      for (const jid of chats) db.deleteRegisteredGroup(jid);
+      for (const id of sessions) db.deleteAgent(id);
+    }
+  });
+
+  test('rebind_to must be another session of this workspace', async () => {
+    seedTestGroup();
+    asUser(OWNER_ID);
+    const doomed = await newSessionId('Doomed');
+    db.setRegisteredGroup('web:rebind-elsewhere', {
+      name: 'Elsewhere',
+      folder: 'rebind-elsewhere',
+      added_at: new Date().toISOString(),
+      created_by: OWNER_ID,
+    });
+    db.createAgent({
+      id: 'elsewhere-session',
+      group_folder: 'rebind-elsewhere',
+      chat_jid: 'web:rebind-elsewhere',
+      name: 'Elsewhere',
+      prompt: '',
+      status: 'idle',
+      kind: 'conversation',
+      created_by: OWNER_ID,
+      created_at: new Date().toISOString(),
+      completed_at: null,
+      result_summary: null,
+      last_im_jid: null,
+      spawned_from_jid: null,
+    });
+    try {
+      for (const target of [doomed, 'missing-session', 'elsewhere-session']) {
+        const result = await deleteSessionRoute(
+          doomed,
+          `?confirm_bindings=true&rebind_to=${target}`,
+        );
+        expect(result.status).toBe(400);
+        expect(result.body.code).toBe('invalid_rebind_target');
+      }
+      expect(db.getAgent(doomed)).toBeDefined();
+    } finally {
+      db.deleteAgent('elsewhere-session');
+      db.deleteRegisteredGroup('web:rebind-elsewhere');
+    }
+  });
+
+  test('a former main session and the `main` id are sessions like any other', async () => {
+    seedTestGroup();
+    asUser(OWNER_ID);
+    expect((await deleteSessionRoute('main')).status).toBe(404);
+    expect((await patchSession('main', { pinned: true })).status).toBe(404);
+    db.createAgent({
+      id: 'legacy-main-session',
+      group_folder: GROUP_FOLDER,
+      chat_jid: GROUP_JID,
+      name: 'Old conversation',
+      prompt: '',
+      status: 'idle',
+      kind: 'conversation',
+      created_by: OWNER_ID,
+      created_at: new Date().toISOString(),
+      completed_at: null,
+      result_summary: null,
+      last_im_jid: null,
+      spawned_from_jid: null,
+      source_kind: 'legacy_main',
+      title_source: 'auto',
+    });
+    expect(
+      (await patchSession('legacy-main-session', { name: 'Renamed' })).status,
+    ).toBe(200);
+    expect(await deleteSessionRoute('legacy-main-session')).toEqual({
+      status: 200,
+      body: { success: true },
+    });
+  });
+
+  test('lists only real sessions, pinned first, each with the viewer pin time', async () => {
+    seedTestGroup();
+    asUser(OWNER_ID);
+    const older = await newSessionId('Older');
+    const newer = await newSessionId('Newer');
+    db.updateAgentContextInfo(older, {
+      last_active_at: '2026-01-01T00:00:00.000Z',
+    });
+    db.updateAgentContextInfo(newer, {
+      last_active_at: '2026-06-01T00:00:00.000Z',
+    });
+    const list = async () => {
+      const res = await agentRoutes.request(
+        `/${encodeURIComponent(GROUP_JID)}/sessions`,
+      );
+      const all = (await res.json()).sessions as Array<Record<string, unknown>>;
+      expect(
+        all.filter(
+          (s) => s.id === 'main' || s.kind === 'main' || 'is_main' in s,
+        ),
+      ).toEqual([]);
+      // Sessions earlier tests left in the shared workspace are not ours.
+      return all.filter((s) => s.id === older || s.id === newer);
+    };
+    let sessions = await list();
+    expect(sessions.map((s) => s.id)).toEqual([newer, older]);
+    expect(sessions.every((s) => s.pinned_at === null)).toBe(true);
+
+    const pinned = await patchSession(older, { pinned: true });
+    expect(pinned.status).toBe(200);
+    expect(pinned.body).toEqual({
+      success: true,
+      pinned_at: expect.any(String),
+    });
+    sessions = await list();
+    expect(sessions.map((s) => s.id)).toEqual([older, newer]);
+    expect(sessions[0].pinned_at).toBe(pinned.body.pinned_at);
+
+    const agentsRes = await agentRoutes.request(
+      `/${encodeURIComponent(GROUP_JID)}/agents`,
+    );
+    const agents = (
+      (await agentsRes.json()).agents as Array<Record<string, unknown>>
+    ).filter((a) => a.id === older || a.id === newer);
+    expect(agents.map((a) => a.id)).toEqual([older, newer]);
+    expect(agents[0].pinned_at).toBe(pinned.body.pinned_at);
+
+    // Another user's pins are their own.
+    expect(db.getUserPinnedSessions(OUTSIDER_ID)).toEqual({});
+
+    expect(await patchSession(older, { pinned: false })).toEqual({
+      status: 200,
+      body: { success: true, pinned_at: null },
+    });
+    expect((await list()).map((s) => s.id)).toEqual([newer, older]);
+  });
+
+  test('the topic of a deleted session opens a new session on its next message', async () => {
+    seedTestGroup();
+    asUser(OWNER_ID);
+    const chatJid = `feishu:topics-${Date.now()}`;
+    db.setRegisteredGroup(chatJid, {
+      name: 'Topics',
+      folder: GROUP_FOLDER,
+      added_at: new Date().toISOString(),
+      created_by: OWNER_ID,
+      feishu_chat_mode: 'topic',
+      target_main_jid: GROUP_JID,
+      binding_mode: 'thread_map',
+    } as any);
+    const globals: Record<string, unknown> = {
+      crypto,
+      buildNativeThreadRouteJid,
+      getImContextBinding: db.getImContextBinding,
+      getAgent: db.getAgent,
+      createAgent: db.createAgent,
+      ensureAgentDirectories: () => {},
+      ensureChatExists: db.ensureChatExists,
+      updateChatName: db.updateChatName,
+      updateAgentLastImJid: db.updateAgentLastImJid,
+      broadcastAgentStatus: () => {},
+      upsertImContextBinding: db.upsertImContextBinding,
+      updateAgentContextInfo: db.updateAgentContextInfo,
+      touchImContextBindingActivity: db.touchImContextBindingActivity,
+    };
+    createRuntimeSourceHarness(globals).install(
+      'resolveOrCreateNativeThreadAgent',
+    );
+    const route = () =>
+      (
+        globals.resolveOrCreateNativeThreadAgent as (...args: unknown[]) => {
+          agentId: string;
+        }
+      )(
+        chatJid,
+        GROUP_JID,
+        db.getRegisteredGroup(GROUP_JID),
+        db.getRegisteredGroup(chatJid),
+        { contextId: 'omt_1', rootMessageId: 'om_1', title: 'A topic' },
+      );
+    try {
+      const first = route().agentId;
+      expect(route().agentId).toBe(first);
+      const deletion = await deleteSessionRoute(first);
+      expect(deletion.status).toBe(409);
+      expect(deletion.body.thread_bindings).toEqual([
+        { jid: chatJid, name: 'Topics', context_id: 'omt_1' },
+      ]);
+      expect(
+        (await deleteSessionRoute(first, '?confirm_bindings=true')).status,
+      ).toBe(200);
+      expect(
+        db.getImContextBinding(chatJid, 'thread', 'omt_1'),
+      ).toBeUndefined();
+      const second = route().agentId;
+      expect(second).not.toBe(first);
+      expect(db.getAgent(second)).toMatchObject({
+        source_kind: 'native_thread',
+        chat_jid: GROUP_JID,
+      });
+    } finally {
+      db.deleteRegisteredGroup(chatJid);
+    }
+  });
+  test('native-thread sessions have read-only titles but can be deleted', async () => {
     seedTestGroup();
     asUser(OWNER_ID);
     const sessionId = `native-session-${Date.now()}`;
@@ -324,8 +725,11 @@ describe('formal sessions API', () => {
     expect(rename.body.error).toMatch(/read-only/i);
 
     const deletion = await deleteSessionRoute(sessionId);
-    expect(deletion.status).toBe(409);
-    expect(deletion.body.error).toMatch(/managed by their channel container/i);
+    expect(deletion, JSON.stringify(deletion.body)).toEqual({
+      status: 200,
+      body: { success: true },
+    });
+    expect(db.getAgent(sessionId)).toBeUndefined();
   });
 });
 
@@ -562,15 +966,16 @@ describe('agents IM-binding ACL (owner-only, mirrors CRUD)', () => {
     }
   });
 
-  test('a direct chat can bind to the workspace main session', async () => {
+  test('a direct chat binds to a session; `main` is no session', async () => {
     seedTestGroup();
     asUser(OWNER_ID);
+    const sessionId = await newSessionId();
     const suffix = Date.now().toString(36);
     const account = db.createChannelAccount({
       id: `qq-workspace-${suffix}`,
       owner_user_id: OWNER_ID,
       provider: 'qq',
-      name: `QQ main-session bot ${suffix}`,
+      name: `QQ session bot ${suffix}`,
       secret_ref: `channel-account:qq-workspace-${suffix}`,
       default_workspace_jid: GROUP_JID,
     });
@@ -584,14 +989,28 @@ describe('agents IM-binding ACL (owner-only, mirrors CRUD)', () => {
       native_context_type: 'none',
     });
 
-    const { status } = await req('/sessions/main/im-binding', 'PUT', {
+    for (const method of ['PUT', 'DELETE'] as const) {
+      const path =
+        method === 'PUT'
+          ? '/sessions/main/im-binding'
+          : `/sessions/main/im-binding/${encodeURIComponent(imJid)}`;
+      const { status, body } = await req(path, method, { im_jid: imJid });
+      expect({ status, body }).toEqual({
+        status: 404,
+        body: { error: 'Session not found' },
+      });
+    }
+    expect(db.getRegisteredGroup(imJid)?.target_main_jid).toBeUndefined();
+
+    const { status } = await req(`/sessions/${sessionId}/im-binding`, 'PUT', {
       im_jid: imJid,
     });
     expect(status).toBe(200);
     expect(db.getRegisteredGroup(imJid)).toMatchObject({
-      target_main_jid: GROUP_JID,
+      target_agent_id: sessionId,
       binding_mode: 'single_context',
     });
+    expect(db.getRegisteredGroup(imJid)?.target_main_jid).toBeUndefined();
   });
 
   test('workspace binding rejects a direct chat', async () => {
@@ -653,9 +1072,10 @@ describe('agents IM-binding ACL (owner-only, mirrors CRUD)', () => {
     expect(db.getRegisteredGroup(imJid)?.target_agent_id).toBe(sessionId);
   });
 
-  test('ordinary Feishu mention and always modes keep the selected main session', async () => {
+  test('ordinary Feishu mention and always modes keep the selected session', async () => {
     seedTestGroup();
     asUser(OWNER_ID);
+    const sessionId = await newSessionId();
     const suffix = Date.now().toString(36);
     const account = db.createChannelAccount({
       id: `feishu-mention-${suffix}`,
@@ -684,25 +1104,25 @@ describe('agents IM-binding ACL (owner-only, mirrors CRUD)', () => {
     } as unknown as Parameters<typeof webContext.setWebDeps>[0]);
 
     try {
-      const mentioned = await req('/sessions/main/im-binding', 'PUT', {
+      const mentioned = await req(`/sessions/${sessionId}/im-binding`, 'PUT', {
         im_jid: imJid,
         activation_mode: 'when_mentioned',
       });
       expect(mentioned.status, JSON.stringify(mentioned.body)).toBe(200);
       expect(db.getRegisteredGroup(imJid)).toMatchObject({
-        target_main_jid: GROUP_JID,
+        target_agent_id: sessionId,
         binding_mode: 'single_context',
         activation_mode: 'when_mentioned',
       });
 
-      const always = await req('/sessions/main/im-binding', 'PUT', {
+      const always = await req(`/sessions/${sessionId}/im-binding`, 'PUT', {
         im_jid: imJid,
         activation_mode: 'always',
         force: true,
       });
       expect(always.status, JSON.stringify(always.body)).toBe(200);
       expect(db.getRegisteredGroup(imJid)).toMatchObject({
-        target_main_jid: GROUP_JID,
+        target_agent_id: sessionId,
         binding_mode: 'single_context',
         activation_mode: 'always',
       });
@@ -716,6 +1136,7 @@ describe('agents IM-binding ACL (owner-only, mirrors CRUD)', () => {
   test('Feishu response audience changes independently from mention activation', async () => {
     seedTestGroup();
     asUser(OWNER_ID);
+    const sessionId = await newSessionId();
     const suffix = Date.now().toString(36);
     const account = db.createChannelAccount({
       id: `feishu-audience-${suffix}`,
@@ -746,7 +1167,7 @@ describe('agents IM-binding ACL (owner-only, mirrors CRUD)', () => {
 
     try {
       const ownerWithoutMention = await req(
-        '/sessions/main/im-binding',
+        `/sessions/${sessionId}/im-binding`,
         'PUT',
         {
           im_jid: imJid,
@@ -761,12 +1182,16 @@ describe('agents IM-binding ACL (owner-only, mirrors CRUD)', () => {
         binding_mode: 'single_context',
       });
 
-      const ownerWithMention = await req('/sessions/main/im-binding', 'PUT', {
-        im_jid: imJid,
-        activation_mode: 'when_mentioned',
-        audience_mode: 'owner_only',
-        force: true,
-      });
+      const ownerWithMention = await req(
+        `/sessions/${sessionId}/im-binding`,
+        'PUT',
+        {
+          im_jid: imJid,
+          activation_mode: 'when_mentioned',
+          audience_mode: 'owner_only',
+          force: true,
+        },
+      );
       expect(ownerWithMention.status).toBe(200);
       expect(db.getRegisteredGroup(imJid)).toMatchObject({
         activation_mode: 'when_mentioned',
@@ -775,7 +1200,7 @@ describe('agents IM-binding ACL (owner-only, mirrors CRUD)', () => {
       });
 
       const everyoneWithMention = await req(
-        '/sessions/main/im-binding',
+        `/sessions/${sessionId}/im-binding`,
         'PUT',
         {
           im_jid: imJid,
@@ -791,11 +1216,15 @@ describe('agents IM-binding ACL (owner-only, mirrors CRUD)', () => {
         binding_mode: 'single_context',
       });
 
-      const legacyComposite = await req('/sessions/main/im-binding', 'PUT', {
-        im_jid: imJid,
-        activation_mode: 'owner_mentioned',
-        force: true,
-      });
+      const legacyComposite = await req(
+        `/sessions/${sessionId}/im-binding`,
+        'PUT',
+        {
+          im_jid: imJid,
+          activation_mode: 'owner_mentioned',
+          force: true,
+        },
+      );
       expect(legacyComposite.status).toBe(200);
       expect(db.getRegisteredGroup(imJid)).toMatchObject({
         activation_mode: 'when_mentioned',
@@ -811,6 +1240,7 @@ describe('agents IM-binding ACL (owner-only, mirrors CRUD)', () => {
   test('Feishu private chats reject mention activation at the binding API', async () => {
     seedTestGroup();
     asUser(OWNER_ID);
+    const sessionId = await newSessionId();
     const suffix = Date.now().toString(36);
     const account = db.createChannelAccount({
       id: `feishu-direct-${suffix}`,
@@ -835,13 +1265,13 @@ describe('agents IM-binding ACL (owner-only, mirrors CRUD)', () => {
     } as unknown as Parameters<typeof webContext.setWebDeps>[0]);
 
     try {
-      const result = await req('/sessions/main/im-binding', 'PUT', {
+      const result = await req(`/sessions/${sessionId}/im-binding`, 'PUT', {
         im_jid: imJid,
         activation_mode: 'when_mentioned',
       });
       expect(result.status).toBe(400);
       expect(result.body.error).toMatch(/private chats/i);
-      expect(db.getRegisteredGroup(imJid)?.target_main_jid).toBeUndefined();
+      expect(db.getRegisteredGroup(imJid)?.target_agent_id).toBeUndefined();
     } finally {
       webContext.setWebDeps(
         null as unknown as Parameters<typeof webContext.setWebDeps>[0],
@@ -852,6 +1282,7 @@ describe('agents IM-binding ACL (owner-only, mirrors CRUD)', () => {
   test('a concurrent write during checkThreadCapableBinding is not clobbered by the pre-await snapshot', async () => {
     seedTestGroup();
     asUser(OWNER_ID);
+    const sessionId = await newSessionId();
     const suffix = Date.now().toString(36);
     const account = db.createChannelAccount({
       id: `qq-toctou-${suffix}`,
@@ -890,7 +1321,7 @@ describe('agents IM-binding ACL (owner-only, mirrors CRUD)', () => {
     } as unknown as Parameters<typeof webContext.setWebDeps>[0]);
 
     try {
-      const { status } = await req('/sessions/main/im-binding', 'PUT', {
+      const { status } = await req(`/sessions/${sessionId}/im-binding`, 'PUT', {
         im_jid: imJid,
       });
       expect(status).toBe(200);
@@ -899,7 +1330,7 @@ describe('agents IM-binding ACL (owner-only, mirrors CRUD)', () => {
       // concurrent write that landed mid-await. A stale pre-await snapshot
       // would silently overwrite owner_im_id back to its original value.
       expect(after).toMatchObject({
-        target_main_jid: GROUP_JID,
+        target_agent_id: sessionId,
         binding_mode: 'single_context',
         owner_im_id: 'concurrent-writer',
       });
@@ -913,6 +1344,7 @@ describe('agents IM-binding ACL (owner-only, mirrors CRUD)', () => {
   test('a concurrent ownership transfer during checkThreadCapableBinding is rejected, not silently applied', async () => {
     seedTestGroup();
     asUser(OWNER_ID);
+    const sessionId = await newSessionId();
     const suffix = Date.now().toString(36);
     const account = db.createChannelAccount({
       id: `qq-reauth-${suffix}`,
@@ -952,15 +1384,19 @@ describe('agents IM-binding ACL (owner-only, mirrors CRUD)', () => {
     } as unknown as Parameters<typeof webContext.setWebDeps>[0]);
 
     try {
-      const { status, body } = await req('/sessions/main/im-binding', 'PUT', {
-        im_jid: imJid,
-      });
+      const { status, body } = await req(
+        `/sessions/${sessionId}/im-binding`,
+        'PUT',
+        {
+          im_jid: imJid,
+        },
+      );
       expect(status).toBe(403);
       expect(body.error).toMatch(/forbidden/i);
       // The mutation must not have been applied — the row still reflects
       // only the concurrent write, not this request's intended bind.
       const after = db.getRegisteredGroup(imJid);
-      expect(after?.target_main_jid).not.toBe(GROUP_JID);
+      expect(after?.target_agent_id).not.toBe(sessionId);
       expect(after?.created_by).toBe(OUTSIDER_ID);
     } finally {
       webContext.setWebDeps(
