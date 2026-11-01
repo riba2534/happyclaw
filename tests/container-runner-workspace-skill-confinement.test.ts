@@ -102,7 +102,11 @@ describe('buildVolumeMounts — workspace skill confinement', () => {
 
     fs.mkdirSync(path.join(tmpDataDir, 'groups', 'ws-a'), { recursive: true });
 
-    const mounts = buildVolumeMounts(fakeGroup('ws-a', USER) as any, false);
+    const mounts = buildVolumeMounts(
+      fakeGroup('ws-a', USER) as any,
+      false,
+      'session-1',
+    );
 
     expect(
       mounts.some(
@@ -129,7 +133,11 @@ describe('buildVolumeMounts — workspace skill confinement', () => {
 
     fs.mkdirSync(path.join(tmpDataDir, 'groups', 'ws-a'), { recursive: true });
 
-    const mounts = buildVolumeMounts(fakeGroup('ws-a', USER) as any, false);
+    const mounts = buildVolumeMounts(
+      fakeGroup('ws-a', USER) as any,
+      false,
+      'session-1',
+    );
 
     expect(
       mounts.some(
@@ -157,7 +165,11 @@ describe('buildVolumeMounts — workspace skill confinement', () => {
     fs.mkdirSync(wsADir, { recursive: true });
     fs.symlinkSync(path.join(wsBDir, '.claude'), path.join(wsADir, '.claude'));
 
-    const mounts = buildVolumeMounts(fakeGroup('ws-a', USER) as any, false);
+    const mounts = buildVolumeMounts(
+      fakeGroup('ws-a', USER) as any,
+      false,
+      'session-1',
+    );
 
     expect(
       mounts.some(
@@ -182,7 +194,11 @@ describe('buildVolumeMounts — workspace skill confinement', () => {
 
     fs.mkdirSync(path.join(tmpDataDir, 'groups', 'ws-a'), { recursive: true });
 
-    const mounts = buildVolumeMounts(fakeGroup('ws-a', USER) as any, false);
+    const mounts = buildVolumeMounts(
+      fakeGroup('ws-a', USER) as any,
+      false,
+      'session-1',
+    );
 
     const legitMount = mounts.find(
       (mount) => mount.containerPath === '/workspace/effective-skills/legit',
@@ -209,7 +225,11 @@ describe('buildVolumeMounts — workspace skill confinement', () => {
 
     fs.mkdirSync(path.join(tmpDataDir, 'groups', 'ws-a'), { recursive: true });
 
-    const mounts = buildVolumeMounts(fakeGroup('ws-a', USER) as any, false);
+    const mounts = buildVolumeMounts(
+      fakeGroup('ws-a', USER) as any,
+      false,
+      'session-1',
+    );
 
     const reviewMount = mounts.find(
       (mount) => mount.containerPath === '/workspace/effective-skills/review',

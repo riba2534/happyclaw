@@ -449,7 +449,7 @@ export interface CloseHandlerContext {
   /** containerName or processId */
   identifier: string;
   logsDir: string;
-  input: { prompt: string; sessionId?: string; agentId?: string };
+  input: { prompt: string; sessionId?: string; agentId: string };
   stdoutState: StdoutParserState;
   stderrState: StderrState;
   onOutput?: (output: ContainerOutput) => Promise<void>;
@@ -531,7 +531,7 @@ export function writeRunLog(
     `=== ${ctx.label} Run Log ===`,
     `Timestamp: ${new Date().toISOString()}`,
     `Group: ${ctx.groupName}`,
-    `Session: ${ctx.input.agentId ?? 'n/a'}`,
+    `Session: ${ctx.input.agentId}`,
     `Duration: ${duration}ms`,
     `Exit Code: ${code}`,
     `Stdout Truncated: ${ctx.stdoutState.stdoutTruncated}`,

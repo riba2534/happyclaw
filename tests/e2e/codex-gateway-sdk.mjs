@@ -855,7 +855,8 @@ try {
   // into the runner's grant, the picked model becomes the runner's model.
   const pickLease = new CodexGatewayRunnerLease({
     kind: 'host',
-    ...conversation,
+    groupFolder: conversation.groupFolder,
+    agentId: conversation.sessionAgentId,
     sessionEffort: 'ultra',
   });
   overrideKey = resolveCodexGatewayLaunchConfig(

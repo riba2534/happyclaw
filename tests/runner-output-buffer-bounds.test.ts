@@ -115,7 +115,7 @@ function closeContext(
     filePrefix: 'container',
     identifier: 'c-1',
     logsDir,
-    input: { prompt: 'p', isMain: false },
+    input: { prompt: 'p', agentId: 'session-1' },
     stdoutState,
     stderrState,
     onOutput,

@@ -239,8 +239,8 @@ async function runScenario({ mode, port, timeoutMs, tmp }) {
     JSON.stringify({
       prompt: 'reply with exactly: STUB_PROBE',
       groupFolder: 'hc-stub',
-      chatJid: 'web:hc-stub',
-      isMain: false,
+      chatJid: 'web:hc-stub#agent:session-1',
+      agentId: 'session-1',
       isHome: false,
       isAdminHome: false,
       turnId: `stub-${mode.replace(/[^a-z0-9]/gi, '-')}`,

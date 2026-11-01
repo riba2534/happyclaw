@@ -226,8 +226,8 @@ child.stdin.end(
   JSON.stringify({
     prompt: 'start two background jobs',
     groupFolder: 'hc-bg-placeholder',
-    chatJid: 'web:hc-bg-placeholder',
-    isMain: false,
+    chatJid: 'web:hc-bg-placeholder#agent:session-1',
+    agentId: 'session-1',
     isHome: false,
     isAdminHome: false,
     turnId: 'bg-placeholder-turn',
