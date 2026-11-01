@@ -8,6 +8,8 @@ interface InteractionModeSelectorProps {
   disabled?: boolean;
   name: string;
   description?: string;
+  /** Use a denser choice row in compact creation dialogs. */
+  compact?: boolean;
   /** Keep the legend for screen readers only when a dialog title already names the choice. */
   hideLegend?: boolean;
 }
@@ -39,6 +41,7 @@ export function InteractionModeSelector({
   onChange,
   disabled = false,
   name,
+  compact = false,
   hideLegend = false,
   description = '选择由框架在任务结束时交付一条主回复，还是由智能体在处理过程中主动发出多条消息。身份、Skills、记忆与渠道响应范围不变。',
 }: InteractionModeSelectorProps) {
@@ -54,7 +57,8 @@ export function InteractionModeSelector({
       </legend>
       <p
         className={cn(
-          'text-caption leading-5 text-muted-foreground',
+          'text-caption text-muted-foreground',
+          !compact && 'leading-5',
           !hideLegend && 'mt-1',
         )}
       >
@@ -67,8 +71,10 @@ export function InteractionModeSelector({
           return (
             <label
               key={option.value}
+              title={compact ? option.description : undefined}
               className={cn(
                 'relative flex min-w-0 cursor-pointer items-start gap-2.5 rounded-lg px-3 py-2.5 ring-1 transition-colors duration-100',
+                compact && 'px-2 py-1.5',
                 'has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-ring/50',
                 selected
                   ? 'bg-surface-selected ring-foreground/25'
@@ -82,22 +88,32 @@ export function InteractionModeSelector({
                 value={option.value}
                 checked={selected}
                 onChange={() => onChange(option.value)}
+                aria-description={compact ? option.description : undefined}
                 className="sr-only"
               />
               <Icon
                 aria-hidden="true"
                 className={cn(
-                  'mt-0.5 size-4 shrink-0',
+                  compact
+                    ? 'mt-0.5 size-3.5 shrink-0'
+                    : 'mt-0.5 size-4 shrink-0',
                   selected ? 'text-foreground' : 'text-muted-foreground',
                 )}
               />
               <span className="min-w-0">
-                <span className="block pr-5 text-label text-foreground">
+                <span
+                  className={cn(
+                    'block pr-5 text-foreground',
+                    compact ? 'text-caption font-medium' : 'text-label',
+                  )}
+                >
                   {option.title}
                 </span>
-                <span className="mt-0.5 block text-caption leading-5 text-muted-foreground">
-                  {option.description}
-                </span>
+                {!compact && (
+                  <span className="mt-0.5 block text-caption leading-5 text-muted-foreground">
+                    {option.description}
+                  </span>
+                )}
               </span>
               {selected && (
                 <CircleCheck
