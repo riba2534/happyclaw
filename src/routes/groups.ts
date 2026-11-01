@@ -3317,10 +3317,11 @@ groupRoutes.get(
     );
     if (!original) return c.json({ error: 'Attachment not found' }, 404);
 
-    // Same cache posture as the message list: originals are per-user content,
-    // so keep them out of shared caches while still allowing the viewer to
-    // reuse one within the session.
-    c.header('Cache-Control', 'private, max-age=300');
+    // Originals are per-user content, so keep them out of shared caches.
+    // A message's attachment never changes once stored, so the browser may
+    // keep it for good: reopening the viewer must not re-fetch over the slow
+    // public path (VPS + frp).
+    c.header('Cache-Control', 'private, max-age=31536000, immutable');
     c.header('Content-Type', original.mimeType);
     return c.body(
       original.buffer.buffer.slice(
