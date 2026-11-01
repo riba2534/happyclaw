@@ -30,7 +30,6 @@ Telegram、QQ、钉钉、微信、企业微信、Discord、WhatsApp。
 ```text
 Agent Profile（身份、四段 Prompt、能力策略）
 └── Workspace（文件目录、执行模式、环境变量、话题群绑定）
-    ├── Main Session（可绑定私聊或普通群）
     ├── Runtime Session（独立 Claude 上下文，可绑定私聊或普通群；Host 工作区可选独立 git worktree）
     ├── Native Context Session（飞书话题等原生线程）
     ├── Automation（自动化：按计划把提示词作为真实的一轮发进会话）
@@ -43,6 +42,12 @@ Agent Profile（身份、四段 Prompt、能力策略）
 - `registered_groups` 是当前兼容层中的工作区和渠道路由记录。
 - `agents` 表及 `/api/groups/:jid/agents` 是历史命名，实际表示工作区内的运行会话，
   不是产品级 Agent Profile。
+- 工作区没有主会话，会话之间一视同仁：工作区 JID 不是任何会话的聊天地址，每个会话都是
+  `agents` 行（`kind='conversation'`），地址为 `<工作区JID>#agent:<id>`；工作区可以一个
+  会话都没有。会话列表的顺序（用户置顶的在前，然后按最近活跃）由 `shared/session-order.ts`
+  给出，Web 与 IM `/list` 共用；置顶按用户记在 `user_pinned_sessions`。旧库里每个工作区的
+  隐式主会话由 v88 迁移成普通会话（`source_kind='legacy_main'`），历史、Claude 上下文、
+  模型选择、渠道绑定和自动化随之迁移。
 - 同一个 Workspace 内的会话共享工作区文件目录，但拥有独立 Claude Session；
   工作区文件隔离与对话上下文隔离是两件事。
 - 自动化（Automation）属于 Workspace，每次运行都是某个真实会话里的一轮：绑定已有会话
@@ -53,8 +58,9 @@ Agent Profile（身份、四段 Prompt、能力策略）
   每轮以它为 cwd，文件面板、项目 Skills 和 Review 面板也以它为根。worktree 缺失或损坏时
   运行失败，不回退到主仓库；删除会话时移除 worktree、保留分支，有未提交改动或已初始化的
   子模块时须确认。同一目录上同时有别的会话在跑时，对话页提示但不阻塞。
-- 团队模式（Team mode）按群开启（v1 只支持绑定在工作区主会话上的飞书普通群），关闭时
-  任何行为不变。开启后，宿主为该群建一个路由会话（`source_kind='team_router'`，不是主会话），
+- 团队模式（Team mode）按群开启（v1 只支持绑定到工作区某个会话的飞书普通群），关闭时
+  任何行为不变，群回到它绑定的会话。开启后，宿主为该群建一个路由会话
+  （`source_kind='team_router'`，不是群绑定的那个会话），
   每个被接下的请求成为一个工作项（`work_items`），由它自己的执行会话
   （`source_kind='work_item'`；Host 工作区的 git 仓库用 worktree 会话）完成。只有路由会话在群里
   说话；执行会话只能发一次确认，结果经 `work_report` 回流给路由会话。工作项的阶段
@@ -353,7 +359,9 @@ preset 的身份和默认风格，只低于平台的安全、权限、工具和�
 为准，业务含义见 `docs/BUSINESS-MODEL.md`：
 
 - 工作区绑定只接受原生话题群（飞书话题群、Telegram Forum），路由为 `thread_map`。
-- Runtime Session 绑定接受私聊和普通群，可以绑定 Main Session。
+- 私聊和普通群只绑定到一个具体会话（`registered_groups.target_agent_id`，挂载表
+  `session_id`）；`target_main_jid` 只表示话题群的工作区绑定。IM 里 `/bind <工作区>`
+  在该工作区新建一个会话并绑定，`/bind <工作区>/<会话>` 绑定到已有会话。
 - 会话类型无法确定时拒绝绑定，不猜测。
 - Session 只能在工作区（`web:*` JID）下创建；`POST /api/groups/:jid/sessions`
   （及兼容别名 `/agents`）拒绝 IM 聊天 JID。`#agent:` 是逻辑会话地址，不是发送目标，
@@ -388,7 +396,7 @@ preset 的身份和默认风格，只低于平台的安全、权限、工具和�
 
 普通飞书群：
 
-- 整个群共享已绑定的那一个 Session（可以是 Main Session）。
+- 整个群共享已绑定的那一个 Session。
 - `always` 与 `when_mentioned` 只决定消息是否需要 @ 才激活；提及或激活策略
   不会为普通群新建话题 Session，也不会把它变成工作区绑定。
 - 引用回复（带 root_id 但没有 thread_id，私聊同样）在主聊天作答，不在被引用消息下
@@ -461,8 +469,10 @@ Telegram 默认流式：回复期间约每 1.5 秒编辑一条进度消息，结
   `feishu_chat_mode=p2p`；仍未知时按群聊处理。
 - `/status`、`/where` 只描述本聊天自己的绑定，群成员可用。
 - `/recall` 读取本条消息实际路由到的 Session：普通群/私聊为其绑定的 Session；
-  话题群为当前话题的 Session，缺少话题元数据时拒绝，永远不回退到 Workspace
-  主会话，也不会为此新建话题 Session。
+  话题群为当前话题的 Session，缺少话题元数据时拒绝，永远不回退到工作区的其他
+  会话，也不会为此新建话题 Session。
+- 未绑定的聊天没有目标会话：`/clear`、`/fresh`、`/recall`、`/rc`、`/sw`、`/spawn`
+  回复「本聊天未绑定会话。」且不做任何操作，`/status`、`/where` 显示「未绑定」。
 
 另有精确的 Session 运行时控制命令，由渠道连接器在通用斜杠命令之前解析。
 群聊必须由渠道结构证明真实 `@Bot`，命令大小写敏感；私聊可直接使用。
@@ -491,7 +501,7 @@ WhatsApp、企微、微信支持 `/steer` 和 `/break`，其 `/clear` 与 `/fres
   同一破坏性边界：群聊中 `@Bot /clear`、`@Bot /fresh` 只允许 owner，未认领 owner 的
   群直接拒绝；私聊首次使用时认领发送者。
 - 运行时控制的目标：群聊由连接器按本条消息的路由（含原生话题）解析；路由失败时
-  回复目标不存在，绝不回退到绑定的 Workspace 主会话（话题群尤其如此）。只有私聊
+  回复目标不存在，绝不回退到工作区的其他会话（话题群尤其如此）。只有私聊
   在连接器未给出目标时由绑定解析，`/break`、`/clear`、`/fresh` 相同。
 
 飞书撤回（`im.message.recalled_v1`）经 `onMessageRecalled` 进入宿主：仍在 durable
