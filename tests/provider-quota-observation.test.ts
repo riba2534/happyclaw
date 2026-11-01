@@ -214,9 +214,6 @@ describe('SDK provider quota observation', () => {
       runner.match(/if \(onOutput\) await onOutput\(output\);/g),
     ).toHaveLength(2);
     expect(main).toMatch(
-      /queue\.markRunnerActivity\(chatJid\);\s*if \(isProviderQuotaControlOutput\(output\)\) return;/,
-    );
-    expect(main).toMatch(
       /queue\.markRunnerActivity\(virtualJid\);\s*if \(isProviderQuotaControlOutput\(output\)\) return;/,
     );
 

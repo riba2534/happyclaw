@@ -421,15 +421,32 @@ describe('run lifecycle reports', () => {
     const { service, settled } = fakeService();
     ledger.setAutomationRuntimeService(service);
     const deps = runtime.createAutomationRuntimeDeps(hooks());
-    const cleared = nextRunId();
-    await inject(deps, cleared);
-
-    await executeSessionReset(WORKSPACE, FOLDER, {
+    const SESSION = 'clear-session';
+    const lane = `${WORKSPACE}#agent:${SESSION}`;
+    db.createAgent({
+      id: SESSION,
+      group_folder: FOLDER,
+      chat_jid: WORKSPACE,
+      name: 'Clear',
+      prompt: '',
+      status: 'idle',
+      kind: 'conversation',
+      created_by: OWNER,
+      created_at: new Date().toISOString(),
+      completed_at: null,
+      result_summary: null,
+      last_im_jid: null,
+      spawned_from_jid: null,
+    });
+    const resetDeps = () => ({
       queue: { stopGroup: vi.fn(async () => {}) },
-      sessions: {},
       broadcast: vi.fn(),
       setLastAgentTimestamp: vi.fn(),
     });
+    const cleared = nextRunId();
+    await inject(deps, cleared, lane);
+
+    await executeSessionReset(WORKSPACE, FOLDER, resetDeps(), SESSION);
     expect(settled).toContainEqual([
       cleared,
       { status: 'cancelled', reason: 'clear' },
@@ -440,19 +457,10 @@ describe('run lifecycle reports', () => {
     );
 
     const fresh = nextRunId();
-    await inject(deps, fresh);
-    await executeSessionReset(
-      WORKSPACE,
-      FOLDER,
-      {
-        queue: { stopGroup: vi.fn(async () => {}) },
-        sessions: {},
-        broadcast: vi.fn(),
-        setLastAgentTimestamp: vi.fn(),
-      },
-      undefined,
-      { mode: 'fresh' },
-    );
+    await inject(deps, fresh, lane);
+    await executeSessionReset(WORKSPACE, FOLDER, resetDeps(), SESSION, {
+      mode: 'fresh',
+    });
     expect(settled.at(-1)).toEqual([
       fresh,
       { status: 'cancelled', reason: 'fresh' },

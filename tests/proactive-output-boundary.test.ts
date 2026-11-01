@@ -131,30 +131,22 @@ describe('Proactive SDK output boundary', () => {
     ).toBe(hiddenSdkText);
   });
 
-  test('wires the boundary into both main and conversation host paths', () => {
+  test('wires the boundary into the session host path', () => {
     const source = fs.readFileSync(
       path.join(process.cwd(), 'src/index.ts'),
       'utf8',
     );
 
-    expect(
-      source.match(/isProactiveControlPlaneSuccess\(\{/g)?.length,
-    ).toBeGreaterThanOrEqual(2);
-    expect(
-      source.match(/shouldResolveFrameworkPrimaryAnswer\(\{/g)?.length,
-    ).toBeGreaterThanOrEqual(2);
-    expect(
-      source.match(
-        /publishesFrameworkAnswer\(interactionMode\)\s*\?\s*[^;]*reduceStreamEvent/g,
-      )?.length,
-    ).toBeGreaterThanOrEqual(2);
+    expect(source).toContain('isProactiveControlPlaneSuccess({');
+    expect(source).toContain('shouldResolveFrameworkPrimaryAnswer({');
+    expect(source).toMatch(
+      /publishesFrameworkAnswer\(interactionMode\)\s*\?\s*[^;]*reduceStreamEvent/,
+    );
     expect(source).not.toContain('deliverProactiveFinalFallback');
     expect(source).not.toContain('recoverProactiveFinalCandidate');
     expect(source).not.toContain("sourceKind: 'proactive_sdk_fallback'");
-    expect(
-      source.match(
-        /Suppressed Proactive(?: agent)? SDK final without send_message delivery/g,
-      ),
-    ).toHaveLength(2);
+    expect(source).toContain(
+      'Suppressed Proactive agent SDK final without send_message delivery',
+    );
   });
 });

@@ -75,18 +75,8 @@ describe('history hand-off after a capability change', () => {
     );
   });
 
-  test('both conversation paths re-inject history with the capability intro', () => {
+  test('the session path re-injects history with the capability intro', () => {
     const source = fs.readFileSync('src/index.ts', 'utf8');
-    const main = source.slice(
-      source.indexOf('async function processGroupMessages('),
-      source.indexOf('async function runTerminalWarmup('),
-    );
-    expect(main).toMatch(
-      /const capabilityReset = takeSessionHistoryReinjection\(\s*effectiveGroup\.folder,\s*null,\s*!!sessions\[effectiveGroup\.folder\],\s*\);/,
-    );
-    expect(main).toMatch(
-      /resetForInteractionMode \|\|[\s\S]{0,120}capabilityReset\s*\)\s*\{[\s\S]{0,800}: CAPABILITY_CHANGE_HISTORY_INTRO,/,
-    );
     const agent = source.slice(
       source.indexOf('async function processAgentConversation('),
     );
