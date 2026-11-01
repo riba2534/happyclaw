@@ -467,6 +467,50 @@ export interface CloseHandlerContext {
   ) => { result: string | null; error: string };
 }
 
+const RUN_LOG_MAX_BYTES = 1024 * 1024;
+const RUN_LOG_RETENTION_PER_TYPE = 20;
+const RUN_LOG_TRUNCATION_MARKER = '\n... run log truncated at 1 MiB ...\n';
+
+function writeBoundedRunLog(logFile: string, content: string): void {
+  const contentBuffer = Buffer.from(content, 'utf8');
+  if (contentBuffer.byteLength <= RUN_LOG_MAX_BYTES) {
+    fs.writeFileSync(logFile, contentBuffer);
+    return;
+  }
+
+  const markerBytes = Buffer.byteLength(RUN_LOG_TRUNCATION_MARKER, 'utf8');
+  let prefix = contentBuffer
+    .subarray(0, RUN_LOG_MAX_BYTES - markerBytes)
+    .toString('utf8');
+  while (Buffer.byteLength(prefix, 'utf8') + markerBytes > RUN_LOG_MAX_BYTES) {
+    prefix = prefix.slice(0, -1);
+  }
+  fs.writeFileSync(logFile, `${prefix}${RUN_LOG_TRUNCATION_MARKER}`);
+}
+
+function pruneRunLogs(logsDir: string, filePrefix: string): void {
+  try {
+    const prefix = `${filePrefix}-`;
+    const logFiles = fs
+      .readdirSync(logsDir, { withFileTypes: true })
+      .filter(
+        (entry) =>
+          entry.isFile() &&
+          entry.name.startsWith(prefix) &&
+          entry.name.endsWith('.log'),
+      )
+      .map((entry) => entry.name)
+      .sort((left, right) => right.localeCompare(left));
+
+    for (const oldLog of logFiles.slice(RUN_LOG_RETENTION_PER_TYPE)) {
+      fs.unlinkSync(path.join(logsDir, oldLog));
+    }
+  } catch (err) {
+    // Log pruning is best-effort and must never fail the agent turn.
+    logger.warn({ err, logsDir }, 'Failed to prune old agent run logs');
+  }
+}
+
 /**
  * Handle the 'close' event for timeout case.
  * Returns true if this was a timeout (caller should return early).
@@ -493,6 +537,7 @@ export function handleTimeoutClose(
       `Exit Code: ${code}`,
     ].join('\n'),
   );
+  pruneRunLogs(ctx.logsDir, ctx.filePrefix);
 
   logger.error(
     {
@@ -577,13 +622,18 @@ export function writeRunLog(
   );
 
   if (isVerbose || isError) {
-    logLines.push(``, `=== Input ===`, JSON.stringify(ctx.input, null, 2));
+    logLines.push(
+      ``,
+      `=== Additional Diagnostics ===`,
+      `Full runner input omitted from persisted logs.`,
+    );
     if (ctx.extraVerboseLines) {
       logLines.push(``, ...ctx.extraVerboseLines);
     }
   }
 
-  fs.writeFileSync(logFile, logLines.join('\n'));
+  writeBoundedRunLog(logFile, logLines.join('\n'));
+  pruneRunLogs(ctx.logsDir, ctx.filePrefix);
   logger.debug({ logFile, verbose: isVerbose }, `${ctx.label} log written`);
   return logFile;
 }
