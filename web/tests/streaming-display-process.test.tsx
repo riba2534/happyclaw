@@ -14,6 +14,8 @@ import type { StreamingStep } from '../src/lib/stream-steps';
 ).IS_REACT_ACT_ENVIRONMENT = true;
 
 const JID = 'web:process-card';
+const SESSION = 'session-1';
+const SESSION_JID = `${JID}#agent:${SESSION}`;
 const LAYOUT_KEY = 'happyclaw-stream-layout:guest';
 
 let root: Root;
@@ -42,11 +44,11 @@ afterEach(async () => {
   await act(async () => root.unmount());
   container.remove();
   useChatStore.setState({
-    streaming: {},
+    agentStreaming: {},
     settledStreaming: {},
     stopRequests: {},
     activeRuns: {},
-    waiting: {},
+    agentWaiting: {},
   });
 });
 
@@ -134,15 +136,15 @@ const mount = async (
     visibility?: 'hidden' | 'activity' | 'full';
   } = {},
 ) => {
-  const shown = streaming ? { [JID]: streaming } : {};
   useChatStore.setState({
-    streaming: props.settled ? {} : shown,
-    settledStreaming: props.settled ? shown : {},
+    agentStreaming: !props.settled && streaming ? { [SESSION]: streaming } : {},
+    settledStreaming:
+      props.settled && streaming ? { [SESSION_JID]: streaming } : {},
     activeRuns: props.settled
       ? {}
       : {
-          [JID]: {
-            chatJid: JID,
+          [SESSION_JID]: {
+            chatJid: SESSION_JID,
             runId: 'run-1',
             startedAt: new Date(Date.now() - 20_000).toISOString(),
             phase: 'running',
@@ -165,6 +167,7 @@ const mount = async (
     root.render(
       <StreamingDisplay
         groupJid={JID}
+        agentId={SESSION}
         isWaiting={props.isWaiting ?? !props.settled}
         settled={props.settled}
         interactionMode={props.proactive ? 'proactive' : 'assistant'}
@@ -255,7 +258,7 @@ describe('StreamingDisplay, the step timeline layout', () => {
     expect(before).toBeTruthy();
     // A stop request ends the card's life as the one being written.
     await act(async () => {
-      useChatStore.setState({ stopRequests: { [JID]: Date.now() } });
+      useChatStore.setState({ stopRequests: { [SESSION_JID]: Date.now() } });
     });
     expect(card()?.getAttribute('data-mode')).toBe('settled');
     expect(answer()).toBe(before);
@@ -434,7 +437,7 @@ describe('StreamingDisplay, after cindy', () => {
         <MessageBubble
           message={{
             id: 'final-swap',
-            chat_jid: JID,
+            chat_jid: SESSION_JID,
             sender: 'happyclaw-agent',
             sender_name: 'HappyClaw',
             content: '最终答案正文',

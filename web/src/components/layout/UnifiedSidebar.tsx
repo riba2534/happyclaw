@@ -21,7 +21,6 @@ import { useShellStore } from '../../stores/shell';
 import { useClearWorkspace } from '../../hooks/useClearWorkspace';
 import { useDeleteWorkspace } from '../../hooks/useDeleteWorkspace';
 import { useNewConversation } from '../../hooks/useNewConversation';
-import { useSessionActions } from '../../hooks/useSessionActions';
 import { useWorkspaceTree } from '../../hooks/useWorkspaceTree';
 import { useStableCallback } from '../../hooks/useStableCallback';
 import { ConfirmDialog } from '@/components/common';
@@ -45,7 +44,7 @@ import { preloadWhenIdle, useOpenedOnce } from '../../lib/preloaded-component';
 import { SkeletonCardList } from '@/components/common/Skeletons';
 import { cn } from '@/lib/utils';
 import { SHORTCUTS } from '@/lib/shortcuts';
-import { chatHref, openWorkspaceSession } from '../../lib/chat-navigation';
+import { enterWorkspace } from '../../lib/chat-navigation';
 import { filterNavItems } from './nav-items';
 import { withBasePath } from '../../utils/url';
 import { SidebarItem } from './sidebar/SidebarItem';
@@ -79,7 +78,6 @@ export function UnifiedSidebar() {
   const revealWorkspace = useShellStore((s) => s.revealWorkspace);
   // The dialog itself lives in AppLayout, so phones and the palette reach it.
   const setCreateOpen = useShellStore((s) => s.setCreateWorkspaceOpen);
-  const requestComposerFocus = useShellStore((s) => s.requestComposerFocus);
   const setPaletteOpen = useShellStore((s) => s.setPaletteOpen);
   useEffect(
     () =>
@@ -90,7 +88,6 @@ export function UnifiedSidebar() {
     [],
   );
   const { startNewConversation, creatingSession } = useNewConversation();
-  const { createSession } = useSessionActions();
   const [showBugReport, setShowBugReport] = useState(false);
   const bugReportMounted = useOpenedOnce(showBugReport);
   const [renameState, setRenameState] = useState({
@@ -110,7 +107,6 @@ export function UnifiedSidebar() {
 
   // 窄 selector：整 store 订阅会让侧边栏跟着流式输出每帧重渲染。
   const currentGroup = useChatStore((s) => s.currentGroup);
-  const selectGroup = useChatStore((s) => s.selectGroup);
   const loading = useChatStore((s) => s.loading);
   const togglePin = useChatStore((s) => s.togglePin);
   const { allGroups, agentSections, agentPartitions } = useWorkspaceTree();
@@ -144,11 +140,9 @@ export function UnifiedSidebar() {
 
   // The tree and its rows are memoized; hand them stable callbacks. Opening
   // a workspace expands it because it becomes current, without persisting.
-  const selectWorkspace = useStableCallback((group: GroupEntry) => {
-    selectGroup(group.jid);
-    revealWorkspace(group.jid);
-    navigate(chatHref(group.folder));
-  });
+  const selectWorkspace = useStableCallback((group: GroupEntry) =>
+    enterWorkspace(navigate, group),
+  );
   const isExpanded = useCallback(
     (group: GroupEntry) =>
       expandedWorkspaces[group.jid] ?? group.jid === currentGroupJid,
@@ -165,17 +159,18 @@ export function UnifiedSidebar() {
       setWorkspaceExpanded(group.jid, expanded),
   );
   const navigateTo = useStableCallback((to: string) => navigate(to));
+  // "+" on a workspace row: a new conversation there (or the blank one it
+  // already has); 新建独立 worktree 会话 always creates one.
   const createWorkspaceSession = useStableCallback(
     async (
       group: GroupEntry,
       options?: { name?: string; worktree?: boolean },
     ) => {
-      const session = await createSession(group.jid, options);
-      if (!session) return false;
       revealWorkspace(group.jid);
-      openWorkspaceSession(navigateTo, group, session.id);
-      requestComposerFocus();
-      return true;
+      return startNewConversation({
+        target: { jid: group.jid },
+        create: options,
+      });
     },
   );
   const createAgentWorkspace = useStableCallback((agentId: string) =>

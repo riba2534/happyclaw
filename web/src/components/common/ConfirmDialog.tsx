@@ -2,7 +2,11 @@ import { useId } from 'react';
 import { Loader2 } from 'lucide-react';
 import { Label } from '@/components/ui/label';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
-import type { ConfirmChoice } from '../../stores/confirm';
+import {
+  NativeSelect,
+  NativeSelectOption,
+} from '@/components/ui/native-select';
+import type { ConfirmChoice, ConfirmSelect } from '../../stores/confirm';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -29,6 +33,8 @@ export interface ConfirmDialogProps {
   messageClassName?: string;
   /** Radio options between the message and the buttons. */
   choices?: ConfirmChoice[];
+  /** A dropdown between the message and the buttons; its value is `choice`. */
+  select?: ConfirmSelect;
   choice?: string;
   onChoiceChange?: (value: string) => void;
 }
@@ -46,9 +52,11 @@ export function ConfirmDialog({
   confirmDisabled = false,
   messageClassName,
   choices,
+  select,
   choice = '',
   onChoiceChange,
 }: ConfirmDialogProps) {
+  const selectId = useId();
   return (
     <AlertDialog open={open} onOpenChange={(v) => !v && onClose()}>
       <AlertDialogContent>
@@ -66,6 +74,25 @@ export function ConfirmDialog({
             value={choice}
             onChange={(value) => onChoiceChange?.(value)}
           />
+        )}
+        {select && (
+          <div className="space-y-1.5">
+            <Label htmlFor={selectId} className="text-label">
+              {select.label}
+            </Label>
+            <NativeSelect
+              id={selectId}
+              value={choice}
+              onChange={(event) => onChoiceChange?.(event.target.value)}
+              className="w-full"
+            >
+              {select.options.map((option) => (
+                <NativeSelectOption key={option.value} value={option.value}>
+                  {option.label}
+                </NativeSelectOption>
+              ))}
+            </NativeSelect>
+          </div>
         )}
         <AlertDialogFooter>
           <AlertDialogCancel disabled={loading}>{cancelText}</AlertDialogCancel>

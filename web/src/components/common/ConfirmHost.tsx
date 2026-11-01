@@ -32,13 +32,16 @@ export function ConfirmHost() {
       <ConfirmDialog
         open={!!pending}
         onClose={() => settle(false)}
-        onConfirm={() => settle(true, shown.choices ? selected : undefined)}
+        onConfirm={() =>
+          settle(true, shown.choices || shown.select ? selected : undefined)
+        }
         title={shown.title}
         message={shown.message}
         confirmText={dangerText ?? shown.confirmText}
         cancelText={shown.cancelText}
         confirmVariant={dangerText ? 'danger' : shown.variant}
         choices={shown.choices}
+        select={shown.select}
         choice={selected}
         onChoiceChange={(value) => setChoice({ id: shown.id, value })}
       />

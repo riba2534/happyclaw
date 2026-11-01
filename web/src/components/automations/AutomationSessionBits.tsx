@@ -70,14 +70,14 @@ export function useSessionAutomations(
 /** The timer mark's automations for each session row of a workspace. */
 export function useBoundAutomations(
   workspaceJid: string,
-): (session: AgentInfo | null) => Automation[] {
+): (session: AgentInfo) => Automation[] {
   const automations = useAutomationsStore((s) => s.automations);
   return useMemo(
     () => (session) =>
       boundAutomationsOf(
         automations,
-        sessionJidOf(workspaceJid, session?.id),
-        session?.automation_id,
+        sessionJidOf(workspaceJid, session.id),
+        session.automation_id,
       ),
     [automations, workspaceJid],
   );

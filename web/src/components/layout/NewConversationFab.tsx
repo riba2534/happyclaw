@@ -14,7 +14,7 @@ export function NewConversationFab() {
   // The home list has no workspace on screen: aim at the default one.
   const start = () => {
     lightTap();
-    void startNewConversation({ inHome: true });
+    void startNewConversation({ target: 'home' });
   };
 
   return (

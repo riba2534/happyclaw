@@ -12,16 +12,15 @@ import {
 import { useNavigate } from 'react-router-dom';
 import { AnimatePresence, m } from 'motion/react';
 import { ChevronRight, Folder, Link2, Pin, Timer } from 'lucide-react';
+import { useNewConversation } from '../../../hooks/useNewConversation';
 import { Spinner } from '@/components/ui/spinner';
 import { cn } from '@/lib/utils';
 import { TeamSessionTag } from '../../team/TeamSessionTag';
 import { isTeamSession } from '../../../lib/team-mode';
 import { useChatStore } from '../../../stores/chat';
 import { useAuthStore } from '../../../stores/auth';
-import { useGroupsStore } from '../../../stores/groups';
+import { isWorkspaceRunning, useGroupsStore } from '../../../stores/groups';
 import { useShellStore } from '../../../stores/shell';
-import { useAutomationsStore } from '../../../stores/automations';
-import { useSessionActions } from '../../../hooks/useSessionActions';
 import { useStableCallback } from '../../../hooks/useStableCallback';
 import {
   openWorkspaceSession,
@@ -29,14 +28,12 @@ import {
 } from '../../../lib/chat-navigation';
 import {
   formatSessionTime,
-  isNativeManagedSession,
   messagePreview,
-  partitionAutomationSessions,
-  previewText,
   sessionActivityAt,
+  sessionDisplayName,
+  sessionListItems,
   type AutomationSessionGroup,
 } from '../../../lib/session-presentation';
-import { sessionJidOf } from '../../../lib/session-jid';
 import type { Automation } from '../../../lib/automation';
 import {
   AutomationMenuItems,
@@ -66,9 +63,8 @@ import {
   type WorkspaceMenuActions,
 } from './WorkspaceTree';
 import {
-  MAIN_BINDING,
   RenameSessionDialog,
-  sessionMenuGroups,
+  useSessionRowActions,
   useWorkspaceSessions,
 } from './workspace-sessions';
 
@@ -126,8 +122,7 @@ export function PhoneWorkspaceList({
   const expandedWorkspaces = useShellStore((s) => s.expandedWorkspaces);
   const setWorkspaceExpanded = useShellStore((s) => s.setWorkspaceExpanded);
   const revealWorkspace = useShellStore((s) => s.revealWorkspace);
-  const requestComposerFocus = useShellStore((s) => s.requestComposerFocus);
-  const { createSession } = useSessionActions();
+  const { startNewConversation } = useNewConversation();
 
   const sections = useMemo(() => {
     const pinned: WorkspaceEntry[] = [];
@@ -196,16 +191,8 @@ export function PhoneWorkspaceList({
     setWorkspaceExpanded(jid, expanded),
   );
   const createWorkspaceSession = useStableCallback(
-    async (
-      group: GroupEntry,
-      options?: { name?: string; worktree?: boolean },
-    ) => {
-      const session = await createSession(group.jid, options);
-      if (!session) return false;
-      openWorkspaceSession(navigateTo, group, session.id);
-      requestComposerFocus();
-      return true;
-    },
+    (group: GroupEntry, options?: { name?: string; worktree?: boolean }) =>
+      startNewConversation({ target: { jid: group.jid }, create: options }),
   );
   const menuActions = useMemo<WorkspaceMenuActions>(
     () => ({ ...actions, onCreateSession: createWorkspaceSession }),
@@ -254,8 +241,8 @@ const WorkspaceBlock = memo(function WorkspaceBlock({
 }) {
   const { group, label, agentName, identity, agentId, isHome } = entry;
   const contentId = useId();
-  const isRunning = useGroupsStore(
-    (s) => s.runnerStates[group.jid] === 'running',
+  const isRunning = useGroupsStore((s) =>
+    isWorkspaceRunning(s.runnerStates, group.jid),
   );
   // Unread replies are counted per workspace, not per session.
   const unread = useChatStore((s) => s.unreadReplies[group.jid] ?? 0);
@@ -344,7 +331,7 @@ const WorkspaceBlock = memo(function WorkspaceBlock({
   );
 });
 
-/** The main conversation and the newest sessions of an open workspace. */
+/** The sessions of an open workspace, in list order. */
 function WorkspaceSessions({
   group,
   navigate,
@@ -356,40 +343,27 @@ function WorkspaceSessions({
     group.jid,
     { paused: useContext(ListPausedContext) },
   );
-  const openCreateAutomation = useAutomationsStore((s) => s.openCreateForm);
   const boundTo = useBoundAutomations(group.jid);
-  const { deleteSession } = useSessionActions();
   const [visibleCount, setVisibleCount] = useState(INITIAL_VISIBLE);
   const [renameTarget, setRenameTarget] = useState<AgentInfo | null>(null);
-  // `MAIN_BINDING` or a session id while its binding dialog is open.
-  const [bindingTarget, setBindingTarget] = useState<string | null>(null);
+  // The session whose binding dialog is open.
+  const [bindingTarget, setBindingTarget] = useState<AgentInfo | null>(null);
 
-  const canModify = !!group.can_modify;
-  const mainLabel = group.is_my_home ? '直接对话' : '当前对话';
-  // Sessions an automation opened sit in its group, not in the flat list.
-  const { groups: automationGroups, others } = useMemo(
-    () => partitionAutomationSessions(sessions),
-    [sessions],
-  );
-  const hidden = others.length - visibleCount;
-  const open = (sessionId: string | null) =>
+  // Sessions an automation opened fold into its row, where its newest is.
+  const items = useMemo(() => sessionListItems(sessions), [sessions]);
+  const hidden = items.length - visibleCount;
+  const open = (sessionId: string) =>
     openWorkspaceSession(navigate, group, sessionId);
-  const openBinding = (target: string) => setBindingTarget(target);
-  const bindingSession =
-    bindingTarget && bindingTarget !== MAIN_BINDING
-      ? sessions.find((session) => session.id === bindingTarget)
-      : undefined;
-  const createAutomationFrom = (sessionId: string | null) =>
-    openCreateAutomation({
-      workspaceJid: group.jid,
-      targetSessionJid: sessionJidOf(group.jid, sessionId),
-    });
+  const menuFor = useSessionRowActions(group, {
+    onBind: setBindingTarget,
+    onRename: setRenameTarget,
+  });
   const renderSession = (session: AgentInfo) => {
     const running = session.status === 'running';
     return (
       <PhoneSessionRow
         key={session.id}
-        title={session.name || '新会话'}
+        title={sessionDisplayName(session)}
         preview={
           running ? '正在生成回复' : messagePreview(session) || '暂无消息'
         }
@@ -401,6 +375,7 @@ function WorkspaceSessions({
               ? '正在生成回复'
               : undefined
         }
+        pinned={!!session.pinned_at}
         linked={(session.linked_im_groups?.length ?? 0) > 0}
         worktree={session.worktree}
         automations={boundTo(session)}
@@ -410,50 +385,31 @@ function WorkspaceSessions({
           )
         }
         onOpen={() => open(session.id)}
-        menu={
-          canModify && !isNativeManagedSession(session)
-            ? sessionMenuGroups({
-                onBind: () => openBinding(session.id),
-                onCreateAutomation: () => createAutomationFrom(session.id),
-                onRename: () => setRenameTarget(session),
-                onDelete: () =>
-                  deleteSession(group.jid, session.id, openBinding),
-              })
-            : undefined
-        }
+        menu={menuFor(session)}
       />
     );
   };
 
   return (
     <ul ref={containerRef}>
-      <PhoneSessionRow
-        title={mainLabel}
-        preview={previewText(group.lastMessage) || '暂无消息'}
-        time={
-          group.lastMessageTime ? formatSessionTime(group.lastMessageTime) : ''
-        }
-        automations={boundTo(null)}
-        onOpen={() => open(null)}
-        menu={
-          canModify
-            ? sessionMenuGroups({
-                onBind: () => openBinding(MAIN_BINDING),
-                onCreateAutomation: () => createAutomationFrom(null),
-              })
-            : undefined
-        }
-      />
-      {automationGroups.map((automationGroup) => (
-        <PhoneAutomationGroup
-          key={automationGroup.automationId}
-          group={automationGroup}
-          navigate={navigate}
-        >
-          {automationGroup.sessions.map(renderSession)}
-        </PhoneAutomationGroup>
-      ))}
-      {others.slice(0, visibleCount).map(renderSession)}
+      {items.slice(0, visibleCount).map((item) =>
+        item.kind === 'automation' ? (
+          <PhoneAutomationGroup
+            key={`automation:${item.group.automationId}`}
+            group={item.group}
+            navigate={navigate}
+          >
+            {item.group.sessions.map(renderSession)}
+          </PhoneAutomationGroup>
+        ) : (
+          renderSession(item.session)
+        ),
+      )}
+      {sessions.length === 0 && (
+        <li className="flex h-12 list-none items-center pl-13 text-body-lg text-faint-foreground">
+          暂无会话
+        </li>
+      )}
       {hidden > 0 && (
         <li className="list-none">
           <button
@@ -474,8 +430,8 @@ function WorkspaceSessions({
         <ImBindingDialog
           open
           groupJid={group.jid}
-          agentId={bindingTarget === MAIN_BINDING ? null : bindingTarget}
-          agent={bindingSession}
+          agentId={bindingTarget.id}
+          agent={bindingTarget}
           onClose={() => setBindingTarget(null)}
         />
       )}
@@ -494,6 +450,7 @@ function PhoneSessionRow({
   preview,
   time,
   busy,
+  pinned = false,
   linked = false,
   worktree,
   automations = NO_AUTOMATIONS,
@@ -506,6 +463,7 @@ function PhoneSessionRow({
   time: string;
   /** Shown as a spinner in place of the time while the session works. */
   busy?: string;
+  pinned?: boolean;
   linked?: boolean;
   worktree?: SessionWorktreeInfo | null;
   /** Automations bound to this session, shown as a timer mark. */
@@ -542,6 +500,12 @@ function PhoneSessionRow({
           >
             {title}
           </button>
+          {pinned && (
+            <Pin
+              className="size-3.5 shrink-0 text-faint-foreground"
+              aria-label="已置顶"
+            />
+          )}
           {worktree && (
             <WorktreeBranchTag
               worktree={worktree}

@@ -51,6 +51,18 @@ vi.mock('../utils/messageSnapshotCache', () => ({
 const { useChatStore } = await import('./chat');
 
 const JID = 'web:idempotent';
+const SESSION = 'session-1';
+const SESSION_JID = `${JID}#agent:${SESSION}`;
+/** A send to the session the tests talk to. */
+const send = (
+  jid: string,
+  content: string,
+  attachments?: Array<{ data: string; mimeType: string }>,
+  mode?: 'queue' | 'steer',
+) =>
+  useChatStore
+    .getState()
+    .sendAgentMessage(jid, SESSION, content, attachments, mode);
 const accepted = {
   success: true,
   messageId: 'm1',
@@ -71,8 +83,7 @@ beforeEach(() => {
   apiPostMock.mockReset();
   showToastMock.mockReset();
   useChatStore.setState({
-    messages: { [JID]: [] },
-    waiting: {},
+    agentMessages: { [SESSION]: [] },
     agentWaiting: {},
     activeRuns: {},
   });
@@ -80,7 +91,6 @@ beforeEach(() => {
 
 describe('send idempotency keys', () => {
   it('a resend after a timeout reuses the id; the next message gets a new one', async () => {
-    const send = useChatStore.getState().sendMessage;
     apiPostMock.mockRejectedValueOnce(timeout);
     expect(await send(JID, 'hello')).toBe(false);
     apiPostMock.mockResolvedValueOnce(accepted);
@@ -99,7 +109,6 @@ describe('send idempotency keys', () => {
   });
 
   it('a lost connection or gateway timeout also keeps the id', async () => {
-    const send = useChatStore.getState().sendMessage;
     apiPostMock.mockRejectedValueOnce({ status: 0, message: 'Network error' });
     await send(JID, 'flaky');
     apiPostMock.mockRejectedValueOnce({ status: 504, message: 'Gateway' });
@@ -111,7 +120,6 @@ describe('send idempotency keys', () => {
   });
 
   it('edited content or other images are a new message', async () => {
-    const send = useChatStore.getState().sendMessage;
     apiPostMock.mockRejectedValue(timeout);
     await send(JID, 'draft');
     await send(JID, 'draft, edited');
@@ -124,7 +132,6 @@ describe('send idempotency keys', () => {
   });
 
   it('any failure keeps the id; only acceptance ends it', async () => {
-    const send = useChatStore.getState().sendMessage;
     apiPostMock.mockRejectedValueOnce({ status: 500, message: 'boom' });
     await send(JID, 'rejected');
     apiPostMock.mockRejectedValueOnce({ status: 403, message: 'denied' });
@@ -148,13 +155,13 @@ describe('send idempotency keys', () => {
     apiPostMock.mockRejectedValueOnce(timeout);
     await sendAgent(JID, 'agent-1', 'same text');
     apiPostMock.mockRejectedValueOnce(timeout);
-    await useChatStore.getState().sendMessage(JID, 'same text');
+    await sendAgent(JID, 'agent-2', 'same text');
     apiPostMock.mockResolvedValueOnce(accepted);
     await sendAgent(JID, 'agent-1', 'same text');
 
-    const [agentFirst, main, agentRetry] = sentIds();
+    const [agentFirst, other, agentRetry] = sentIds();
     expect(agentRetry).toBe(agentFirst);
-    expect(main).not.toBe(agentFirst);
+    expect(other).not.toBe(agentFirst);
   });
 });
 
@@ -162,20 +169,23 @@ describe('when a key is not reused', () => {
   afterEach(() => vi.useRealTimers());
 
   it('the message showing up means a same-text send is a new message', async () => {
-    const send = useChatStore.getState().sendMessage;
     apiPostMock.mockRejectedValueOnce(timeout);
     await send(JID, 'landed anyway');
     const [first] = sentIds();
-    useChatStore.getState().handleWsNewMessage(JID, {
-      id: 'm-landed',
-      chat_jid: JID,
-      sender: 'u',
-      sender_name: 'U',
-      content: 'landed anyway',
-      timestamp: '2026-01-01T00:00:01.000Z',
-      is_from_me: false,
-      client_message_id: first,
-    });
+    useChatStore.getState().handleWsNewMessage(
+      JID,
+      {
+        id: 'm-landed',
+        chat_jid: SESSION_JID,
+        sender: 'u',
+        sender_name: 'U',
+        content: 'landed anyway',
+        timestamp: '2026-01-01T00:00:01.000Z',
+        is_from_me: false,
+        client_message_id: first,
+      },
+      SESSION,
+    );
     apiPostMock.mockResolvedValueOnce(accepted);
     await send(JID, 'landed anyway');
     expect(sentIds()[1]).not.toBe(first);
@@ -183,7 +193,6 @@ describe('when a key is not reused', () => {
 
   it('a slow image resend keeps its id however long it takes', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
-    const send = useChatStore.getState().sendMessage;
     const images = [{ data: 'IMAGE', mimeType: 'image/png' }];
     apiPostMock.mockRejectedValue(timeout);
     await send(JID, 'big upload', images);
@@ -194,7 +203,6 @@ describe('when a key is not reused', () => {
   });
 
   it('steering instead of queueing is a new message', async () => {
-    const send = useChatStore.getState().sendMessage;
     apiPostMock.mockRejectedValue(timeout);
     await send(JID, 'mode change', undefined, 'queue');
     await send(JID, 'mode change', undefined, 'steer');
@@ -213,10 +221,10 @@ describe('a replayed answer', () => {
   };
 
   it('neither restarts the old run nor overwrites the message’s current state', async () => {
-    useChatStore.getState().handleRunStarted(JID, 'run-current');
+    useChatStore.getState().handleRunStarted(SESSION_JID, 'run-current');
     const current = {
       id: 'm-first',
-      chat_jid: JID,
+      chat_jid: SESSION_JID,
       sender: 'u',
       sender_name: 'U',
       content: 'replayed',
@@ -226,30 +234,18 @@ describe('a replayed answer', () => {
       delivery_status: 'released' as const,
       delivery_run_id: 'run-current',
     };
-    useChatStore.setState({ messages: { [JID]: [current] } });
+    useChatStore.setState({ agentMessages: { [SESSION]: [current] } });
     apiPostMock.mockResolvedValueOnce({ ...replay, disposition: 'queued' });
 
-    expect(await useChatStore.getState().sendMessage(JID, 'replayed')).toBe(
-      true,
-    );
+    expect(await send(JID, 'replayed')).toBe(true);
     const state = useChatStore.getState();
-    expect(state.activeRuns[JID]?.runId).toBe('run-current');
-    expect(state.messages[JID]).toEqual([current]);
-    expect(apiGetMock).toHaveBeenCalled();
-  });
-
-  it('shows a message whose announcement was missed, without stale queue state', async () => {
-    apiPostMock.mockResolvedValueOnce({ ...replay, disposition: 'queued' });
-    await useChatStore.getState().sendMessage(JID, 'missed it');
-    const [shown] = useChatStore.getState().messages[JID];
-    expect(shown).toMatchObject({ id: 'm-first', content: 'missed it' });
-    expect(shown.delivery_status).toBeUndefined();
-    expect(useChatStore.getState().activeRuns[JID]).toBeUndefined();
+    expect(state.activeRuns[SESSION_JID]?.runId).toBe('run-current');
+    expect(state.agentMessages[SESSION]).toEqual([current]);
   });
 
   it('tells the user the message was already sent', async () => {
     apiPostMock.mockResolvedValueOnce(replay);
-    expect(await useChatStore.getState().sendMessage(JID, 'twice')).toBe(true);
+    expect(await send(JID, 'twice')).toBe(true);
     apiPostMock.mockResolvedValueOnce(replay);
     await useChatStore.getState().sendAgentMessage(JID, 'agent-9', 'twice');
     expect(
@@ -303,7 +299,7 @@ describe('a replayed answer', () => {
 describe('a history fetch that returns the message', () => {
   const own = (content: string, timestamp: string) => ({
     id: `own-${content}`,
-    chat_jid: JID,
+    chat_jid: SESSION_JID,
     sender: 'web-user',
     sender_name: 'Web',
     content,
@@ -312,13 +308,12 @@ describe('a history fetch that returns the message', () => {
   });
 
   it('a resend right after the fetch reuses the key; a minute later it is new', async () => {
-    const send = useChatStore.getState().sendMessage;
     apiPostMock.mockRejectedValueOnce(timeout);
     await send(JID, ' fetched ');
     apiGetMock.mockResolvedValueOnce({
       messages: [own('fetched', new Date().toISOString())],
     });
-    await useChatStore.getState().refreshMessages(JID);
+    await useChatStore.getState().refreshAgentMessages(JID, SESSION);
     // The toast promised that resending the kept input will not duplicate.
     apiPostMock.mockRejectedValueOnce(timeout);
     await send(JID, ' fetched ');
@@ -333,13 +328,12 @@ describe('a history fetch that returns the message', () => {
   });
 
   it('keeps it for the same text sent long before', async () => {
-    const send = useChatStore.getState().sendMessage;
     apiPostMock.mockRejectedValueOnce(timeout);
     await send(JID, 'said before');
     apiGetMock.mockResolvedValueOnce({
       messages: [own('said before', '2020-01-01T00:00:00.000Z')],
     });
-    await useChatStore.getState().refreshMessages(JID);
+    await useChatStore.getState().refreshAgentMessages(JID, SESSION);
     apiPostMock.mockResolvedValueOnce(accepted);
     await send(JID, 'said before');
     const [first, second] = sentIds();
@@ -371,21 +365,24 @@ describe('a history fetch that returns the message', () => {
 
 describe('a /clear that timed out', () => {
   it('is done once its divider arrives with the id; the next /clear is new', async () => {
-    const send = useChatStore.getState().sendMessage;
     apiPostMock.mockRejectedValueOnce(timeout);
     await send(JID, '/clear');
     const [first] = sentIds();
-    useChatStore.getState().handleWsNewMessage(JID, {
-      id: 'divider-1',
-      chat_jid: JID,
-      sender: '__system__',
-      sender_name: 'system',
-      content: 'context_reset',
-      timestamp: '2026-01-01T00:00:02.000Z',
-      is_from_me: true,
-      source_kind: 'context_reset',
-      client_message_id: first,
-    });
+    useChatStore.getState().handleWsNewMessage(
+      JID,
+      {
+        id: 'divider-1',
+        chat_jid: SESSION_JID,
+        sender: '__system__',
+        sender_name: 'system',
+        content: 'context_reset',
+        timestamp: '2026-01-01T00:00:02.000Z',
+        is_from_me: true,
+        source_kind: 'context_reset',
+        client_message_id: first,
+      },
+      SESSION,
+    );
     apiPostMock.mockResolvedValueOnce({ success: true, cleared: true });
     await send(JID, '/clear');
     expect(sentIds()[1]).not.toBe(first);
@@ -400,7 +397,6 @@ describe('stored, then failed on the server', () => {
   };
 
   it('counts as sent, says processing may have failed, and spends the id', async () => {
-    const send = useChatStore.getState().sendMessage;
     apiPostMock.mockRejectedValueOnce(storedError);
     expect(await send(JID, 'stored anyway')).toBe(true);
     expect(showToastMock).toHaveBeenCalledWith(
@@ -419,7 +415,6 @@ describe('stored, then failed on the server', () => {
   });
 
   it('a 409 spends the id too', async () => {
-    const send = useChatStore.getState().sendMessage;
     apiPostMock.mockRejectedValueOnce({ status: 409, message: 'conflict' });
     expect(await send(JID, 'conflicted')).toBe(false);
     apiPostMock.mockResolvedValueOnce(accepted);
@@ -450,7 +445,7 @@ describe('background task notice', () => {
   });
 
   it('updates the stream before notifying, so a failing notification cannot skip it', () => {
-    useChatStore.getState().handleRunStarted(JID, 'run-1');
+    useChatStore.getState().handleRunStarted(SESSION_JID, 'run-1');
     const before = {
       partialText: 'working',
       thinkingText: '',
@@ -461,11 +456,11 @@ describe('background task notice', () => {
       recentEvents: [],
       todos: [],
     };
-    useChatStore.setState({ streaming: { [JID]: before as never } });
+    useChatStore.setState({ agentStreaming: { [SESSION]: before as never } });
     emitNoticeMock.mockReturnValue(true);
     let streamingAtNotify: unknown;
     notifyMock.mockImplementation(() => {
-      streamingAtNotify = useChatStore.getState().streaming[JID];
+      streamingAtNotify = useChatStore.getState().agentStreaming[SESSION];
       throw new Error('Illegal constructor');
     });
 
@@ -479,7 +474,7 @@ describe('background task notice', () => {
           taskSummary: 'done',
           isBackground: true,
         },
-        undefined,
+        SESSION,
         'run-1',
       ),
     ).toThrow('Illegal constructor');

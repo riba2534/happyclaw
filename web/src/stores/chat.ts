@@ -1,7 +1,12 @@
 import { create } from 'zustand';
 import { api, computeUploadTimeoutMs, type ApiError } from '../api/client';
 import { randomUuid } from '../utils/random-uuid';
-import { sessionJidOf } from '../lib/session-jid';
+import {
+  isSessionOf,
+  sessionIdOf,
+  sessionJidOf,
+  workspaceJidOf,
+} from '../lib/session-jid';
 import { useFileStore } from './files';
 import { useAuthStore } from './auth';
 import {
@@ -58,7 +63,6 @@ import {
   markRunAnswered,
   runsFromAuthoritativeSnapshot,
   shouldApplyRunScopedPayload,
-  shouldDiscardStreamForAuthoritativeRun,
   waitKeysForQueuedChats,
   type ClientActiveRuns,
 } from './run-lifecycle';
@@ -68,6 +72,12 @@ import {
   worktreeConfirmationParams,
   type WorktreeDirtyInfo,
 } from '../lib/session-worktree';
+import {
+  sessionDeleteImpactFromError,
+  sessionDeletePath,
+  type SessionDeleteOptions,
+  type SessionDeleteResult,
+} from '../lib/session-delete';
 import { markdownTail } from '../lib/markdown-blocks';
 import { hasListedSteps } from '../lib/process-steps';
 import {
@@ -198,11 +208,6 @@ export interface ContextUsage {
   usedTokens: number | null;
   contextWindow: number | null;
   percentage: number | null;
-}
-
-/** Store key of a conversation's context usage, like the follow-up queue's. */
-export function contextUsageKey(jid: string, agentId?: string | null): string {
-  return agentId ? `${jid}#agent:${agentId}` : jid;
 }
 
 function toContextUsage(
@@ -698,21 +703,18 @@ const MAX_THINKING_CACHE_SIZE = 500;
  * sessions repaint from the IndexedDB snapshot first.
  */
 const RETAINED_CONVERSATIONS = 20;
-/** Viewed conversations by runtime key, least recently viewed first. */
-const viewedConversations = new Map<
-  string,
-  { jid: string; agentId: string | null }
->();
+/** Viewed sessions by runtime key, least recently viewed first. */
+const viewedConversations = new Map<string, { jid: string; agentId: string }>();
 
-function noteConversationViewed(jid: string, agentId: string | null) {
-  const key = agentId ? `${jid}#agent:${agentId}` : jid;
+function noteConversationViewed(jid: string, agentId: string) {
+  const key = sessionJidOf(jid, agentId);
   viewedConversations.delete(key);
   viewedConversations.set(key, { jid, agentId });
 }
 
 /**
- * Drop the messages of the least recently viewed conversations beyond
- * RETAINED_CONVERSATIONS. The open workspace keeps all of its conversations,
+ * Drop the messages of the least recently viewed sessions beyond
+ * RETAINED_CONVERSATIONS. The open workspace keeps all of its sessions,
  * because its stream events and new messages are applied to them, and so
  * does anything still running, streaming, awaiting a reply or clearing.
  */
@@ -722,8 +724,6 @@ function evictViewedConversations(
 ): Partial<ChatState> {
   let excess = viewedConversations.size - RETAINED_CONVERSATIONS;
   if (excess <= 0) return {};
-  let messages: ChatState['messages'] | undefined;
-  let hasMore: ChatState['hasMore'] | undefined;
   let agentMessages: ChatState['agentMessages'] | undefined;
   let agentHasMore: ChatState['agentHasMore'] | undefined;
   for (const [key, { jid, agentId }] of viewedConversations) {
@@ -733,32 +733,19 @@ function evictViewedConversations(
       !!s.activeRuns[key] ||
       !!s.settledStreaming[key] ||
       !!s.clearing[jid] ||
-      (agentId
-        ? !!s.agentWaiting[agentId] || !!s.agentStreaming[agentId]
-        : !!s.waiting[jid] || !!s.streaming[jid]);
+      !!s.agentWaiting[agentId] ||
+      !!s.agentStreaming[agentId];
     if (busy) continue;
     viewedConversations.delete(key);
     excess -= 1;
-    if (agentId) {
-      if (!s.agentMessages[agentId]) continue;
-      agentMessages ??= { ...s.agentMessages };
-      agentHasMore ??= { ...s.agentHasMore };
-      delete agentMessages[agentId];
-      delete agentHasMore[agentId];
-    } else {
-      if (!s.messages[jid]) continue;
-      messages ??= { ...s.messages };
-      hasMore ??= { ...s.hasMore };
-      delete messages[jid];
-      delete hasMore[jid];
-    }
+    if (!s.agentMessages[agentId]) continue;
+    agentMessages ??= { ...s.agentMessages };
+    agentHasMore ??= { ...s.agentHasMore };
+    delete agentMessages[agentId];
+    delete agentHasMore[agentId];
   }
-  return {
-    ...(messages && { messages, hasMore }),
-    ...(agentMessages && { agentMessages, agentHasMore }),
-  };
+  return agentMessages ? { agentMessages, agentHasMore } : {};
 }
-const loadMessagesInFlight = new Map<string, Promise<void>>();
 const loadAgentsInFlight = new Map<string, Promise<void>>();
 let loadGroupsInFlight: Promise<void> | null = null;
 
@@ -944,26 +931,23 @@ function appendReplyText(
 }
 
 /**
- * Whether a runtime delivers its messages itself (a proactive workspace's
- * main and conversation sessions), so no final reply ever replaces its
- * card. Fire-and-forget spawn Agents keep the Assistant contract.
+ * Whether a runtime delivers its messages itself (a session of a proactive
+ * workspace), so no final reply ever replaces its card. Fire-and-forget
+ * spawn Agents keep the Assistant contract.
  */
 export function isProactiveRuntime(
   s: Pick<ChatState, 'groups' | 'agents'>,
   runtimeJid: string,
 ): boolean {
-  const marker = '#agent:';
-  const markerIndex = runtimeJid.indexOf(marker);
-  const chatJid =
-    markerIndex >= 0 ? runtimeJid.slice(0, markerIndex) : runtimeJid;
+  const agentId = sessionIdOf(runtimeJid);
+  if (!agentId) return false;
+  const chatJid = workspaceJidOf(runtimeJid);
   if (
     normalizeInteractionMode(s.groups[chatJid]?.interaction_mode) !==
     'proactive'
   ) {
     return false;
   }
-  if (markerIndex < 0) return true;
-  const agentId = runtimeJid.slice(markerIndex + marker.length);
   return (
     s.agents[chatJid]?.find((agent) => agent.id === agentId)?.kind !== 'spawn'
   );
@@ -1113,7 +1097,7 @@ function applyDeltaChunks(
 
 interface PendingMessageUsage {
   chatJid: string;
-  agentId?: string;
+  agentId: string;
   inputTurnId: string;
   tokenUsageJson: string;
   receivedAt: number;
@@ -1124,10 +1108,10 @@ const MAX_PENDING_MESSAGE_USAGE = 128;
 
 function messageUsageKey(
   chatJid: string,
-  agentId: string | undefined,
+  agentId: string,
   inputTurnId: string,
 ): string {
-  return JSON.stringify([chatJid, agentId ?? null, inputTurnId]);
+  return JSON.stringify([chatJid, agentId, inputTurnId]);
 }
 
 function prunePendingMessageUsage(
@@ -1142,16 +1126,17 @@ function prunePendingMessageUsage(
   );
 }
 
+/** Drop a session's pending usage; without a session, the workspace's. */
 function clearPendingMessageUsage(
   pending: Record<string, PendingMessageUsage>,
   chatJid: string,
   agentId?: string,
-  allAgents = false,
 ): Record<string, PendingMessageUsage> {
   return Object.fromEntries(
     Object.entries(pending).filter(
       ([, entry]) =>
-        entry.chatJid !== chatJid || (!allAgents && entry.agentId !== agentId),
+        entry.chatJid !== chatJid ||
+        (agentId !== undefined && entry.agentId !== agentId),
     ),
   );
 }
@@ -1170,10 +1155,10 @@ function mergePendingMessageUsage(
   messages: Message[],
   pending: Record<string, PendingMessageUsage>,
   chatJid: string,
-  agentId?: string,
+  agentId: string,
 ): { messages: Message[]; pending: Record<string, PendingMessageUsage> } {
   const next = prunePendingMessageUsage(pending);
-  const runtimeJid = agentId ? `${chatJid}#agent:${agentId}` : chatJid;
+  const runtimeJid = sessionJidOf(chatJid, agentId);
   return {
     messages: messages.map((message) => {
       if (!isUsageAnswer(message, runtimeJid)) return message;
@@ -1206,19 +1191,15 @@ interface ChatState {
   groups: Record<string, GroupInfo>;
   adminHostOnlyMode: boolean;
   currentGroup: string | null;
-  messages: Record<string, Message[]>;
-  waiting: Record<string, boolean>;
-  /** Exact GroupQueue query attempt per main/agent runtime JID. */
+  /** Exact GroupQueue query attempt per session runtime JID. */
   activeRuns: ClientActiveRuns;
   /** Usage received before its canonical final row; bounded and session-scoped. */
   pendingMessageUsage: Record<string, PendingMessageUsage>;
   followUps: Record<string, QueuedFollowUp[]>;
-  /** By `contextUsageKey`; null once known to be empty. */
+  /** By session JID; null once known to be empty. */
   contextUsage: Record<string, ContextUsage | null>;
-  hasMore: Record<string, boolean>;
   loading: boolean;
   error: string | null;
-  streaming: Record<string, StreamingState>;
   thinkingCache: Record<string, string>;
   /** Per-message-id duration in ms; rendered as "已思考 Xs" inside ReasoningBlock. */
   thinkingDurationCache: Record<string, number>;
@@ -1249,53 +1230,32 @@ interface ChatState {
   stopRequests: Record<string, number>;
   /**
    * A finished run's frozen card by runtime JID, kept apart from the live
-   * projection (`streaming` / `agentStreaming`) so the next queued run can
-   * start streaming while the previous reply still waits for its final.
+   * projection (`agentStreaming`) so the next queued run can start streaming
+   * while the previous reply still waits for its final.
    */
   settledStreaming: Record<string, StreamingState>;
-  pendingThinking: Record<string, string>;
-  pendingThinkingDuration: Record<string, number>;
   /** Per-group lock: true while clearHistory is in-flight, prevents race re-injection */
   clearing: Record<string, boolean>;
-  // Sub-agent state
-  agents: Record<string, AgentInfo[]>; // jid → agents
-  agentStreaming: Record<string, StreamingState>; // agentId → streaming state
-  activeAgentTab: Record<string, string | null>; // jid → selected agentId (null = main)
-  // SDK Task subagent state (in-process via Task tool, not DB-persisted)
-  sdkTasks: Record<
-    string,
-    {
-      // toolUseId → task info
-      chatJid: string;
-      description: string;
-      status: 'running' | 'completed' | 'error';
-      summary?: string;
-      isTeammate?: boolean;
-      startedAt?: number; // 任务创建时间戳（ms），用于 UI 计时器
-    }
-  >;
-  // SDK Task alias map: runtime taskId/parentToolUseId -> canonical sdkTasks key
-  sdkTaskAliases: Record<string, string>;
-  // Conversation agent state
-  agentMessages: Record<string, Message[]>; // agentId → messages
-  agentWaiting: Record<string, boolean>; // agentId → waiting for reply
-  agentHasMore: Record<string, boolean>; // agentId → has more messages
+  /** A workspace's sessions (and its running task/spawn agents), by workspace JID. */
+  agents: Record<string, AgentInfo[]>;
+  /** A session's live reply, by session id. */
+  agentStreaming: Record<string, StreamingState>;
+  /** The session open in a workspace, by workspace JID; absent when none is. */
+  activeAgentTab: Record<string, string>;
+  /** A session's loaded messages, by session id. */
+  agentMessages: Record<string, Message[]>;
+  /** Whether a session waits for a reply, by session id. */
+  agentWaiting: Record<string, boolean>;
+  /** Whether a session has older messages to load, by session id. */
+  agentHasMore: Record<string, boolean>;
   loadGroups: () => Promise<void>;
   selectGroup: (jid: string) => void;
-  loadMessages: (jid: string, loadMore?: boolean) => Promise<void>;
-  refreshMessages: (jid: string) => Promise<void>;
-  sendMessage: (
-    jid: string,
-    content: string,
-    attachments?: Array<{ data: string; mimeType: string }>,
-    followUpBehavior?: FollowUpMode,
-  ) => Promise<boolean>;
   loadFollowUps: (chatJid: string) => Promise<void>;
-  loadContextUsage: (jid: string, agentId?: string | null) => Promise<void>;
+  loadContextUsage: (jid: string, agentId: string) => Promise<void>;
   /** A `context_usage` push (or a reset, with null). */
   setContextUsage: (
     jid: string,
-    agentId: string | null | undefined,
+    agentId: string,
     usage: Partial<ContextUsage> | null,
   ) => void;
   handleFollowUpUpdate: (
@@ -1311,7 +1271,7 @@ interface ChatState {
     content?: string,
   ) => Promise<boolean>;
   interruptQuery: (jid: string) => Promise<boolean>;
-  resetSession: (jid: string, agentId?: string) => Promise<boolean>;
+  resetSession: (jid: string, agentId: string) => Promise<boolean>;
   /**
    * Rebuild the workspace. Session worktrees that could lose work refuse it
    * until `confirmedWorktrees` names every such session.
@@ -1363,12 +1323,14 @@ interface ChatState {
   loadTurnTrace: (
     message: Pick<Message, 'id' | 'chat_jid' | 'turn_id'>,
   ) => Promise<boolean>;
+  /** A session's stream event; one without a session id has no conversation. */
   handleStreamEvent: (
     chatJid: string,
     event: StreamEvent,
     agentId?: string,
     runId?: string,
   ) => void;
+  /** A session's new message; one without a session id has no conversation. */
   handleWsNewMessage: (chatJid: string, wsMsg: any, agentId?: string) => void;
   handleAgentStatus: (
     chatJid: string,
@@ -1382,10 +1344,6 @@ interface ChatState {
     /** Sent for a session that owns a worktree. */
     worktree?: SessionWorktreeInfo,
   ) => void;
-  clearStreaming: (
-    chatJid: string,
-    options?: { preserveThinking?: boolean },
-  ) => void;
   restoreActiveState: () => Promise<void>;
   handleStreamSnapshot: (
     chatJid: string,
@@ -1396,14 +1354,23 @@ interface ChatState {
   // Sub-agent actions
   loadAgents: (jid: string, opts?: { force?: boolean }) => Promise<void>;
   /**
-   * Resolves true when deleted. A session whose worktree has uncommitted
-   * changes is kept until `forceWorktree` confirms discarding them.
+   * Resolves true when deleted. A session with chats, topics or automations
+   * bound to it is kept until `confirmBindings` confirms what it affects
+   * (`rebindTo` moves its chats to another session first); one whose worktree
+   * has uncommitted changes until `forceWorktree` confirms discarding them.
    */
   deleteAgentAction: (
     jid: string,
     agentId: string,
-    options?: { forceWorktree?: boolean },
-  ) => Promise<boolean | { worktreesDirty: WorktreeDirtyInfo[] }>;
+    options?: SessionDeleteOptions,
+  ) => Promise<SessionDeleteResult>;
+  /** Pin or unpin a session for the current user. */
+  pinSession: (
+    jid: string,
+    agentId: string,
+    pinned: boolean,
+  ) => Promise<boolean>;
+  /** The session open in a workspace; null when none is. */
   setActiveAgentTab: (jid: string, agentId: string | null) => void;
   // Conversation agent actions
   createConversation: (
@@ -1431,8 +1398,7 @@ interface ChatState {
     followUpBehavior?: FollowUpMode,
   ) => Promise<boolean>;
   refreshAgentMessages: (jid: string, agentId: string) => Promise<void>;
-  // Runner state sync
-  handleRunnerState: (chatJid: string, state: string) => void;
+  // Run lifecycle
   handleRunStarted: (chatJid: string, runId?: string | null) => void;
   handleRunFinished: (chatJid: string, runId: string) => void;
   handleActiveRunSnapshot: (
@@ -1449,7 +1415,6 @@ interface ChatState {
     agentId: string,
     imJid: string,
   ) => Promise<boolean>;
-  unbindMainImGroup: (jid: string, imJid: string) => Promise<boolean>;
   unbindWorkspaceImGroup: (jid: string, imJid: string) => Promise<boolean>;
   // Draft persistence across route navigation
   drafts: Record<string, string>;
@@ -1523,18 +1488,6 @@ function streamingStateFromWorkflowRuns(
     traceEvents: [],
     taskStates,
   };
-}
-
-/**
- * Sort items by a given ID order. Items not in the order list are appended at the end.
- */
-function sortByIdOrder(items: AgentInfo[], orderedIds: string[]): AgentInfo[] {
-  const idIndex = new Map(orderedIds.map((id, i) => [id, i]));
-  return [...items].sort((a, b) => {
-    const ia = idIndex.get(a.id) ?? Infinity;
-    const ib = idIndex.get(b.id) ?? Infinity;
-    return ia - ib;
-  });
 }
 
 /**
@@ -1710,15 +1663,13 @@ export function runTurnAnswered(
   return !!answered && (!live || answersInput(live, answered));
 }
 
-/** The live projection of a runtime: the workspace's, or one session's. */
+/** The live projection of a session runtime. */
 export function liveStreamOf(
-  s: Pick<ChatState, 'streaming' | 'agentStreaming'>,
+  s: Pick<ChatState, 'agentStreaming'>,
   runtimeJid: string,
 ): StreamingState | undefined {
-  const marker = runtimeJid.indexOf('#agent:');
-  return marker >= 0
-    ? s.agentStreaming[runtimeJid.slice(marker + '#agent:'.length)]
-    : s.streaming[runtimeJid];
+  const agentId = sessionIdOf(runtimeJid);
+  return agentId ? s.agentStreaming[agentId] : undefined;
 }
 
 /**
@@ -1727,10 +1678,7 @@ export function liveStreamOf(
  * does the run status bar for a while. One rule for both.
  */
 export function proactiveTurnQuiet(
-  s: Pick<
-    ChatState,
-    'groups' | 'agents' | 'activeRuns' | 'streaming' | 'agentStreaming'
-  >,
+  s: Pick<ChatState, 'groups' | 'agents' | 'activeRuns' | 'agentStreaming'>,
   runtimeJid: string,
 ): boolean {
   if (!isProactiveRuntime(s, runtimeJid)) return false;
@@ -1829,12 +1777,12 @@ function processView(group: GroupInfo | undefined): string {
     : 'assistant';
 }
 
-/** The view of the workspace a runtime (the workspace or a session) belongs to. */
+/** The view of the workspace a session runtime belongs to. */
 function processViewOfRuntime(
   s: Pick<ChatState, 'groups'>,
   runtimeJid: string,
 ): string {
-  return processView(s.groups[runtimeJid.replace(/#agent:.*$/, '')]);
+  return processView(s.groups[workspaceJidOf(runtimeJid)]);
 }
 
 /**
@@ -1845,8 +1793,8 @@ function processViewOfRuntime(
 const turnTraceRequests = new Map<string, symbol>();
 
 /**
- * The reasoning, trace and steps this tab holds for the replies of workspaces
- * and their sessions, let go. They were read at the view that was in force: a
+ * The reasoning, trace and steps this tab holds for the replies of the
+ * sessions of workspaces, let go. They were read at the view that was in force: a
  * lowered level must not leave what it hides in memory or on screen, and a
  * raised one must not leave the replies without what it now shows (or marked
  * empty). The replies load again, at the new view, when they are opened.
@@ -1856,15 +1804,9 @@ function withoutProcessCaches(
   jids: readonly string[],
 ): Partial<ChatState> {
   const ids = new Set<string>();
-  for (const jid of jids) {
-    for (const message of s.messages[jid] ?? []) ids.add(message.id);
-  }
-  const sessionPrefixes = jids.map((jid) => `${jid}#agent:`);
   for (const messages of Object.values(s.agentMessages)) {
     for (const message of messages) {
-      if (
-        sessionPrefixes.some((prefix) => message.chat_jid.startsWith(prefix))
-      ) {
+      if (jids.some((jid) => isSessionOf(message.chat_jid, jid))) {
         ids.add(message.id);
       }
     }
@@ -1899,31 +1841,22 @@ function withoutStaleTraceFlags(
   jids: readonly string[],
 ): Partial<ChatState> {
   if (jids.length === 0) return {};
-  const prefixes = jids.map((jid) => `${jid}#agent:`);
-  const unflag = (
-    lists: Record<string, Message[]>,
-    owned: (key: string, list: Message[]) => boolean,
-  ): Record<string, Message[]> => {
-    let next = lists;
-    for (const [key, list] of Object.entries(lists)) {
-      if (!list.some((message) => message.has_trace) || !owned(key, list)) {
-        continue;
-      }
-      if (next === lists) next = { ...lists };
-      next[key] = list.map((message) =>
-        message.has_trace ? { ...message, has_trace: false } : message,
-      );
+  let next = s.agentMessages;
+  for (const [key, list] of Object.entries(s.agentMessages)) {
+    if (
+      !list.some((message) => message.has_trace) ||
+      !list.some((message) =>
+        jids.some((jid) => isSessionOf(message.chat_jid, jid)),
+      )
+    ) {
+      continue;
     }
-    return next;
-  };
-  return {
-    messages: unflag(s.messages, (jid) => jids.includes(jid)),
-    agentMessages: unflag(s.agentMessages, (_, list) =>
-      list.some((message) =>
-        prefixes.some((prefix) => message.chat_jid.startsWith(prefix)),
-      ),
-    ),
-  };
+    if (next === s.agentMessages) next = { ...s.agentMessages };
+    next[key] = list.map((message) =>
+      message.has_trace ? { ...message, has_trace: false } : message,
+    );
+  }
+  return { agentMessages: next };
 }
 
 /** A reply's steps as they stay, whether or not the server had better ones. */
@@ -1959,19 +1892,15 @@ function stepsChars(entry: ReplySteps): number {
   return chars;
 }
 
-/** Messages the reader has in front of them: this workspace, or its open tab. */
+/** Messages the reader has in front of them: the open session's. */
 function idsOnScreen(
-  s: Pick<
-    ChatState,
-    'currentGroup' | 'messages' | 'agentMessages' | 'activeAgentTab'
-  >,
+  s: Pick<ChatState, 'currentGroup' | 'agentMessages' | 'activeAgentTab'>,
 ): Set<string> {
   const ids = new Set<string>();
-  const jid = s.currentGroup;
-  if (!jid) return ids;
-  const agentId = s.activeAgentTab[jid];
-  const shown = agentId ? s.agentMessages[agentId] : s.messages[jid];
-  for (const message of shown ?? []) ids.add(message.id);
+  const agentId = s.currentGroup ? s.activeAgentTab[s.currentGroup] : null;
+  for (const message of (agentId && s.agentMessages[agentId]) || []) {
+    ids.add(message.id);
+  }
   return ids;
 }
 
@@ -2142,35 +2071,19 @@ function patchFollowUpMessages(
     const synced = syncFollowUpContent(existing, items);
     return transition ? applyFollowUpTransition(synced, transition) : synced;
   };
-  const agentMarker = '#agent:';
-  const markerIndex = chatJid.indexOf(agentMarker);
-  if (markerIndex >= 0) {
-    const agentId = chatJid.slice(markerIndex + agentMarker.length);
-    const existing = s.agentMessages[agentId] || [];
-    const updated = apply(existing);
-    return updated === existing
-      ? {}
-      : { agentMessages: { ...s.agentMessages, [agentId]: updated } };
-  }
-  const existing = s.messages[chatJid] || [];
+  const agentId = sessionIdOf(chatJid);
+  if (!agentId) return {};
+  const existing = s.agentMessages[agentId] || [];
   const updated = apply(existing);
   return updated === existing
     ? {}
-    : { messages: { ...s.messages, [chatJid]: updated } };
+    : { agentMessages: { ...s.agentMessages, [agentId]: updated } };
 }
 const MAX_EVENT_LOG = 30;
 const MAX_TRACE_EVENTS = 200;
 const MAX_TASK_TAIL = 4000;
-const SDK_TASK_AUTO_CLOSE_MS = 3000;
-const SDK_TASK_TOOL_END_FALLBACK_CLOSE_MS = 1200;
-const SDK_TASK_STALE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes stale timeout for non-teammate tasks
-const sdkTaskCleanupTimers = new Map<string, ReturnType<typeof setTimeout>>();
-const sdkTaskStaleTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
-/** 已完成/出错的 SDK Task ID，防止迟到事件 re-create */
-const completedSdkTaskIds = new Set<string>();
-
-/** DB task agent 自动清理定时器（完成后延迟移除） */
+/** 已结束的 spawn agent 自动清理定时器（完成后延迟移除） */
 const DB_TASK_AGENT_AUTO_CLEAN_MS = 5000;
 const dbTaskAgentCleanupTimers = new Map<
   string,
@@ -2214,6 +2127,7 @@ interface PendingDelta {
   turnId?: string;
   inputTurnId?: string;
 }
+/** Deltas waiting for the next frame, by session id. */
 const pendingDeltas = new Map<string, PendingDelta>();
 
 /**
@@ -2279,16 +2193,17 @@ function speechCallsOfSnapshot(snapshot: StreamSnapshotData): Set<string> {
 const API_RETRY_STATUS_RE =
   /^API (?:重试中 \((?:\d+|\?)\/(?:\d+|\?)\)，\d+s 后重试|retry in progress \((?:\d+|\?)\/(?:\d+|\?)\))$/i;
 
-function cancelPendingDelta(key: string): void {
-  const entry = pendingDeltas.get(key);
+function cancelPendingDelta(agentId: string): void {
+  const entry = pendingDeltas.get(agentId);
   if (!entry) return;
   cancelAnimationFrame(entry.raf);
-  pendingDeltas.delete(key);
+  pendingDeltas.delete(agentId);
 }
 
 function cancelPendingDeltaForRuntime(runtimeJid: string): void {
-  for (const [key, entry] of pendingDeltas) {
-    if (entry.runtimeJid === runtimeJid) cancelPendingDelta(key);
+  const agentId = sessionIdOf(runtimeJid);
+  if (agentId && pendingDeltas.get(agentId)?.runtimeJid === runtimeJid) {
+    cancelPendingDelta(agentId);
   }
 }
 
@@ -2301,19 +2216,12 @@ function flushPendingDeltaForRuntime(
   runtimeJid: string,
   set: (fn: (s: ChatState) => Partial<ChatState>) => void,
 ): void {
-  const marker = '#agent:';
-  const markerIndex = runtimeJid.indexOf(marker);
-  const agentId =
-    markerIndex >= 0
-      ? runtimeJid.slice(markerIndex + marker.length)
-      : undefined;
-  const chatJid =
-    markerIndex >= 0 ? runtimeJid.slice(0, markerIndex) : runtimeJid;
-  const key = agentId ? `agent:${agentId}` : `main:${chatJid}`;
-  const entry = pendingDeltas.get(key);
+  const agentId = sessionIdOf(runtimeJid);
+  if (!agentId) return;
+  const entry = pendingDeltas.get(agentId);
   if (!entry || entry.runtimeJid !== runtimeJid) return;
   cancelAnimationFrame(entry.raf);
-  flushPendingDelta(key, chatJid, agentId, set);
+  flushPendingDelta(agentId, set);
 }
 
 /**
@@ -2338,66 +2246,32 @@ function deltaBase(
 }
 
 function flushPendingDelta(
-  key: string,
-  chatJid: string,
-  agentId: string | undefined,
+  agentId: string,
   set: (fn: (s: ChatState) => Partial<ChatState>) => void,
 ): void {
-  const entry = pendingDeltas.get(key);
+  const entry = pendingDeltas.get(agentId);
   if (!entry) return;
-  pendingDeltas.delete(key);
+  pendingDeltas.delete(agentId);
 
-  if (agentId) {
-    set((s) => {
-      if (
-        !shouldApplyRunScopedPayload(
-          s.activeRuns,
-          entry.runtimeJid,
-          entry.runId,
-        )
-      ) {
-        return s;
-      }
-      const current = s.agentStreaming[agentId];
-      if (!current && s.agentWaiting[agentId] === false) return s;
-      // A stopped card is frozen until its terminal message replaces it.
-      if (current?.interrupted) return s;
-      const prev = deltaBase(current, entry);
-      const next = applyDeltaChunks(
-        prev,
-        entry.chunks,
-        runStartedAtMs(s.activeRuns, entry.runtimeJid),
-      );
-      if (next === prev) return s;
-      return { agentStreaming: { ...s.agentStreaming, [agentId]: next } };
-    });
-  } else {
-    set((s) => {
-      if (
-        !shouldApplyRunScopedPayload(
-          s.activeRuns,
-          entry.runtimeJid,
-          entry.runId,
-        )
-      ) {
-        return s;
-      }
-      const current = s.streaming[chatJid];
-      if (!current && s.waiting[chatJid] === false) return s;
-      if (current?.interrupted) return s;
-      const prev = deltaBase(current, entry);
-      const next = applyDeltaChunks(
-        prev,
-        entry.chunks,
-        runStartedAtMs(s.activeRuns, entry.runtimeJid),
-      );
-      if (next === prev) return s;
-      return {
-        waiting: { ...s.waiting, [chatJid]: true },
-        streaming: { ...s.streaming, [chatJid]: next },
-      };
-    });
-  }
+  set((s) => {
+    if (
+      !shouldApplyRunScopedPayload(s.activeRuns, entry.runtimeJid, entry.runId)
+    ) {
+      return s;
+    }
+    const current = s.agentStreaming[agentId];
+    if (!current && s.agentWaiting[agentId] === false) return s;
+    // A stopped card is frozen until its terminal message replaces it.
+    if (current?.interrupted) return s;
+    const prev = deltaBase(current, entry);
+    const next = applyDeltaChunks(
+      prev,
+      entry.chunks,
+      runStartedAtMs(s.activeRuns, entry.runtimeJid),
+    );
+    if (next === prev) return s;
+    return { agentStreaming: { ...s.agentStreaming, [agentId]: next } };
+  });
 }
 
 function withoutKey<V>(
@@ -2410,15 +2284,88 @@ function withoutKey<V>(
   return next;
 }
 
-/** Settled cards of a workspace's main conversation and all its sessions. */
+/** The state of one session, let go: it was deleted or removed. */
+function withoutSession(
+  s: ChatState,
+  jid: string,
+  agentId: string,
+): Partial<ChatState> {
+  return {
+    agents: {
+      ...s.agents,
+      [jid]: (s.agents[jid] || []).filter((a) => a.id !== agentId),
+    },
+    pendingMessageUsage: clearPendingMessageUsage(
+      s.pendingMessageUsage,
+      jid,
+      agentId,
+    ),
+    agentMessages: withoutKey(s.agentMessages, agentId),
+    agentStreaming: withoutKey(s.agentStreaming, agentId),
+    agentWaiting: withoutKey(s.agentWaiting, agentId),
+    agentHasMore: withoutKey(s.agentHasMore, agentId),
+    settledStreaming: withoutKey(
+      s.settledStreaming,
+      sessionJidOf(jid, agentId),
+    ),
+    activeAgentTab:
+      s.activeAgentTab[jid] === agentId
+        ? withoutKey(s.activeAgentTab, jid)
+        : s.activeAgentTab,
+  };
+}
+
+/**
+ * The state of a workspace's sessions, let go: their list, the open one,
+ * their messages, live and settled replies, and the reasoning and steps of
+ * replies no session holds any more.
+ */
+function withoutWorkspaceSessions(
+  s: ChatState,
+  jid: string,
+): Partial<ChatState> {
+  const agentMessages = { ...s.agentMessages };
+  const agentStreaming = { ...s.agentStreaming };
+  const agentWaiting = { ...s.agentWaiting };
+  const agentHasMore = { ...s.agentHasMore };
+  for (const { id } of s.agents[jid] ?? []) {
+    delete agentMessages[id];
+    delete agentStreaming[id];
+    delete agentWaiting[id];
+    delete agentHasMore[id];
+  }
+  return {
+    agents: withoutKey(s.agents, jid),
+    activeAgentTab: withoutKey(s.activeAgentTab, jid),
+    agentMessages,
+    agentStreaming,
+    agentWaiting,
+    agentHasMore,
+    settledStreaming: withoutWorkspaceSettled(s.settledStreaming, jid),
+    pendingMessageUsage: clearPendingMessageUsage(s.pendingMessageUsage, jid),
+    thinkingCache: retainThinkingCacheForMessages(
+      agentMessages,
+      s.thinkingCache,
+    ),
+    thinkingDurationCache: retainThinkingCacheForMessages(
+      agentMessages,
+      s.thinkingDurationCache,
+    ),
+    traceCache: retainThinkingCacheForMessages(agentMessages, s.traceCache),
+    stepsCache: retainThinkingCacheForMessages(agentMessages, s.stepsCache),
+    turnTraceStatus: retainThinkingCacheForMessages(
+      agentMessages,
+      s.turnTraceStatus,
+    ),
+  };
+}
+
+/** Settled cards of all the sessions of a workspace. */
 function withoutWorkspaceSettled(
   settled: Record<string, StreamingState>,
   jid: string,
 ): Record<string, StreamingState> {
-  const prefix = `${jid}#agent:`;
-  const keys = Object.keys(settled).filter(
-    (key) => key === jid || key.startsWith(prefix),
-  );
+  const keys = Object.keys(settled).filter((key) => isSessionOf(key, jid));
   if (keys.length === 0) return settled;
   const next = { ...settled };
   for (const key of keys) delete next[key];
@@ -2436,22 +2383,14 @@ function scheduleSettleFallback(
   set: (fn: (s: ChatState) => Partial<ChatState>) => void,
   get: () => ChatState,
 ): void {
-  const marker = '#agent:';
-  const markerIndex = runtimeJid.indexOf(marker);
-  const agentId =
-    markerIndex >= 0 ? runtimeJid.slice(markerIndex + marker.length) : null;
-  const chatJid =
-    markerIndex >= 0 ? runtimeJid.slice(0, markerIndex) : runtimeJid;
+  const agentId = sessionIdOf(runtimeJid);
+  const chatJid = workspaceJidOf(runtimeJid);
   const current = () => get().settledStreaming[runtimeJid];
   setTimeout(async () => {
     if (current() !== settled) return;
     try {
-      if (agentId) {
-        if (get().agentMessages[agentId]) {
-          await get().refreshAgentMessages(chatJid, agentId);
-        }
-      } else if (get().messages[chatJid]) {
-        await get().refreshMessages(chatJid);
+      if (agentId && get().agentMessages[agentId]) {
+        await get().refreshAgentMessages(chatJid, agentId);
       }
     } catch {
       /* fall through to dropping the card */
@@ -2479,12 +2418,7 @@ function scheduleDbTaskAgentCleanup(
       const existing = s.agents[chatJid] || [];
       const filtered = existing.filter((a) => a.id !== agentId);
       if (filtered.length === existing.length) return {};
-      const nextActiveTab = { ...s.activeAgentTab };
-      if (nextActiveTab[chatJid] === agentId) nextActiveTab[chatJid] = null;
-      return {
-        agents: { ...s.agents, [chatJid]: filtered },
-        activeAgentTab: nextActiveTab,
-      };
+      return { agents: { ...s.agents, [chatJid]: filtered } };
     });
   }, DB_TASK_AGENT_AUTO_CLEAN_MS);
   dbTaskAgentCleanupTimers.set(agentId, timer);
@@ -2496,152 +2430,6 @@ function clearDbTaskAgentCleanupTimer(agentId: string): void {
     clearTimeout(timer);
     dbTaskAgentCleanupTimers.delete(agentId);
   }
-}
-
-function removeSdkTaskAliases(
-  aliases: Record<string, string>,
-  taskId: string,
-): Record<string, string> {
-  const next: Record<string, string> = {};
-  for (const [alias, target] of Object.entries(aliases)) {
-    if (alias === taskId || target === taskId) continue;
-    next[alias] = target;
-  }
-  return next;
-}
-
-function resolveSdkTaskId(
-  state: Pick<ChatState, 'sdkTasks' | 'sdkTaskAliases'>,
-  rawId: string,
-): string {
-  if (state.sdkTasks[rawId]) return rawId;
-  return state.sdkTaskAliases[rawId] || rawId;
-}
-
-function pickSdkTaskAliasTarget(
-  state: Pick<ChatState, 'sdkTasks' | 'sdkTaskAliases' | 'agents'>,
-  chatJid: string,
-): string | null {
-  const runningIds = Object.entries(state.sdkTasks)
-    .filter(([, task]) => task.chatJid === chatJid && task.status === 'running')
-    .map(([id]) => id);
-  if (runningIds.length === 0) return null;
-
-  const usedTargets = new Set(Object.values(state.sdkTaskAliases));
-  const unbound = runningIds.filter((id) => !usedTargets.has(id));
-  const pool = (unbound.length > 0 ? unbound : runningIds).slice();
-  const createdAtMap = new Map(
-    (state.agents[chatJid] || []).map((a) => [a.id, a.created_at]),
-  );
-  pool.sort((a, b) =>
-    (createdAtMap.get(a) || '').localeCompare(createdAtMap.get(b) || ''),
-  );
-  return pool[0] || null;
-}
-
-function isTerminalSystemMessage(
-  message: Pick<Message, 'sender' | 'content'>,
-): boolean {
-  if (message.sender === '__billing__') return true;
-  // query_interrupted 仅作为视觉分隔线，不参与流式状态清理。
-  // 流式状态由 status:interrupted（冻结）→ interrupt_partial（转正）两阶段处理。
-  return (
-    message.sender === '__system__' &&
-    (message.content === 'context_reset' ||
-      message.content === 'context_fresh_window' ||
-      message.content.startsWith('agent_error:') ||
-      message.content.startsWith('agent_max_retries:') ||
-      message.content.startsWith('context_overflow:'))
-  );
-}
-
-function isInterruptSystemMessage(
-  message: Pick<Message, 'sender' | 'content'>,
-): boolean {
-  return (
-    message.sender === '__system__' && message.content === 'query_interrupted'
-  );
-}
-
-function clearSdkTaskCleanupTimer(taskId: string): void {
-  const timer = sdkTaskCleanupTimers.get(taskId);
-  if (timer) {
-    clearTimeout(timer);
-    sdkTaskCleanupTimers.delete(taskId);
-  }
-}
-
-function clearSdkTaskStaleTimer(taskId: string): void {
-  const timer = sdkTaskStaleTimers.get(taskId);
-  if (timer) {
-    clearTimeout(timer);
-    sdkTaskStaleTimers.delete(taskId);
-  }
-}
-
-/**
- * Reset the stale timer for a non-teammate SDK task.
- * If no events are received within SDK_TASK_STALE_TIMEOUT_MS, auto-finalize it.
- */
-function resetSdkTaskStaleTimer(
-  set: (fn: (s: ChatState) => Partial<ChatState>) => void,
-  get: () => ChatState,
-  taskId: string,
-  chatJid: string,
-): void {
-  clearSdkTaskStaleTimer(taskId);
-  const timer = setTimeout(() => {
-    sdkTaskStaleTimers.delete(taskId);
-    const state = get();
-    const task = state.sdkTasks[taskId];
-    if (task && task.status === 'running' && !task.isTeammate) {
-      // Auto-finalize stale task
-      set((s) => {
-        const existingTask = s.sdkTasks[taskId];
-        if (!existingTask || existingTask.status !== 'running') return {};
-        return {
-          sdkTasks: {
-            ...s.sdkTasks,
-            [taskId]: { ...existingTask, status: 'completed' as const },
-          },
-        };
-      });
-      scheduleSdkTaskCleanup(set, taskId, chatJid, SDK_TASK_AUTO_CLOSE_MS);
-    }
-  }, SDK_TASK_STALE_TIMEOUT_MS);
-  sdkTaskStaleTimers.set(taskId, timer);
-}
-
-function doSdkTaskCleanup(
-  set: (fn: (s: ChatState) => Partial<ChatState>) => void,
-  taskId: string,
-  _chatJid: string,
-): void {
-  sdkTaskCleanupTimers.delete(taskId);
-  clearSdkTaskStaleTimer(taskId);
-  completedSdkTaskIds.delete(taskId);
-  set((s) => {
-    const nextSdkTasks = { ...s.sdkTasks };
-    delete nextSdkTasks[taskId];
-    const nextAliases = removeSdkTaskAliases(s.sdkTaskAliases, taskId);
-    return {
-      sdkTasks: nextSdkTasks,
-      sdkTaskAliases: nextAliases,
-    };
-  });
-}
-
-function scheduleSdkTaskCleanup(
-  set: (fn: (s: ChatState) => Partial<ChatState>) => void,
-  taskId: string,
-  chatJid: string,
-  delayMs = SDK_TASK_AUTO_CLOSE_MS,
-): void {
-  clearSdkTaskCleanupTimer(taskId);
-  const timer = setTimeout(() => {
-    doSdkTaskCleanup(set, taskId, chatJid);
-  }, delayMs);
-  sdkTaskCleanupTimers.set(taskId, timer);
 }
 
 function pushEvent(
@@ -3059,7 +2847,7 @@ function applyTaskToSteps(
 
 /**
  * Apply a single StreamEvent to a StreamingState object.
- * Shared by main conversation and SDK subagent streaming.
+ * Shared by every session's stream.
  */
 function applyStreamEvent(
   event: StreamEvent,
@@ -3478,16 +3266,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
   groups: {},
   adminHostOnlyMode: false,
   currentGroup: null,
-  messages: {},
-  waiting: {},
   activeRuns: {},
   pendingMessageUsage: {},
   followUps: {},
   contextUsage: {},
-  hasMore: {},
   loading: false,
   error: null,
-  streaming: {},
   thinkingCache: {},
   thinkingDurationCache: {},
   traceCache: {},
@@ -3496,16 +3280,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
   stopRequests: {},
   settledStreaming: {},
   traceAwaited: {},
-  pendingThinking: {},
-  pendingThinkingDuration: {},
   clearing: {},
   agents: {},
   agentStreaming: {},
-  // Active sub-conversation tab is mirrored from URL (?agent=...) by ChatView.
-  // The store holds an in-memory copy for components that read it directly.
+  // The open session is mirrored from the URL (?agent=...) by ChatView. The
+  // store holds an in-memory copy for components that read it directly.
   activeAgentTab: {},
-  sdkTasks: {},
-  sdkTaskAliases: {},
   agentMessages: {},
   agentWaiting: {},
   agentHasMore: {},
@@ -3572,389 +3352,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   selectGroup: (jid: string) => {
     set({ currentGroup: jid });
-    const state = get();
-    if (!state.messages[jid]) {
-      get().loadMessages(jid);
-    }
-  },
-
-  loadMessages: async (jid: string, loadMore = false) => {
-    const state = get();
-    const existing = state.messages[jid] || [];
-    const beforeSequence = loadMore
-      ? messageSequenceBoundary(existing, 'min')
-      : undefined;
-    const before =
-      loadMore && beforeSequence === undefined && existing.length > 0
-        ? existing[0].timestamp
-        : undefined;
-
-    // 首屏有两个入口（ChatPage 路由解析 + ChatView 挂载）会各发一次同参请求；
-    // 同一目标的首页加载在途时直接复用，避免重复拉 50 条。
-    const inFlightKey = `${jid}\0${beforeSequence ?? before ?? 'first'}`;
-    const inFlight = loadMessagesInFlight.get(inFlightKey);
-    if (inFlight) return inFlight;
-    const request = (async () => {
-      try {
-        const data = await api.get<{ messages: Message[]; hasMore: boolean }>(
-          `/api/groups/${encodeURIComponent(jid)}/messages?${new URLSearchParams(
-            beforeSequence !== undefined
-              ? { beforeSequence: String(beforeSequence), limit: '50' }
-              : before
-                ? { before: String(before), limit: '50' }
-                : { limit: '50' },
-          )}`,
-        );
-        forgetSendsSeenIn(jid, data.messages);
-        // Messages come in DESC order from API, reverse to chronological for display
-        const sorted = [...data.messages].reverse();
-        set((s) => {
-          const mergedUsage = mergePendingMessageUsage(
-            mergeMessagesChronologically(s.messages[jid] || [], sorted),
-            s.pendingMessageUsage,
-            jid,
-          );
-          const merged = mergedUsage.messages;
-          const nextWaiting = { ...s.waiting };
-          if (s.activeRuns[jid]) {
-            nextWaiting[jid] = true;
-          } else {
-            delete nextWaiting[jid];
-          }
-
-          return {
-            pendingMessageUsage: mergedUsage.pending,
-            messages: {
-              ...s.messages,
-              [jid]: merged,
-            },
-            waiting: nextWaiting,
-            hasMore: { ...s.hasMore, [jid]: data.hasMore },
-            error: null,
-          };
-        });
-      } catch (err) {
-        set({ error: extractErrorMessage(err) });
-      }
-    })().finally(() => {
-      loadMessagesInFlight.delete(inFlightKey);
-    });
-    loadMessagesInFlight.set(inFlightKey, request);
-    return request;
-  },
-
-  refreshMessages: async (jid: string) => {
-    // Skip polling while clearHistory is in-flight to prevent race re-injection
-    if (get().clearing[jid]) return;
-
-    const state = get();
-    const existing = state.messages[jid] || [];
-    const lastSequence = messageSequenceBoundary(existing, 'max');
-    const lastTs =
-      lastSequence === undefined && existing.length > 0
-        ? existing[existing.length - 1].timestamp
-        : undefined;
-
-    try {
-      // Fetch messages newer than the last one we have
-      const params = new URLSearchParams({ limit: '50' });
-      if (lastSequence !== undefined) {
-        params.set('afterSequence', String(lastSequence));
-      } else if (lastTs) {
-        params.set('after', lastTs);
-      }
-
-      const data = await api.get<{ messages: Message[] }>(
-        `/api/groups/${encodeURIComponent(jid)}/messages?${params}`,
-      );
-      forgetSendsSeenIn(jid, data.messages);
-
-      // Re-check clearing lock after async fetch — clearHistory may have started mid-request
-      if (get().clearing[jid]) return;
-
-      if (data.messages.length > 0) {
-        // Messages from getMessagesAfter are already in ASC order
-        set((s) => {
-          const mergedUsage = mergePendingMessageUsage(
-            mergeMessagesChronologically(s.messages[jid] || [], data.messages),
-            s.pendingMessageUsage,
-            jid,
-          );
-          const merged = mergedUsage.messages;
-          // Check if agent has truly finalized (explicit sdk_send_message should not clear streaming)
-          // interrupt_partial 到达时若流式卡片已冻结（运行仍在），不视为"agent 已回复"，
-          // 避免清除冻结的富内容。消息仍添加到列表，10s 兜底计时器做最终清理。
-          const streamState = s.streaming[jid];
-          const settledState = s.settledStreaming[jid];
-          const exactRunActive = !!s.activeRuns[jid];
-          const isFrozen = !!streamState?.interrupted;
-          const agentReplied = data.messages.some(
-            (m) =>
-              m.is_from_me &&
-              m.sender !== '__system__' &&
-              m.source_kind !== 'sdk_send_message' &&
-              !(isFrozen && m.source_kind === 'interrupt_partial'),
-          );
-          const hasSystemError = data.messages.some((m) =>
-            isTerminalSystemMessage(m),
-          );
-          // Move the finished reply's thinking and execution details onto it.
-          const lastAiMsg = agentReplied
-            ? [...data.messages]
-                .reverse()
-                .find(
-                  (m) =>
-                    m.is_from_me &&
-                    m.sender !== '__system__' &&
-                    m.source_kind !== 'sdk_send_message',
-                )
-            : undefined;
-          // The same rule as a live final message (`settlementOf`).
-          const settlement = lastAiMsg
-            ? settlementOf(
-                s.activeRuns,
-                jid,
-                streamState,
-                settledState,
-                lastAiMsg,
-              )
-            : null;
-          const finalizes =
-            (agentReplied || hasSystemError) &&
-            (settlement?.replacesLive ??
-              (!exactRunActive || isFrozenProjection(streamState)));
-          // And of a proactive reply: its panel gives way to it.
-          const utterance = [...data.messages]
-            .reverse()
-            .find(
-              (m) =>
-                m.is_from_me &&
-                m.sender !== '__system__' &&
-                m.source_kind === 'sdk_send_message',
-            );
-          const replyLanded =
-            !!utterance && proactiveReplyLanded(s, jid, streamState, utterance);
-          const replyCaches =
-            lastAiMsg && settlement?.source
-              ? finalizedReplyCaches(s, settlement.source, lastAiMsg.id)
-              : {};
-          let nextPendingThinking = s.pendingThinking;
-          let nextPendingThinkingDuration = s.pendingThinkingDuration;
-          if (finalizes && lastAiMsg) {
-            const { [jid]: _, ...restPending } = s.pendingThinking;
-            nextPendingThinking = restPending;
-            const { [jid]: __, ...restPendingDur } = s.pendingThinkingDuration;
-            nextPendingThinkingDuration = restPendingDur;
-          }
-
-          return {
-            ...replyCaches,
-            ...(settlement?.dropsSettled || (settledState && hasSystemError)
-              ? { settledStreaming: withoutKey(s.settledStreaming, jid) }
-              : {}),
-            activeRuns: replyLanded
-              ? markRunAnswered(s.activeRuns, jid, utterance?.turn_id)
-              : (settlement?.activeRuns ?? s.activeRuns),
-            ...(replyLanded && utterance
-              ? { traceAwaited: withAwaitedTrace(s, jid, utterance) }
-              : {}),
-            pendingMessageUsage: mergedUsage.pending,
-            messages: { ...s.messages, [jid]: merged },
-            waiting:
-              finalizes && !exactRunActive
-                ? { ...s.waiting, [jid]: false }
-                : s.waiting,
-            streaming:
-              finalizes || replyLanded
-                ? withoutKey(s.streaming, jid)
-                : s.streaming,
-            pendingThinking: nextPendingThinking,
-            pendingThinkingDuration: nextPendingThinkingDuration,
-            error: null,
-          };
-        });
-      }
-    } catch (err) {
-      set({ error: extractErrorMessage(err) });
-    }
-  },
-
-  sendMessage: async (
-    jid: string,
-    content: string,
-    attachments?: Array<{ data: string; mimeType: string }>,
-    followUpBehavior: FollowUpMode = 'queue',
-  ) => {
-    try {
-      // streaming 状态由以下 3 条路径正确清理，sendMessage 不应无条件清空：
-      // 1. handleWsNewMessage 收到 is_from_me 消息时
-      // 2. agent_reply WebSocket 事件时
-      // 3. status:interrupted 事件时
-
-      const body: {
-        chatJid: string;
-        content: string;
-        attachments?: Array<{ type: 'image'; data: string; mimeType: string }>;
-        followUpBehavior: FollowUpMode;
-        clientMessageId: string;
-      } = {
-        chatJid: jid,
-        content,
-        followUpBehavior,
-        clientMessageId: clientMessageIdFor(
-          jid,
-          content,
-          attachments,
-          followUpBehavior,
-        ),
-      };
-      if (attachments && attachments.length > 0) {
-        body.attachments = attachments.map((att) => ({
-          type: 'image',
-          ...att,
-        }));
-      }
-
-      const data = await api.post<MessageCreateResponse>(
-        '/api/messages',
-        body,
-        attachmentTimeoutMs(body.attachments),
-      );
-      unconfirmedSends.delete(jid);
-      if (!data.success) {
-        // Server returned non-success payload — surface as a send failure so caller can retain input.
-        const msg = '服务器返回失败，请重试';
-        set({ error: msg });
-        showToast('发送失败', msg);
-        return false;
-      }
-      // /clear was intercepted server-side: skip local user message merge.
-      // The context_reset divider arrives via WS new_message and triggers state cleanup.
-      if (isClearedResponse(data)) return true;
-      if (data.deduplicated) {
-        showAlreadySent();
-        // The first attempt's message: show it if its announcement was
-        // missed, and take its queue state from the server.
-        if (!get().messages[jid]?.some((m) => m.id === data.messageId)) {
-          const authState = useAuthStore.getState();
-          const replayed: Message = {
-            id: data.messageId,
-            chat_jid: jid,
-            sender: authState.user?.id || 'web-user',
-            sender_name:
-              authState.user?.display_name || authState.user?.username || 'Web',
-            content,
-            timestamp: data.timestamp,
-            ingest_sequence: data.ingestSequence,
-            is_from_me: false,
-            attachments: body.attachments
-              ? JSON.stringify(body.attachments)
-              : undefined,
-          };
-          set((s) => ({
-            messages: {
-              ...s.messages,
-              [jid]: mergeMessagesChronologically(s.messages[jid] || [], [
-                replayed,
-              ]),
-            },
-          }));
-        }
-        void get().loadFollowUps(jid);
-        return true;
-      }
-      if (data.disposition === 'started' && data.runId) {
-        get().handleRunStarted(jid, data.runId);
-      }
-      // Add user message to local state immediately
-      const authState = useAuthStore.getState();
-      const sender = authState.user?.id || 'web-user';
-      const senderName =
-        authState.user?.display_name || authState.user?.username || 'Web';
-      const msg: Message = {
-        id: data.messageId,
-        chat_jid: jid,
-        sender,
-        sender_name: senderName,
-        content,
-        // Use server timestamp so incremental polling cursor stays monotonic with backend data.
-        timestamp: data.timestamp,
-        ingest_sequence: data.ingestSequence,
-        // is_from_me is from the bot's perspective: true = bot sent it, false = human sent it
-        is_from_me: false,
-        attachments: body.attachments
-          ? JSON.stringify(body.attachments)
-          : undefined,
-        delivery_mode:
-          data.disposition === 'queued'
-            ? 'queue'
-            : data.disposition === 'steered'
-              ? 'steer'
-              : null,
-        delivery_status:
-          data.disposition === 'started'
-            ? null
-            : data.disposition === 'queued'
-              ? 'queued'
-              : 'queued',
-        delivery_run_id: data.runId ?? null,
-        delivery_updated_at:
-          data.disposition === 'started' ? null : data.timestamp,
-      };
-      set((s) => {
-        const existing = s.messages[jid] || [];
-        if (!s.messages[jid]) {
-          console.warn(
-            '[sendMessage] messages[jid] is undefined at send time',
-            { jid, storeKeys: Object.keys(s.messages) },
-          );
-        }
-        const merged = mergeMessagesChronologically(existing, [msg]);
-        const latest = merged.length > 0 ? merged[merged.length - 1] : null;
-        const shouldWait =
-          !!latest &&
-          latest.is_from_me === false &&
-          !isTerminalSystemMessage(latest);
-        return {
-          messages: {
-            ...s.messages,
-            [jid]: merged,
-          },
-          waiting: { ...s.waiting, [jid]: shouldWait },
-          error: null,
-        };
-      });
-      if (data.disposition !== 'started') {
-        void get().loadFollowUps(jid);
-      }
-      return true;
-    } catch (err) {
-      // 弱网/断网/后端 500 等场景：记录错误并给用户可见的 toast，
-      // 返回 false 让调用方（MessageInput）保留输入不清空。
-      settleFailedSend(jid, err);
-      if (storedDespiteError(err)) {
-        showStoredButFailed();
-        return true;
-      }
-      const message = extractErrorMessage(err);
-      set({ error: message });
-      showToast(
-        '发送失败',
-        sendMayHaveLanded(err)
-          ? `${UNCONFIRMED_SEND_HINT}，输入已保留`
-          : '消息未发送，输入已保留，请检查网络后重试',
-      );
-      return false;
-    }
   },
 
   loadContextUsage: async (jid, agentId) => {
-    const key = contextUsageKey(jid, agentId);
+    const key = sessionJidOf(jid, agentId);
     const revision = contextUsageRevisions.get(key) ?? 0;
     try {
-      const query = agentId ? `?${new URLSearchParams({ agentId })}` : '';
       const data = await api.get<Partial<ContextUsage>>(
-        `/api/groups/${encodeURIComponent(jid)}/context-usage${query}`,
+        `/api/groups/${encodeURIComponent(jid)}/context-usage?${new URLSearchParams({ agentId })}`,
       );
       if ((contextUsageRevisions.get(key) ?? 0) !== revision) return;
       set((s) => ({
@@ -3966,7 +3371,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   setContextUsage: (jid, agentId, usage) => {
-    const key = contextUsageKey(jid, agentId);
+    const key = sessionJidOf(jid, agentId);
     contextUsageRevisions.set(key, (contextUsageRevisions.get(key) ?? 0) + 1);
     set((s) => ({
       contextUsage: { ...s.contextUsage, [key]: toContextUsage(usage) },
@@ -4031,28 +3436,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
       );
       if (!data.interrupted) {
         clearStopRequest();
-        // Agent 已完成，无活跃查询可中断。
-        // 解析虚拟 JID 判断是 agent 还是主会话，清除卡住的状态。
-        const agentSep = jid.indexOf('#agent:');
-        if (agentSep >= 0) {
-          const agentId = jid.slice(agentSep + 7);
+        // Agent 已完成，无活跃查询可中断：清除该会话卡住的状态。
+        const agentId = sessionIdOf(jid);
+        if (agentId) {
           // Cancel pending rAF to prevent stale flushes
-          const agentKey = `agent:${agentId}`;
-          const pendingEntry = pendingDeltas.get(agentKey);
-          if (pendingEntry) {
-            cancelAnimationFrame(pendingEntry.raf);
-            pendingDeltas.delete(agentKey);
-          }
-          set((s) => {
-            const nextStreaming = { ...s.agentStreaming };
-            delete nextStreaming[agentId];
-            return {
-              agentStreaming: nextStreaming,
-              agentWaiting: { ...s.agentWaiting, [agentId]: false },
-            };
-          });
-        } else {
-          get().clearStreaming(jid);
+          cancelPendingDelta(agentId);
+          set((s) => ({
+            agentStreaming: withoutKey(s.agentStreaming, agentId),
+            agentWaiting: { ...s.agentWaiting, [agentId]: false },
+          }));
         }
         return false;
       }
@@ -4069,58 +3461,28 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
   },
 
-  resetSession: async (jid: string, agentId?: string) => {
-    // Hold the clearing lock for main-session reset so late-arriving stream
-    // events from the soon-to-be-killed process can't repopulate UI state
-    // (same lock clearHistory uses at chat.ts ~1105). Agent-specific reset
-    // is scoped narrowly enough that the lock isn't needed.
-    // Release the lock BEFORE calling refreshMessages/loadAgentMessages,
-    // which themselves honor `clearing[jid]` and would otherwise skip.
-    const useLock = !agentId;
-    if (useLock) {
-      set((s) => ({ clearing: { ...s.clearing, [jid]: true } }));
-    }
-    let succeeded = false;
+  resetSession: async (jid: string, agentId: string) => {
     try {
       await api.post<{ success: boolean; dividerMessageId: string }>(
         `/api/groups/${encodeURIComponent(jid)}/reset-session`,
-        agentId ? { agentId } : undefined,
+        { agentId },
       );
-      set((s) => ({
-        pendingMessageUsage: clearPendingMessageUsage(
-          s.pendingMessageUsage,
-          jid,
-          agentId,
-        ),
-      }));
-      if (agentId) {
-        set((s) => {
-          const nextStreaming = { ...s.agentStreaming };
-          delete nextStreaming[agentId];
-          const nextWaiting = { ...s.agentWaiting };
-          delete nextWaiting[agentId];
-          return { agentStreaming: nextStreaming, agentWaiting: nextWaiting };
-        });
-      } else {
-        get().clearStreaming(jid, { preserveThinking: false });
-      }
-      get().setContextUsage(jid, agentId, null);
-      succeeded = true;
     } catch (err) {
       set({ error: extractErrorMessage(err) });
-    } finally {
-      if (useLock) {
-        set((s) => {
-          const { [jid]: _, ...nextClearing } = s.clearing;
-          return { clearing: nextClearing };
-        });
-      }
+      return false;
     }
-    if (succeeded) {
-      if (agentId) await get().loadAgentMessages(jid, agentId);
-      else await get().refreshMessages(jid);
-    }
-    return succeeded;
+    set((s) => ({
+      pendingMessageUsage: clearPendingMessageUsage(
+        s.pendingMessageUsage,
+        jid,
+        agentId,
+      ),
+      agentStreaming: withoutKey(s.agentStreaming, agentId),
+      agentWaiting: withoutKey(s.agentWaiting, agentId),
+    }));
+    get().setContextUsage(jid, agentId, null);
+    await get().loadAgentMessages(jid, agentId);
+    return true;
   },
 
   clearHistory: async (jid: string, options = {}) => {
@@ -4140,92 +3502,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
       void deleteGroupMessageSnapshots(jid);
 
       set((s) => {
-        // Delete the key entirely (not []==[]) so selectGroup/ChatView effect
-        // will trigger loadMessages on re-entry
-        const nextMessages = { ...s.messages };
-        delete nextMessages[jid];
-        const nextStreaming = { ...s.streaming };
-        delete nextStreaming[jid];
-        const { [jid]: _pending, ...nextPendingThinking } = s.pendingThinking;
-        const { [jid]: _clearing, ...nextClearing } = s.clearing;
-
-        // Collect sub-agent IDs that belonged to this workspace so we can
-        // scrub their per-agent state — backend has deleted the agent rows
-        // already, leaving these Maps orphaned otherwise.
-        const staleAgentIds = (s.agents[jid] || []).map((a) => a.id);
-        const nextAgents = { ...s.agents };
-        delete nextAgents[jid];
-        const nextAgentMessages = { ...s.agentMessages };
-        const nextAgentStreaming = { ...s.agentStreaming };
-        const nextAgentWaiting = { ...s.agentWaiting };
-        for (const aid of staleAgentIds) {
-          delete nextAgentMessages[aid];
-          delete nextAgentStreaming[aid];
-          delete nextAgentWaiting[aid];
-        }
-
-        // Reset UI-scoped state tied to this workspace jid.
-        const nextDrafts = { ...s.drafts };
-        delete nextDrafts[jid];
-        const nextActiveAgentTab = { ...s.activeAgentTab };
-        delete nextActiveAgentTab[jid];
-
-        // Purge SDK Task state that originated from this workspace.
-        const nextSdkTasks = { ...s.sdkTasks };
-        const droppedTaskKeys = new Set<string>();
-        for (const [taskKey, info] of Object.entries(s.sdkTasks)) {
-          if (info.chatJid === jid) {
-            delete nextSdkTasks[taskKey];
-            droppedTaskKeys.add(taskKey);
-          }
-        }
-        const nextSdkTaskAliases = { ...s.sdkTaskAliases };
-        for (const [alias, canonical] of Object.entries(s.sdkTaskAliases)) {
-          if (droppedTaskKeys.has(canonical)) delete nextSdkTaskAliases[alias];
-        }
-
+        // Reset UI-scoped state tied to this workspace's sessions.
+        const nextDrafts = Object.fromEntries(
+          Object.entries(s.drafts).filter(([key]) => !isSessionOf(key, jid)),
+        );
         return {
-          messages: nextMessages,
-          waiting: { ...s.waiting, [jid]: false },
-          hasMore: { ...s.hasMore, [jid]: false },
-          streaming: nextStreaming,
-          settledStreaming: withoutWorkspaceSettled(s.settledStreaming, jid),
-          pendingThinking: nextPendingThinking,
-          clearing: nextClearing,
-          thinkingCache: retainThinkingCacheForMessages(
-            { ...nextAgentMessages, ...nextMessages },
-            s.thinkingCache,
-          ),
-          thinkingDurationCache: retainThinkingCacheForMessages(
-            { ...nextAgentMessages, ...nextMessages },
-            s.thinkingDurationCache,
-          ),
-          traceCache: retainThinkingCacheForMessages(
-            { ...nextAgentMessages, ...nextMessages },
-            s.traceCache,
-          ),
-          stepsCache: retainThinkingCacheForMessages(
-            { ...nextAgentMessages, ...nextMessages },
-            s.stepsCache,
-          ),
-          turnTraceStatus: retainThinkingCacheForMessages(
-            { ...nextAgentMessages, ...nextMessages },
-            s.turnTraceStatus,
-          ),
-          agents: nextAgents,
-          pendingMessageUsage: clearPendingMessageUsage(
-            s.pendingMessageUsage,
-            jid,
-            undefined,
-            true,
-          ),
-          agentMessages: nextAgentMessages,
-          agentStreaming: nextAgentStreaming,
-          agentWaiting: nextAgentWaiting,
+          // The backend has deleted the session rows already.
+          ...withoutWorkspaceSessions(s, jid),
+          clearing: withoutKey(s.clearing, jid),
           drafts: nextDrafts,
-          activeAgentTab: nextActiveAgentTab,
-          sdkTasks: nextSdkTasks,
-          sdkTaskAliases: nextSdkTaskAliases,
           error: null,
         };
       });
@@ -4250,40 +3535,23 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   handleMessageDeleted: async (messageChatJid, messageId) => {
-    const agentMarker = '#agent:';
-    const agentSep = messageChatJid.indexOf(agentMarker);
-    const workspaceJid =
-      agentSep >= 0 ? messageChatJid.slice(0, agentSep) : null;
-    const agentId =
-      agentSep >= 0
-        ? messageChatJid.slice(agentSep + agentMarker.length)
-        : null;
+    // Every message is a session's, in that session's list.
+    const agentId = sessionIdOf(messageChatJid);
+    if (!agentId) return;
+    const workspaceJid = workspaceJidOf(messageChatJid);
 
     set((s) => {
-      const matchesDeletedRow = (message: Message) =>
-        message.id === messageId && message.chat_jid === messageChatJid;
-      const messages = { ...s.messages };
-      for (const [key, list] of Object.entries(messages)) {
-        if (list.some(matchesDeletedRow)) {
-          messages[key] = list.filter((message) => !matchesDeletedRow(message));
-        }
-      }
-
-      const agentMessages = { ...s.agentMessages };
-      for (const [key, list] of Object.entries(agentMessages)) {
-        if (list.some(matchesDeletedRow)) {
-          agentMessages[key] = list.filter(
-            (message) => !matchesDeletedRow(message),
-          );
-        }
-      }
-
-      if (!workspaceJid || !agentId) return { messages, agentMessages };
+      const loaded = s.agentMessages[agentId]?.filter(
+        (message) =>
+          message.id !== messageId || message.chat_jid !== messageChatJid,
+      );
+      const agentMessages = loaded
+        ? { ...s.agentMessages, [agentId]: loaded }
+        : s.agentMessages;
 
       // The Session sidebar has its own latest-message projection. Update it
       // immediately from the loaded page, then force an authoritative refresh
       // below in case the previous message is outside that page.
-      const loaded = agentMessages[agentId];
       const latest = loaded?.[loaded.length - 1];
       const agents = { ...s.agents };
       if (agents[workspaceJid]) {
@@ -4298,26 +3566,18 @@ export const useChatStore = create<ChatState>((set, get) => ({
             : agent,
         );
       }
-      return { messages, agentMessages, agents };
+      return { agentMessages, agents };
     });
 
-    if (workspaceJid && agentId) {
-      // A deleted sensitive message must not survive in the PWA's persisted
-      // hydrate cache. Await invalidation so an immediate reload cannot race it.
-      await deleteAgentMessageSnapshot(workspaceJid, agentId);
-      await get().loadAgents(workspaceJid, { force: true });
-    }
+    // A deleted sensitive message must not survive in the PWA's persisted
+    // hydrate cache. Await invalidation so an immediate reload cannot race it.
+    await deleteAgentMessageSnapshot(workspaceJid, agentId);
+    await get().loadAgents(workspaceJid, { force: true });
   },
 
   handleMessageTrace: (messageChatJid, messageId) => {
-    const agentMarker = '#agent:';
-    const agentSep = messageChatJid.indexOf(agentMarker);
-    const workspaceJid =
-      agentSep >= 0 ? messageChatJid.slice(0, agentSep) : null;
-    const agentId =
-      agentSep >= 0
-        ? messageChatJid.slice(agentSep + agentMarker.length)
-        : null;
+    const agentId = sessionIdOf(messageChatJid);
+    const workspaceJid = agentId ? workspaceJidOf(messageChatJid) : null;
     const isIt = (message: Message) =>
       message.id === messageId && message.chat_jid === messageChatJid;
     const marks = (message: Message) => isIt(message) && !message.has_trace;
@@ -4329,28 +3589,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
     let snapshot: { messages: Message[]; hasMore: boolean } | null = null;
     let known = false;
     set((s) => {
-      known =
-        Object.values(s.messages).some((list) => list.some(isIt)) ||
-        Object.values(s.agentMessages).some((list) => list.some(isIt));
-      let messages = s.messages;
-      for (const [key, list] of Object.entries(s.messages)) {
-        if (list.some(marks)) {
-          messages = { ...messages, [key]: mark(list) };
-        }
-      }
-      let agentMessages = s.agentMessages;
-      for (const [key, list] of Object.entries(s.agentMessages)) {
-        if (!list.some(marks)) continue;
-        const updated = mark(list);
-        agentMessages = { ...agentMessages, [key]: updated };
-        if (key === agentId) {
-          snapshot = { messages: updated, hasMore: !!s.agentHasMore[key] };
-        }
-      }
-      if (messages === s.messages && agentMessages === s.agentMessages) {
-        return s;
-      }
-      return { messages, agentMessages };
+      // Every message is a session's, in that session's list.
+      const list = agentId ? s.agentMessages[agentId] : undefined;
+      known = !!list?.some(isIt);
+      if (!agentId || !list?.some(marks)) return s;
+      const updated = mark(list);
+      snapshot = { messages: updated, hasMore: !!s.agentHasMore[agentId] };
+      return { agentMessages: { ...s.agentMessages, [agentId]: updated } };
     });
     // The held row is the reply's own now (marked first, so it never lapses).
     set((s) => releaseAwaitedTrace(s, messageChatJid, messageId));
@@ -4502,30 +3747,30 @@ export const useChatStore = create<ChatState>((set, get) => ({
         };
       };
       set((state) => {
-        // A level lowered mid-run must not leave what it hides in memory.
-        const scrub = isProactiveRuntime(state, jid);
-        const nextStreaming = { ...state.streaming };
-        if (scrub && nextStreaming[jid]) {
-          nextStreaming[jid] = scrubForVisibility(
-            nextStreaming[jid],
-            processVisibility,
-          );
-        }
+        // A level lowered mid-run must not leave what it hides in memory:
+        // the workspace's listed sessions and those running in it.
+        const sessionIds = new Set([
+          ...(state.agents[jid] ?? []).map((agent) => agent.id),
+          ...Object.keys(state.activeRuns).flatMap((runtimeJid) =>
+            workspaceJidOf(runtimeJid) === jid
+              ? [sessionIdOf(runtimeJid) ?? '']
+              : [],
+          ),
+        ]);
         const nextAgentStreaming = { ...state.agentStreaming };
-        for (const agent of state.agents[jid] ?? []) {
+        for (const agentId of sessionIds) {
           if (
-            isProactiveRuntime(state, `${jid}#agent:${agent.id}`) &&
-            nextAgentStreaming[agent.id]
+            nextAgentStreaming[agentId] &&
+            isProactiveRuntime(state, sessionJidOf(jid, agentId))
           ) {
-            nextAgentStreaming[agent.id] = scrubForVisibility(
-              nextAgentStreaming[agent.id],
+            nextAgentStreaming[agentId] = scrubForVisibility(
+              nextAgentStreaming[agentId],
               processVisibility,
             );
           }
         }
         return {
           groups: patchGroups(state.groups),
-          streaming: nextStreaming,
           agentStreaming: nextAgentStreaming,
           error: null,
         };
@@ -4588,18 +3833,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       void deleteGroupMessageSnapshots(jid);
       set((s) => {
         const nextGroups = { ...s.groups };
-        const nextMessages = { ...s.messages };
-        const nextWaiting = { ...s.waiting };
-        const nextHasMore = { ...s.hasMore };
-        const nextStreaming = { ...s.streaming };
-        const nextPendingThinking = { ...s.pendingThinking };
-
         delete nextGroups[jid];
-        delete nextMessages[jid];
-        delete nextWaiting[jid];
-        delete nextHasMore[jid];
-        delete nextStreaming[jid];
-        delete nextPendingThinking[jid];
 
         let nextCurrent = s.currentGroup === jid ? null : s.currentGroup;
         // Auto-select first remaining group after deletion
@@ -4610,38 +3844,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
         return {
           groups: nextGroups,
-          pendingMessageUsage: clearPendingMessageUsage(
-            s.pendingMessageUsage,
-            jid,
-            undefined,
-            true,
-          ),
-          messages: nextMessages,
-          waiting: nextWaiting,
-          hasMore: nextHasMore,
-          streaming: nextStreaming,
-          settledStreaming: withoutWorkspaceSettled(s.settledStreaming, jid),
-          pendingThinking: nextPendingThinking,
-          thinkingCache: retainThinkingCacheForMessages(
-            { ...s.agentMessages, ...nextMessages },
-            s.thinkingCache,
-          ),
-          thinkingDurationCache: retainThinkingCacheForMessages(
-            { ...s.agentMessages, ...nextMessages },
-            s.thinkingDurationCache,
-          ),
-          traceCache: retainThinkingCacheForMessages(
-            { ...s.agentMessages, ...nextMessages },
-            s.traceCache,
-          ),
-          stepsCache: retainThinkingCacheForMessages(
-            { ...s.agentMessages, ...nextMessages },
-            s.stepsCache,
-          ),
-          turnTraceStatus: retainThinkingCacheForMessages(
-            { ...s.agentMessages, ...nextMessages },
-            s.turnTraceStatus,
-          ),
+          ...withoutWorkspaceSessions(s, jid),
           currentGroup: nextCurrent,
           error: null,
         };
@@ -4656,7 +3859,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
         apiErr.status === 409 &&
         (apiErr.body?.bound_sessions ||
           apiErr.body?.bound_agents ||
-          apiErr.body?.bound_main_im_groups ||
           apiErr.body?.bound_thread_contexts)
       ) {
         const e = new Error(
@@ -4664,12 +3866,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
         ) as Error & {
           boundSessions?: unknown;
           boundAgents?: unknown;
-          boundMainImGroups?: unknown;
           boundThreadContexts?: unknown;
         };
         e.boundSessions = apiErr.body.bound_sessions;
         e.boundAgents = apiErr.body.bound_agents;
-        e.boundMainImGroups = apiErr.body.bound_main_im_groups;
         e.boundThreadContexts = apiErr.body.bound_thread_contexts;
         throw e;
       }
@@ -4846,6 +4046,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   handleStreamEvent: (chatJid, event, agentId, runId) => {
+    // Every conversation is a session: an event without one has nowhere to go.
+    if (!agentId) return;
     // Skip while clearHistory is in-flight
     if (get().clearing[chatJid]) return;
 
@@ -4853,7 +4055,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     // useful to operators, but never belong in a user's conversation state.
     if (event.eventType === 'context_audit') return;
 
-    const runtimeJid = agentId ? `${chatJid}#agent:${agentId}` : chatJid;
+    const runtimeJid = sessionJidOf(chatJid, agentId);
     if (!shouldApplyRunScopedPayload(get().activeRuns, runtimeJid, runId)) {
       return;
     }
@@ -4882,9 +4084,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       let snapshotHasMore = false;
       set((s) => {
         const pending = prunePendingMessageUsage(s.pendingMessageUsage);
-        const messages = agentId
-          ? s.agentMessages[agentId] || []
-          : s.messages[chatJid] || [];
+        const messages = s.agentMessages[agentId] || [];
         let targetIdx = -1;
         for (let i = messages.length - 1; i >= 0; i--) {
           if (
@@ -4912,20 +4112,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
           ...updated[targetIdx],
           token_usage: tokenUsageJson,
         };
-        if (agentId) {
-          snapshotMessages = updated;
-          snapshotHasMore = !!s.agentHasMore[agentId];
-          return {
-            agentMessages: { ...s.agentMessages, [agentId]: updated },
-            pendingMessageUsage: pending,
-          };
-        }
+        snapshotMessages = updated;
+        snapshotHasMore = !!s.agentHasMore[agentId];
         return {
-          messages: { ...s.messages, [chatJid]: updated },
+          agentMessages: { ...s.agentMessages, [agentId]: updated },
           pendingMessageUsage: pending,
         };
       });
-      if (agentId && snapshotMessages) {
+      if (snapshotMessages) {
         void saveAgentMessageSnapshot(
           chatJid,
           agentId,
@@ -4963,17 +4157,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
           // Keep arrival order: reasoning still waiting for its frame came first.
           flushPendingDeltaForRuntime(runtimeJid, set);
           set((s) => {
-            const prev = agentId
-              ? s.agentStreaming[agentId]
-              : s.streaming[chatJid];
+            const prev = s.agentStreaming[agentId];
             if (!prev || prev.interrupted) return s;
             const next = { ...prev };
             endThinkingBurst(prev, next, Date.now());
             next.awaitingModel = false;
             next.phaseStartedAt = undefined;
-            return agentId
-              ? { agentStreaming: { ...s.agentStreaming, [agentId]: next } }
-              : { streaming: { ...s.streaming, [chatJid]: next } };
+            return { agentStreaming: { ...s.agentStreaming, [agentId]: next } };
           });
         }
         return;
@@ -4990,7 +4180,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           !!event.text))
     ) {
       set((s) => {
-        const prev = agentId ? s.agentStreaming[agentId] : s.streaming[chatJid];
+        const prev = s.agentStreaming[agentId];
         if (
           !prev ||
           prev.interrupted ||
@@ -4998,32 +4188,31 @@ export const useChatStore = create<ChatState>((set, get) => ({
         ) {
           return s;
         }
-        const next = { ...prev, systemStatus: null };
-        if (agentId) {
-          return { agentStreaming: { ...s.agentStreaming, [agentId]: next } };
-        }
-        return { streaming: { ...s.streaming, [chatJid]: next } };
+        return {
+          agentStreaming: {
+            ...s.agentStreaming,
+            [agentId]: { ...prev, systemStatus: null },
+          },
+        };
       });
     }
 
-    // ⓪ text_delta / thinking_delta — rAF batch for both agent and main
-    // conversation. A sub-agent's own text and reasoning (it has a parent tool)
-    // is its task's tail, not the reply's, in a session as in the main stream.
+    // ⓪ text_delta / thinking_delta — rAF batch. A sub-agent's own text and
+    // reasoning (it has a parent tool) is its task's tail, not the reply's.
     if (
       (event.eventType === 'text_delta' ||
         event.eventType === 'thinking_delta') &&
       !event.parentToolUseId
     ) {
-      const key = agentId ? `agent:${agentId}` : `main:${chatJid}`;
-      let entry = pendingDeltas.get(key);
+      let entry = pendingDeltas.get(agentId);
       if (entry && (entry.runtimeJid !== runtimeJid || entry.runId !== runId)) {
-        cancelPendingDelta(key);
+        cancelPendingDelta(agentId);
         entry = undefined;
       }
       if (entry && event.turnId && entry.turnId !== event.turnId) {
         // A new turn: settle the old turn's frame before starting this one.
         cancelAnimationFrame(entry.raf);
-        flushPendingDelta(key, chatJid, agentId, set);
+        flushPendingDelta(agentId, set);
         entry = undefined;
       }
       const chunk = {
@@ -5044,9 +4233,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
         inputTurnId: event.inputTurnId,
       };
       entry.raf = requestAnimationFrame(() => {
-        flushPendingDelta(key, chatJid, agentId, set);
+        flushPendingDelta(agentId, set);
       });
-      pendingDeltas.set(key, entry);
+      pendingDeltas.set(agentId, entry);
       return;
     }
 
@@ -5055,375 +4244,47 @@ export const useChatStore = create<ChatState>((set, get) => ({
     // preceded it).
     flushPendingDeltaForRuntime(runtimeJid, set);
 
-    // ① conversation agent（DB 持久化的）
-    if (agentId) {
-      if (event.eventType === 'status' && event.statusText === 'interrupted') {
-        // 与主会话一致的两阶段处理：先冻结（保留已输出内容），
-        // 等 new_message (interrupt_partial) 到达后完成最终清理。
-        const key = `agent:${agentId}`;
-        const pendingEntry = pendingDeltas.get(key);
-        if (pendingEntry) {
-          cancelAnimationFrame(pendingEntry.raf);
-          flushPendingDelta(key, chatJid, agentId, set);
-        }
-        set((s) => {
-          const frozen = freezeStreamingState(s.agentStreaming[agentId]);
-          const nextStreaming = { ...s.agentStreaming };
-          if (frozen) {
-            nextStreaming[agentId] = frozen;
-          } else {
-            delete nextStreaming[agentId];
-          }
-          return {
-            agentStreaming: nextStreaming,
-            agentWaiting: { ...s.agentWaiting, [agentId]: false },
-          };
-        });
-
-        // Fallback：10s 后如果 new_message 未到达，强制清除冻结状态
-        setTimeout(() => {
-          const state = get();
-          if (
-            state.agentStreaming[agentId]?.interrupted &&
-            !state.agentWaiting[agentId]
-          ) {
-            set((s) => {
-              const next = { ...s.agentStreaming };
-              delete next[agentId];
-              return { agentStreaming: next };
-            });
-          }
-        }, 10_000);
-        return;
-      }
-
-      set((s) => {
-        // Guard: if streaming was already cleared (agent reply received),
-        // ignore late-arriving stream events to prevent "thinking" reappearing.
-        if (!s.agentStreaming[agentId] && s.agentWaiting[agentId] === false) {
-          return s;
-        }
-        // A stopped card stays frozen until its terminal message arrives.
-        const current = s.agentStreaming[agentId];
-        if (current?.interrupted) return s;
-        const prev = resolveStreamingPrev(current, event);
-        const next = { ...prev };
-        applyStreamEvent(
-          event,
-          prev,
-          next,
-          MAX_STREAMING_TEXT,
-          runStartedAtMs(s.activeRuns, runtimeJid),
-        );
-        return { agentStreaming: { ...s.agentStreaming, [agentId]: next } };
-      });
-      return;
-    }
-
-    const ensureSdkTask = (
-      taskId: string,
-      description?: string,
-      isTeammate?: boolean,
-    ) => {
-      set((s) => {
-        const existingTask = s.sdkTasks[taskId];
-        const desc = description || existingTask?.description || 'Task';
-        const teammate = isTeammate || existingTask?.isTeammate || false;
-
-        return {
-          sdkTasks: {
-            ...s.sdkTasks,
-            [taskId]: {
-              chatJid,
-              description: desc,
-              status: 'running' as const,
-              summary: existingTask?.summary,
-              startedAt: existingTask?.startedAt || Date.now(),
-              ...(teammate ? { isTeammate: true } : {}),
-            },
-          },
-        };
-      });
-      // Start stale timer for non-teammate tasks
-      if (!isTeammate) {
-        resetSdkTaskStaleTimer(set, get, taskId, chatJid);
-      }
-    };
-
-    const resolveOrBindTaskId = (rawId: string): string => {
-      const state = get();
-      const resolved = resolveSdkTaskId(state, rawId);
-      if (state.sdkTasks[resolved]) return resolved;
-      const target = pickSdkTaskAliasTarget(state, chatJid);
-      if (target && rawId !== target) {
-        set((s) => ({
-          sdkTaskAliases: { ...s.sdkTaskAliases, [rawId]: target },
-        }));
-        return target;
-      }
-      return resolved;
-    };
-
-    const finalizeSdkTask = (
-      taskId: string,
-      status: 'completed' | 'error',
-      summary?: string,
-      closeAfterMs = SDK_TASK_AUTO_CLOSE_MS,
-    ) => {
-      clearSdkTaskStaleTimer(taskId);
-      completedSdkTaskIds.add(taskId);
-      let targetChatJid: string | null = null;
-      set((s) => {
-        const existingTask = s.sdkTasks[taskId];
-        if (!existingTask) return {};
-        const taskChatJid = existingTask.chatJid || chatJid;
-        targetChatJid = taskChatJid;
-        return {
-          sdkTasks: {
-            ...s.sdkTasks,
-            [taskId]: {
-              chatJid: taskChatJid,
-              description: existingTask.description,
-              status,
-              summary: summary ?? existingTask.summary,
-              ...(existingTask.isTeammate ? { isTeammate: true } : {}),
-            },
-          },
-        };
-      });
-      if (targetChatJid) {
-        scheduleSdkTaskCleanup(set, taskId, targetChatJid, closeAfterMs);
-      }
-    };
-
-    // ② task_start / Task tool start → 创建/更新虚拟 Agent（SDK Task）
-    if (
-      (event.eventType === 'task_start' &&
-        event.toolUseId &&
-        !(event.taskType && NON_AGENT_TASK_TYPES.has(event.taskType))) ||
-      (event.eventType === 'tool_use_start' &&
-        event.toolName === 'Task' &&
-        event.toolUseId)
-    ) {
-      ensureSdkTask(
-        event.toolUseId!,
-        event.taskDescription || event.toolInputSummary,
-        event.isTeammate,
-      );
-      // 不 return — 让 task_start 同时落入主对话 streaming（显示 Task 工具卡片）
-    }
-
-    if (
-      event.eventType === 'task_progress' &&
-      (event.toolUseId || event.taskId)
-    ) {
-      const resolvedTaskId = resolveOrBindTaskId(
-        event.toolUseId || event.taskId!,
-      );
-      set((s) => {
-        const existing = s.sdkTasks[resolvedTaskId];
-        if (!existing) return {};
-        return {
-          sdkTasks: {
-            ...s.sdkTasks,
-            [resolvedTaskId]: {
-              ...existing,
-              description: event.taskDescription || existing.description,
-              summary: event.summary || event.taskSummary || existing.summary,
-            },
-          },
-        };
-      });
-    }
-
-    if (
-      event.eventType === 'task_updated' &&
-      (event.toolUseId || event.taskId)
-    ) {
-      const resolvedTaskId = resolveOrBindTaskId(
-        event.toolUseId || event.taskId!,
-      );
-      const patchStatus = event.taskPatch?.status;
-      if (
-        patchStatus === 'completed' ||
-        patchStatus === 'failed' ||
-        patchStatus === 'killed' ||
-        patchStatus === 'stopped' ||
-        patchStatus === 'aborted'
-      ) {
-        finalizeSdkTask(
-          resolvedTaskId,
-          patchStatus === 'completed' ? 'completed' : 'error',
-          event.summary || event.taskPatch?.error,
-        );
-      }
-    }
-
-    // ③ task_notification → 标记完成/失败并自动关闭标签页
-    if (event.eventType === 'task_notification' && event.taskId) {
-      const resolvedTaskId = resolveOrBindTaskId(event.taskId);
-      finalizeSdkTask(
-        resolvedTaskId,
-        event.taskStatus === 'completed' ? 'completed' : 'error',
-        event.taskSummary,
-      );
-
-      set((s) => {
-        const current = s.streaming[chatJid];
-        if (!current || current.interrupted) return s;
-        const prev = resolveStreamingPrev(current, event);
-        const next = { ...prev };
-        applyStreamEvent(
-          event,
-          prev,
-          next,
-          MAX_STREAMING_TEXT,
-          runStartedAtMs(s.activeRuns, runtimeJid),
-        );
-        return {
-          streaming: { ...s.streaming, [chatJid]: next },
-        };
-      });
-
-      // Toast + 浏览器通知（仅限后台任务）。放在 set() 之后，状态更新不依赖
-      // 通知能否发出（notifyIfHidden 自己也会吞掉 Android 的构造异常）。
-      // stream-processor 为前台 Task 合成的 task_notification 不带 isBackground 标记，
-      // 仅 SDK 原生的后台完成事件携带 isBackground: true。
-      if (
-        event.isBackground &&
-        shouldEmitBackgroundTaskNotice(resolvedTaskId)
-      ) {
-        const taskInfo = get().sdkTasks[resolvedTaskId];
-        const desc = (
-          taskInfo?.description ||
-          event.taskSummary ||
-          '后台任务'
-        ).slice(0, 60);
-        const status = event.taskStatus === 'completed' ? '已完成' : '失败';
-        if (typeof document === 'undefined' || !document.hidden) {
-          showToast(`${desc} ${status}`, event.taskSummary);
-        }
-        notifyIfHidden(`HappyClaw: ${desc} ${status}`, event.taskSummary);
-      }
-
-      // 不落入主对话 streaming
-      return;
-    }
-
-    // ④ parentToolUseId 匹配已知 SDK Task → 刷新 stale timer，事件落入主对话 streaming
-    if (event.parentToolUseId) {
-      const tid = resolveOrBindTaskId(event.parentToolUseId);
-      const state = get();
-      const knownTask = !!state.sdkTasks[tid];
-      if (knownTask) {
-        if (completedSdkTaskIds.has(tid)) return;
-        const task = state.sdkTasks[tid];
-        if (task && !task.isTeammate) {
-          resetSdkTaskStaleTimer(set, get, tid, chatJid);
-        }
-        // 不 return — 让事件落入主对话 streaming（步骤⑥）
-      }
-    }
-
-    // ⑤ task tool_use_end 兜底：若 task_notification 缺失，仍然收敛状态并自动关闭
-    if (event.eventType === 'tool_use_end' && event.toolUseId) {
-      const resolvedToolUseId = resolveOrBindTaskId(event.toolUseId);
-      const task = get().sdkTasks[resolvedToolUseId];
-      if (task && task.status === 'running') {
-        finalizeSdkTask(
-          resolvedToolUseId,
-          'completed',
-          task.summary,
-          SDK_TASK_TOOL_END_FALLBACK_CLOSE_MS,
-        );
-      }
-      // fall-through 到主对话处理，移除 activeTools 中的 Task 条目
-    }
-
-    // turn 干净结束信号（silent-success：agent 仅用 send_message 旁路回复或最终
-    // result 为空，后端不会发 sdk_final new_message 来清 waiting）。直接清除 streaming
-    // 与 waiting，避免 spinner/思考动画永久残留。那些 send_message 已作为独立 new_message
-    // 在消息列表中，无需保留 streaming 富内容。
-    if (event.eventType === 'status' && event.statusText === 'idle') {
-      // status:idle predates exact GroupQueue query IDs. While a precise run
-      // is active this can be a late event from its predecessor, so only the
-      // matching run_finished event may close the waiting state.
-      if (get().activeRuns[chatJid]) return;
-      const mainKey = `main:${chatJid}`;
-      const pendingEntry = pendingDeltas.get(mainKey);
-      if (pendingEntry) {
-        cancelAnimationFrame(pendingEntry.raf);
-        pendingDeltas.delete(mainKey);
-      }
-      set((s) => {
-        if (!s.streaming[chatJid] && s.waiting[chatJid] === false) return s;
-        const nextStreaming = { ...s.streaming };
-        delete nextStreaming[chatJid];
-        const nextPendingThinking = { ...s.pendingThinking };
-        delete nextPendingThinking[chatJid];
-        return {
-          waiting: { ...s.waiting, [chatJid]: false },
-          streaming: nextStreaming,
-          pendingThinking: nextPendingThinking,
-        };
-      });
-      return;
-    }
-
-    // 中断事件：冻结流式 UI（保留已输出文本），等待 new_message 完成最终转换。
     if (event.eventType === 'status' && event.statusText === 'interrupted') {
-      // 强制 flush rAF 缓冲：thinking_delta/text_delta 通过 requestAnimationFrame 批处理，
-      // 中断信号可能在 rAF 回调执行前到达，导致 thinkingText 仍为空 → hasData=false → 卡片消失。
-      const mainKey = `main:${chatJid}`;
-      const pendingEntry = pendingDeltas.get(mainKey);
-      if (pendingEntry) {
-        cancelAnimationFrame(pendingEntry.raf);
-        flushPendingDelta(mainKey, chatJid, undefined, set);
-      }
+      // 两阶段处理：先冻结（保留已输出内容），
+      // 等 new_message (interrupt_partial) 到达后完成最终清理。
       set((s) => {
-        const frozen = freezeStreamingState(s.streaming[chatJid]);
-        const nextStreaming = { ...s.streaming };
+        const frozen = freezeStreamingState(s.agentStreaming[agentId]);
+        const nextStreaming = { ...s.agentStreaming };
         if (frozen) {
-          nextStreaming[chatJid] = frozen;
+          nextStreaming[agentId] = frozen;
         } else {
-          delete nextStreaming[chatJid];
+          delete nextStreaming[agentId];
         }
-        const nextPendingThinking = { ...s.pendingThinking };
-        delete nextPendingThinking[chatJid];
         return {
-          waiting: { ...s.waiting, [chatJid]: false },
-          streaming: nextStreaming,
-          pendingThinking: nextPendingThinking,
+          agentStreaming: nextStreaming,
+          agentWaiting: { ...s.agentWaiting, [agentId]: false },
         };
       });
 
       // Fallback：10s 后如果 new_message 未到达，强制清除冻结状态
       setTimeout(() => {
         const state = get();
-        if (state.streaming[chatJid]?.interrupted && !state.waiting[chatJid]) {
-          set((s) => {
-            const next = { ...s.streaming };
-            delete next[chatJid];
-            return { streaming: next };
-          });
+        if (
+          state.agentStreaming[agentId]?.interrupted &&
+          !state.agentWaiting[agentId]
+        ) {
+          set((s) => ({
+            agentStreaming: withoutKey(s.agentStreaming, agentId),
+          }));
         }
       }, 10_000);
-
       return;
     }
 
-    // ⑥ 主对话 streaming — 使用 applyStreamEvent 共享函数
     set((s) => {
-      // If streaming state was already cleared (final message received),
-      // ignore late-arriving stream events to prevent "thinking" from reappearing.
-      if (!s.streaming[chatJid] && s.waiting[chatJid] === false) {
+      // Guard: if streaming was already cleared (agent reply received),
+      // ignore late-arriving stream events to prevent "thinking" reappearing.
+      if (!s.agentStreaming[agentId] && s.agentWaiting[agentId] === false) {
         return s;
       }
-      // 冻结的中断状态不接收新事件（如 usage），防止 waiting 被改回 true
-      const current = s.streaming[chatJid];
-      if (current?.interrupted) {
-        return s;
-      }
+      // A stopped card stays frozen until its terminal message arrives.
+      const current = s.agentStreaming[agentId];
+      if (current?.interrupted) return s;
       const prev = resolveStreamingPrev(current, event);
       const next = { ...prev };
       applyStreamEvent(
@@ -5433,11 +4294,30 @@ export const useChatStore = create<ChatState>((set, get) => ({
         MAX_STREAMING_TEXT,
         runStartedAtMs(s.activeRuns, runtimeJid),
       );
-      return {
-        waiting: { ...s.waiting, [chatJid]: true },
-        streaming: { ...s.streaming, [chatJid]: next },
-      };
+      return { agentStreaming: { ...s.agentStreaming, [agentId]: next } };
     });
+
+    // A background task's end is news even when the reader looks elsewhere
+    // (after the stream took it: a notification that throws skips nothing).
+    // The SDK marks its own background completions; the ones the stream
+    // processor makes up for foreground tasks carry no such mark.
+    if (
+      event.eventType === 'task_notification' &&
+      event.taskId &&
+      event.isBackground &&
+      shouldEmitBackgroundTaskNotice(event.taskId)
+    ) {
+      const desc = (
+        get().agentStreaming[agentId]?.taskStates[event.taskId]?.title ||
+        event.taskSummary ||
+        '后台任务'
+      ).slice(0, 60);
+      const status = event.taskStatus === 'completed' ? '已完成' : '失败';
+      if (typeof document === 'undefined' || !document.hidden) {
+        showToast(`${desc} ${status}`, event.taskSummary);
+      }
+      notifyIfHidden(`HappyClaw: ${desc} ${status}`, event.taskSummary);
+    }
   },
 
   // 通过 WebSocket new_message 事件立即添加消息（避免轮询延迟导致消息"丢失"）
@@ -5446,6 +4326,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
     if (typeof wsMsg.client_message_id === 'string') {
       forgetConfirmedSend(wsMsg.client_message_id);
     }
+    // Every conversation is a session: a message without one is no
+    // conversation's.
+    if (!agentId) return;
     // Skip while clearHistory is in-flight to prevent race re-injection
     if (get().clearing[chatJid]) return;
 
@@ -5500,327 +4383,148 @@ export const useChatStore = create<ChatState>((set, get) => ({
       msg.is_from_me &&
       msg.sender !== '__system__' &&
       msg.source_kind === 'sdk_send_message';
+    const isAgentReply =
+      msg.is_from_me &&
+      msg.sender !== '__system__' &&
+      msg.source_kind !== 'sdk_send_message';
+    // A finished reply (not a progress row of a workflow still running).
+    const finishesReply =
+      isAgentReply &&
+      !holdsRunningWorkflow &&
+      (msg.source_kind === 'sdk_final' ||
+        msg.source_kind === 'interrupt_partial' ||
+        msg.source_kind === 'legacy' ||
+        msg.source_kind == null);
+    const runtimeJid = sessionJidOf(chatJid, agentId);
 
-    // Route to agentMessages if this is a conversation agent message
-    if (agentId) {
-      // Same as the main path below: apply a frame still waiting for rAF
-      // before the reply replaces the card it belongs to.
-      flushPendingDeltaForRuntime(`${chatJid}#agent:${agentId}`, set);
-      let snapshotMessages: Message[] | null = null;
-      let snapshotHasMore = false;
-      let didReceiveProactiveUtterance = false;
-      set((s) => {
-        const existing = s.agentMessages[agentId] || [];
-        const isNewMessage = !existing.some((item) => item.id === msg.id);
-        const mergedUsage = mergePendingMessageUsage(
-          mergeMessagesChronologically(existing, [msg]),
-          resetsContext
-            ? clearPendingMessageUsage(s.pendingMessageUsage, chatJid, agentId)
-            : s.pendingMessageUsage,
-          chatJid,
-          agentId,
-        );
-        const updated = mergedUsage.messages;
-        snapshotMessages = updated;
-        snapshotHasMore = !!s.agentHasMore[agentId];
-        const isAgentReply =
-          msg.is_from_me &&
-          msg.sender !== '__system__' &&
-          msg.source_kind !== 'sdk_send_message';
-        const runtimeJid = `${chatJid}#agent:${agentId}`;
-        const exactRunActive = !!s.activeRuns[runtimeJid];
-        // The reply takes its card's place in this same update, carrying its
-        // thinking and execution details over (`settlementOf`).
-        const agentState = s.agentStreaming[agentId];
-        const settlement = isAgentReply
-          ? settlementOf(
-              s.activeRuns,
-              runtimeJid,
-              agentState,
-              s.settledStreaming[runtimeJid],
-              msg,
-            )
-          : null;
-        const replyLanded =
-          isProactiveUtterance &&
-          proactiveReplyLanded(s, runtimeJid, agentState, msg);
-        const nextAgentStreaming =
-          !replyLanded && !settlement?.replacesLive
-            ? s.agentStreaming
-            : settlement && holdsRunningWorkflow
-              ? {
-                  ...s.agentStreaming,
-                  [agentId]:
-                    streamingStateFromWorkflowRuns(runningWorkflowRuns),
-                }
-              : withoutKey(s.agentStreaming, agentId);
-
-        // For user messages (non-reply), set agentWaiting=true so subsequent
-        // streaming events are accepted.  This handles messages injected from
-        // Feishu/Telegram which don't go through sendAgentMessage().
-        const nextAgentWaiting = isAgentReply
-          ? {
-              ...s.agentWaiting,
-              [agentId]: exactRunActive || holdsRunningWorkflow,
-            }
-          : !msg.is_from_me
-            ? { ...s.agentWaiting, [agentId]: true }
-            : s.agentWaiting;
-        const isHidden = typeof document !== 'undefined' && document.hidden;
-        const isOtherConversation =
-          s.currentGroup !== chatJid || s.activeAgentTab[chatJid] !== agentId;
-        didReceiveProactiveUtterance = isNewMessage && isProactiveUtterance;
-        const nextUnread =
-          didReceiveProactiveUtterance && (isHidden || isOtherConversation)
-            ? {
-                ...s.unreadReplies,
-                [chatJid]: (s.unreadReplies[chatJid] || 0) + 1,
-              }
-            : s.unreadReplies;
-        const currentAgents = s.agents[chatJid];
-        const nextAgents = currentAgents?.map((agent) =>
-          agent.id === agentId
-            ? {
-                ...agent,
-                last_active_at: msg.timestamp,
-                latest_message: {
-                  content: msg.content,
-                  timestamp: msg.timestamp,
-                },
-              }
-            : agent,
-        );
-
-        return {
-          ...(settlement?.source
-            ? finalizedReplyCaches(s, settlement.source, msg.id)
-            : {}),
-          ...(settlement?.dropsSettled
-            ? { settledStreaming: withoutKey(s.settledStreaming, runtimeJid) }
-            : {}),
-          activeRuns: replyLanded
-            ? markRunAnswered(s.activeRuns, runtimeJid, msg.turn_id)
-            : (settlement?.activeRuns ?? s.activeRuns),
-          ...(replyLanded
-            ? { traceAwaited: withAwaitedTrace(s, runtimeJid, msg) }
-            : {}),
-          agentMessages: { ...s.agentMessages, [agentId]: updated },
-          pendingMessageUsage: mergedUsage.pending,
-          agentWaiting: nextAgentWaiting,
-          agentStreaming: nextAgentStreaming,
-          unreadReplies: nextUnread,
-          ...(nextAgents
-            ? { agents: { ...s.agents, [chatJid]: nextAgents } }
-            : {}),
-        };
-      });
-      if (snapshotMessages) {
-        void saveAgentMessageSnapshot(
-          chatJid,
-          agentId,
-          snapshotMessages,
-          snapshotHasMore,
-        );
-      }
-      if (didReceiveProactiveUtterance) {
-        const groupName = get().groups[chatJid]?.name || '对话';
-        const preview = msg.content ? msg.content.slice(0, 80) : '';
-        notifyIfHidden(groupName, preview || '收到新消息');
-      }
-      return;
-    }
-
-    // 闭包外标志：set() 内部计算后传出，用于驱动通知逻辑（避免重复判断条件）
-    let didFinalizeAssistant = false;
+    // Apply a frame still waiting for rAF before the reply replaces the card
+    // it belongs to.
+    flushPendingDeltaForRuntime(runtimeJid, set);
+    let snapshotMessages: Message[] | null = null;
+    let snapshotHasMore = false;
     let didReceiveProactiveUtterance = false;
-
-    // 强制 flush rAF 缓冲：finalize 会 delete streaming 并把 thinkingText 转存
-    // thinkingCache。若某轮最后一帧 thinking_delta/text_delta 仍卡在 pendingDeltas
-    // （页面隐藏时 rAF 被节流），不先 flush 会随 streaming 删除而丢失。
-    // 与中断路径（status:interrupted）和 agent-status 路径对称。
-    {
-      const mainKey = `main:${chatJid}`;
-      const pendingEntry = pendingDeltas.get(mainKey);
-      if (pendingEntry) {
-        cancelAnimationFrame(pendingEntry.raf);
-        flushPendingDelta(mainKey, chatJid, undefined, set);
-      }
-    }
-
+    let didFinishReply = false;
     set((s) => {
-      const existing = s.messages[chatJid] || [];
+      const existing = s.agentMessages[agentId] || [];
       const isNewMessage = !existing.some((item) => item.id === msg.id);
-
-      // 消息已存在时保留原顺序，仅执行状态收尾（清 waiting/streaming）
       const mergedUsage = mergePendingMessageUsage(
         mergeMessagesChronologically(existing, [msg]),
         resetsContext
-          ? clearPendingMessageUsage(s.pendingMessageUsage, chatJid)
+          ? clearPendingMessageUsage(s.pendingMessageUsage, chatJid, agentId)
           : s.pendingMessageUsage,
         chatJid,
+        agentId,
       );
       const updated = mergedUsage.messages;
-      didReceiveProactiveUtterance = isNewMessage && isProactiveUtterance;
-
-      const isAgentReply =
-        msg.is_from_me &&
-        msg.sender !== '__system__' &&
-        msg.source_kind !== 'sdk_send_message';
-      const isSystemError = isTerminalSystemMessage(msg);
-      const shouldFinalizeAssistant =
-        isAgentReply &&
-        (msg.source_kind === 'sdk_final' ||
-          msg.source_kind === 'interrupt_partial' ||
-          msg.source_kind === null ||
-          msg.source_kind === undefined ||
-          msg.source_kind === 'legacy');
-
-      if (shouldFinalizeAssistant || isSystemError) {
-        if (shouldFinalizeAssistant && !holdsRunningWorkflow)
-          didFinalizeAssistant = true;
-
-        // Agent 回复或系统错误：在同一次更新里用定稿替换流式卡片（已结束
-        // 运行的 settled 卡片，或已中断冻结的卡片），并把 thinking 与执行
-        // 详情转存到该消息。下一轮的 live 卡片不受影响。
-        const exactRunActive = !!s.activeRuns[chatJid];
-        const settlement = settlementOf(
-          s.activeRuns,
-          chatJid,
-          s.streaming[chatJid],
-          s.settledStreaming[chatJid],
-          msg,
-          isAgentReply,
-        );
-        const replacesProjection = settlement.replacesLive;
-        const replyCaches =
-          isAgentReply && settlement.source
-            ? finalizedReplyCaches(s, settlement.source, msg.id)
-            : {};
-        const nextStreaming = { ...s.streaming };
-        if (!replacesProjection) {
-          // The exact terminal for the previous reply has already started a
-          // replacement attempt. Preserve that replacement's stream.
-        } else if (holdsRunningWorkflow) {
-          nextStreaming[chatJid] =
-            streamingStateFromWorkflowRuns(runningWorkflowRuns);
-        } else {
-          delete nextStreaming[chatJid];
-        }
-        const nextPending = { ...s.pendingThinking };
-        const nextPendingDur = { ...s.pendingThinkingDuration };
-        if (replacesProjection) {
-          delete nextPending[chatJid];
-          delete nextPendingDur[chatJid];
-        }
-
-        // 未读计数：页面隐藏或不在当前对话时增加
-        const isHidden = typeof document !== 'undefined' && document.hidden;
-        const isOtherChat = s.currentGroup !== chatJid;
-        const nextUnread =
-          (isHidden || isOtherChat) &&
-          shouldFinalizeAssistant &&
-          !holdsRunningWorkflow
-            ? {
-                ...s.unreadReplies,
-                [chatJid]: (s.unreadReplies[chatJid] || 0) + 1,
-              }
-            : s.unreadReplies;
-
-        return {
-          ...replyCaches,
-          messages: { ...s.messages, [chatJid]: updated },
-          pendingMessageUsage: mergedUsage.pending,
-          // The run stays: the composer can still stop it until run_finished.
-          waiting: {
-            ...s.waiting,
-            [chatJid]: exactRunActive || holdsRunningWorkflow,
-          },
-          activeRuns: settlement.activeRuns,
-          streaming: nextStreaming,
-          settledStreaming: settlement.dropsSettled
-            ? withoutKey(s.settledStreaming, chatJid)
-            : s.settledStreaming,
-          pendingThinking: nextPending,
-          pendingThinkingDuration: nextPendingDur,
-          unreadReplies: nextUnread,
-        };
-      }
-
-      // A direct human message is also the earliest cross-tab/IM signal that a
-      // new logical run is about to start. Do not wait for the first Claude
-      // stream event: warm runners can spend noticeable time preparing context
-      // and previously left secondary tabs looking idle during that window.
-      const startsDirectRun =
-        !msg.is_from_me &&
-        msg.delivery_status !== 'queued' &&
-        msg.delivery_status !== 'promoting' &&
-        msg.delivery_status !== 'cancelled' &&
-        msg.delivery_status !== 'subsumed';
+      snapshotMessages = updated;
+      snapshotHasMore = !!s.agentHasMore[agentId];
+      const exactRunActive = !!s.activeRuns[runtimeJid];
+      // The reply takes its card's place in this same update, carrying its
+      // thinking and execution details over (`settlementOf`).
+      const agentState = s.agentStreaming[agentId];
+      const settlement = isAgentReply
+        ? settlementOf(
+            s.activeRuns,
+            runtimeJid,
+            agentState,
+            s.settledStreaming[runtimeJid],
+            msg,
+          )
+        : null;
       const replyLanded =
         isProactiveUtterance &&
-        proactiveReplyLanded(s, chatJid, s.streaming[chatJid], msg);
+        proactiveReplyLanded(s, runtimeJid, agentState, msg);
+      const nextAgentStreaming =
+        !replyLanded && !settlement?.replacesLive
+          ? s.agentStreaming
+          : settlement && holdsRunningWorkflow
+            ? {
+                ...s.agentStreaming,
+                [agentId]: streamingStateFromWorkflowRuns(runningWorkflowRuns),
+              }
+            : withoutKey(s.agentStreaming, agentId);
+
+      // For user messages (non-reply), set agentWaiting=true so subsequent
+      // streaming events are accepted.  This handles messages injected from
+      // Feishu/Telegram which don't go through sendAgentMessage().
+      const nextAgentWaiting = isAgentReply
+        ? {
+            ...s.agentWaiting,
+            [agentId]: exactRunActive || holdsRunningWorkflow,
+          }
+        : !msg.is_from_me
+          ? { ...s.agentWaiting, [agentId]: true }
+          : s.agentWaiting;
+      // Unread replies are counted per workspace: one arriving while the
+      // page is hidden or another conversation is open.
       const isHidden = typeof document !== 'undefined' && document.hidden;
-      const isOtherChat =
-        s.currentGroup !== chatJid || !!s.activeAgentTab[chatJid];
+      const isOtherConversation =
+        s.currentGroup !== chatJid || s.activeAgentTab[chatJid] !== agentId;
+      didReceiveProactiveUtterance = isNewMessage && isProactiveUtterance;
+      didFinishReply = isNewMessage && finishesReply;
       const nextUnread =
-        didReceiveProactiveUtterance && (isHidden || isOtherChat)
+        (didReceiveProactiveUtterance || didFinishReply) &&
+        (isHidden || isOtherConversation)
           ? {
               ...s.unreadReplies,
               [chatJid]: (s.unreadReplies[chatJid] || 0) + 1,
             }
           : s.unreadReplies;
-      return {
-        ...(replyLanded
+      const currentAgents = s.agents[chatJid];
+      const nextAgents = currentAgents?.map((agent) =>
+        agent.id === agentId
           ? {
-              streaming: withoutKey(s.streaming, chatJid),
-              activeRuns: markRunAnswered(s.activeRuns, chatJid, msg.turn_id),
-              traceAwaited: withAwaitedTrace(s, chatJid, msg),
+              ...agent,
+              last_active_at: msg.timestamp,
+              latest_message: {
+                content: msg.content,
+                timestamp: msg.timestamp,
+              },
             }
+          : agent,
+      );
+
+      return {
+        ...(settlement?.source
+          ? finalizedReplyCaches(s, settlement.source, msg.id)
           : {}),
-        messages: { ...s.messages, [chatJid]: updated },
+        ...(settlement?.dropsSettled
+          ? { settledStreaming: withoutKey(s.settledStreaming, runtimeJid) }
+          : {}),
+        activeRuns: replyLanded
+          ? markRunAnswered(s.activeRuns, runtimeJid, msg.turn_id)
+          : (settlement?.activeRuns ?? s.activeRuns),
+        ...(replyLanded
+          ? { traceAwaited: withAwaitedTrace(s, runtimeJid, msg) }
+          : {}),
+        agentMessages: { ...s.agentMessages, [agentId]: updated },
         pendingMessageUsage: mergedUsage.pending,
+        agentWaiting: nextAgentWaiting,
+        agentStreaming: nextAgentStreaming,
         unreadReplies: nextUnread,
-        ...(startsDirectRun
-          ? { waiting: { ...s.waiting, [chatJid]: true } }
+        ...(nextAgents
+          ? { agents: { ...s.agents, [chatJid]: nextAgents } }
           : {}),
       };
     });
-
-    // 对话完成通知：复用 set() 内部的 shouldFinalizeAssistant 判断结果
-    if (didFinalizeAssistant) {
+    if (snapshotMessages) {
+      void saveAgentMessageSnapshot(
+        chatJid,
+        agentId,
+        snapshotMessages,
+        snapshotHasMore,
+      );
+    }
+    if (didFinishReply || didReceiveProactiveUtterance) {
       const groupName = get().groups[chatJid]?.name || '对话';
       const preview = msg.content ? msg.content.slice(0, 80) : '';
-      notifyIfHidden(groupName, preview || '收到新回复');
-      if (typeof document !== 'undefined' && !document.hidden) {
-        showNotificationPromptToast();
-      }
+      notifyIfHidden(
+        groupName,
+        preview || (didFinishReply ? '收到新回复' : '收到新消息'),
+      );
     }
-    if (didReceiveProactiveUtterance) {
-      const groupName = get().groups[chatJid]?.name || '对话';
-      const preview = msg.content ? msg.content.slice(0, 80) : '';
-      notifyIfHidden(groupName, preview || '收到新消息');
-    }
-
-    // query_interrupted 仅作为视觉分隔线，不清理流式状态。
-    // 流式状态由 status:interrupted（冻结）→ interrupt_partial（转正）两阶段处理。
-    // 兜底：20s 后若流式状态仍未清理（如 status:interrupted 或 interrupt_partial 丢失），
-    // 强制清理 streaming 和 waiting，防止 UI 永久卡死。
-    if (isInterruptSystemMessage(msg) && get().streaming[chatJid]) {
-      setTimeout(() => {
-        const state = get();
-        // 只清除仍处于中断冻结的状态；如果已被清理或已被新查询覆盖则跳过
-        if (state.streaming[chatJid]?.interrupted) {
-          set((s) => {
-            if (!s.streaming[chatJid]?.interrupted) return s;
-            const next = { ...s.streaming };
-            delete next[chatJid];
-            return {
-              streaming: next,
-              waiting: { ...s.waiting, [chatJid]: false },
-            };
-          });
-        }
-      }, 20_000);
+    if (didFinishReply && typeof document !== 'undefined' && !document.hidden) {
+      showNotificationPromptToast();
     }
   },
 
@@ -5836,58 +4540,19 @@ export const useChatStore = create<ChatState>((set, get) => ({
     titleGenerating?,
     worktree?,
   ) => {
+    // '__removed__' signal: agent has been cleaned up, remove from list
+    if (resultSummary === '__removed__') {
+      clearDbTaskAgentCleanupTimer(agentId);
+      set((s) => withoutSession(s, chatJid, agentId));
+      return;
+    }
     set((s) => {
       const existing = s.agents[chatJid] || [];
-
-      // '__removed__' signal: agent has been cleaned up, remove from list
-      if (resultSummary === '__removed__') {
-        clearSdkTaskCleanupTimer(agentId);
-        clearSdkTaskStaleTimer(agentId);
-        clearDbTaskAgentCleanupTimer(agentId);
-        const filtered = existing.filter((a) => a.id !== agentId);
-        const nextAgentStreaming = { ...s.agentStreaming };
-        delete nextAgentStreaming[agentId];
-        const nextSettled = withoutKey(
-          s.settledStreaming,
-          `${chatJid}#agent:${agentId}`,
-        );
-        const nextActiveTab = { ...s.activeAgentTab };
-        if (nextActiveTab[chatJid] === agentId) nextActiveTab[chatJid] = null;
-        const nextSdkTasks = { ...s.sdkTasks };
-        delete nextSdkTasks[agentId];
-        const nextSdkTaskAliases = removeSdkTaskAliases(
-          s.sdkTaskAliases,
-          agentId,
-        );
-        // Clean up conversation agent state
-        const nextAgentMessages = { ...s.agentMessages };
-        delete nextAgentMessages[agentId];
-        const nextAgentWaiting = { ...s.agentWaiting };
-        delete nextAgentWaiting[agentId];
-        const nextAgentHasMore = { ...s.agentHasMore };
-        delete nextAgentHasMore[agentId];
-        return {
-          agents: { ...s.agents, [chatJid]: filtered },
-          pendingMessageUsage: clearPendingMessageUsage(
-            s.pendingMessageUsage,
-            chatJid,
-            agentId,
-            false,
-          ),
-          agentStreaming: nextAgentStreaming,
-          settledStreaming: nextSettled,
-          activeAgentTab: nextActiveTab,
-          sdkTasks: nextSdkTasks,
-          sdkTaskAliases: nextSdkTaskAliases,
-          agentMessages: nextAgentMessages,
-          agentWaiting: nextAgentWaiting,
-          agentHasMore: nextAgentHasMore,
-        };
-      }
-
       const idx = existing.findIndex((a) => a.id === agentId);
-      const resolvedKind = kind || (idx >= 0 ? existing[idx].kind : 'task');
       const previous = idx >= 0 ? existing[idx] : undefined;
+      const resolvedKind = kind || previous?.kind;
+      // Sessions and spawned agents are listed; SDK tasks show in the stream.
+      if (!resolvedKind || resolvedKind === 'task') return s;
       const agentInfo: AgentInfo = {
         ...previous,
         id: agentId,
@@ -5912,39 +4577,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
           ? existing.map((a, i) => (i === idx ? agentInfo : a))
           : [...existing, agentInfo];
 
-      // Clean up agent streaming if not actively running
-      const nextAgentStreaming = { ...s.agentStreaming };
-      const exactAgentRunActive = !!s.activeRuns[`${chatJid}#agent:${agentId}`];
-      if (status !== 'running' && !exactAgentRunActive) {
-        delete nextAgentStreaming[agentId];
-      }
-      const nextSdkTasks = { ...s.sdkTasks };
-      let nextSdkTaskAliases = { ...s.sdkTaskAliases };
-      if (resolvedKind === 'task') {
-        if (status !== 'running') {
-          completedSdkTaskIds.add(agentId);
-          clearSdkTaskCleanupTimer(agentId);
-          clearSdkTaskStaleTimer(agentId);
-          delete nextSdkTasks[agentId];
-          nextSdkTaskAliases = removeSdkTaskAliases(
-            nextSdkTaskAliases,
-            agentId,
-          );
-          // 自动清理已完成的 DB task agent（延迟移除，让用户看到完成状态）
-          scheduleDbTaskAgentCleanup(set, agentId, chatJid);
-        } else {
-          // Task 回到 running 状态，取消 pending 的清理定时器
-          clearDbTaskAgentCleanupTimer(agentId);
-          if (nextSdkTasks[agentId]) {
-            nextSdkTasks[agentId] = {
-              ...nextSdkTasks[agentId],
-              chatJid,
-              description: prompt,
-              status: 'running',
-            };
-          }
-        }
-      }
       // Spawn agents are fire-and-forget: auto-remove from frontend state after completion
       if (
         resolvedKind === 'spawn' &&
@@ -5953,16 +4585,20 @@ export const useChatStore = create<ChatState>((set, get) => ({
         scheduleDbTaskAgentCleanup(set, agentId, chatJid);
       }
 
+      // Clean up agent streaming if not actively running
+      const exactAgentRunActive =
+        !!s.activeRuns[sessionJidOf(chatJid, agentId)];
       return {
         agents: { ...s.agents, [chatJid]: updated },
-        agentStreaming: nextAgentStreaming,
-        sdkTasks: nextSdkTasks,
-        sdkTaskAliases: nextSdkTaskAliases,
+        agentStreaming:
+          status !== 'running' && !exactAgentRunActive
+            ? withoutKey(s.agentStreaming, agentId)
+            : s.agentStreaming,
       };
     });
   },
 
-  // 加载子 Agent 列表
+  // 加载工作区的会话列表
   loadAgents: async (jid, opts) => {
     // Skip network call if agents are already cached.  WebSocket events
     // (agent_status, agent created/deleted) keep the cache fresh after the
@@ -5983,95 +4619,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
           const visibleAgents = data.agents.filter(
             (a) =>
               a.kind === 'conversation' ||
-              (a.kind === 'spawn' && a.status !== 'completed') ||
-              a.status === 'running',
+              (a.kind === 'spawn' && a.status !== 'completed'),
           );
-          const runningTasks = data.agents.filter(
-            (a) => a.kind === 'task' && a.status === 'running',
-          );
-          const runningTaskIds = new Set(runningTasks.map((a) => a.id));
-          const runningTaskMap = new Map(runningTasks.map((a) => [a.id, a]));
-
-          const nextSdkTasks: ChatState['sdkTasks'] = {};
-          for (const [id, task] of Object.entries(s.sdkTasks)) {
-            if (task.chatJid !== jid) {
-              nextSdkTasks[id] = task;
-              continue;
-            }
-            if (runningTaskIds.has(id)) {
-              const agent = runningTaskMap.get(id)!;
-              nextSdkTasks[id] = {
-                ...task,
-                chatJid: jid,
-                description: agent.prompt || agent.name,
-                status: 'running',
-              };
-            } else {
-              clearSdkTaskCleanupTimer(id);
-              clearSdkTaskStaleTimer(id);
-            }
-          }
-
-          for (const agent of runningTasks) {
-            if (!nextSdkTasks[agent.id]) {
-              nextSdkTasks[agent.id] = {
-                chatJid: jid,
-                description: agent.prompt || agent.name,
-                status: 'running',
-              };
-            }
-          }
-
-          const nextAgentStreaming = { ...s.agentStreaming };
-          for (const [id, task] of Object.entries(s.sdkTasks)) {
-            if (task.chatJid === jid && !runningTaskIds.has(id)) {
-              delete nextAgentStreaming[id];
-            }
-          }
-
-          const nextActiveTab = { ...s.activeAgentTab };
-          if (nextActiveTab[jid] && !runningTaskIds.has(nextActiveTab[jid]!)) {
-            const stillExists = visibleAgents.some(
-              (a) => a.id === nextActiveTab[jid],
-            );
-            if (!stillExists) nextActiveTab[jid] = null;
-          }
-
-          const nextSdkTaskAliases: Record<string, string> = {};
-          for (const [alias, target] of Object.entries(s.sdkTaskAliases)) {
-            const task = nextSdkTasks[target];
-            if (!task) continue;
-            if (task.chatJid === jid && task.status !== 'running') continue;
-            if (alias === target && task.status !== 'running') continue;
-            nextSdkTaskAliases[alias] = target;
-          }
-
-          // Apply saved conversation order from localStorage (only to conversations)
-          let orderedAgents = visibleAgents;
-          try {
-            const savedOrder = localStorage.getItem(
-              `happyclaw-agent-order-${jid}`,
-            );
-            if (savedOrder) {
-              const ids: string[] = JSON.parse(savedOrder);
-              const conversations = visibleAgents.filter(
-                (a) => a.kind === 'conversation',
-              );
-              const others = visibleAgents.filter(
-                (a) => a.kind !== 'conversation',
-              );
-              orderedAgents = [...sortByIdOrder(conversations, ids), ...others];
-            }
-          } catch {
-            /* ignore */
-          }
-
+          const open = s.activeAgentTab[jid];
           return {
-            agents: { ...s.agents, [jid]: orderedAgents },
-            sdkTasks: nextSdkTasks,
-            sdkTaskAliases: nextSdkTaskAliases,
-            agentStreaming: nextAgentStreaming,
-            activeAgentTab: nextActiveTab,
+            agents: { ...s.agents, [jid]: visibleAgents },
+            activeAgentTab:
+              open && !visibleAgents.some((a) => a.id === open)
+                ? withoutKey(s.activeAgentTab, jid)
+                : s.activeAgentTab,
           };
         });
       } catch {
@@ -6085,66 +4641,65 @@ export const useChatStore = create<ChatState>((set, get) => ({
     return request;
   },
 
-  // 删除子 Agent
   deleteAgentAction: async (jid, agentId, options) => {
     try {
-      await api.delete(
-        `/api/groups/${encodeURIComponent(jid)}/sessions/${agentId}${
-          options?.forceWorktree ? '?force_worktree=true' : ''
-        }`,
-      );
-      void deleteAgentMessageSnapshot(jid, agentId);
-      clearSdkTaskCleanupTimer(agentId);
-      clearSdkTaskStaleTimer(agentId);
-      set((s) => {
-        const updated = (s.agents[jid] || []).filter((a) => a.id !== agentId);
-        const nextAgentMessages = { ...s.agentMessages };
-        delete nextAgentMessages[agentId];
-        const nextAgentStreaming = { ...s.agentStreaming };
-        delete nextAgentStreaming[agentId];
-        const nextAgentWaiting = { ...s.agentWaiting };
-        delete nextAgentWaiting[agentId];
-        const nextAgentHasMore = { ...s.agentHasMore };
-        delete nextAgentHasMore[agentId];
-        const nextActiveTab = { ...s.activeAgentTab };
-        if (nextActiveTab[jid] === agentId) nextActiveTab[jid] = null;
-        const nextSdkTasks = { ...s.sdkTasks };
-        delete nextSdkTasks[agentId];
-        const nextSdkTaskAliases = removeSdkTaskAliases(
-          s.sdkTaskAliases,
-          agentId,
-        );
-        return {
-          agents: { ...s.agents, [jid]: updated },
-          pendingMessageUsage: clearPendingMessageUsage(
-            s.pendingMessageUsage,
-            jid,
-            agentId,
-            false,
-          ),
-          agentMessages: nextAgentMessages,
-          agentStreaming: nextAgentStreaming,
-          agentWaiting: nextAgentWaiting,
-          agentHasMore: nextAgentHasMore,
-          activeAgentTab: nextActiveTab,
-          sdkTasks: nextSdkTasks,
-          sdkTaskAliases: nextSdkTaskAliases,
-        };
-      });
-      return true;
+      await api.delete(sessionDeletePath(jid, agentId, options));
     } catch (err) {
+      const bindings = sessionDeleteImpactFromError(err);
+      if (bindings) return { bindings };
       const worktreesDirty = dirtyWorktreesFromError(err);
       if (worktreesDirty) return { worktreesDirty };
       set({ error: extractErrorMessage(err) || '删除会话失败' });
       return false;
     }
+    void deleteAgentMessageSnapshot(jid, agentId);
+    set((s) => withoutSession(s, jid, agentId));
+    // Chats moved to another session show on its row.
+    if (options?.rebindTo) void get().loadAgents(jid, { force: true });
+    return true;
   },
 
-  // 切换子 Agent 标签页（在内存中 mirror，URL 是真正的真相源）。
-  // 未读目前按 Workspace 聚合；在当前 Workspace 内进入主会话或任一
-  // Agent 会话，都视为已经查看该 Workspace。后台 Workspace 的 URL/tab
-  // 同步不得清除其未读。
+  pinSession: async (jid, agentId, pinned) => {
+    try {
+      const data = await api.patch<{
+        success: boolean;
+        pinned_at?: string | null;
+      }>(
+        `/api/groups/${encodeURIComponent(jid)}/sessions/${encodeURIComponent(agentId)}`,
+        { pinned },
+      );
+      const pinnedAt = pinned
+        ? data.pinned_at || new Date().toISOString()
+        : null;
+      set((s) => ({
+        agents: {
+          ...s.agents,
+          [jid]: (s.agents[jid] || []).map((agent) =>
+            agent.id === agentId ? { ...agent, pinned_at: pinnedAt } : agent,
+          ),
+        },
+      }));
+      return true;
+    } catch (err) {
+      const message = extractErrorMessage(err) || '操作失败';
+      set({ error: message });
+      showToast(pinned ? '置顶失败' : '取消置顶失败', message);
+      return false;
+    }
+  },
+
+  // 打开的会话（在内存中 mirror，URL 是真正的真相源）。未读按 Workspace
+  // 聚合：在当前 Workspace 内打开任一会话，都视为已经查看该 Workspace。
+  // 后台 Workspace 的 URL/tab 同步不得清除其未读。
   setActiveAgentTab: (jid, agentId) => {
+    if (!agentId) {
+      set((s) =>
+        jid in s.activeAgentTab
+          ? { activeAgentTab: withoutKey(s.activeAgentTab, jid) }
+          : s,
+      );
+      return;
+    }
     // ChatView calls this whenever it shows a conversation.
     noteConversationViewed(jid, agentId);
     set((s) => {
@@ -6319,10 +4874,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
         : undefined;
     const runtimeJid = sessionJidOf(jid, agentId);
     try {
-      // Conversation sends use the acknowledged HTTP path, just like the
-      // main chat. WebSocket remains the push channel for the stored message
-      // and stream events; a successful return now means the server really
-      // persisted and classified this message as started/queued/steered.
+      // Sends use the acknowledged HTTP path. WebSocket remains the push
+      // channel for the stored message and stream events; a successful return
+      // means the server really persisted and classified this message as
+      // started/queued/steered.
       const data = await api.post<MessageCreateResponse>(
         '/api/messages',
         {
@@ -6360,24 +4915,66 @@ export const useChatStore = create<ChatState>((set, get) => ({
       if (data.disposition === 'started' && data.runId) {
         get().handleRunStarted(runtimeJid, data.runId);
       }
+      // Show the message at once, from the server's answer, unless its
+      // announcement came first (and may be newer).
+      const user = useAuthStore.getState().user;
+      const sent: Message = {
+        id: data.messageId,
+        chat_jid: runtimeJid,
+        sender: user?.id || 'web-user',
+        sender_name: user?.display_name || user?.username || 'Web',
+        content,
+        // The server's timestamp keeps the polling cursor monotonic.
+        timestamp: data.timestamp,
+        ingest_sequence: data.ingestSequence,
+        is_from_me: false,
+        attachments: normalizedAttachments
+          ? JSON.stringify(normalizedAttachments)
+          : undefined,
+        delivery_mode:
+          data.disposition === 'queued'
+            ? 'queue'
+            : data.disposition === 'steered'
+              ? 'steer'
+              : null,
+        delivery_status: data.disposition === 'started' ? null : 'queued',
+        delivery_run_id: data.runId ?? null,
+        delivery_updated_at:
+          data.disposition === 'started' ? null : data.timestamp,
+      };
+      set((s) => {
+        const existing = s.agentMessages[agentId] || [];
+        return {
+          agentWaiting: { ...s.agentWaiting, [agentId]: true },
+          ...(existing.some((m) => m.id === sent.id)
+            ? {}
+            : {
+                agentMessages: {
+                  ...s.agentMessages,
+                  [agentId]: mergeMessagesChronologically(existing, [sent]),
+                },
+              }),
+        };
+      });
+      return true;
     } catch (err) {
       settleFailedSend(runtimeJid, err);
       if (storedDespiteError(err)) {
         showStoredButFailed();
         return true;
       }
-      const detail = sendMayHaveLanded(err)
-        ? UNCONFIRMED_SEND_HINT
-        : err instanceof Error
-          ? err.message
-          : '服务器未确认消息';
-      showToast('发送失败', `${detail}，输入已保留，请稍后重试`);
+      // 弱网/断网/后端 500 等场景：记录错误并给用户可见的 toast，返回 false
+      // 让调用方（MessageInput）保留输入不清空。
+      const message = extractErrorMessage(err);
+      set({ error: message });
+      showToast(
+        '发送失败',
+        sendMayHaveLanded(err)
+          ? `${UNCONFIRMED_SEND_HINT}，输入已保留`
+          : `消息未发送，输入已保留${message ? `：${message}` : '，请检查网络后重试'}`,
+      );
       return false;
     }
-    set((s) => ({
-      agentWaiting: { ...s.agentWaiting, [agentId]: true },
-    }));
-    return true;
   },
 
   refreshAgentMessages: async (jid, agentId) => {
@@ -6426,7 +5023,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 m.source_kind !== 'sdk_send_message',
             );
           const agentState = s.agentStreaming[agentId];
-          const runtimeJid = `${jid}#agent:${agentId}`;
+          const runtimeJid = sessionJidOf(jid, agentId);
           const exactRunActive = !!s.activeRuns[runtimeJid];
           // The same rule as a live final message (`settlementOf`), and as a
           // proactive reply.
@@ -6523,18 +5120,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
   },
 
-  unbindMainImGroup: async (jid, imJid) => {
-    try {
-      await api.delete(
-        `/api/groups/${encodeURIComponent(jid)}/sessions/main/im-binding/${encodeURIComponent(imJid)}`,
-      );
-      await get().loadGroups();
-      return true;
-    } catch {
-      return false;
-    }
-  },
-
   unbindWorkspaceImGroup: async (jid, imJid) => {
     try {
       await api.delete(
@@ -6562,46 +5147,32 @@ export const useChatStore = create<ChatState>((set, get) => ({
           queryId?: string | null;
         }>;
       }>('/api/status/groups');
-      const knownJids = new Set(data.groups.map((g) => g.jid));
       const activeAgentIds = new Set(
         data.groups
-          .map((g) => {
-            const marker = '#agent:';
-            const markerIndex = g.jid.indexOf(marker);
-            return markerIndex >= 0
-              ? g.jid.slice(markerIndex + marker.length)
-              : null;
-          })
+          .map((g) => sessionIdOf(g.jid))
           .filter((agentId): agentId is string => !!agentId),
       );
 
-      // 关键：对 active 群组先 refreshMessages 同步本地与后端真相，再做推断。
+      // 关键：对 active 会话先刷新消息，同步本地与后端真相，再做推断。
       // 否则 ws 断开期间漏接 agent 完成的 new_message 时，本地最新仍是用户消息，
-      // 下面的 inferredWaiting 会错把 waiting 设回 true，UI 永久卡"正在思考..."。
-      // refreshMessages 内部在拉到 agent 回复时会主动清除 waiting/streaming。
-      // 仅刷新本地已加载过 messages 的群组，避免为侧边栏未点开的群组浪费请求。
-      const currentMessages = get().messages;
-      const activeJidsToRefresh = data.groups
-        .filter((g) => g.active && currentMessages[g.jid])
-        .map((g) => g.jid);
+      // UI 会一直卡在"正在思考..."。刷新拉到 agent 回复时会主动清除
+      // waiting/streaming。仅刷新本地已加载过消息的会话。
+      const loaded = get().agentMessages;
       await Promise.all(
-        activeJidsToRefresh.map((jid) => get().refreshMessages(jid)),
+        data.groups.flatMap((g) => {
+          const agentId = sessionIdOf(g.jid);
+          return g.active && agentId && loaded[agentId]
+            ? [get().refreshAgentMessages(workspaceJidOf(g.jid), agentId)]
+            : [];
+        }),
       );
 
       set((s) => {
-        const nextWaiting = { ...s.waiting };
-        const nextStreaming = { ...s.streaming };
         const nextAgentWaiting = { ...s.agentWaiting };
         const nextAgentStreaming = { ...s.agentStreaming };
 
-        // 清除后端不可见的 JID 的 waiting/streaming（进程已死）
-        // （主服务重启后 queue 为空，所有 JID 都不在集合中）。
-        for (const jid of Object.keys(nextWaiting)) {
-          if (!knownJids.has(jid)) {
-            delete nextWaiting[jid];
-            delete nextStreaming[jid];
-          }
-        }
+        // 清除后端不可见的会话的 waiting/streaming（进程已死）
+        // （主服务重启后 queue 为空，所有会话都不在集合中）。
         for (const agentId of Object.keys(nextAgentWaiting)) {
           if (!activeAgentIds.has(agentId)) {
             delete nextAgentWaiting[agentId];
@@ -6610,36 +5181,22 @@ export const useChatStore = create<ChatState>((set, get) => ({
         }
 
         for (const g of data.groups) {
-          const agentMarker = '#agent:';
-          const agentMarkerIndex = g.jid.indexOf(agentMarker);
-          if (agentMarkerIndex >= 0) {
-            const agentId = g.jid.slice(agentMarkerIndex + agentMarker.length);
-            // A conversation runner intentionally stays alive between turns.
-            // Only a terminal-capable exact attempt restores waiting.
-            // pendingMessages may merely be a retry/backoff reservation and
-            // has no run_finished identity.
-            if (hasExactQueryAttempt(g)) {
-              nextAgentWaiting[agentId] = true;
-            } else {
-              delete nextAgentWaiting[agentId];
-              delete nextAgentStreaming[agentId];
-            }
-            continue;
-          }
+          const agentId = sessionIdOf(g.jid);
+          if (!agentId) continue;
+          // A conversation runner intentionally stays alive between turns.
+          // Only a terminal-capable exact attempt restores waiting.
+          // pendingMessages may merely be a retry/backoff reservation and
+          // has no run_finished identity. Never infer waiting from message
+          // shape: it can override an authoritative empty WS snapshot and
+          // create a spinner that no run_finished can close.
           if (hasExactQueryAttempt(g)) {
-            nextWaiting[g.jid] = true;
-            continue;
+            nextAgentWaiting[agentId] = true;
+          } else {
+            delete nextAgentWaiting[agentId];
+            delete nextAgentStreaming[agentId];
           }
-          // Warm process, retry/backoff and proactive sdk_send_message history
-          // have no exact terminal-capable attempt. Never infer waiting from
-          // message shape: it can override an authoritative empty WS snapshot
-          // and create a spinner that no run_finished can close.
-          delete nextWaiting[g.jid];
-          delete nextStreaming[g.jid];
         }
         return {
-          waiting: nextWaiting,
-          streaming: nextStreaming,
           agentWaiting: nextAgentWaiting,
           agentStreaming: nextAgentStreaming,
         };
@@ -6651,7 +5208,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   // WS 重连时接收后端推送的流式快照，恢复 StreamingDisplay
   handleStreamSnapshot: (chatJid, snapshot, agentId, runId) => {
-    const runtimeJid = agentId ? `${chatJid}#agent:${agentId}` : chatJid;
+    // Every conversation is a session: a snapshot without one shows nothing.
+    if (!agentId) return;
+    const runtimeJid = sessionJidOf(chatJid, agentId);
     // The speech tool of a proactive turn is not work to watch: the calls the
     // snapshot shows are remembered so their later events are left out too.
     const speech = isProactiveRuntime(get(), runtimeJid)
@@ -6796,63 +5355,27 @@ export const useChatStore = create<ChatState>((set, get) => ({
       return level ? scrubForVisibility(restored, level) : restored;
     };
 
-    if (agentId) {
-      // Agent-specific snapshot → restore agentStreaming + agentWaiting
-      set((s) => {
-        if (!shouldApplyRunScopedPayload(s.activeRuns, runtimeJid, runId)) {
-          return s;
-        }
-        return {
-          agentWaiting: { ...s.agentWaiting, [agentId]: true },
-          agentStreaming: {
-            ...s.agentStreaming,
-            [agentId]: restore(s.agentStreaming[agentId], levelOf(s)),
-          },
-        };
-      });
-    } else {
-      // Main conversation snapshot
-      set((s) => {
-        if (!shouldApplyRunScopedPayload(s.activeRuns, runtimeJid, runId)) {
-          return s;
-        }
-        return {
-          waiting: { ...s.waiting, [chatJid]: true },
-          streaming: {
-            ...s.streaming,
-            [chatJid]: restore(s.streaming[chatJid], levelOf(s)),
-          },
-        };
-      });
-    }
-  },
-
-  // Process lifecycle is sidebar-only. A warm conversation process may be
-  // running while no query exists, so runner_state must never own waiting.
-  handleRunnerState: (chatJid, state) => {
-    if (chatJid.includes('#agent:')) return;
-    if (state === 'idle') {
-      // Process teardown still owns cleanup of process-scoped SDK task tabs.
-      const currentAgents = get().agents[chatJid] || [];
-      const hasTaskAgents = currentAgents.some((a) => a.kind === 'task');
-      if (hasTaskAgents) {
-        set((s) => {
-          const existing = s.agents[chatJid] || [];
-          const filtered = existing.filter((a) => a.kind !== 'task');
-          return { agents: { ...s.agents, [chatJid]: filtered } };
-        });
+    set((s) => {
+      if (!shouldApplyRunScopedPayload(s.activeRuns, runtimeJid, runId)) {
+        return s;
       }
-    }
+      return {
+        agentWaiting: { ...s.agentWaiting, [agentId]: true },
+        agentStreaming: {
+          ...s.agentStreaming,
+          [agentId]: restore(s.agentStreaming[agentId], levelOf(s)),
+        },
+      };
+    });
   },
 
   handleRunStarted: (chatJid, runId) => {
     // Older servers may omit runId. Keep their stream events functional, but
     // only exact IDs enter the fenced lifecycle map.
     if (!runId) return;
-    const marker = '#agent:';
-    const markerIndex = chatJid.indexOf(marker);
-    const agentId =
-      markerIndex >= 0 ? chatJid.slice(markerIndex + marker.length) : null;
+    const agentId = sessionIdOf(chatJid);
+    // Every conversation is a session: a run without one shows nothing.
+    if (!agentId) return;
     if (get().activeRuns[chatJid]?.runId !== runId) {
       cancelPendingDeltaForRuntime(chatJid);
     }
@@ -6871,48 +5394,31 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // A replaced attempt's card (no run_finished seen for it) waits,
       // settled, for its final message like a finished run's; the new run
       // streams into a fresh live projection next to it.
-      const previous = agentId
-        ? s.agentStreaming[agentId]
-        : s.streaming[chatJid];
       if (replacingAttempt && !isProactiveRuntime(s, chatJid)) {
         settled.state = settleStreamingState(
-          previous,
+          s.agentStreaming[agentId],
           s.activeRuns[chatJid]?.runId,
         );
       }
       const settledStreaming = settled.state
         ? { ...s.settledStreaming, [chatJid]: settled.state }
         : s.settledStreaming;
-      if (agentId) {
-        return {
-          activeRuns,
-          stopRequests,
-          settledStreaming,
-          agentWaiting: { ...s.agentWaiting, [agentId]: true },
-          agentStreaming: replacingAttempt
-            ? withoutKey(s.agentStreaming, agentId)
-            : s.agentStreaming,
-        };
-      }
       return {
         activeRuns,
         stopRequests,
         settledStreaming,
-        waiting: { ...s.waiting, [chatJid]: true },
-        streaming: replacingAttempt
-          ? withoutKey(s.streaming, chatJid)
-          : s.streaming,
+        agentWaiting: { ...s.agentWaiting, [agentId]: true },
+        agentStreaming: replacingAttempt
+          ? withoutKey(s.agentStreaming, agentId)
+          : s.agentStreaming,
       };
     });
     if (settled.state) scheduleSettleFallback(chatJid, settled.state, set, get);
   },
 
   handleRunFinished: (chatJid, runId) => {
-    const marker = '#agent:';
-    const markerIndex = chatJid.indexOf(marker);
-    const agentId =
-      markerIndex >= 0 ? chatJid.slice(markerIndex + marker.length) : null;
-    if (get().activeRuns[chatJid]?.runId !== runId) return;
+    const agentId = sessionIdOf(chatJid);
+    if (!agentId || get().activeRuns[chatJid]?.runId !== runId) return;
     // The last buffered frame still belongs to this run: apply it before the
     // run fence closes, then drop anything left.
     flushPendingDeltaForRuntime(chatJid, set);
@@ -6930,37 +5436,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // A proactive workspace's messages are not replies to a card.
       settled.state = isProactiveRuntime(s, chatJid)
         ? null
-        : settleStreamingState(
-            agentId ? s.agentStreaming[agentId] : s.streaming[chatJid],
-            runId,
-          );
+        : settleStreamingState(s.agentStreaming[agentId], runId);
       const settledStreaming = settled.state
         ? { ...s.settledStreaming, [chatJid]: settled.state }
         : s.settledStreaming;
-      if (agentId) {
-        return {
-          activeRuns: finished.runs,
-          stopRequests,
-          settledStreaming,
-          agentWaiting: { ...s.agentWaiting, [agentId]: false },
-          agentStreaming: withoutKey(s.agentStreaming, agentId),
-        };
-      }
-      const nextStreaming = withoutKey(s.streaming, chatJid);
-      const nextPendingThinking = { ...s.pendingThinking };
-      delete nextPendingThinking[chatJid];
-      const nextPendingThinkingDuration = {
-        ...s.pendingThinkingDuration,
-      };
-      delete nextPendingThinkingDuration[chatJid];
       return {
         activeRuns: finished.runs,
         stopRequests,
         settledStreaming,
-        waiting: { ...s.waiting, [chatJid]: false },
-        streaming: nextStreaming,
-        pendingThinking: nextPendingThinking,
-        pendingThinkingDuration: nextPendingThinkingDuration,
+        agentWaiting: { ...s.agentWaiting, [agentId]: false },
+        agentStreaming: withoutKey(s.agentStreaming, agentId),
       };
     });
     if (settled.state) scheduleSettleFallback(chatJid, settled.state, set, get);
@@ -6987,29 +5472,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
       }
     }
     set((s) => {
-      const nextWaiting: Record<string, boolean> = {};
       const nextAgentWaiting: Record<string, boolean> = {};
-      const nextStreaming = { ...s.streaming };
       const nextAgentStreaming = { ...s.agentStreaming };
-      const nextPendingThinking = { ...s.pendingThinking };
-      const nextPendingThinkingDuration = {
-        ...s.pendingThinkingDuration,
-      };
 
-      for (const jid of Object.keys(nextStreaming)) {
-        if (
-          shouldDiscardStreamForAuthoritativeRun(previous, authoritative, jid)
-        ) {
-          delete nextStreaming[jid];
-        }
-      }
       for (const agentId of Object.keys(s.agentWaiting)) {
-        const suffix = `#agent:${agentId}`;
-        const previousJid = Object.keys(previous).find((jid) =>
-          jid.endsWith(suffix),
+        const previousJid = Object.keys(previous).find(
+          (jid) => sessionIdOf(jid) === agentId,
         );
-        const authoritativeJid = Object.keys(authoritative).find((jid) =>
-          jid.endsWith(suffix),
+        const authoritativeJid = Object.keys(authoritative).find(
+          (jid) => sessionIdOf(jid) === agentId,
         );
         if (
           !authoritativeJid ||
@@ -7021,28 +5492,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
         }
       }
       for (const run of Object.values(authoritative)) {
-        const marker = '#agent:';
-        const markerIndex = run.chatJid.indexOf(marker);
-        if (markerIndex >= 0) {
-          nextAgentWaiting[run.chatJid.slice(markerIndex + marker.length)] =
-            true;
-        } else {
-          nextWaiting[run.chatJid] = true;
-        }
+        const agentId = sessionIdOf(run.chatJid);
+        if (agentId) nextAgentWaiting[agentId] = true;
       }
       // Queued chats have no run identity, so they never enter activeRuns and
       // never expect a run_finished. They still need the wait state, otherwise
       // reloading while a message sits behind a busy runner shows an idle
       // composer. The next authoritative snapshot recomputes this from scratch.
-      const queuedWaitKeys = waitKeysForQueuedChats(queuedChatJids);
-      for (const jid of queuedWaitKeys.waiting) nextWaiting[jid] = true;
-      for (const agentId of queuedWaitKeys.agentWaiting) {
+      for (const agentId of waitKeysForQueuedChats(queuedChatJids)) {
         nextAgentWaiting[agentId] = true;
-      }
-      for (const jid of Object.keys(previous)) {
-        if (jid.includes('#agent:') || authoritative[jid]) continue;
-        delete nextPendingThinking[jid];
-        delete nextPendingThinkingDuration[jid];
       }
       const stopRequests = Object.fromEntries(
         Object.entries(s.stopRequests).filter(
@@ -7054,80 +5512,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
       return {
         activeRuns: authoritative,
         stopRequests,
-        waiting: nextWaiting,
         agentWaiting: nextAgentWaiting,
-        streaming: nextStreaming,
         agentStreaming: nextAgentStreaming,
-        pendingThinking: nextPendingThinking,
-        pendingThinkingDuration: nextPendingThinkingDuration,
-      };
-    });
-  },
-
-  // 清除流式状态（保留仍在运行的后台 SDK Task 的 agentStreaming）
-  clearStreaming: (chatJid, options) => {
-    // Cancel any pending rAF for this chatJid to prevent stale flushes
-    const mainKey = `main:${chatJid}`;
-    const mainEntry = pendingDeltas.get(mainKey);
-    if (mainEntry) {
-      cancelAnimationFrame(mainEntry.raf);
-      pendingDeltas.delete(mainKey);
-    }
-    set((s) => {
-      const next = { ...s.streaming };
-      const thinkingText = next[chatJid]?.thinkingText;
-      const thinkingDur = next[chatJid]?.thinkingDurationMs;
-      const preserveThinking = options?.preserveThinking !== false;
-      const nextPendingThinking = { ...s.pendingThinking };
-      const nextPendingThinkingDuration = { ...s.pendingThinkingDuration };
-      delete next[chatJid];
-      if (preserveThinking && thinkingText) {
-        nextPendingThinking[chatJid] = thinkingText;
-        if (thinkingDur != null)
-          nextPendingThinkingDuration[chatJid] = thinkingDur;
-        else delete nextPendingThinkingDuration[chatJid];
-      } else {
-        delete nextPendingThinking[chatJid];
-        delete nextPendingThinkingDuration[chatJid];
-      }
-
-      // 收集该 chatJid 下仍在运行的 SDK Task
-      const runningSet = new Set<string>();
-      for (const [taskId, task] of Object.entries(s.sdkTasks)) {
-        if (task.chatJid === chatJid && task.status === 'running') {
-          runningSet.add(taskId);
-        }
-      }
-
-      // 清理已结束 task 的 agentStreaming（无论是否有运行中的 task）
-      const nextAgentStreaming = { ...s.agentStreaming };
-      let agentStreamingChanged = false;
-      for (const [taskId, task] of Object.entries(s.sdkTasks)) {
-        if (
-          task.chatJid === chatJid &&
-          !runningSet.has(taskId) &&
-          nextAgentStreaming[taskId]
-        ) {
-          delete nextAgentStreaming[taskId];
-          agentStreamingChanged = true;
-        }
-      }
-      // 同时清理 agents[] 中已完成的 conversation agent 的 agentStreaming
-      for (const agent of s.agents[chatJid] || []) {
-        if (agent.status !== 'running' && nextAgentStreaming[agent.id]) {
-          delete nextAgentStreaming[agent.id];
-          agentStreamingChanged = true;
-        }
-      }
-
-      return {
-        waiting: { ...s.waiting, [chatJid]: false },
-        streaming: next,
-        pendingThinking: nextPendingThinking,
-        pendingThinkingDuration: nextPendingThinkingDuration,
-        ...(agentStreamingChanged
-          ? { agentStreaming: nextAgentStreaming }
-          : {}),
       };
     });
   },
@@ -7190,7 +5576,7 @@ useChatStore.subscribe((state, previous) => {
 const TRACE_FLAG_RESYNC_LIMIT = 200;
 
 /**
- * The `has_trace` of the replies this tab holds of `jid` and its sessions,
+ * The `has_trace` of the replies this tab holds of the sessions of `jid`,
  * read again for the view now in force. At `hidden` the server flags only the
  * turns whose progress it keeps, which this tab cannot tell from what it
  * holds; the flags read at another level were let go meanwhile.
@@ -7217,25 +5603,8 @@ async function resyncTraceFlags(jid: string): Promise<void> {
         )
       : list;
   const limit = `limit=${TRACE_FLAG_RESYNC_LIMIT}`;
-  if (useChatStore.getState().messages[jid]?.length) {
-    const flagged = await flaggedOf(limit);
-    if (flagged?.size) {
-      useChatStore.setState((s) =>
-        s.messages[jid]
-          ? {
-              messages: {
-                ...s.messages,
-                [jid]: flag(s.messages[jid], flagged),
-              },
-            }
-          : s,
-      );
-    }
-  }
   const sessions = Object.entries(useChatStore.getState().agentMessages)
-    .filter(([, list]) =>
-      list.some((m) => m.chat_jid.startsWith(`${jid}#agent:`)),
-    )
+    .filter(([, list]) => list.some((m) => isSessionOf(m.chat_jid, jid)))
     .map(([agentId]) => agentId);
   for (const agentId of sessions) {
     const flagged = await flaggedOf(

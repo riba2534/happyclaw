@@ -27,7 +27,7 @@ test.use({
   hasTouch: false,
 });
 
-test('marks the opened workspace and its main conversation as current', async ({
+test('marks the opened workspace and the session open in it as current', async ({
   page,
 }) => {
   await page.goto(HARNESS_PATH);
@@ -36,17 +36,19 @@ test('marks the opened workspace and its main conversation as current', async ({
   const beta = nav.getByRole('button', { name: 'Beta 工作区', exact: true });
   await expect(alpha).toHaveAttribute('aria-current', 'page');
 
+  // A workspace is entered without naming a session: the chat opens one.
   await beta.click();
   await expect(page.getByTestId('route')).toHaveText('/chat/beta');
   await expect(beta).toHaveAttribute('aria-current', 'page');
   await expect(alpha).not.toHaveAttribute('aria-current', 'page');
-  // The workspace item holds its row and, when expanded, its sessions.
+  // The workspace item holds its row and, when expanded, its sessions: all
+  // alike, most recently active first, none standing for the workspace.
   const betaItem = nav.locator('li').filter({
     has: page.getByRole('button', { name: 'Beta 工作区', exact: true }),
   });
   await expect(
-    betaItem.locator('[aria-current="page"]', { hasText: '当前对话' }),
-  ).toHaveCount(1);
+    betaItem.getByRole('button', { name: /^beta 会话 \d$/ }),
+  ).toHaveText(['beta 会话 1', 'beta 会话 2']);
 
   await betaItem
     .getByRole('button', { name: 'beta 会话 1', exact: true })
@@ -54,12 +56,10 @@ test('marks the opened workspace and its main conversation as current', async ({
   await expect(page.getByTestId('route')).toHaveText(
     '/chat/beta?agent=beta-s1',
   );
-  await expect(
-    betaItem.locator('[aria-current="page"]', { hasText: 'beta 会话 1' }),
-  ).toHaveCount(1);
-  await expect(
-    betaItem.locator('[aria-current="page"]', { hasText: '当前对话' }),
-  ).toHaveCount(0);
+  await expect(betaItem.locator('[aria-current="page"]')).toHaveText([
+    'Beta 工作区',
+    'beta 会话 1',
+  ]);
 });
 
 test('a dialog whose chunk fails to load closes with a toast instead of taking the app down', async ({
@@ -153,14 +153,15 @@ test('shows each agent with its avatar; a single workspace is the agent row itse
   await expect(page.getByTestId('route')).toHaveText('/chat/bill2');
 });
 
-test('the + on a workspace row creates a session and opens it', async ({
+test('the + on a workspace row creates a session and opens it, once', async ({
   page,
 }) => {
   await page.goto(HARNESS_PATH);
   const nav = page.getByRole('navigation', { name: '主导航' });
+  const plus = nav.getByRole('button', { name: '新建会话（Beta 工作区）' });
 
   await nav.getByRole('button', { name: 'Beta 工作区', exact: true }).hover();
-  await nav.getByRole('button', { name: '新建会话（Beta 工作区）' }).click();
+  await plus.click();
   await expect(page.getByTestId('route')).toHaveText(
     '/chat/beta?agent=beta-new',
   );
@@ -170,6 +171,64 @@ test('the + on a workspace row creates a session and opens it', async ({
   await expect(
     betaItem.locator('[aria-current="page"]', { hasText: '新会话' }),
   ).toHaveCount(1);
+
+  // Pressed again while that one is still blank: it is opened, not doubled.
+  await betaItem
+    .getByRole('button', { name: 'beta 会话 1', exact: true })
+    .click();
+  await expect(page.getByTestId('route')).toHaveText(
+    '/chat/beta?agent=beta-s1',
+  );
+  await nav.getByRole('button', { name: 'Beta 工作区', exact: true }).hover();
+  await plus.click();
+  await expect(page.getByTestId('route')).toHaveText(
+    '/chat/beta?agent=beta-new',
+  );
+  await expect(
+    betaItem.getByRole('button', { name: '新会话', exact: true }),
+  ).toHaveCount(1);
+});
+
+test('a session is pinned to the top of its list from its menu, and unpinned', async ({
+  page,
+}) => {
+  await page.goto(HARNESS_PATH);
+  const nav = page.getByRole('navigation', { name: '主导航' });
+  const alphaItem = nav.locator('li').filter({
+    has: page.getByRole('button', { name: 'Alpha 工作区', exact: true }),
+  });
+  // alpha 会话 2 answers a chat; its name carries that mark.
+  const rows = alphaItem.getByRole('button', { name: /^alpha 会话 \d/ });
+  await expect(rows).toHaveText(['alpha 会话 1', 'alpha 会话 2']);
+
+  await rows.nth(1).hover();
+  await nav.getByRole('button', { name: 'alpha 会话 2的更多操作' }).click();
+  await expect(page.getByRole('menuitem')).toHaveText([
+    '重命名',
+    '置顶',
+    '会话绑定',
+    '从此会话创建自动化…',
+    '删除',
+  ]);
+  await page.getByRole('menuitem', { name: '置顶' }).click();
+  await expect(rows).toHaveText(['alpha 会话 2', 'alpha 会话 1']);
+  await expect(alphaItem.getByLabel('已置顶')).toHaveCount(1);
+
+  await rows.nth(0).hover();
+  await nav.getByRole('button', { name: 'alpha 会话 2的更多操作' }).click();
+  await page.getByRole('menuitem', { name: '取消置顶' }).click();
+  await expect(rows).toHaveText(['alpha 会话 1', 'alpha 会话 2']);
+  await expect(alphaItem.getByLabel('已置顶')).toHaveCount(0);
+  expect(
+    await page.evaluate(
+      () =>
+        (window as unknown as { sidebarHarness: { pins: unknown[] } })
+          .sidebarHarness.pins,
+    ),
+  ).toEqual([
+    { agentId: 'alpha-s2', pinned: true },
+    { agentId: 'alpha-s2', pinned: false },
+  ]);
 });
 
 test('an agent menu creates a workspace with that agent preselected', async ({
@@ -200,17 +259,55 @@ test('a session row deletes from its hover button after confirmation', async ({
   await page.goto(HARNESS_PATH);
   const nav = page.getByRole('navigation', { name: '主导航' });
   const session = nav.getByRole('button', {
-    name: 'alpha 会话 2',
+    name: 'alpha 会话 1',
     exact: true,
+  });
+
+  await session.hover();
+  await nav.getByRole('button', { name: '删除alpha 会话 1' }).click();
+  const dialog = page.getByRole('alertdialog');
+  await expect(dialog.getByRole('heading')).toHaveText('删除会话');
+  await expect(dialog).toContainText('删除后会话的聊天记录将无法恢复。');
+  await expect(dialog.getByRole('combobox')).toHaveCount(0);
+  await dialog.getByRole('button', { name: '删除' }).click();
+  await expect(session).toHaveCount(0);
+  await expect(
+    nav.getByRole('button', { name: 'alpha 会话 2 已绑定消息渠道' }),
+  ).toBeVisible();
+});
+
+test('deleting a session bound to a chat lists it and can move it to another session', async ({
+  page,
+}) => {
+  await page.goto(HARNESS_PATH);
+  const nav = page.getByRole('navigation', { name: '主导航' });
+  const session = nav.getByRole('button', {
+    name: 'alpha 会话 2 已绑定消息渠道',
   });
 
   await session.hover();
   await nav.getByRole('button', { name: '删除alpha 会话 2' }).click();
   const dialog = page.getByRole('alertdialog');
-  await expect(dialog).toContainText('alpha 会话 2');
+  await expect(dialog).toContainText('· 研发群');
+  await expect(dialog).toContainText('删除后这些聊天将不再收到回复。');
+  const rebind = dialog.getByRole('combobox', { name: '改绑到' });
+  await expect(rebind).toHaveValue('');
+  await expect(rebind.locator('option')).toHaveText(['不改绑', 'alpha 会话 1']);
+  await rebind.selectOption('alpha-s1');
   await dialog.getByRole('button', { name: '删除' }).click();
   await expect(session).toHaveCount(0);
-  await expect(
-    nav.getByRole('button', { name: 'alpha 会话 1', exact: true }),
-  ).toBeVisible();
+  // The server's refusal listed nothing new: confirmed with the pick at once.
+  expect(
+    await page.evaluate(
+      () =>
+        (window as unknown as { sidebarHarness: { deletes: unknown[] } })
+          .sidebarHarness.deletes,
+    ),
+  ).toEqual([
+    { agentId: 'alpha-s2', options: {} },
+    {
+      agentId: 'alpha-s2',
+      options: { confirmBindings: true, rebindTo: 'alpha-s1' },
+    },
+  ]);
 });

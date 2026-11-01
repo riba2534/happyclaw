@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { apiFetch } from '../../api/client';
 import { useChatStore } from '../../stores/chat';
+import { sessionJidOf } from '../../lib/session-jid';
 import type {
   GitDiffResponse,
   GitReviewFile,
@@ -25,13 +26,6 @@ export function toReviewFailure(error: unknown): ReviewRequestFailure {
     status: 0,
     message: error instanceof Error ? error.message : String(error),
   };
-}
-
-export function reviewRuntimeJid(
-  groupJid: string,
-  agentId: string | null,
-): string {
-  return agentId ? `${groupJid}#agent:${agentId}` : groupJid;
 }
 
 export function gitStatusUrl(
@@ -222,8 +216,9 @@ export function useGitReview(groupJid: string, agentId: string | null) {
   }, [loadStatus]);
 
   // A finished run is when the Agent's edits land; refresh then, never poll.
-  const runtimeJid = reviewRuntimeJid(groupJid, agentId);
-  const running = useChatStore((s) => !!s.activeRuns[runtimeJid]);
+  const running = useChatStore(
+    (s) => !!agentId && !!s.activeRuns[sessionJidOf(groupJid, agentId)],
+  );
   const wasRunning = useRef(running);
   useEffect(() => {
     if (wasRunning.current && !running) refresh();

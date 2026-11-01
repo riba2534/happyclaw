@@ -44,6 +44,9 @@ root.classList.toggle('theme-neutral', scheme === 'neutral');
 root.classList.toggle('theme-orange', !scheme || scheme === 'orange');
 
 const groupJid = 'web:render-harness';
+/** The session the harness shows. */
+const sessionId = 'render-session';
+const sessionJid = `${groupJid}#agent:${sessionId}`;
 const userId = 'harness-user';
 if (params.get('display') === 'compact') {
   localStorage.setItem(`happyclaw-display-mode:${userId}`, 'compact');
@@ -177,7 +180,7 @@ const msg = (
   extra: Partial<Message> = {},
 ): Message => ({
   id,
-  chat_jid: groupJid,
+  chat_jid: sessionJid,
   sender: fromAgent ? 'happyclaw-agent' : userId,
   sender_name: fromAgent ? 'HappyClaw' : 'riba2534',
   content,
@@ -1134,7 +1137,7 @@ const followUps: QueuedFollowUp[] =
     ? [
         {
           id: 'q1',
-          chat_jid: groupJid,
+          chat_jid: sessionJid,
           sender: userId,
           sender_name: 'riba2534',
           content: '做完以后顺便把 FilePanel 的列表也检查一下',
@@ -1145,7 +1148,7 @@ const followUps: QueuedFollowUp[] =
         },
         {
           id: 'q2',
-          chat_jid: groupJid,
+          chat_jid: sessionJid,
           sender: userId,
           sender_name: 'riba2534',
           content: '还有暗色模式下的对比度',
@@ -1215,24 +1218,24 @@ useChatStore.setState({
     },
   },
   currentGroup: groupJid,
-  messages: { [groupJid]: history },
-  waiting: isRunning ? { [groupJid]: true } : {},
+  agentMessages: { [sessionId]: history },
+  agentWaiting: isRunning ? { [sessionId]: true } : {},
   activeRuns: isRunning
     ? {
-        [groupJid]: {
-          chatJid: groupJid,
+        [sessionJid]: {
+          chatJid: sessionJid,
           runId: 'run-harness',
           startedAt: new Date(now - 47_000).toISOString(),
           phase: 'running',
         },
       }
     : {},
-  streaming: scenarioStreaming ? { [groupJid]: scenarioStreaming } : {},
+  agentStreaming: scenarioStreaming ? { [sessionId]: scenarioStreaming } : {},
   settledStreaming:
     scenario === 'settled'
-      ? { [groupJid]: settledStreaming }
+      ? { [sessionJid]: settledStreaming }
       : scenario === 'facts'
-        ? { [groupJid]: factsSettled }
+        ? { [sessionJid]: factsSettled }
         : {},
   thinkingCache: {
     m4: '**确认订阅范围**\n\n先看订阅层级，再比较几种方案的复杂度与收益。',
@@ -1265,16 +1268,25 @@ useChatStore.setState({
       },
     ],
   },
-  hasMore: { [groupJid]: false },
-  agents: { [groupJid]: [] },
-  activeAgentTab: { [groupJid]: null },
-  agentMessages: {},
-  agentWaiting: {},
-  agentHasMore: {},
-  followUps: { [groupJid]: followUps },
+  agents: {
+    [groupJid]: [
+      {
+        id: sessionId,
+        name: '前端重构讨论',
+        prompt: '',
+        status: 'idle',
+        kind: 'conversation',
+        created_at: '2026-01-01T00:00:00.000Z',
+      },
+    ],
+  },
+  activeAgentTab: { [groupJid]: sessionId },
+  agentHasMore: { [sessionId]: false },
+  followUps: { [sessionJid]: followUps },
   loading: false,
-  loadMessages: async () => undefined,
-  refreshMessages: async () => undefined,
+  loadAgentMessages: async () => undefined,
+  hydrateAgentMessages: async () => undefined,
+  refreshAgentMessages: async () => undefined,
   restoreActiveState: async () => undefined,
   loadAgents: async () => undefined,
   loadFollowUps: async () => undefined,
@@ -1297,7 +1309,7 @@ if (scenario === 'live') {
   Object.assign(window, {
     renderHarness: {
       start() {
-        useChatStore.getState().handleRunStarted(groupJid, runId);
+        useChatStore.getState().handleRunStarted(sessionJid, runId);
       },
       emit(event: StreamEvent) {
         useChatStore
@@ -1305,17 +1317,21 @@ if (scenario === 'live') {
           .handleStreamEvent(
             groupJid,
             { turnId: 'turn-live', ...event },
-            undefined,
+            sessionId,
             runId,
           );
       },
       finish(content: string) {
-        useChatStore.getState().handleRunFinished(groupJid, runId);
+        useChatStore.getState().handleRunFinished(sessionJid, runId);
         window.setTimeout(() => {
-          useChatStore.getState().handleWsNewMessage(groupJid, {
-            ...msg('live-final', 0, true, content),
-            turn_id: 'turn-live',
-          });
+          useChatStore.getState().handleWsNewMessage(
+            groupJid,
+            {
+              ...msg('live-final', 0, true, content),
+              turn_id: 'turn-live',
+            },
+            sessionId,
+          );
         }, 60);
       },
     },
@@ -1331,23 +1347,23 @@ if (scenario === 'markdown' || scenario === 'markdown-streaming') {
       kitchenSink: markdownKitchenSink,
       setPartial(partialText: string) {
         useChatStore.setState((s) => ({
-          streaming: {
-            ...s.streaming,
-            [groupJid]: { ...markdownStreaming, partialText },
+          agentStreaming: {
+            ...s.agentStreaming,
+            [sessionId]: { ...markdownStreaming, partialText },
           },
         }));
       },
       finish(content = markdownKitchenSink) {
         useChatStore.setState((s) => ({
-          messages: {
-            ...s.messages,
-            [groupJid]: [
-              ...(s.messages[groupJid] ?? []),
+          agentMessages: {
+            ...s.agentMessages,
+            [sessionId]: [
+              ...(s.agentMessages[sessionId] ?? []),
               msg('md-final', 0, true, content),
             ],
           },
-          streaming: {},
-          waiting: {},
+          agentStreaming: {},
+          agentWaiting: {},
           activeRuns: {},
         }));
       },
@@ -1360,10 +1376,10 @@ Object.assign(window, {
   chatHarness: {
     append(id: string, fromMe: boolean, content: string) {
       useChatStore.setState((s) => ({
-        messages: {
-          ...s.messages,
-          [groupJid]: [
-            ...(s.messages[groupJid] ?? []),
+        agentMessages: {
+          ...s.agentMessages,
+          [sessionId]: [
+            ...(s.agentMessages[sessionId] ?? []),
             msg(id, 0, fromMe, content),
           ],
         },
@@ -1375,7 +1391,9 @@ Object.assign(window, {
 createRoot(document.getElementById('root')!).render(
   <MotionProvider>
     <TooltipProvider>
-      <MemoryRouter initialEntries={['/chat/render-harness']}>
+      <MemoryRouter
+        initialEntries={[`/chat/render-harness?agent=${sessionId}`]}
+      >
         <main className="h-[100dvh] overflow-hidden bg-background">
           <ChatView groupJid={groupJid} />
         </main>

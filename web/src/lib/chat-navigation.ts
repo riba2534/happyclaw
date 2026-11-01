@@ -1,27 +1,47 @@
 import { useChatStore } from '../stores/chat';
-import { setWorkspaceLastAgent } from '../utils/workspaceLastAgent';
+import { useShellStore } from '../stores/shell';
 
+/**
+ * A workspace's chat route: with a session it opens that session, without
+ * one it enters the workspace (ChatView opens the session last opened there,
+ * else the most recently active one).
+ */
 export function chatHref(folder: string, sessionId?: string | null): string {
   const base = `/chat/${folder}`;
   return sessionId ? `${base}?agent=${encodeURIComponent(sessionId)}` : base;
 }
 
 /** Navigation to an app path; a router `navigate` or a stable wrapper of it. */
-export type NavigateToPath = (to: string) => unknown;
+export type NavigateToPath = (
+  to: string,
+  options?: { replace?: boolean },
+) => unknown;
 
 /**
- * Open a specific conversation in a workspace. `null` opens the main
- * conversation and clears the per-workspace "last session" memory, otherwise
- * ChatView's restore effect would immediately jump back to that session.
+ * Enter a workspace (the sidebar row or ⌘K): expand it in the sidebar and
+ * let ChatView pick its session.
+ */
+export function enterWorkspace(
+  navigate: NavigateToPath,
+  group: { jid: string; folder: string },
+) {
+  useShellStore.getState().revealWorkspace(group.jid);
+  useChatStore.getState().selectGroup(group.jid);
+  navigate(chatHref(group.folder));
+}
+
+/**
+ * Open a specific session of a workspace (ChatView remembers it once it
+ * shows it).
  */
 export function openWorkspaceSession(
   navigate: NavigateToPath,
   group: { jid: string; folder: string },
-  sessionId: string | null,
+  sessionId: string,
+  options?: { replace?: boolean },
 ) {
-  setWorkspaceLastAgent(group.jid, sessionId);
   useChatStore.getState().selectGroup(group.jid);
-  navigate(chatHref(group.folder, sessionId));
+  navigate(chatHref(group.folder, sessionId), options);
 }
 
 /**

@@ -1,24 +1,27 @@
-import { useEffect, useMemo, useRef } from 'react';
-import { Link2, Pencil, Timer, Trash2 } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef } from 'react';
+import { Link2, Pencil, Pin, PinOff, Timer, Trash2 } from 'lucide-react';
 import { PromptDialog } from '@/components/common/PromptDialog';
 import { isLiveStream, useChatStore } from '../../../stores/chat';
-import { buildConversationSessions } from '../../../lib/session-presentation';
+import { useIsGuest } from '../../../stores/auth';
+import { useAutomationsStore } from '../../../stores/automations';
+import { useSessionActions } from '../../../hooks/useSessionActions';
+import {
+  buildConversationSessions,
+  isNativeManagedSession,
+} from '../../../lib/session-presentation';
+import { sessionJidOf } from '../../../lib/session-jid';
 import type { AgentInfo } from '../../../types';
 import type { MenuAction } from '../../common/ResponsiveMenu';
-import { MenuActionItems } from './WorkspaceTree';
 
 // Session lists shared by the desktop sidebar tree and the phone home list.
 
 const EMPTY_AGENTS: AgentInfo[] = [];
 
-/** The binding target of a workspace's main conversation. */
-export const MAIN_BINDING = '__main__';
-
 /**
- * A workspace's conversations, newest first. They are fetched once the
- * element behind `containerRef` scrolls into view: a workspace far down a
- * long list should not cost a request on every load. While `paused` (the
- * list is hidden) the running state is not recomputed per store update.
+ * A workspace's sessions in list order. They are fetched once the element
+ * behind `containerRef` scrolls into view: a workspace far down a long list
+ * should not cost a request on every load. While `paused` (the list is
+ * hidden) the running state is not recomputed per store update.
  */
 export function useWorkspaceSessions<T extends Element>(
   groupJid: string,
@@ -68,45 +71,125 @@ export function useWorkspaceSessions<T extends Element>(
 }
 
 interface SessionMenuHandlers {
-  onBind: () => void;
-  onCreateAutomation?: () => void;
+  /** Whether the session is pinned, which names the pin action. */
+  pinned: boolean;
   onRename?: () => void;
+  onTogglePin?: () => void;
+  onBind?: () => void;
+  onCreateAutomation?: () => void;
   onDelete?: () => void;
 }
 
-/** A conversation row's ⋯ actions; the main conversation only binds. */
-export function sessionMenuGroups({
+/** A session row's ⋯ actions, the same in every list. */
+function sessionMenuGroups({
+  pinned,
+  onRename,
+  onTogglePin,
   onBind,
   onCreateAutomation,
-  onRename,
   onDelete,
 }: SessionMenuHandlers): MenuAction[][] {
-  const actions: MenuAction[] = [
-    { label: '会话绑定', icon: Link2, onSelect: onBind },
-  ];
+  const organize: MenuAction[] = [];
+  if (onRename) {
+    organize.push({ label: '重命名', icon: Pencil, onSelect: onRename });
+  }
+  if (onTogglePin) {
+    organize.push({
+      label: pinned ? '取消置顶' : '置顶',
+      icon: pinned ? PinOff : Pin,
+      onSelect: onTogglePin,
+    });
+  }
+  const connect: MenuAction[] = [];
+  if (onBind) {
+    connect.push({ label: '会话绑定', icon: Link2, onSelect: onBind });
+  }
   if (onCreateAutomation) {
-    actions.push({
+    connect.push({
       label: '从此会话创建自动化…',
       icon: Timer,
       onSelect: onCreateAutomation,
     });
   }
-  if (onRename)
-    actions.push({ label: '重命名', icon: Pencil, onSelect: onRename });
-  if (onDelete) {
-    actions.push({
-      label: '删除',
-      icon: Trash2,
-      destructive: true,
-      onSelect: onDelete,
-    });
-  }
-  return [actions];
+  const remove: MenuAction[] = onDelete
+    ? [{ label: '删除', icon: Trash2, destructive: true, onSelect: onDelete }]
+    : [];
+  return [organize, connect, remove];
 }
 
-/** The same actions as dropdown items, for the desktop session tree. */
-export function SessionMenuItems(handlers: SessionMenuHandlers) {
-  return <MenuActionItems groups={sessionMenuGroups(handlers)} />;
+/**
+ * Deleting a workspace's sessions (after confirmation): only for its owner,
+ * never a guest; undefined when the viewer may not.
+ */
+export function useSessionDelete(group: { jid: string; can_modify?: boolean }) {
+  const isGuest = useIsGuest();
+  const { deleteSession } = useSessionActions();
+  const allowed = !!group.can_modify && !isGuest;
+  return useMemo(
+    () =>
+      allowed
+        ? (session: AgentInfo) => deleteSession(group.jid, session.id)
+        : undefined,
+    [allowed, deleteSession, group.jid],
+  );
+}
+
+/**
+ * The ⋯ actions of a workspace's session rows: what the viewer may do to a
+ * session. Guests may do none; pinning only needs a signed-in member, the
+ * rest the workspace's owner. A channel topic's session is named by its
+ * topic, so it is not renamed here. Binding and renaming open where the list
+ * keeps their dialogs.
+ */
+export function useSessionRowActions(
+  group: { jid: string; can_modify?: boolean },
+  {
+    onBind,
+    onRename,
+  }: {
+    onBind: (session: AgentInfo) => void;
+    onRename: (session: AgentInfo) => void;
+  },
+) {
+  const isGuest = useIsGuest();
+  const pinSession = useChatStore((s) => s.pinSession);
+  const openCreateAutomation = useAutomationsStore((s) => s.openCreateForm);
+  const deleteSession = useSessionDelete(group);
+  const canModify = !!group.can_modify && !isGuest;
+
+  return useCallback(
+    (session: AgentInfo): MenuAction[][] | undefined => {
+      if (isGuest) return undefined;
+      return sessionMenuGroups({
+        pinned: !!session.pinned_at,
+        onRename:
+          canModify && !isNativeManagedSession(session)
+            ? () => onRename(session)
+            : undefined,
+        onTogglePin: () =>
+          void pinSession(group.jid, session.id, !session.pinned_at),
+        onBind: canModify ? () => onBind(session) : undefined,
+        onCreateAutomation: canModify
+          ? () =>
+              openCreateAutomation({
+                workspaceJid: group.jid,
+                targetSessionJid: sessionJidOf(group.jid, session.id),
+              })
+          : undefined,
+        onDelete: deleteSession && (() => deleteSession(session)),
+      });
+    },
+    [
+      isGuest,
+      canModify,
+      group.jid,
+      onBind,
+      onRename,
+      pinSession,
+      openCreateAutomation,
+      deleteSession,
+    ],
+  );
 }
 
 /** Renames `session` (open while it is set). */

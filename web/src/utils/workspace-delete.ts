@@ -6,9 +6,6 @@ export function workspaceDeleteBindingNames(
   const impact = state.impact;
   if (!impact) return [];
   const names = new Map<string, string>();
-  for (const group of impact.bound_main_im_groups) {
-    names.set(group.jid, group.name);
-  }
   for (const session of impact.bound_sessions) {
     for (const group of session.imGroups) names.set(group.jid, group.name);
   }

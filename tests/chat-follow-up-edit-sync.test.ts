@@ -36,9 +36,11 @@ vi.mock('../web/src/utils/messageSnapshotCache', () => ({
 
 const { useChatStore } = await import('../web/src/stores/chat');
 
+const SESSION_JID = 'web:main#agent:s1';
+
 const queued = (id: string, content: string): Message => ({
   id,
-  chat_jid: 'web:main',
+  chat_jid: SESSION_JID,
   sender: 'user',
   sender_name: 'User',
   content,
@@ -49,7 +51,7 @@ const queued = (id: string, content: string): Message => ({
 
 const item = (id: string, content: string): QueuedFollowUp => ({
   id,
-  chat_jid: 'web:main',
+  chat_jid: SESSION_JID,
   sender: 'user',
   sender_name: 'User',
   content,
@@ -73,19 +75,19 @@ describe('edited follow-ups', () => {
 
   it('a released row shows the edited text, not the original', () => {
     useChatStore.setState({
-      messages: { 'web:main': [queued('m1', '最后给出一个命令示例')] },
+      agentMessages: { s1: [queued('m1', '最后给出一个命令示例')] },
       followUps: {},
     });
     const state = useChatStore.getState();
-    state.handleFollowUpUpdate('web:main', [
+    state.handleFollowUpUpdate(SESSION_JID, [
       item('m1', '最后给出一个命令示例（简短）'),
     ]);
-    state.handleFollowUpUpdate('web:main', [], {
+    state.handleFollowUpUpdate(SESSION_JID, [], {
       id: 'm1',
       delivery_status: 'released',
       delivery_updated_at: '2026-10-10T00:00:05.000Z',
     });
-    const [row] = useChatStore.getState().messages['web:main'];
+    const [row] = useChatStore.getState().agentMessages.s1;
     expect(row.content).toBe('最后给出一个命令示例（简短）');
     expect(row.delivery_status).toBe('released');
   });

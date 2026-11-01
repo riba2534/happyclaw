@@ -95,6 +95,8 @@ import type { InteractionMode, ProcessVisibility } from '../src/types.js';
 
 const initialState = useChatStore.getState();
 const JID = 'web:parity';
+const SESSION = 'session-parity';
+const SESSION_JID = `${JID}#agent:${SESSION}`;
 const RUN = 'run-parity';
 const T0 = Date.parse('2026-10-13T00:00:00.000Z');
 const FOLDER = 'parity';
@@ -143,17 +145,12 @@ function resetStore(
               } as GroupInfo,
             }
           : {},
-      messages: { [JID]: [] },
-      waiting: {},
       activeRuns: {},
-      streaming: {},
       thinkingCache: {},
       thinkingDurationCache: {},
       traceCache: {},
       stopRequests: {},
       settledStreaming: {},
-      pendingThinking: {},
-      pendingThinkingDuration: {},
       clearing: {},
       agents: {},
       agentStreaming: {},
@@ -189,18 +186,18 @@ function webSteps(
   resetStore(mode, 'full');
   vi.setSystemTime(T0);
   const store = useChatStore.getState();
-  store.handleRunStarted(JID, RUN);
+  store.handleRunStarted(SESSION_JID, RUN);
   for (const [offset, event] of script) {
     vi.setSystemTime(T0 + offset);
     const shown = options.projected
       ? projectSdkStreamEventForWeb(mode, 'full', event)
       : event;
     if (!shown) continue;
-    useChatStore.getState().handleStreamEvent(JID, shown, undefined, RUN);
+    useChatStore.getState().handleStreamEvent(JID, shown, SESSION, RUN);
     flushRaf();
   }
   vi.setSystemTime(T0 + end);
-  const live = useChatStore.getState().streaming[JID];
+  const live = useChatStore.getState().agentStreaming[SESSION];
   expect(live, 'the Web kept a streaming state').toBeDefined();
   // A stop freezes the card with the steps already finished; a run that ends
   // settles them. A proactive turn has no card to settle: finish them here.

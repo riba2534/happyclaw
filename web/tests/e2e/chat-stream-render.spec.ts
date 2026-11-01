@@ -694,7 +694,7 @@ test.describe('the reasoning and trace the server kept', () => {
     ).toBeVisible();
     await expect(page.getByRole('button', { name: '处理过程' })).toHaveCount(0);
     expect(requests).toEqual([
-      '/api/groups/web%3Arender-harness/turn-traces/turn-kept',
+      '/api/groups/web%3Arender-harness%23agent%3Arender-session/turn-traces/turn-kept',
     ]);
     // The reply itself did not move out from under the reader.
     await expect(page.getByText('改成窄 selector 即可。')).toBeVisible();
@@ -744,7 +744,7 @@ test.describe('the reasoning and trace the server kept', () => {
     await expect(loaded).toHaveAttribute('aria-expanded', 'true');
     await expect(page.getByText('useChatStore in web/src')).toBeVisible();
     expect(requests).toEqual([
-      '/api/groups/web%3Arender-harness/turn-traces/turn-kept',
+      '/api/groups/web%3Arender-harness%23agent%3Arender-session/turn-traces/turn-kept',
     ]);
     // The reply itself did not move out from under the reader.
     await expect(page.getByText('改成窄 selector 即可。')).toBeVisible();

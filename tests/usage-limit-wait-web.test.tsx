@@ -58,11 +58,26 @@ describe('usage-limit waits on the Web', () => {
     store.apply({ chatJid: 'web:ws', agentId: 's1', resumeAt: null });
     expect(useUsageLimitWaits.getState().waits).toEqual({});
 
-    store.apply({ chatJid: 'web:a', resumeAt: '2026-10-29T09:00:00.000Z' });
+    // Every input waits in a session: a workspace JID alone names none.
+    store.apply({ chatJid: 'web:ws', resumeAt: '2026-10-29T09:00:00.000Z' });
+    expect(useUsageLimitWaits.getState().waits).toEqual({});
+
+    store.apply({
+      chatJid: 'web:a',
+      agentId: 's1',
+      resumeAt: '2026-10-29T09:00:00.000Z',
+    });
     store.replace([
-      { chatJid: 'web:b', resumeAt: '2026-10-29T10:00:00.000Z', waitCount: 1 },
+      {
+        chatJid: 'web:b',
+        agentId: 's2',
+        resumeAt: '2026-10-29T10:00:00.000Z',
+        waitCount: 1,
+      },
     ]);
-    expect(Object.keys(useUsageLimitWaits.getState().waits)).toEqual(['web:b']);
+    expect(Object.keys(useUsageLimitWaits.getState().waits)).toEqual([
+      'web:b#agent:s2',
+    ]);
   });
 
   test('the resume time reads HH:MM today and names the day otherwise', () => {
@@ -81,24 +96,31 @@ describe('usage-limit waits on the Web', () => {
     ).IS_REACT_ACT_ENVIRONMENT = true;
     const resumeAt = new Date(Date.now() + 60 * 60 * 1000);
     useUsageLimitWaits.setState({
-      waits: { 'web:main': { resumeAt: resumeAt.toISOString(), waitCount: 1 } },
+      waits: {
+        'web:main#agent:s1': {
+          resumeAt: resumeAt.toISOString(),
+          waitCount: 1,
+        },
+      },
     });
-    const render = async (groupJid: string) => {
+    const render = async (agentId: string) => {
       const container = document.createElement('div');
       const root = createRoot(container);
-      await act(async () => root.render(<RunStatusBar groupJid={groupJid} />));
+      await act(async () =>
+        root.render(<RunStatusBar groupJid="web:main" agentId={agentId} />),
+      );
       const text = container.textContent ?? '';
       const status = container.querySelector('[role="status"]');
       await act(async () => root.unmount());
       return { text, status };
     };
-    const waiting = await render('web:main');
+    const waiting = await render('s1');
     expect(waiting.text).toContain(
       `额度用尽，预计 ${formatResumeTime(resumeAt.toISOString())} 自动继续`,
     );
     expect(waiting.status).not.toBeNull();
     // Another Session shows nothing.
-    expect((await render('web:other')).text).toBe('');
+    expect((await render('s2')).text).toBe('');
   });
 
   test('an input moved back into the queue leaves the transcript', () => {

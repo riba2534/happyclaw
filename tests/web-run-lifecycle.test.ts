@@ -4,7 +4,6 @@ import {
   applyRunFinished,
   applyRunStarted,
   hasExactQueryAttempt,
-  shouldDiscardStreamForAuthoritativeRun,
   runsFromAuthoritativeSnapshot,
   shouldApplyRunScopedPayload,
   waitKeysForQueuedChats,
@@ -68,30 +67,6 @@ describe('Web exact logical-run fencing', () => {
     expect(restored).toEqual({});
   });
 
-  test('reconnect replacement B discards the local stream owned by A', () => {
-    const previous = {
-      'web:alpha': run('web:alpha', 'run-a'),
-    };
-    const authoritative = {
-      'web:alpha': run('web:alpha', 'run-b'),
-    };
-
-    expect(
-      shouldDiscardStreamForAuthoritativeRun(
-        previous,
-        authoritative,
-        'web:alpha',
-      ),
-    ).toBe(true);
-    expect(
-      shouldDiscardStreamForAuthoritativeRun(
-        authoritative,
-        authoritative,
-        'web:alpha',
-      ),
-    ).toBe(false);
-  });
-
   test('warm proactive history cannot restore waiting without an exact query', () => {
     const warmIdleStatus = {
       active: true,
@@ -117,33 +92,25 @@ describe('Web exact logical-run fencing', () => {
 });
 
 describe('queued-message wait state', () => {
-  test('a queued chat restores waiting without ever entering activeRuns', () => {
+  test('a queued session chat restores waiting without ever entering activeRuns', () => {
     // The server cannot give a queued message a runId — it has no attempt yet,
     // so no run_finished would ever arrive to clear it. It travels outside
     // `runs` for exactly that reason, but must still surface as waiting or a
     // reload mid-queue shows an idle composer and invites a duplicate send.
     const restored = runsFromAuthoritativeSnapshot([]);
-    const keys = waitKeysForQueuedChats(['web:alpha']);
+    const keys = waitKeysForQueuedChats(['web:alpha#agent:agent-1']);
 
     expect(restored).toEqual({});
-    expect(keys.waiting).toEqual(['web:alpha']);
-    expect(keys.agentWaiting).toEqual([]);
+    expect(keys).toEqual(['agent-1']);
   });
 
-  test('a queued conversation-Agent chat maps to its agent wait key', () => {
-    const keys = waitKeysForQueuedChats([
-      'web:alpha#agent:agent-1',
-      'web:beta',
-    ]);
-
-    expect(keys.agentWaiting).toEqual(['agent-1']);
-    expect(keys.waiting).toEqual(['web:beta']);
+  test('a workspace JID names no conversation to wait in', () => {
+    expect(
+      waitKeysForQueuedChats(['web:alpha#agent:agent-1', 'web:beta']),
+    ).toEqual(['agent-1']);
   });
 
   test('an empty queue clears nothing and adds nothing', () => {
-    const keys = waitKeysForQueuedChats([]);
-
-    expect(keys.waiting).toEqual([]);
-    expect(keys.agentWaiting).toEqual([]);
+    expect(waitKeysForQueuedChats([])).toEqual([]);
   });
 });

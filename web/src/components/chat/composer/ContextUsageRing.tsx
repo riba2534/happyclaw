@@ -6,11 +6,8 @@ import {
 } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
 import { wsManager } from '../../../api/ws';
-import {
-  contextUsageKey,
-  useChatStore,
-  type ContextUsage,
-} from '../../../stores/chat';
+import { sessionJidOf } from '../../../lib/session-jid';
+import { useChatStore, type ContextUsage } from '../../../stores/chat';
 
 /** 120000 → "120K", 12345 → "12.3K", 1000000 → "1M", 1500000 → "1.5M". */
 export function formatTokenCount(n: number): string {
@@ -131,7 +128,7 @@ export function ConversationContextUsage({
   agentId,
 }: {
   jid: string;
-  agentId: string | null;
+  agentId: string;
 }) {
   return <ContextUsageRing usage={useConversationContextUsage(jid, agentId)} />;
 }
@@ -145,7 +142,7 @@ export function ConversationContextUsageLine({
   agentId,
 }: {
   jid: string;
-  agentId: string | null;
+  agentId: string;
 }) {
   // Shown each time the model sheet opens: what the store already has
   // (turn pushes keep it current) is not fetched again.
@@ -169,10 +166,10 @@ export function ConversationContextUsageLine({
 /** One conversation's usage, loaded when shown and after a reconnect. */
 function useConversationContextUsage(
   jid: string,
-  agentId: string | null,
+  agentId: string,
   { onlyIfMissing = false }: { onlyIfMissing?: boolean } = {},
 ) {
-  const key = contextUsageKey(jid, agentId);
+  const key = sessionJidOf(jid, agentId);
   const usage = useChatStore((s) => s.contextUsage[key]);
   const load = useChatStore((s) => s.loadContextUsage);
   useEffect(() => {

@@ -10,7 +10,6 @@ import {
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { toast } from 'sonner';
 import {
-  contextUsageKey,
   isLiveStream,
   useChatStore,
   type FollowUpMode,
@@ -59,6 +58,7 @@ import {
   Gauge,
   GitCompare,
   Link,
+  MessagesSquare,
   MoreHorizontal,
   Paintbrush,
   PanelRightClose,
@@ -66,6 +66,7 @@ import {
   Server,
   Settings2,
   SlidersHorizontal,
+  SquarePen,
   Terminal,
   TerminalSquare,
   Timer,
@@ -78,6 +79,18 @@ import { sessionJidOf } from '../../lib/session-jid';
 import { useDisplayMode } from '../../hooks/useDisplayMode';
 import { cn } from '@/lib/utils';
 import { Badge } from '@/components/ui/badge';
+import {
+  Empty,
+  EmptyContent,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle,
+} from '@/components/ui/empty';
+import {
+  ResponsiveMenu,
+  type MenuAction,
+} from '@/components/common/ResponsiveMenu';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Spinner } from '@/components/ui/spinner';
@@ -159,6 +172,7 @@ const SessionSidebar = lazySessionSidebar.Component;
 const WorkspaceInteractionModeDialog = lazyInteractionModeDialog.Component;
 import { useFileDropZone } from '../../hooks/useFileDropZone';
 import { useSessionActions } from '../../hooks/useSessionActions';
+import { useSessionRowActions } from '../layout/sidebar/workspace-sessions';
 import { useStableCallback } from '../../hooks/useStableCallback';
 import {
   preloadedComponent,
@@ -170,15 +184,16 @@ import { buildConversationSessions } from '../../lib/session-presentation';
 import { showToast } from '../../utils/toast';
 import {
   getWorkspaceLastAgent,
-  setWorkspaceLastAgent,
+  rememberOpenedSession,
 } from '../../utils/workspaceLastAgent';
+import { resolveWorkspaceEntry } from '../../lib/session-entry';
+import { useNewConversation } from '../../hooks/useNewConversation';
 import { CHANNEL_LABEL } from '../settings/channel-meta';
 import { getAgentProfileDisplayName } from '../../utils/agent-product';
 import { normalizeInteractionMode } from '../../lib/interaction-mode';
 import { normalizeProcessVisibility } from '../../lib/process-visibility';
 
-/** Sentinel value for binding the main conversation (vs. a specific agent) */
-const MAIN_BINDING = '__main__' as const;
+/** The binding dialog opened for the workspace's topic groups (vs. a session). */
 const WORKSPACE_BINDING = '__workspace__' as const;
 
 // New messages arrive over WebSocket; polling is only a safety net. Poll
@@ -201,7 +216,7 @@ interface ChatViewProps {
 }
 
 const IM_BANNER_TEXT =
-  '未配置消息渠道（飞书 / Telegram / Discord / QQ / 微信 / 钉钉 / WhatsApp），消息无法与 HappyClaw 的直接对话互通';
+  '未配置消息渠道（飞书 / Telegram / Discord / QQ / 微信 / 钉钉 / WhatsApp），无法在 IM 中与 HappyClaw 对话';
 
 export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
   const { mode: displayMode, toggle: toggleDisplayMode } = useDisplayMode();
@@ -260,14 +275,13 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
     [],
   );
   const [resetLoading, setResetLoading] = useState(false);
-  const [resetAgentId, setResetAgentId] = useState<string | null>(null);
   // Desktop: visible controls panel height, mounted controls terminal lifecycle.
   const [terminalVisible, setTerminalVisible] = useState(false);
   const [terminalMounted, setTerminalMounted] = useState(false);
   const [terminalHeight, setTerminalHeight] = useState(TERMINAL_DEFAULT_HEIGHT);
   const [headerSheetOpen, setHeaderSheetOpen] = useState(false);
   const [mobileTerminal, setMobileTerminal] = useState(false);
-  // null = dialog closed; MAIN_BINDING = main conversation; other = agent id
+  // null = dialog closed; WORKSPACE_BINDING = topic groups; other = session id
   const [bindingAgentId, setBindingAgentId] = useState<string | null>(null);
   const [renameTarget, setRenameTarget] = useState<{
     agentId: string;
@@ -289,16 +303,6 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
 
   // Individual selectors: avoid re-renders from unrelated store changes (e.g. streaming)
   const group = useChatStore((s) => s.groups[groupJid]);
-  const groupMessages = useChatStore((s) => s.messages[groupJid]);
-  const isWaiting = useChatStore((s) => !!s.waiting[groupJid]);
-  const mainInterrupted = useChatStore(
-    (s) => !!s.streaming[groupJid]?.interrupted,
-  );
-  const hasMoreMessages = useChatStore((s) => !!s.hasMore[groupJid]);
-  const loading = useChatStore((s) => s.loading);
-  const loadMessages = useChatStore((s) => s.loadMessages);
-  const refreshMessages = useChatStore((s) => s.refreshMessages);
-  const sendMessage = useChatStore((s) => s.sendMessage);
   const interruptQuery = useChatStore((s) => s.interruptQuery);
   const resetSession = useChatStore((s) => s.resetSession);
   const handleWsNewMessage = useChatStore((s) => s.handleWsNewMessage);
@@ -307,14 +311,9 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
     (s) => s.updateProcessVisibility,
   );
 
+  const agentsLoaded = useChatStore((s) => s.agents[groupJid] !== undefined);
   const agents = useChatStore((s) => s.agents[groupJid] ?? EMPTY_AGENTS);
-  const activeAgentTab = useChatStore(
-    (s) => s.activeAgentTab[groupJid] ?? null,
-  );
   const setActiveAgentTab = useChatStore((s) => s.setActiveAgentTab);
-  const followUpChatJid = activeAgentTab
-    ? `${groupJid}#agent:${activeAgentTab}`
-    : groupJid;
 
   // Files dropped anywhere on the chat canvas go to the composer; without a
   // page-level target the browser would navigate the tab to the file.
@@ -322,18 +321,16 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
   const { isDragOver, dropZoneProps } = useFileDropZone((dataTransfer) =>
     composerRef.current?.acceptDrop(dataTransfer),
   );
-  const queuedFollowUps = useChatStore(
-    (s) => s.followUps[followUpChatJid] ?? EMPTY_FOLLOW_UPS,
-  );
+
   const loadFollowUps = useChatStore((s) => s.loadFollowUps);
   const handleFollowUpUpdate = useChatStore((s) => s.handleFollowUpUpdate);
   const setContextUsage = useChatStore((s) => s.setContextUsage);
   const actOnFollowUp = useChatStore((s) => s.actOnFollowUp);
 
-  // URL `?agent=` is the source of truth for the active sub-conversation tab.
-  // Refresh, browser back/forward, route restore, and direct deep-links all
-  // converge here. `selectTab` updates the URL only; an effect below mirrors
-  // the URL value into the store for consumers that read it directly.
+  // URL `?agent=` is the source of truth for the open session. Refresh,
+  // browser back/forward, route restore, and direct deep-links all converge
+  // here. `selectTab` updates the URL only; an effect below mirrors the URL
+  // value into the store for consumers that read it directly.
   const [searchParams, setSearchParams] = useSearchParams();
   const urlAgentId = searchParams.get('agent') || null;
   const mobileSessionsVisible = searchParams.get('sessions') === '1';
@@ -350,9 +347,8 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
         },
         { replace: true },
       );
-      setWorkspaceLastAgent(groupJid, id);
     },
-    [groupJid, setSearchParams],
+    [setSearchParams],
   );
   const loadAgents = useChatStore((s) => s.loadAgents);
   // Session ids with an active query, joined: streaming deltas of any session
@@ -366,26 +362,41 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
       .map((a) => a.id)
       .join(','),
   );
-  const { creatingSession, createSession, deleteSession } = useSessionActions();
+  const { createSession } = useSessionActions();
+  const { startNewConversation, creatingSession } = useNewConversation();
   const renameConversation = useChatStore((s) => s.renameConversation);
   const loadAgentMessages = useChatStore((s) => s.loadAgentMessages);
   const hydrateAgentMessages = useChatStore((s) => s.hydrateAgentMessages);
   const refreshAgentMessages = useChatStore((s) => s.refreshAgentMessages);
   const sendAgentMessage = useChatStore((s) => s.sendAgentMessage);
+
+  // The session shown: the URL's, once it is known to be one of this
+  // workspace's conversations.
+  const activeAgent = urlAgentId
+    ? agents.find((a) => a.id === urlAgentId && a.kind === 'conversation')
+    : undefined;
+  const sessionId = activeAgent?.id ?? null;
+  // The open session's JID: its follow-ups, context usage, composer draft,
+  // automations and terminal are keyed by it ('' with none open).
+  const sessionJid = sessionId ? sessionJidOf(groupJid, sessionId) : '';
+  const queuedFollowUps = useChatStore((s) =>
+    sessionJid
+      ? (s.followUps[sessionJid] ?? EMPTY_FOLLOW_UPS)
+      : EMPTY_FOLLOW_UPS,
+  );
   const activeAgentMessages = useChatStore((s) =>
-    activeAgentTab ? s.agentMessages[activeAgentTab] : undefined,
+    sessionId ? s.agentMessages[sessionId] : undefined,
   );
   const activeAgentHasMore = useChatStore((s) =>
-    activeAgentTab ? !!s.agentHasMore[activeAgentTab] : false,
+    sessionId ? !!s.agentHasMore[sessionId] : false,
   );
   const activeAgentWaiting = useChatStore((s) =>
-    activeAgentTab
-      ? !!s.agentWaiting[activeAgentTab] ||
-        isLiveStream(s.agentStreaming[activeAgentTab])
+    sessionId
+      ? !!s.agentWaiting[sessionId] || isLiveStream(s.agentStreaming[sessionId])
       : false,
   );
   const activeAgentInterrupted = useChatStore((s) =>
-    activeAgentTab ? !!s.agentStreaming[activeAgentTab]?.interrupted : false,
+    sessionId ? !!s.agentStreaming[sessionId]?.interrupted : false,
   );
 
   const markChatRead = useChatStore((s) => s.markChatRead);
@@ -395,7 +406,9 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
   // Guests view granted workspaces only: no composer, terminal, uploads,
   // session changes or workspace configuration.
   const readOnly = isGuest;
-  const canUseTerminal = group?.execution_mode !== 'host' && !readOnly;
+  // Each session has its own terminal (Docker workspaces only).
+  const canUseTerminal =
+    group?.execution_mode !== 'host' && !readOnly && !!sessionId;
   const pollRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   const isHome = !!group?.is_home;
@@ -462,26 +475,19 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
     };
   }, [isOwnHome]);
 
-  // 未读目前按 Workspace 聚合：进入主会话或切换到任一 Agent 会话，
-  // 都表示用户已经查看当前 Workspace。
+  // 未读按 Workspace 聚合：打开其中任一会话，都表示用户已经查看当前 Workspace。
   useEffect(() => {
     markChatRead(groupJid);
     const onFocus = () => markChatRead(groupJid);
     window.addEventListener('focus', onFocus);
     return () => window.removeEventListener('focus', onFocus);
-  }, [activeAgentTab, groupJid, markChatRead]);
+  }, [sessionId, groupJid, markChatRead]);
 
-  // Load messages on group select
-  const hasMessages = !!groupMessages;
+  // Poll the open session for new messages — use setTimeout recursion to
+  // avoid request piling up. Pauses when the page is not visible to save
+  // resources.
   useEffect(() => {
-    if (groupJid && !hasMessages) {
-      loadMessages(groupJid);
-    }
-  }, [groupJid, hasMessages, loadMessages]);
-
-  // Poll for new messages — use setTimeout recursion to avoid request piling up
-  // Pauses when the page is not visible to save resources
-  useEffect(() => {
+    if (!sessionId) return;
     let active = true;
 
     const schedulePoll = () => {
@@ -499,7 +505,7 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
       if (!active || polling) return;
       polling = true;
       try {
-        await refreshMessages(groupJid);
+        await refreshAgentMessages(groupJid, sessionId);
       } catch {
         /* handled in store */
       } finally {
@@ -539,10 +545,10 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
     const offDisconnected = wsManager.on('disconnected', reschedule);
 
     document.addEventListener('visibilitychange', handleVisibility);
-    // Returning to a workspace whose messages are cached: catch up at once.
+    // Returning to a session whose messages are cached: catch up at once.
     // Its WS events were ignored while another workspace was open, and the
     // connected cadence would otherwise wait 30s for the first refresh.
-    if (useChatStore.getState().messages[groupJid]) void poll();
+    if (useChatStore.getState().agentMessages[sessionId]) void poll();
     else schedulePoll();
 
     return () => {
@@ -553,7 +559,7 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
       if (pollRef.current) clearTimeout(pollRef.current);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [groupJid]);
+  }, [groupJid, sessionId]);
 
   // WS 重连时恢复正在运行的 agent 状态（独立于 groupJid，避免切换会话时重复调用）
   // wsManager.connect() 已提升到 AppLayout 级别
@@ -574,17 +580,7 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
       // events that were missed during WS disconnection.  Force-refresh
       // bypasses the per-group memoize so reconnect always hits the API.
       loadAgents(groupJid, { force: true });
-      // Refresh conversation agent messages that may have been missed during WS disconnection
-      const state = useChatStore.getState();
-      const currentTab = state.activeAgentTab[groupJid];
-      if (currentTab) {
-        const agentInfo = (state.agents[groupJid] || []).find(
-          (a) => a.id === currentTab,
-        );
-        if (agentInfo?.kind === 'conversation') {
-          refreshAgentMessages(groupJid, currentTab);
-        }
-      }
+      // The open session's messages are caught up by its poll on reconnect.
     });
     return () => {
       unsub();
@@ -592,22 +588,10 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [groupJid]);
 
-  // Derived: active agent info and kind
-  const activeAgent = activeAgentTab
-    ? agents.find((a) => a.id === activeAgentTab)
-    : null;
-  const isConversationTab = activeAgent?.kind === 'conversation';
-  const sessionTab = !!activeAgentTab && isConversationTab;
-  const composerAgentId = sessionTab ? activeAgentTab : null;
   // A session with its own worktree works there: files, the @ picker and
   // uploads follow it.
-  const activeWorktree = sessionTab ? (activeAgent?.worktree ?? null) : null;
-  const worktreeSessionId = activeWorktree ? activeAgentTab : null;
-  // The session automations bind to: a conversation, or the main one.
-  const runtimeSessionJid = sessionJidOf(
-    groupJid,
-    sessionTab ? activeAgentTab : null,
-  );
+  const activeWorktree = activeAgent?.worktree ?? null;
+  const worktreeSessionId = activeWorktree ? sessionId : null;
   const openCreateAutomation = useAutomationsStore((s) => s.openCreateForm);
   useEffect(() => {
     useFileStore.getState().setFileScopeSession(groupJid, worktreeSessionId);
@@ -616,58 +600,58 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
   // not learn about other workspaces' runs.
   const workdirPeers = useWorkdirPeers(
     groupJid,
-    composerAgentId,
+    sessionId,
     !!group && !activeWorktree && !readOnly,
   );
   const showWorkdirNotice =
     workdirPeers.peers.length + workdirPeers.hiddenCount > 0;
   // Memoized so the memoized composer does not re-render with a fresh element.
   const modelSelector = useMemo(
-    () => (
-      <ModelSelector
-        key={composerAgentId ?? 'main'}
-        groupJid={groupJid}
-        agentId={composerAgentId}
-        canChange={canModifyWorkspaceConfig}
-      />
-    ),
-    [groupJid, composerAgentId, canModifyWorkspaceConfig],
+    () =>
+      sessionId ? (
+        <ModelSelector
+          key={sessionId}
+          groupJid={groupJid}
+          agentId={sessionId}
+          canChange={canModifyWorkspaceConfig}
+        />
+      ) : null,
+    [groupJid, sessionId, canModifyWorkspaceConfig],
   );
 
   // The run's phase and pace, shown above the composer while it runs.
   const statusBar = useMemo(
-    () => (
-      <RunStatusBar
-        key={composerAgentId ?? 'main'}
-        groupJid={groupJid}
-        agentId={composerAgentId}
-      />
-    ),
-    [groupJid, composerAgentId],
+    () =>
+      sessionId ? (
+        <RunStatusBar key={sessionId} groupJid={groupJid} agentId={sessionId} />
+      ) : null,
+    [groupJid, sessionId],
   );
   const contextUsage = useMemo(
-    () => <ConversationContextUsage jid={groupJid} agentId={composerAgentId} />,
-    [groupJid, composerAgentId],
+    () =>
+      sessionId ? (
+        <ConversationContextUsage jid={groupJid} agentId={sessionId} />
+      ) : null,
+    [groupJid, sessionId],
   );
   // A phone's composer has no room for the ring: its ⋯ sheet says how full
   // the context is, from the same store entry the ring and the model
   // sheet read (loaded when the sheet opens, kept current by turn pushes).
-  const usageKey = contextUsageKey(groupJid, composerAgentId);
   const phoneContextUsage = useChatStore((s) =>
-    isPhone ? s.contextUsage[usageKey] : undefined,
+    isPhone && sessionJid ? s.contextUsage[sessionJid] : undefined,
   );
   const loadContextUsage = useChatStore((s) => s.loadContextUsage);
   useEffect(() => {
-    if (!headerSheetOpen || readOnly) return;
-    if (useChatStore.getState().contextUsage[usageKey] !== undefined) return;
-    void loadContextUsage(groupJid, composerAgentId);
+    if (!headerSheetOpen || readOnly || !sessionId) return;
+    if (useChatStore.getState().contextUsage[sessionJid] !== undefined) return;
+    void loadContextUsage(groupJid, sessionId);
   }, [
     headerSheetOpen,
     readOnly,
-    usageKey,
+    sessionJid,
     loadContextUsage,
     groupJid,
-    composerAgentId,
+    sessionId,
   ]);
   const isTopicWorkspace =
     group?.conversation_nav_mode === 'vertical_threads' ||
@@ -684,23 +668,19 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
       ),
     [agents, activeQueryIds],
   );
-  const mainConversationLabel = group?.is_my_home ? '直接对话' : '当前对话';
-  const currentContextName =
-    sessionTab && activeAgent ? activeAgent.name : mainConversationLabel;
-  const currentContextWaiting = sessionTab ? activeAgentWaiting : isWaiting;
+  const currentContextName = activeAgent?.name || '新会话';
   // Loaded and nothing to show yet: the conversation opens on its empty
   // state, with the composer centred between heading and starters on a wide
   // screen with a mouse. A touch screen of any size (a phone, a landscape
   // phone, a tablet) keeps it docked above its software keyboard.
-  const shownMessages = sessionTab ? activeAgentMessages : groupMessages;
   const emptyConversation =
-    !currentContextWaiting &&
-    !!shownMessages &&
-    !shownMessages.some(isMessageVisibleInTimeline);
+    !!sessionId &&
+    !activeAgentWaiting &&
+    !!activeAgentMessages &&
+    !activeAgentMessages.some(isMessageVisibleInTimeline);
   const centersEmptyState = useMediaQuery(
     '(min-width: 640px) and (hover: hover) and (pointer: fine)',
   );
-  const composerKey = sessionTab ? followUpChatJid : groupJid;
   // Read-only viewers have no composer to centre.
   const heroCentered = emptyConversation && centersEmptyState && !readOnly;
   const agentProfileLabel = group?.agent_profile_name
@@ -718,81 +698,101 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
   const workspaceDisplayName = group?.is_my_home
     ? agentProfileLabel
     : group?.name;
-  // SDK Tasks 不再创建独立标签页，事件直接显示在主对话流式卡片中
 
-  // Load sub-agents for this group
+  // Load the workspace's sessions
   useEffect(() => {
     loadAgents(groupJid);
   }, [groupJid, loadAgents]);
 
-  // Mirror URL → store so consumers reading activeAgentTab stay in sync.
+  // Mirror the shown session → store so consumers reading activeAgentTab stay
+  // in sync.
   useEffect(() => {
-    setActiveAgentTab(groupJid, urlAgentId);
-  }, [urlAgentId, groupJid, setActiveAgentTab]);
+    setActiveAgentTab(groupJid, sessionId);
+  }, [sessionId, groupJid, setActiveAgentTab]);
 
-  // If URL points to an agent that no longer exists in this workspace
-  // (e.g., deleted while we were on it, or stale deep link), strip the param
-  // and clear the workspace memory so we don't try to restore it again.
+  // Opening a session makes it the one this device returns to, in this
+  // workspace and when the app opens.
+  const groupFolder = group?.folder;
   useEffect(() => {
-    if (!urlAgentId) return;
-    if (agents.length === 0) return;
-    if (agents.some((a) => a.id === urlAgentId)) return;
-    setWorkspaceLastAgent(groupJid, null);
-    setSearchParams(
-      (prev) => {
-        const next = new URLSearchParams(prev);
-        next.delete('agent');
-        return next;
-      },
-      { replace: true },
-    );
-  }, [urlAgentId, agents, groupJid, setSearchParams]);
+    if (sessionId && groupFolder) {
+      rememberOpenedSession({ jid: groupJid, folder: groupFolder }, sessionId);
+    }
+  }, [sessionId, groupJid, groupFolder]);
 
-  // On entering a workspace without ?agent=, restore the last sub-tab the
-  // user was on in this workspace (per-workspace memory, persisted across
-  // PWA restarts via localStorage). Stale entries (agent deleted) get cleaned.
-  // Guarded by `params.groupFolder` so this doesn't fire when the URL is on
-  // the workspace picker (mobile back) but ChatView is still mounted with
-  // a stale `currentGroup`.
+  // Entering the workspace without a session (`?agent=` absent) opens the one
+  // last opened here, else the most recently active one, else (for its owner)
+  // a new one. A session that is gone (deleted while shown, or a stale link)
+  // gives way to the most recent one, but never makes a new one: the empty
+  // state offers that. Guarded by `params.groupFolder` so this doesn't fire
+  // when the URL is on the workspace list (mobile back) but ChatView is still
+  // mounted with a stale `currentGroup`; the narrow window's session list
+  // (`?sessions=1`) picks for itself.
   const params = useParams<{ groupFolder?: string }>();
+  const [entryCreating, setEntryCreating] = useState(false);
+  // The workspace whose last session went away while it was shown: it stays
+  // empty until the user starts a conversation or enters it again.
+  const creationHeldFor = useRef<string | null>(null);
   useEffect(() => {
-    if (!params.groupFolder) return;
-    if (urlAgentId) return;
-    if (agents.length === 0) return;
-    const remembered = getWorkspaceLastAgent(groupJid);
-    if (!remembered) return;
-    if (!agents.some((a) => a.id === remembered)) {
-      setWorkspaceLastAgent(groupJid, null);
+    if (!params.groupFolder || !agentsLoaded || mobileSessionsVisible) return;
+    if (sessionId) {
+      creationHeldFor.current = null;
       return;
     }
-    setSearchParams(
-      (prev) => {
-        const next = new URLSearchParams(prev);
-        next.set('agent', remembered);
-        return next;
-      },
-      { replace: true },
+    // A `?agent=` naming no session: it was deleted, or the link is stale.
+    const stale = !!urlAgentId;
+    if (stale) creationHeldFor.current = groupJid;
+    const entry = resolveWorkspaceEntry(
+      agents,
+      getWorkspaceLastAgent(groupJid),
+      canModifyWorkspaceConfig && creationHeldFor.current !== groupJid,
     );
-  }, [groupJid, urlAgentId, agents, setSearchParams, params.groupFolder]);
+    if (entry.kind === 'open') {
+      selectTab(entry.sessionId);
+      return;
+    }
+    if (entry.kind === 'empty') {
+      if (stale) selectTab(null);
+      return;
+    }
+    // A rerun or a remount while it is being made joins the same creation.
+    setEntryCreating(true);
+    void createSession(groupJid)
+      .then((created) => {
+        if (created && useChatStore.getState().currentGroup === groupJid) {
+          selectTab(created.id);
+        }
+      })
+      .finally(() => setEntryCreating(false));
+  }, [
+    params.groupFolder,
+    agentsLoaded,
+    mobileSessionsVisible,
+    sessionId,
+    urlAgentId,
+    agents,
+    groupJid,
+    canModifyWorkspaceConfig,
+    createSession,
+    selectTab,
+  ]);
 
-  // Load messages for conversation agent tabs.
+  // Load the open session's messages.
   // hydrate-then-calibrate: 先把 IndexedDB 快照灌回 store（避免首屏回退），
   // 再走网络以服务端为准。不要用 useEffect cleanup 的 cancelled flag —— hydrate
   // 的 set() 会改 agentMessages 触发 effect 重跑，cleanup 会把上一轮的 cancelled
   // 置 true，导致网络校准被自己取消。改成 hydrate 完成后直接读 store 判断
-  // 「用户是否仍停留在这个 conversation tab」。
+  // 「用户是否仍停留在这个会话」。
   useEffect(() => {
-    if (!activeAgentTab || !isConversationTab) return;
+    if (!sessionId) return;
     if (activeAgentMessages) return;
-    const agentId = activeAgentTab;
+    const agentId = sessionId;
     void (async () => {
       await hydrateAgentMessages(groupJid, agentId);
       if (useChatStore.getState().activeAgentTab[groupJid] !== agentId) return;
       await loadAgentMessages(groupJid, agentId);
     })();
   }, [
-    activeAgentTab,
-    isConversationTab,
+    sessionId,
     groupJid,
     hydrateAgentMessages,
     loadAgentMessages,
@@ -817,16 +817,18 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
     });
     const unsub5 = wsManager.on('follow_up_update', (data: any) => {
       if (data.chatJid !== groupJid || !Array.isArray(data.items)) return;
-      const targetJid = data.agentId
-        ? `${groupJid}#agent:${data.agentId}`
-        : groupJid;
-      handleFollowUpUpdate(targetJid, data.items, data.transition);
+      if (!data.agentId) return;
+      handleFollowUpUpdate(
+        sessionJidOf(groupJid, data.agentId),
+        data.items,
+        data.transition,
+      );
     });
-    // How full a conversation's context is, after each of its turns; kept
-    // for every conversation here, shown or not.
+    // How full a session's context is, after each of its turns; kept for
+    // every session here, shown or not.
     const unsub6 = wsManager.on('context_usage', (data: any) => {
-      if (data.chatJid !== groupJid) return;
-      setContextUsage(groupJid, data.agentId ?? null, data);
+      if (data.chatJid !== groupJid || !data.agentId) return;
+      setContextUsage(groupJid, data.agentId, data);
     });
     // agent_status 已提升到 AppLayout 全局监听
     return () => {
@@ -838,107 +840,80 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
   }, [groupJid, handleWsNewMessage, handleFollowUpUpdate, setContextUsage]);
 
   useEffect(() => {
-    void loadFollowUps(followUpChatJid);
+    if (!sessionJid) return;
+    void loadFollowUps(sessionJid);
     const unsub = wsManager.on('connected', (data: { reconnect?: boolean }) => {
-      if (data?.reconnect) void loadFollowUps(followUpChatJid);
+      if (data?.reconnect) void loadFollowUps(sessionJid);
     });
     return () => {
       unsub();
     };
-  }, [followUpChatJid, loadFollowUps]);
+  }, [sessionJid, loadFollowUps]);
 
   const [scrollTrigger, setScrollTrigger] = useState(0);
-
-  const handleSend = async (
-    content: string,
-    attachments?: Array<{ data: string; mimeType: string }>,
-    followUpBehavior?: FollowUpMode,
-  ) => {
-    const ok = await sendMessage(
-      groupJid,
-      content,
-      attachments,
-      followUpBehavior,
-    );
-    // 只有发送成功时才触发滚动；失败时保留当前视图位置，避免用户上下文切换。
-    if (ok) setScrollTrigger((n) => n + 1);
-    return ok;
-  };
 
   const handleActiveAgentSend = async (
     content: string,
     attachments?: Array<{ data: string; mimeType: string }>,
     followUpBehavior?: FollowUpMode,
   ) => {
-    if (!activeAgentTab) return false;
+    if (!sessionId) return false;
     const ok = await sendAgentMessage(
       groupJid,
-      activeAgentTab,
+      sessionId,
       content,
       attachments,
       followUpBehavior,
     );
+    // 只有发送成功时才触发滚动；失败时保留当前视图位置，避免用户上下文切换。
     if (ok) setScrollTrigger((value) => value + 1);
     return ok;
-  };
-
-  const handleLoadMore = () => {
-    if (hasMoreMessages && !loading) {
-      loadMessages(groupJid, true);
-    }
   };
 
   // Stable handlers for the memoized transcript and composer: this view also
   // re-renders for dialogs, panels and run status, which must not re-render
   // a long transcript or the composer.
-  const loadMoreMain = useStableCallback(handleLoadMore);
   const loadMoreActiveAgent = useStableCallback(() => {
-    if (activeAgentTab) void loadAgentMessages(groupJid, activeAgentTab, true);
+    if (sessionId) void loadAgentMessages(groupJid, sessionId, true);
   });
-  const sendMain = useStableCallback(handleSend);
   const sendActiveAgent = useStableCallback(handleActiveAgentSend);
-  const stopMain = useStableCallback(() => interruptQuery(groupJid));
   const stopActiveAgent = useStableCallback(() =>
-    interruptQuery(`${groupJid}#agent:${activeAgentTab}`),
+    sessionJid ? interruptQuery(sessionJid) : false,
   );
   const handleFollowUpAction = useStableCallback(
     (item: QueuedFollowUp, action: FollowUpQueueAction, content?: string) =>
-      actOnFollowUp(
-        followUpChatJid,
-        item.id,
-        action,
-        item.delivery_run_id,
-        content,
-      ),
+      actOnFollowUp(sessionJid, item.id, action, item.delivery_run_id, content),
   );
-  const requestResetMain = useStableCallback(() => {
-    setResetAgentId(null);
-    setShowResetConfirm(true);
-  });
   const requestResetActiveAgent = useStableCallback(() => {
-    setResetAgentId(activeAgentTab);
     setShowResetConfirm(true);
   });
 
   const handleResetSession = async () => {
+    if (!sessionId) return;
     setResetLoading(true);
-    const ok = await resetSession(groupJid, resetAgentId ?? undefined);
+    const ok = await resetSession(groupJid, sessionId);
     setResetLoading(false);
     setShowResetConfirm(false);
-    setResetAgentId(null);
     if (!ok) {
       toast.error('清除上下文失败，请稍后重试');
     }
   };
 
-  const handleCreateSession = useCallback(async () => {
-    const agent = await createSession(groupJid);
-    if (agent) selectTab(agent.id);
-  }, [createSession, groupJid, selectTab]);
+  // A new conversation here: the blank session it already has, or a new one.
+  const startConversationHere = useCallback(
+    () => startNewConversation({ target: { jid: groupJid } }),
+    [startNewConversation, groupJid],
+  );
 
-  const handleDeleteSession = useCallback(
-    (id: string) => deleteSession(groupJid, id, setBindingAgentId),
-    [deleteSession, groupJid],
+  // The ⋯ actions of the narrow window's session list, the same as the
+  // sidebar's; their dialogs live here.
+  const sessionMenuFor = useSessionRowActions(
+    { jid: groupJid, can_modify: group?.can_modify },
+    {
+      onBind: (session) => setBindingAgentId(session.id),
+      onRename: (session) =>
+        setRenameTarget({ agentId: session.id, name: session.name }),
+    },
   );
 
   // The sidebar session tree asks for IM binding through the shell store
@@ -1055,12 +1030,13 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
     }
   }, [canUseTerminal, terminalMounted]);
 
-  // Switching groups should not carry terminal UI/session into the next page.
+  // Each session has its own terminal: switching sessions or workspaces does
+  // not carry the terminal UI into the next one.
   useEffect(() => {
     setTerminalVisible(false);
     setTerminalMounted(false);
     setMobileTerminal(false);
-  }, [groupJid]);
+  }, [sessionJid]);
 
   // If current group is host mode, force-close any mounted terminal.
   useEffect(() => {
@@ -1096,37 +1072,32 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
     <SessionSidebar
       key={groupJid}
       sessions={conversationAgents}
-      activeSessionId={activeAgentTab}
+      activeSessionId={sessionId}
       canModify={canModifyWorkspaceConfig}
       isTopicWorkspace={isTopicWorkspace}
       // Same naming as the desktop session tree: the list is titled by its
-      // workspace and the first row is the main conversation.
+      // workspace.
       title={group.is_my_home ? agentProfileLabel : group.name}
-      mainLabel={mainConversationLabel}
-      mainMeta={group.lastMessage || '暂无消息'}
       onClose={mobile ? onBack : undefined}
       onSelectSession={(id) => {
         selectTab(id);
       }}
-      onCreateSession={() => void handleCreateSession()}
+      onCreateSession={() => void startConversationHere()}
       isCreatingSession={creatingSession}
-      onRenameSession={(id, currentName) => {
-        setRenameTarget({ agentId: id, name: currentName });
-      }}
-      onDeleteSession={handleDeleteSession}
-      onBindSession={(id) => {
-        setBindingAgentId(id ?? MAIN_BINDING);
-      }}
+      menuFor={sessionMenuFor}
     />
   );
 
-  const handleContextPanelToggle = () => {
+  // Desktop docks the context panel beside the chat; narrower screens open
+  // it as a sheet.
+  const openContextPanel = (toggle = false) => {
     if (window.matchMedia('(min-width: 1024px)').matches) {
-      setPanelOpen((open) => !open);
+      setPanelOpen((open) => (toggle ? !open : true));
     } else {
       setMobileContextOpen(true);
     }
   };
+  const handleContextPanelToggle = () => openContextPanel(true);
 
   const contextNavItems: {
     key: string;
@@ -1276,7 +1247,7 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
         {contextPanelView === 'env' && canModifyWorkspaceConfig ? (
           <ContainerEnvPanel groupJid={groupJid} />
         ) : contextPanelView === 'review' && canReview ? (
-          <ReviewPanel groupJid={groupJid} agentId={composerAgentId} />
+          <ReviewPanel groupJid={groupJid} agentId={sessionId} />
         ) : (
           <FilePanel groupJid={groupJid} />
         )}
@@ -1299,22 +1270,25 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
     !!imStatus &&
     !Object.values(imStatus).some(Boolean) &&
     !imBannerDismissed;
-  // This conversation's actions, for the composer and the phone's ⋯ sheet.
-  const resetCurrent = canModifyWorkspaceConfig
-    ? sessionTab
-      ? requestResetActiveAgent
-      : requestResetMain
-    : undefined;
-  const toggleTerminal =
-    canUseTerminal && !sessionTab ? handleTerminalToggle : undefined;
-  // The phone header's ⋯ sheet: workspace settings, then this conversation.
+  // This session's actions, for the composer and the phone's ⋯ sheet.
+  const resetCurrent =
+    canModifyWorkspaceConfig && sessionId ? requestResetActiveAgent : undefined;
+  const toggleTerminal = canUseTerminal ? handleTerminalToggle : undefined;
+  const newConversationAction = {
+    label: '新对话',
+    icon: SquarePen,
+    onSelect: () => void startConversationHere(),
+  };
+  const openWorkspaceSettings = () => setShowInteractionModeDialog(true);
+  // The phone header's ⋯ sheet: the workspace, then this session.
   const headerActions: SheetAction[][] = [
     canModifyWorkspaceConfig
       ? [
+          newConversationAction,
           {
             label: '工作区设置',
             icon: Settings2,
-            onSelect: () => setShowInteractionModeDialog(true),
+            onSelect: openWorkspaceSettings,
           },
           {
             label: '渠道绑定',
@@ -1324,7 +1298,7 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
         ]
       : [],
     [
-      ...(canModifyWorkspaceConfig
+      ...(canModifyWorkspaceConfig && sessionId
         ? [
             {
               label: '从此会话创建自动化…',
@@ -1332,7 +1306,7 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
               onSelect: () =>
                 openCreateAutomation({
                   workspaceJid: groupJid,
-                  targetSessionJid: runtimeSessionJid,
+                  targetSessionJid: sessionJid,
                 }),
             },
           ]
@@ -1367,7 +1341,7 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
   };
   const contextFigures = contextUsageFigures(phoneContextUsage);
   // The model sheet lives in the composer, which read-only viewers lack.
-  if (isPhone && !readOnly) {
+  if (isPhone && !readOnly && sessionId) {
     headerActions.push([
       { label: '切换模型', icon: Cpu, onSelect: openModelSheet },
       ...(contextFigures
@@ -1382,6 +1356,23 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
     ]);
   }
   const hasHeaderActions = headerActions.some((group) => group.length > 0);
+  // The workspace name in the header opens the workspace's menu.
+  const workspaceMenu: MenuAction[][] = [
+    canModifyWorkspaceConfig ? [newConversationAction] : [],
+    [
+      {
+        label: '文件',
+        icon: Folder,
+        onSelect: () => {
+          setContextPanelView('files');
+          openContextPanel();
+        },
+      },
+      ...(canModifyWorkspaceConfig
+        ? [{ label: '设置', icon: Settings2, onSelect: openWorkspaceSettings }]
+        : []),
+    ],
+  ];
   // A phone's header controls sit on a translucent round capsule.
   const phoneCapsule =
     'phone:rounded-full phone:border phone:border-surface-border phone:bg-surface-raised/85';
@@ -1425,24 +1416,29 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
           {headerLeft}
           <div className="flex min-w-0 flex-1 items-center gap-2">
             <nav
-              aria-label="当前对话"
+              aria-label="工作区与会话"
               className="flex min-w-0 items-center gap-1 text-body phone:absolute phone:inset-x-[5.75rem] phone:justify-center phone:text-base phone:leading-[22px] phone:font-semibold"
             >
-              {activeAgentTab && isConversationTab ? (
-                <button
-                  type="button"
-                  onClick={() => selectTab(null)}
-                  className="hidden max-w-[16rem] shrink-0 cursor-pointer truncate rounded-md px-1.5 py-0.5 font-medium text-muted-foreground transition-colors hover:bg-surface-hover hover:text-foreground sm:block"
-                  title={`返回${mainConversationLabel}`}
-                >
-                  {workspaceDisplayName}
-                </button>
-              ) : (
-                <h2 className="truncate px-1.5 font-medium text-foreground phone:font-semibold">
-                  {workspaceDisplayName}
-                </h2>
-              )}
-              {activeAgentTab && isConversationTab && (
+              <ResponsiveMenu
+                title={workspaceDisplayName || '工作区'}
+                align="start"
+                groups={workspaceMenu}
+                trigger={
+                  <button
+                    type="button"
+                    aria-label={`${workspaceDisplayName}的工作区菜单`}
+                    className={cn(
+                      'max-w-[16rem] shrink-0 cursor-pointer truncate rounded-md px-1.5 py-0.5 font-medium transition-colors hover:bg-surface-hover hover:text-foreground aria-expanded:bg-surface-hover',
+                      sessionId
+                        ? 'hidden text-muted-foreground sm:block'
+                        : 'text-foreground',
+                    )}
+                  >
+                    {workspaceDisplayName}
+                  </button>
+                }
+              />
+              {sessionId && (
                 <>
                   <ChevronRight
                     className="hidden size-3.5 shrink-0 text-faint-foreground sm:block"
@@ -1462,10 +1458,12 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
             </nav>
             <div className="hidden min-w-0 items-center gap-1.5 overflow-hidden md:flex">
               {readOnly && <Badge variant="neutral">只读</Badge>}
-              <SessionAutomationBadge
-                sessionJid={runtimeSessionJid}
-                generatedBy={sessionTab ? activeAgent?.automation_id : null}
-              />
+              {sessionId && (
+                <SessionAutomationBadge
+                  sessionJid={sessionJid}
+                  generatedBy={activeAgent?.automation_id}
+                />
+              )}
               {group.execution_mode && (
                 <Badge variant="outline">
                   {group.execution_mode === 'host' ? '宿主机' : 'Docker'}
@@ -1508,7 +1506,7 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
                 )}
             </div>
           </div>
-          {currentContextWaiting && (
+          {activeAgentWaiting && (
             <span
               data-testid="chat-run-indicator"
               title="运行中"
@@ -1590,7 +1588,7 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
                   type="button"
                   className="min-w-0 flex-1 cursor-pointer truncate text-left outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
                 >
-                  未配置消息渠道，消息无法与直接对话互通
+                  未配置消息渠道，无法在 IM 中对话
                 </button>
               </InfoTip>
             ) : (
@@ -1624,7 +1622,7 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
           />
         )}
 
-        {/* Main conversation canvas */}
+        {/* The open session's conversation */}
         <div className="flex-1 flex overflow-hidden min-h-0">
           {/* Messages Area */}
           {/* The phone's composer dock floats over this area and publishes
@@ -1644,7 +1642,49 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
                 </div>
               </div>
             )}
-            {emptyConversation ? (
+            {!sessionId ? (
+              // No session open: the workspace has none (a guest sees that,
+              // its owner can start one), or one is being chosen or made.
+              agentsLoaded &&
+              conversationAgents.length === 0 &&
+              !entryCreating ? (
+                <Empty
+                  data-hc-no-session
+                  className="min-h-0 flex-1 pt-(--chat-top-inset,0px)"
+                >
+                  <EmptyHeader>
+                    <EmptyMedia variant="icon">
+                      <MessagesSquare />
+                    </EmptyMedia>
+                    <EmptyTitle>暂无会话</EmptyTitle>
+                    {canModifyWorkspaceConfig && (
+                      <EmptyDescription>
+                        开始一个新对话，与 {agentProfileLabel} 协作。
+                      </EmptyDescription>
+                    )}
+                  </EmptyHeader>
+                  {canModifyWorkspaceConfig && (
+                    <EmptyContent>
+                      <Button
+                        onClick={() => void startConversationHere()}
+                        disabled={creatingSession}
+                      >
+                        <SquarePen />
+                        新对话
+                      </Button>
+                    </EmptyContent>
+                  )}
+                </Empty>
+              ) : (
+                <div
+                  role="status"
+                  aria-label="正在打开会话"
+                  className="flex min-h-0 flex-1 items-center justify-center"
+                >
+                  <Spinner className="size-5 text-muted-foreground" />
+                </div>
+              )
+            ) : emptyConversation ? (
               // An empty conversation opens on who answers and where to
               // start; on a wide screen the composer sits between them.
               <div
@@ -1665,7 +1705,7 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
                   )}
                 >
                   <EmptyConversationHeading
-                    sessionLabel={sessionTab ? currentContextName : undefined}
+                    sessionLabel={activeAgent?.name || undefined}
                     {...agentLook}
                   />
                   {!heroCentered && !readOnly && (
@@ -1673,9 +1713,9 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
                   )}
                 </div>
               </div>
-            ) : sessionTab ? (
+            ) : (
               <MessageList
-                key={`conv-${activeAgentTab}`}
+                key={`conv-${sessionId}`}
                 messages={activeAgentMessages || EMPTY_MESSAGES}
                 // Not loaded yet (first visit, or evicted from the message
                 // cache).
@@ -1684,30 +1724,17 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
                 onLoadMore={loadMoreActiveAgent}
                 scrollTrigger={scrollTrigger}
                 groupJid={groupJid}
-                isWaiting={currentContextWaiting}
-                agentId={activeAgentTab}
-                {...agentLook}
-                interactionMode={interactionMode}
-              />
-            ) : (
-              <MessageList
-                key={`main-${groupJid}`}
-                messages={groupMessages || EMPTY_MESSAGES}
-                loading={loading || groupMessages === undefined}
-                hasMore={hasMoreMessages}
-                onLoadMore={loadMoreMain}
-                scrollTrigger={scrollTrigger}
-                groupJid={groupJid}
-                isWaiting={isWaiting}
+                isWaiting={activeAgentWaiting}
+                agentId={sessionId}
                 {...agentLook}
                 interactionMode={interactionMode}
               />
             )}
             {/* One place in the tree for both layouts, so docking after the
                 first message keeps the composer (and what it holds). */}
-            {readOnly ? (
+            {!sessionId ? null : readOnly ? (
               <ReadOnlyComposer
-                key={composerKey}
+                key={sessionJid}
                 notice={GUEST_READ_ONLY_NOTICE}
                 queuedFollowUps={queuedFollowUps}
               />
@@ -1715,23 +1742,15 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
               <MessageInput
                 // One instance per conversation: draft and pending
                 // attachments never carry over to another session.
-                key={composerKey}
+                key={sessionJid}
                 ref={composerRef}
                 layout={heroCentered ? 'centered' : 'docked'}
-                draftKey={composerKey}
+                draftKey={sessionJid}
                 placeholder={`向 ${agentProfileLabel} 发送消息…`}
-                onSend={sessionTab ? sendActiveAgent : sendMain}
+                onSend={sendActiveAgent}
                 groupJid={groupJid}
-                isRunning={currentContextWaiting}
-                onStop={
-                  sessionTab
-                    ? activeAgentInterrupted
-                      ? undefined
-                      : stopActiveAgent
-                    : mainInterrupted
-                      ? undefined
-                      : stopMain
-                }
+                isRunning={activeAgentWaiting}
+                onStop={activeAgentInterrupted ? undefined : stopActiveAgent}
                 queuedFollowUps={queuedFollowUps}
                 onFollowUpAction={handleFollowUpAction}
                 onResetSession={resetCurrent}
@@ -1776,7 +1795,7 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
             >
               <Suspense fallback={null}>
                 <TerminalPanel
-                  groupJid={groupJid}
+                  chatJid={sessionJid}
                   visible={terminalVisible}
                   onHide={() => setTerminalVisible(false)}
                   onDelete={() => {
@@ -1882,7 +1901,7 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
             <div className="min-h-0 flex-1 overflow-hidden">
               <Suspense fallback={null}>
                 <TerminalPanel
-                  groupJid={groupJid}
+                  chatJid={sessionJid}
                   visible
                   onHide={() => setMobileTerminal(false)}
                   onDelete={() => setMobileTerminal(false)}
@@ -1899,11 +1918,7 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
         onClose={() => setShowResetConfirm(false)}
         onConfirm={handleResetSession}
         title="清除上下文"
-        message={
-          resetAgentId
-            ? '将清除该子对话的 Claude 会话上下文，下次发送消息时将开始全新会话。聊天记录不受影响。'
-            : '将清除当前对话的 Claude 上下文并停止运行中的智能体进程，下次发送消息时将开始全新会话。聊天记录和其他对话不受影响。'
-        }
+        message="将清除这个会话的 Claude 上下文并停止它运行中的智能体进程，下次发送消息时将开始全新会话。聊天记录和其他会话不受影响。"
         confirmText="清除"
         confirmVariant="danger"
         loading={resetLoading}
@@ -1914,21 +1929,8 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
         <ImBindingDialog
           open={!!bindingAgentId}
           groupJid={groupJid}
-          agentId={
-            bindingAgentId === MAIN_BINDING ||
-            bindingAgentId === WORKSPACE_BINDING
-              ? null
-              : bindingAgentId
-          }
-          targetMode={
-            bindingAgentId === WORKSPACE_BINDING ? 'workspace' : 'session'
-          }
-          agent={
-            bindingAgentId !== MAIN_BINDING &&
-            bindingAgentId !== WORKSPACE_BINDING
-              ? agents.find((a) => a.id === bindingAgentId)
-              : undefined
-          }
+          agentId={bindingAgentId === WORKSPACE_BINDING ? null : bindingAgentId}
+          agent={agents.find((a) => a.id === bindingAgentId)}
           onClose={() => {
             setBindingAgentId(null);
           }}

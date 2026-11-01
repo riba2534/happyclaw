@@ -1,6 +1,11 @@
 import { PhoneBarButton } from '../components/layout/PhonePageHeader';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import {
+  useLocation,
+  useNavigate,
+  useParams,
+  useSearchParams,
+} from 'react-router-dom';
 import { FolderPlus, Plus, SquarePen } from 'lucide-react';
 import { useChatStore } from '../stores/chat';
 import { useAuthStore, useIsGuest } from '../stores/auth';
@@ -37,7 +42,14 @@ import { withBasePath } from '../utils/url';
 import { useSwipeBack } from '../hooks/useSwipeBack';
 import { useClearWorkspace } from '../hooks/useClearWorkspace';
 import type { GroupEntry } from '../utils/group-utils';
-import { hasAppEntryBefore } from '../lib/chat-navigation';
+import {
+  hasAppEntryBefore,
+  openWorkspaceSession,
+} from '../lib/chat-navigation';
+import { useMediaQuery } from '../hooks/useMediaQuery';
+import { resolveLanding } from '../lib/session-entry';
+import { getLastOpenedSession } from '../utils/workspaceLastAgent';
+import { Spinner } from '@/components/ui/spinner';
 import { cn } from '@/lib/utils';
 import { useDeleteWorkspace } from '../hooks/useDeleteWorkspace';
 import { useWorkspaceTree } from '../hooks/useWorkspaceTree';
@@ -54,6 +66,9 @@ import {
 } from '@/components/ui/empty';
 
 const BugReportDialog = lazyBugReportDialog.Component;
+
+/** One landing at a time (React runs a mount effect twice in development). */
+let landingInFlight = false;
 
 export function ChatPage() {
   const { groupFolder } = useParams<{ groupFolder?: string }>();
@@ -129,8 +144,7 @@ export function ChatPage() {
   const revealOnPhoneHome = useShellStore((s) => s.revealOnPhoneHome);
   const hasAnyGroup = agentSections.length > 0;
 
-  // Sync URL param to store selection. No auto-redirect to home container —
-  // users land on the welcome screen and choose a container manually.
+  // Sync URL param to store selection.
   useEffect(() => {
     if (!groupFolder) return;
     if (routeGroupJid && currentGroup !== routeGroupJid) {
@@ -171,7 +185,63 @@ export function ChatPage() {
     navigate('/chat', { replace: true });
   }, [phoneSessionsLink, groupFolder, navigate, revealOnPhoneHome]);
 
-  const activeGroupJid = groupFolder ? routeGroupJid : currentGroup;
+  // Opening the app (`/chat`) on a desktop lands in a session: the one last
+  // opened on this device while it exists, else Home's most recently active,
+  // else a new one in Home. Narrow windows and phones show their lists.
+  const isDesktop = useMediaQuery('(min-width: 1024px)');
+  const landing = !groupFolder && isDesktop;
+  // Each visit of `/chat` lands once (it may end on the welcome screen).
+  const locationKey = useLocation().key;
+  const [landedAt, setLandedAt] = useState<string | null>(null);
+  const landed = landedAt === locationKey;
+  useEffect(() => {
+    if (!landing || !hasGroups || landingInFlight || landed) return;
+    landingInFlight = true;
+    void (async () => {
+      try {
+        const state = useChatStore.getState();
+        const last = getLastOpenedSession();
+        const lastJid = last
+          ? findRouteGroupJid(state.groups, last.folder)
+          : null;
+        const homeJid =
+          Object.entries(state.groups).find(([, g]) => g.is_my_home)?.[0] ??
+          null;
+        await Promise.all(
+          [...new Set([lastJid, homeJid])].flatMap((jid) =>
+            jid ? [state.loadAgents(jid)] : [],
+          ),
+        );
+        const loaded = useChatStore.getState();
+        const target = resolveLanding({
+          last:
+            last && lastJid
+              ? { jid: lastJid, sessionId: last.sessionId }
+              : null,
+          homeJid,
+          sessionsOf: (jid) => loaded.agents[jid] ?? [],
+        });
+        if (target.kind === 'open') {
+          openWorkspaceSession(
+            navigate,
+            { jid: target.jid, folder: loaded.groups[target.jid].folder },
+            target.sessionId,
+            { replace: true },
+          );
+        } else if (target.kind === 'create') {
+          await startNewConversation({
+            target: { jid: target.jid },
+            replace: true,
+          });
+        }
+      } finally {
+        landingInFlight = false;
+        setLandedAt(locationKey);
+      }
+    })();
+  }, [landing, hasGroups, landed, locationKey, navigate, startNewConversation]);
+
+  const activeGroupJid = groupFolder ? routeGroupJid : null;
   const chatViewRef = useRef<HTMLDivElement>(null);
   const phoneHomeRef = useRef<HTMLDivElement>(null);
 
@@ -412,6 +482,14 @@ export function ChatPage() {
           className={`${groupFolder ? 'flex-1 min-w-0 h-full overflow-hidden' : 'hidden lg:block flex-1 min-w-0 h-full overflow-hidden'}`}
         >
           <ChatView groupJid={activeGroupJid} onBack={handleBackToList} />
+        </div>
+      ) : landing && (!landed || loading) ? (
+        <div
+          role="status"
+          aria-label="正在打开会话"
+          className="hidden flex-1 items-center justify-center lg:flex"
+        >
+          <Spinner className="size-5 text-muted-foreground" />
         </div>
       ) : (
         <Empty className="hidden flex-1 lg:flex">

@@ -94,11 +94,14 @@ function page(jid: string): Message[] {
   ];
 }
 
-/** Open the main conversation of each workspace in turn, as ChatView does. */
-function viewMain(jids: string[]) {
+/** Each workspace's session the tests open. */
+const sid = (jid: string) => `${jid.slice('web:'.length)}-s`;
+
+/** Open a session of each workspace in turn, as ChatView does. */
+function viewEach(jids: string[]) {
   for (const jid of jids) {
     useChatStore.setState({ currentGroup: jid });
-    useChatStore.getState().setActiveAgentTab(jid, null);
+    useChatStore.getState().setActiveAgentTab(jid, sid(jid));
   }
 }
 
@@ -110,44 +113,50 @@ describe('conversation message retention', () => {
     vi.resetModules();
     ({ useChatStore } = await import('../web/src/stores/chat'));
     useChatStore.setState({
-      messages: Object.fromEntries(workspaces.map((jid) => [jid, page(jid)])),
-      hasMore: Object.fromEntries(workspaces.map((jid) => [jid, true])),
+      agentMessages: Object.fromEntries(
+        workspaces.map((jid) => [sid(jid), page(`${jid}#agent:${sid(jid)}`)]),
+      ),
+      agentHasMore: Object.fromEntries(
+        workspaces.map((jid) => [sid(jid), true]),
+      ),
     });
   });
 
   it('drops the least recently viewed conversations beyond twenty', () => {
-    viewMain(workspaces);
-    const { messages, hasMore } = useChatStore.getState();
+    viewEach(workspaces);
+    const { agentMessages, agentHasMore } = useChatStore.getState();
     for (const jid of workspaces.slice(0, 5)) {
-      expect(messages[jid]).toBeUndefined();
-      expect(hasMore[jid]).toBeUndefined();
+      expect(agentMessages[sid(jid)]).toBeUndefined();
+      expect(agentHasMore[sid(jid)]).toBeUndefined();
     }
-    for (const jid of workspaces.slice(5)) expect(messages[jid]).toBeDefined();
+    for (const jid of workspaces.slice(5)) {
+      expect(agentMessages[sid(jid)]).toBeDefined();
+    }
   });
 
   it('keeps conversations that are running, awaiting a reply or reviewed again', () => {
     useChatStore.setState({
-      waiting: { 'web:w0': true },
+      agentWaiting: { [sid('web:w0')]: true },
       activeRuns: {
-        'web:w1': {
-          chatJid: 'web:w1',
+        'web:w1#agent:w1-s': {
+          chatJid: 'web:w1#agent:w1-s',
           runId: 'run-1',
           startedAt: '2026-01-02T10:00:00.000Z',
           phase: 'running',
         },
       },
     } as never);
-    viewMain(workspaces.slice(0, 20));
-    viewMain(['web:w2']);
-    viewMain(workspaces.slice(20));
-    const { messages } = useChatStore.getState();
-    expect(messages['web:w0']).toBeDefined();
-    expect(messages['web:w1']).toBeDefined();
-    expect(messages['web:w2']).toBeDefined();
+    viewEach(workspaces.slice(0, 20));
+    viewEach(['web:w2']);
+    viewEach(workspaces.slice(20));
+    const { agentMessages } = useChatStore.getState();
+    expect(agentMessages[sid('web:w0')]).toBeDefined();
+    expect(agentMessages[sid('web:w1')]).toBeDefined();
+    expect(agentMessages[sid('web:w2')]).toBeDefined();
     for (const jid of ['web:w3', 'web:w4', 'web:w5', 'web:w6', 'web:w7']) {
-      expect(messages[jid]).toBeUndefined();
+      expect(agentMessages[sid(jid)]).toBeUndefined();
     }
-    expect(messages['web:w8']).toBeDefined();
+    expect(agentMessages[sid('web:w8')]).toBeDefined();
   });
 
   it('keeps every session of the open workspace and drops them after leaving it', () => {
@@ -163,7 +172,7 @@ describe('conversation message retention', () => {
     }
     expect(Object.keys(useChatStore.getState().agentMessages)).toHaveLength(25);
 
-    viewMain(['web:w0']);
+    viewEach(['web:w0']);
     const { agentMessages } = useChatStore.getState();
     expect(Object.keys(agentMessages)).toHaveLength(19);
     expect(agentMessages.s0).toBeUndefined();

@@ -1,14 +1,8 @@
 import type { Message } from '../../../stores/chat';
 import { withoutUploadedFiles } from '../composer-helpers';
+import { sessionIdOf } from '../../../lib/session-jid';
 
-const AGENT_MARKER = '#agent:';
 const SENT_HISTORY_LIMIT = 50;
-
-/** The session id inside a conversation draft key, if it names one. */
-function sessionIdOf(draftKey: string): string | null {
-  const index = draftKey.indexOf(AGENT_MARKER);
-  return index < 0 ? null : draftKey.slice(index + AGENT_MARKER.length);
-}
 
 /**
  * What this user sent in a conversation, newest first, for ↑ recall: their
@@ -16,17 +10,12 @@ function sessionIdOf(draftKey: string): string | null {
  * without the uploaded-file announcement (the files are not attached again).
  */
 export function sentMessageHistory(
-  state: {
-    messages: Record<string, Message[] | undefined>;
-    agentMessages: Record<string, Message[] | undefined>;
-  },
+  state: { agentMessages: Record<string, Message[] | undefined> },
   draftKey: string,
   userId: string | undefined,
 ): string[] {
   const sessionId = sessionIdOf(draftKey);
-  const messages =
-    (sessionId ? state.agentMessages[sessionId] : state.messages[draftKey]) ??
-    [];
+  const messages = (sessionId && state.agentMessages[sessionId]) || [];
   const history: string[] = [];
   for (let i = messages.length - 1; i >= 0; i--) {
     const message = messages[i];

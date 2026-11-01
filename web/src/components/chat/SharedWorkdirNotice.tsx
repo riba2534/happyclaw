@@ -8,7 +8,7 @@ import { cn } from '@/lib/utils';
 export interface WorkdirPeer {
   workspace_jid: string;
   workspace_name: string;
-  kind: 'main' | 'session' | 'task';
+  kind: 'session' | 'task';
   session_id: string | null;
   session_name: string | null;
 }
@@ -34,19 +34,22 @@ export function useWorkdirPeers(
   enabled: boolean,
 ): WorkdirPeersState {
   const [state, setState] = useState<WorkdirPeersState>(NO_PEERS);
-  const scope = `${groupJid}\n${agentId ?? ''}\n${enabled}`;
+  const on = enabled && !!agentId;
+  const scope = `${groupJid}\n${agentId ?? ''}\n${on}`;
   const scopeRef = useRef(scope);
   scopeRef.current = scope;
 
   const load = useCallback(async () => {
+    if (!agentId) return;
     const requested = scope;
-    const query = agentId ? `?agentId=${encodeURIComponent(agentId)}` : '';
     let next = NO_PEERS;
     try {
       const data = await api.get<{
         peers: WorkdirPeer[];
         hidden_count: number;
-      }>(`/api/groups/${encodeURIComponent(groupJid)}/workdir/peers${query}`);
+      }>(
+        `/api/groups/${encodeURIComponent(groupJid)}/workdir/peers?agentId=${encodeURIComponent(agentId)}`,
+      );
       next = { peers: data.peers, hiddenCount: data.hidden_count };
     } catch {
       // A failed check shows nothing rather than a stale warning.
@@ -59,20 +62,18 @@ export function useWorkdirPeers(
   );
   useEffect(() => setState(NO_PEERS), [scope]);
   useEffect(() => {
-    if (enabled) void load();
-  }, [enabled, load, runKeys]);
-  useVisibleInterval(load, FALLBACK_POLL_MS, enabled);
+    if (on) void load();
+  }, [on, load, runKeys]);
+  useVisibleInterval(load, FALLBACK_POLL_MS, on);
 
   return state;
 }
 
 function describePeer(peer: WorkdirPeer, groupJid: string): string {
   const conversation =
-    peer.kind === 'main'
-      ? '主会话'
-      : peer.kind === 'task'
-        ? '自动化'
-        : `会话「${peer.session_name || '新会话'}」`;
+    peer.kind === 'task'
+      ? '自动化'
+      : `会话「${peer.session_name || '新会话'}」`;
   return peer.workspace_jid === groupJid
     ? conversation
     : `工作区「${peer.workspace_name}」的${conversation}`;

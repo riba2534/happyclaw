@@ -134,10 +134,10 @@ export function AgentGovernanceSection({
                       <div className="space-y-0.5">
                         {workspace.runtime_sessions.map((session) => (
                           <div
-                            key={`${workspace.jid}:${session.runtime_agent_id || 'main'}`}
+                            key={`${workspace.jid}:${session.runtime_agent_id}`}
                             className="truncate font-mono text-micro text-muted-foreground"
                           >
-                            {session.runtime_agent_id || 'main'} ·{' '}
+                            {session.runtime_agent_id} ·{' '}
                             {session.sdk_session_id || '-'}
                           </div>
                         ))}
@@ -235,7 +235,7 @@ export function AgentGovernanceSection({
                       <span>
                         {mount.session_id
                           ? `session ${mount.session_id}`
-                          : 'main'}
+                          : 'workspace'}
                       </span>
                       <span>{mount.routing_mode}</span>
                       <span>{mount.reply_policy}</span>

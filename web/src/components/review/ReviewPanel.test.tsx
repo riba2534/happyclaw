@@ -501,7 +501,10 @@ describe('ReviewPanel', () => {
     // Starting a run, or a run of another conversation, never refetches.
     act(() =>
       useChatStore.setState({
-        activeRuns: { [run.chatJid]: run, [GROUP]: { ...run, chatJid: GROUP } },
+        activeRuns: {
+          [run.chatJid]: run,
+          [`${GROUP}#agent:s2`]: { ...run, chatJid: `${GROUP}#agent:s2` },
+        },
       }),
     );
     act(() => useChatStore.setState({ activeRuns: { [run.chatJid]: run } }));
@@ -520,19 +523,19 @@ describe('ReviewPanel', () => {
     expect(view.textContent).toContain('+40');
   });
 
-  test('refetches the main session on its own run end', async () => {
+  test('the workspace checkout, with no session open, follows no run', async () => {
     respond((url) => (url.pathname === STATUS_URL ? okStatus() : undefined));
     await render(null);
     const run = {
-      chatJid: GROUP,
-      runId: 'run-main',
+      chatJid: `${GROUP}#agent:s1`,
+      runId: 'run-1',
       startedAt: '2026-10-29T00:00:00.000Z',
       phase: 'running' as const,
     };
-    act(() => useChatStore.setState({ activeRuns: { [GROUP]: run } }));
+    act(() => useChatStore.setState({ activeRuns: { [run.chatJid]: run } }));
     act(() => useChatStore.setState({ activeRuns: {} }));
     await flush();
-    expect(calls(STATUS_URL)).toHaveLength(2);
+    expect(calls(STATUS_URL)).toHaveLength(1);
   });
 
   test('ignores a late response for the previous session', async () => {

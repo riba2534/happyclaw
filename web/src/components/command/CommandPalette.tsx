@@ -33,7 +33,10 @@ import {
   buildCommandGroups,
   type CommandAction,
 } from '../../lib/command-items';
-import { openWorkspaceSession } from '../../lib/chat-navigation';
+import {
+  enterWorkspace,
+  openWorkspaceSession,
+} from '../../lib/chat-navigation';
 
 const EMPTY_QUERY_LIMIT = 12;
 const SEARCH_LIMIT = 30;
@@ -60,10 +63,12 @@ export function CommandPalette({
   const currentSession = useMemo(() => {
     if (!location.pathname.startsWith('/chat') || !currentGroup) return null;
     const agentId = new URLSearchParams(location.search).get('agent');
-    return {
-      workspaceJid: currentGroup,
-      sessionJid: sessionJidOf(currentGroup, agentId),
-    };
+    return agentId
+      ? {
+          workspaceJid: currentGroup,
+          sessionJid: sessionJidOf(currentGroup, agentId),
+        }
+      : null;
   }, [location.pathname, location.search, currentGroup]);
   const loadAgents = useChatStore((s) => s.loadAgents);
   const toggleSidebar = useShellStore((s) => s.toggleSidebar);
@@ -168,6 +173,9 @@ export function CommandPalette({
     switch (action.type) {
       case 'navigate':
         navigate(action.to);
+        break;
+      case 'openWorkspace':
+        enterWorkspace(navigate, { jid: action.jid, folder: action.folder });
         break;
       case 'openSession':
         openWorkspaceSession(

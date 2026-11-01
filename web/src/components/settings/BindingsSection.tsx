@@ -67,7 +67,18 @@ export function BindingsSection() {
     useState<AvailableImGroup | null>(null);
   const [deleteGroup, setDeleteGroup] = useState<AvailableImGroup | null>(null);
   const [teamGroup, setTeamGroup] = useState<AvailableImGroup | null>(null);
-  const teamWorkspaceJid = teamGroup && teamModeWorkspaceOf(teamGroup);
+  // A session's workspace, from the binding targets (every session of every
+  // workspace): what team mode on a group bound to it turns on in.
+  const workspaceOfSession = useMemo(() => {
+    const bySession = new Map(
+      targets
+        .filter((target) => target.type === 'session' && target.sessionId)
+        .map((target) => [target.sessionId!, target.groupJid]),
+    );
+    return (sessionId: string) => bySession.get(sessionId) ?? null;
+  }, [targets]);
+  const teamWorkspaceJid =
+    teamGroup && teamModeWorkspaceOf(teamGroup, workspaceOfSession);
 
   const channels: { key: ChannelFilter; label: string; count: number }[] =
     useMemo(() => {
@@ -131,18 +142,6 @@ export function BindingsSection() {
         items: filtered.filter(
           (item) =>
             resolveBindingTargetType(item) === 'workspace' &&
-            !(item.bound_session_id ?? item.bound_agent_id) &&
-            !!(item.bound_workspace_jid ?? item.bound_main_jid),
-        ),
-      },
-      {
-        key: 'main-session',
-        title: '主会话绑定',
-        description: '私聊和普通群使用目标工作区的主会话',
-        items: filtered.filter(
-          (item) =>
-            resolveBindingTargetType(item) === 'session' &&
-            !hasBindingPolicyMismatch(item) &&
             !(item.bound_session_id ?? item.bound_agent_id) &&
             !!(item.bound_workspace_jid ?? item.bound_main_jid),
         ),
@@ -488,7 +487,11 @@ export function BindingsSection() {
                         onActivationModeChange={handleActivationModeChange}
                         onAudienceModeChange={handleAudienceModeChange}
                         onDelete={handleDelete}
-                        onTeamMode={setTeamGroup}
+                        onTeamMode={
+                          teamModeWorkspaceOf(group, workspaceOfSession)
+                            ? setTeamGroup
+                            : undefined
+                        }
                       />
                     ))}
                   </ListGroup>
