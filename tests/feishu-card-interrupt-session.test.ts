@@ -16,14 +16,15 @@ import { createRuntimeSourceHarness } from './helpers/runtime-source.js';
 const registeredGroups: Record<string, Record<string, unknown>> = {
   'web:home': { folder: 'home', name: 'Home' },
   'web:proj': { folder: 'proj', name: 'Proj' },
-  // Ordinary group bound to the Main Session of `proj`.
-  'feishu:oc_group': { folder: 'home', target_main_jid: 'web:proj' },
+  // Ordinary group bound to session `g1` of `proj`.
+  'feishu:oc_group': { folder: 'home', target_agent_id: 'g1' },
   // Topic group bound to `proj`; each topic has its own Session.
   'feishu:oc_topics': { folder: 'home', target_main_jid: 'web:proj' },
 };
 const agents: Record<string, { chat_jid: string; name: string }> = {
   a1: { chat_jid: 'web:proj', name: 'topic one' },
   a2: { chat_jid: 'web:proj', name: 'topic two' },
+  g1: { chat_jid: 'web:proj', name: 'group session' },
 };
 
 function harness(activeRunnerJid: string) {
@@ -78,12 +79,20 @@ describe('Feishu stop button', () => {
     );
   });
 
-  test('stops the bound Main Session answering inside a thread', () => {
-    const { handle } = harness('web:proj');
+  test('stops the bound session answering inside a thread', () => {
+    const { handle } = harness('web:proj#agent:g1');
+    expect(
+      handle('feishu:oc_group#thread:omt_1#root:om_1#agent:g1', 'ou_owner'),
+    ).toMatchObject({ ok: true });
+  });
+
+  test('a card without a session address stops nothing, not the workspace', () => {
+    const { handle, abort } = harness('web:proj');
     expect(
       handle('feishu:oc_group#thread:omt_1#root:om_1', 'ou_owner'),
-    ).toMatchObject({ ok: true });
-    expect(handle('feishu:oc_group', 'ou_owner')).toMatchObject({ ok: true });
+    ).toEqual(ENDED);
+    expect(handle('feishu:oc_group', 'ou_owner')).toEqual(ENDED);
+    expect(abort).not.toHaveBeenCalled();
   });
 
   test("never stops the chat's home workspace instead", () => {
