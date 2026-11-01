@@ -13,13 +13,10 @@ function sourceBetween(source: string, start: string, end: string): string {
 }
 
 describe('exact processing indicator host contract', () => {
-  test('cold main and conversation-agent batches activate selected batch owners', () => {
+  test('cold session batches activate selected batch owners', () => {
     expect(
       main.match(/await activateBatchProcessingIndicators\(/g),
-    ).toHaveLength(2);
-    expect(main).toContain(
-      'initialProcessingIndicatorOwners.map((owner) => owner.inputTurnId)',
-    );
+    ).toHaveLength(1);
     expect(main).toContain(
       'initialAgentProcessingIndicatorOwners.map((owner) => owner.inputTurnId)',
     );
@@ -31,17 +28,16 @@ describe('exact processing indicator host contract', () => {
     );
     expect(
       main.match(/coveredInputs && coveredInputs\.length > 0/g),
-    ).toHaveLength(2);
+    ).toHaveLength(1);
     expect(
       main.match(/selectBatchProcessingIndicatorOwners\(/g)?.length,
-    ).toBeGreaterThanOrEqual(4);
+    ).toBeGreaterThanOrEqual(2);
     expect(main).toContain(
-      'processingTypingLeaseIdsByCompletion.set(inputTurnId, inputTurnId)',
+      'agentProcessingTypingLeaseIdsByCompletion.set(inputTurnId, inputTurnId)',
     );
-    expect(main).toContain('agentProcessingTypingLeaseIdsByCompletion.set(');
   });
 
-  test('warm main and agent inputs retain selected cross-route ack ownership', () => {
+  test('warm session inputs retain selected cross-route ack ownership', () => {
     expect(main).toMatch(
       /candidateSourceJid = message\.source_jid \?\? message\.chat_jid/,
     );
@@ -49,18 +45,18 @@ describe('exact processing indicator host contract', () => {
       main.match(
         /selectedIndicatorOwners\.map\(\(owner\) => owner\.inputTurnId\)/g,
       ),
-    ).toHaveLength(2);
+    ).toHaveLength(1);
     expect(
       main.match(
-        /(?:agentProcessingIndicatorJidsByInput|processingIndicatorJidsByInput)\.set\(\s*owner\.inputTurnId,\s*owner\.transportJid/g,
+        /agentProcessingIndicatorJidsByInput\.set\(\s*owner\.inputTurnId,\s*owner\.transportJid/g,
       ),
-    ).toHaveLength(4);
+    ).toHaveLength(2);
   });
 
   test('terminal cleanup releases the delivery typing lease separately and retains failed ack owners', () => {
     expect(
-      main.match(/clearTrackedTypingIndicator\(\s*(?:chatJid|virtualChatJid)/g),
-    ).toHaveLength(2);
+      main.match(/clearTrackedTypingIndicator\(\s*virtualChatJid/g),
+    ).toHaveLength(1);
     expect(main).not.toMatch(
       /setTyping\(\s*(?:chatJid|virtualChatJid),\s*false,\s*exactInputId/,
     );
@@ -68,7 +64,7 @@ describe('exact processing indicator host contract', () => {
       main.match(
         /if \(ackCleared\) \{[\s\S]{0,220}untrackProcessingIndicator/g,
       ),
-    ).toHaveLength(2);
+    ).toHaveLength(1);
     expect(main).toMatch(
       /if \(ackCleared\) untrackProcessingIndicator\(logicalJid, inputTurnId\)/,
     );
@@ -77,9 +73,6 @@ describe('exact processing indicator host contract', () => {
   test('a new cold run releases typing leases superseded by a replayed batch', () => {
     // A runner closed mid-turn is replayed with a larger batch keyed by a
     // newer input id; the earlier input's lease must not keep typing alive.
-    expect(main).toMatch(
-      /await initialTypingReady;\s+await releaseSupersededTypingIndicators\(chatJid, lastProcessed\.id\)/,
-    );
     expect(main).toMatch(
       /await initialAgentTypingReady;\s+await releaseSupersededTypingIndicators\(virtualChatJid, lastProcessed\.id\)/,
     );

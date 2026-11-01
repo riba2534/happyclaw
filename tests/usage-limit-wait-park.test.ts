@@ -222,12 +222,11 @@ const LATER = () => new Date(Date.now() + 60 * 60 * 1000).toISOString();
  * Session conversation loop from its group lookup to the batch it admits,
  * plus the helpers that park and release that lane's inputs.
  */
-function lane(kind: 'main' | 'agent') {
+function lane() {
   const chatJid = `web:wait-lane-${++laneSeq}`;
   const agentId = 'wait-session';
-  const jid = kind === 'main' ? chatJid : `${chatJid}#agent:${agentId}`;
+  const jid = `${chatJid}#agent:${agentId}`;
   const loop = createConversationLoop({
-    kind,
     chatJid,
     agentId,
     folder: `wait-lane-${laneSeq}`,
@@ -258,7 +257,7 @@ function lane(kind: 'main' | 'agent') {
     runtime,
     jid,
     chatJid,
-    agentId: kind === 'main' ? null : agentId,
+    agentId,
     inbound: (id: string) => store_(id),
     automationInput: (id: string) =>
       store_(id, { sourceKind: 'automation_prompt', automationRunId: 'run-1' }),
@@ -279,7 +278,7 @@ function lane(kind: 'main' | 'agent') {
       });
       return g.parkInputForUsageLimitWait({
         laneJid: jid,
-        agentId: kind === 'main' ? null : agentId,
+        agentId,
         inputId,
         messageIds: g.usageLimitParkedMessageIds(jid, {}, [{ id: inputId }]),
         replySourceImJid: null,
@@ -301,11 +300,11 @@ function lane(kind: 'main' | 'agent') {
 
 afterEach(() => wait.bindUsageLimitWaitHost(null));
 
-describe('both conversation loops honour a waiting lane', () => {
-  test.each(['main', 'agent'] as const)(
+describe('the session loop honours a waiting lane', () => {
+  test.each(['agent'] as const)(
     '%s: parked input stays put; an automation input joins it; new input brings the user inputs back',
-    async (kind) => {
-      const l = lane(kind);
+    async () => {
+      const l = lane();
       l.inbound('m1');
       l.inbound('m2');
       l.inbound('m3');
@@ -338,9 +337,9 @@ describe('both conversation loops honour a waiting lane', () => {
   );
 });
 
-describe('a provider failure that waits parks the input in both loops', () => {
-  function outputRuntime(kind: 'main' | 'agent') {
-    const l = lane(kind);
+describe('a provider failure that waits parks the input', () => {
+  function outputRuntime() {
+    const l = lane();
     l.inbound('m1');
     l.inbound('m2');
     l.inbound('m3');
@@ -362,45 +361,33 @@ describe('a provider failure that waits parks the input in both loops', () => {
       replySourceImJid: null,
       steeringTransitions: { shouldSuppressOutput: () => false },
       takeRecallStop: () => undefined,
-      mainRecallSuppression: false,
       agentRecallSuppression: false,
-      mainRecalledInputIds: new Set(),
       agentRecalledInputIds: new Set(),
-      rememberScheduledGroupRuns: vi.fn(),
-      activateMainProjectionForInput: vi.fn(async () => {}),
       activateAgentProjectionForInput: vi.fn(async () => {}),
       resolveContainerOutputInputTurnId,
       isProviderQuotaControlOutput: () => false,
       bindRunnerActiveIpcCoverage: vi.fn(),
       resolveProviderFailureClass: () => 'quota',
-      rollbackIdleMainCardReservation: vi.fn(),
       rollbackIdleAgentCardReservation: vi.fn(),
-      admittedWarmMainInputs: new Map(),
       admittedWarmAgentInputs: new Map(),
-      clearProcessingIndicatorForInput: vi.fn(async () => {}),
       clearAgentProcessingIndicatorForInput: vi.fn(async () => {}),
       channelTurnScope: (folder: string, agentId?: string) =>
         `${folder}:${agentId ?? ''}`,
       resetIdleTimer: vi.fn(),
-      providerFailoverPending: false,
       agentProviderFailoverPending: false,
       retryUnfinishedTurn: true,
       parkedForUsageLimitWait: false,
-      usageLimitWaitNote: null,
       agentUsageLimitWaitNote: null,
     });
     l.g.queue.markRunnerActivity = vi.fn();
-    if (kind === 'main') l.runtime.installMainOutput();
-    else l.runtime.install('handleAgentOutput', 'processAgentConversation');
-    const emit =
-      l.g[kind === 'main' ? 'handleMainOutput' : 'handleAgentOutput'];
-    return { ...l, emit };
+    l.runtime.install('handleAgentOutput', 'processAgentConversation');
+    return { ...l, emit: l.g.handleAgentOutput };
   }
 
-  test.each(['main', 'agent'] as const)(
+  test.each(['agent'] as const)(
     '%s: the failed input and the backlog behind it wait; the run ends without a retry',
-    async (kind) => {
-      const run = outputRuntime(kind);
+    async () => {
+      const run = outputRuntime();
       store.reserveUsageLimitWait({
         scopeKey: run.jid,
         inputKey: 'm2',
@@ -423,34 +410,26 @@ describe('a provider failure that waits parks the input in both loops', () => {
         ['m3', 'usage-limit:m2'],
       ]);
       expect(run.g.parkedForUsageLimitWait).toBe(true);
-      expect(
-        run.g[
-          kind === 'main' ? 'usageLimitWaitNote' : 'agentUsageLimitWaitNote'
-        ],
-      ).toMatch(/自动继续$/);
+      expect(run.g.agentUsageLimitWaitNote).toMatch(/自动继续$/);
       expect(run.g.armUsageLimitResume).toHaveBeenCalledWith(
         expect.objectContaining({ scopeKey: run.jid }),
       );
-      expect(
-        run.g[
-          kind === 'main'
-            ? 'clearProcessingIndicatorForInput'
-            : 'clearAgentProcessingIndicatorForInput'
-        ],
-      ).toHaveBeenCalledWith('m2');
+      expect(run.g.clearAgentProcessingIndicatorForInput).toHaveBeenCalledWith(
+        'm2',
+      );
 
       // The loop's verdict once its runner exits: settled, not retried, even
       // when the turn itself was left unfinished.
-      const owner =
-        kind === 'main' ? 'processGroupMessages' : 'processAgentConversation';
       Object.assign(run.g, {
-        recoveryGroups: new Set([run.chatJid]),
         output: { status: 'error' },
         retryUnfinishedTurn: true,
       });
-      run.runtime.installTail('runVerdict', owner, 'parkedForUsageLimitWait');
+      run.runtime.installTail(
+        'runVerdict',
+        'processAgentConversation',
+        'parkedForUsageLimitWait',
+      );
       expect(run.g.runVerdict()).toBe(true);
-      expect(run.g.recoveryGroups.has(run.chatJid)).toBe(kind !== 'main');
       // Without the park the same run asks to be retried.
       Object.assign(run.g, {
         parkedForUsageLimitWait: false,
@@ -484,7 +463,7 @@ describe('every way out of a wait reaches it', () => {
   }
 
   function parkedLane() {
-    const l = lane('agent');
+    const l = lane();
     l.inbound('m1');
     l.inbound('m2');
     l.answeredThrough('m1');
@@ -570,7 +549,7 @@ describe('every way out of a wait reaches it', () => {
 
   test('a restart re-arms waiting lanes and releases every other queue', () => {
     const waiting = parkedLane();
-    const other = lane('main');
+    const other = lane();
     other.inbound('o1');
     db.setMessageFollowUp(other.jid, 'o1', { mode: 'queue', status: 'queued' });
     const g = waiting.g;
@@ -595,14 +574,14 @@ describe('every way out of a wait reaches it', () => {
 
   test('the stale retry_wait sweep keeps every input a wait still holds', () => {
     // Ids of their own: other lanes in this file still wait with m2 and m3.
-    const l = lane('agent');
+    const l = lane();
     l.inbound('s1');
     l.inbound('s2');
     l.answeredThrough('s1');
     l.inbound('s3');
     l.park('s2');
     l.inbound('s4'); // arrived during the wait, not read yet
-    const unrelated = lane('main');
+    const unrelated = lane();
     unrelated.inbound('u1');
     const cancelStaleRetryWaitChannelTurns = vi.fn(() => 0);
     Object.assign(l.g, {

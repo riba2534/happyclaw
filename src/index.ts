@@ -2508,8 +2508,6 @@ const RELATIVE_IMAGE_EXTENSIONS = new Set([
 /** Reply tools use the immutable source captured for their exact input. */
 function resolveImRoute(opts: {
   ipcAgentId: string;
-  isHome: boolean;
-  chatJid: string;
   sourceGroup: string;
   inputTurnId?: string;
 }): string | null {
@@ -7932,8 +7930,6 @@ function startIpcWatcher(): void {
                   imRouteAvailable: !!resolveImRoute({
                     inputTurnId: data.inputTurnId,
                     ipcAgentId,
-                    isHome,
-                    chatJid: data.chatJid,
                     sourceGroup,
                   }),
                 },
@@ -8033,8 +8029,6 @@ function startIpcWatcher(): void {
                   const ipcImRoute = resolveImRoute({
                     inputTurnId: data.inputTurnId,
                     ipcAgentId,
-                    isHome,
-                    chatJid: data.chatJid,
                     sourceGroup,
                   });
                   if (ipcImRoute) {
@@ -8468,8 +8462,6 @@ function startIpcWatcher(): void {
                   const imgImRoute = resolveImRoute({
                     inputTurnId: data.inputTurnId,
                     ipcAgentId,
-                    isHome,
-                    chatJid: data.chatJid,
                     sourceGroup,
                   });
                   let regularImageDelivered: boolean | null = null;
@@ -10425,8 +10417,6 @@ async function processTaskIpc(
               const imRoute = resolveImRoute({
                 inputTurnId: data.inputTurnId,
                 ipcAgentId,
-                isHome,
-                chatJid: data.chatJid,
                 sourceGroup,
               });
               if (imRoute) {
@@ -10461,8 +10451,6 @@ async function processTaskIpc(
           const regularFileImRoute = resolveImRoute({
             inputTurnId: data.inputTurnId,
             ipcAgentId,
-            isHome,
-            chatJid: data.chatJid,
             sourceGroup,
           });
           if (regularFileImRoute) {

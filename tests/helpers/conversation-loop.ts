@@ -13,22 +13,20 @@ import { createRuntimeSourceHarness } from './runtime-source.js';
 const STOP = Symbol('stop-before-agent-turn');
 
 /**
- * The production processGroupMessages / processAgentConversation from the
- * group lookup through input selection. The caller supplies the database
+ * The production processAgentConversation from the group lookup through
+ * input selection. The caller supplies the database
  * functions (and anything else its runs read) in `globals`. A run stops when
  * its batch is published for IPC admission.
  */
 export function createConversationLoop(input: {
-  kind: 'main' | 'agent';
   chatJid: string;
   agentId: string;
   folder: string;
   globals: Record<string, unknown>;
 }) {
-  const { kind, chatJid, agentId } = input;
-  const owner =
-    kind === 'main' ? 'processGroupMessages' : 'processAgentConversation';
-  const queue = { enqueueMessageCheck: vi.fn(), enqueueTask: vi.fn() };
+  const { chatJid, agentId } = input;
+  const owner = 'processAgentConversation';
+  const queue = { enqueueTask: vi.fn() };
   const globals: Record<string, any> = {
     ...interactionRuntime,
     ...channelInteraction,
@@ -75,9 +73,7 @@ export function createConversationLoop(input: {
     async round(): Promise<NewMessage[] | null> {
       globals.admittedBatch = null;
       try {
-        await (kind === 'main'
-          ? globals.processGroupMessages(chatJid)
-          : globals.processAgentConversation(chatJid, agentId));
+        await globals.processAgentConversation(chatJid, agentId);
       } catch (err) {
         if (err !== STOP) throw err;
       }

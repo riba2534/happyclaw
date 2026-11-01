@@ -127,30 +127,20 @@ describe('retry_wait is never left for a consumed input (prod P1-2)', () => {
       logical: string,
       source: string | null,
     ) => unknown;
-    expect(scopeFor('web:main', 'feishu:oc_legacy#thread:omt')).toEqual({
+    const session = 'web:ws#agent:session-1';
+    expect(scopeFor(session, 'feishu:oc_legacy#thread:omt')).toEqual({
       provider: 'feishu',
       accountId: 'legacy-bot',
-      agentId: null,
+      agentId: 'session-1',
     });
-    expect(scopeFor('web:main', 'feishu:oc_unbound')).toBeNull();
-    expect(scopeFor('web:main', 'web:main')).toBeNull();
-    expect(scopeFor('web:main', null)).toBeNull();
+    expect(scopeFor(session, 'feishu:oc_unbound')).toBeNull();
+    expect(scopeFor(session, 'web:ws')).toBeNull();
+    expect(scopeFor(session, null)).toBeNull();
+    // A workspace JID names no session, so it has no Turn scope.
+    expect(scopeFor('web:ws', 'feishu:oc_legacy#thread:omt')).toBeNull();
   });
 
-  test('main and agent loops cancel a Turn whose cursor already committed (loop wiring)', () => {
-    const mainFinally = between(
-      'if (channelTurnRuntimes.size > 0) {',
-      'channelTurnRuntimes.clear();',
-    );
-    const cancelAt = mainFinally.indexOf(
-      '} else if (cursorCommittedInputTurns.has(inputTurnId)) {',
-    );
-    expect(cancelAt).toBeGreaterThan(0);
-    expect(mainFinally.indexOf('runtime.cancel(', cancelAt)).toBeGreaterThan(
-      cancelAt,
-    );
-    expect(mainFinally.indexOf('runtime.retry(')).toBeGreaterThan(cancelAt);
-
+  test('the session loop cancels a Turn whose cursor already committed (loop wiring)', () => {
     const agentStart = main.indexOf('async function processAgentConversation(');
     const agentBranch = main.slice(
       main.indexOf('} else if (isCursorCommitted(inputTurnId)) {', agentStart),
@@ -183,32 +173,26 @@ describe('retry_wait Outbox rows are rejections, not uncertainty (outbound P1-5)
 });
 
 describe('streaming card lifecycle (prod P2-9, outbound P2-8; loop wiring)', () => {
-  test('a reservation without a created session is rolled back (main and agent)', () => {
-    expect(main).toMatch(
-      /if \(!streamingSession && activeDurableCardLifecycle\) \{[\s\S]{0,400}channelTurnRuntime\?\.rollbackUnpublishedStreamingCardReservation\(\)/,
-    );
+  test('a reservation without a created session is rolled back', () => {
     expect(main).toMatch(
       /if \(!agentStreamingSession && activeAgentDurableCardLifecycle\) \{[\s\S]{0,400}agentChannelTurnRuntime\?\.rollbackUnpublishedStreamingCardReservation\(\)/,
     );
   });
 
-  test('a route switch aborts an active card before disposing it', () => {
-    const routeSwitch = between(
-      'Rebuild streaming session if the target channel changed.',
-      'streamingSessionJid = newStreamingJid;',
+  test('a new input finalizes an active card before disposing it', () => {
+    const rotation = between(
+      'const previousAgentSession = agentStreamingSession;',
+      'previousAgentSession?.dispose();',
     );
-    expect(routeSwitch).toContain('.abort(');
-    expect(routeSwitch).toMatch(
-      /\.finally\(\(\) => previousSession\.dispose\(\)\)/,
+    expect(rotation).toContain(
+      'unregisterStreamingSession(streamingSessionJid, previousAgentSession)',
     );
-    expect(routeSwitch).not.toMatch(
-      /if \(streamingSession\.isActive\(\)\) streamingSession\.dispose\(\)/,
-    );
+    expect(rotation).toContain(".abort('新消息已开始')");
   });
 
   test('every streaming session release is compare-and-delete', () => {
     const calls = main.match(/unregisterStreamingSession\([^)]*\)/g) ?? [];
-    expect(calls.length).toBeGreaterThan(5);
+    expect(calls.length).toBeGreaterThan(3);
     for (const call of calls) {
       expect(call).toMatch(
         /unregisterStreamingSession\(\s*[^,]+,\s*[^,)]+,?\s*\)/,
@@ -313,32 +297,6 @@ describe('refused card body fallback (outbound P1-4, cross-review M3; loop wirin
     // The decision itself (cardTerminalized gate, uncertain otherwise) is
     // feishuCardStaticFallbackText/classifyImSendFailure, tested in
     // channel-delivery-failure.test.ts against the real card error.
-    const mainBranch = between(
-      'const refusedCardStaticText = pendingStreamingCardCompleted',
-      '// A quiet automation run that escalated mid-turn',
-    );
-    expect(mainBranch).toContain(
-      'feishuCardStaticFallbackText(cardFinalization.error)',
-    );
-    const markAt = mainBranch.indexOf(
-      'markStreamingCardStaticFallbackDelivered()',
-    );
-    const sendAt = mainBranch.indexOf(
-      'postFinalizationStaticDelivered = await sendImWithRetry(',
-    );
-    expect(markAt).toBeGreaterThan(0);
-    expect(markAt).toBeLessThan(sendAt);
-    expect(mainBranch).toMatch(
-      /postFinalizationStaticDelivered = await sendImWithRetry\(\s+chatJid,\s+staticFallbackText,/,
-    );
-    expect(mainBranch).toMatch(
-      /routedFallbackDelivered = await sendImWithRetry\(\s+outputReplySourceJid,\s+staticFallbackText,/,
-    );
-    // A mixed failure is fenced only after the refused pages went out.
-    expect(mainBranch.indexOf('streaming-card-final-mixed:')).toBeGreaterThan(
-      mainBranch.indexOf('routedFallbackDelivered = await sendImWithRetry('),
-    );
-
     const agentBranch = between(
       'const refusedAgentCardText = cardCompleted',
       'Agent conversation: static IM message sent',
