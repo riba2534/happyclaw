@@ -13,7 +13,7 @@ export type RunnerCpuActivity =
 export interface StuckRecoveryCandidate {
   jid: string;
   idleMs: number;
-  reason: 'pending_messages' | 'ipc_injected';
+  reason: 'pending_tasks' | 'ipc_injected';
   runtime: RunnerRuntime;
   /** Monotonic identity of the concrete GroupQueue runner lifecycle. */
   runnerGeneration: number;
@@ -153,7 +153,7 @@ export function decideStuckRunnerRecovery(
   }
 
   // CPU activity and unobservable container work are grace signals, not an
-  // unlimited veto. Pending-message recovery still needs a hard upper bound.
+  // unlimited veto. Pending-task recovery still needs a hard upper bound.
   if (candidate.idleMs >= forceRestartMs) {
     return { action: 'restart', reason: 'idle_ceiling' };
   }
