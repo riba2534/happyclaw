@@ -435,6 +435,51 @@ async function waitUntil(pred, timeoutMs, label) {
   throw new Error(`timed out waiting for ${label}`);
 }
 
+/** Open a session in a workspace; every Web input names one. */
+async function openSession(cookie, jid, name) {
+  const r = await http_('POST', `/api/groups/${enc(jid)}/sessions`, {
+    cookie,
+    body: { name },
+  });
+  if (r.status >= 300 || !r.json?.session?.id)
+    throw new Error(`session: HTTP ${r.status} ${JSON.stringify(r.json)}`);
+  const sessionId = r.json.session.id;
+  return { jid, sessionId, sessionJid: `${jid}#agent:${sessionId}` };
+}
+
+/**
+ * A session's events: run lifecycle and snapshots under its JID, everything
+ * else under the workspace JID with its agentId.
+ */
+const ofSession =
+  ({ jid, sessionId }) =>
+  (e) =>
+    e.chatJid === `${jid}#agent:${sessionId}` ||
+    (e.chatJid === jid && e.agentId === sessionId);
+
+function sendTo(ws, { jid, sessionId }, content) {
+  ws.send(
+    JSON.stringify({
+      type: 'send_message',
+      chatJid: jid,
+      agentId: sessionId,
+      content,
+    }),
+  );
+}
+
+/** Its stored history, newest page. */
+const historyOf = (cookie, { jid, sessionId }) =>
+  http_('GET', `/api/groups/${enc(jid)}/messages?agentId=${enc(sessionId)}`, {
+    cookie,
+  });
+
+/** One settled turn of it; a trace is stored under the session's chat. */
+const traceOf = (cookie, { sessionJid }, turnId) =>
+  http_('GET', `/api/groups/${enc(sessionJid)}/turn-traces/${enc(turnId)}`, {
+    cookie,
+  });
+
 // ── scenarios ─────────────────────────────────────────────────────────────
 const UNSAFE_TYPES = new Set([
   'text_delta',
@@ -498,16 +543,11 @@ async function runScenario(ctx, { label, interaction, visibility, expect }) {
     );
   }
 
+  const session = await openSession(ctx.cookie, jid, label);
   const conn = openWs(ctx.cookie);
   await conn.ready;
-  const mine = (e) => e.chatJid === jid;
-  conn.ws.send(
-    JSON.stringify({
-      type: 'send_message',
-      chatJid: jid,
-      content: 'run the demo',
-    }),
-  );
+  const mine = ofSession(session);
+  sendTo(conn.ws, session, 'run the demo');
 
   // Mid-run reconnect: a second client joins while the Bash tool is running.
   const conn2 = openWs(ctx.cookie);
@@ -572,7 +612,7 @@ async function runScenario(ctx, { label, interaction, visibility, expect }) {
   );
   const usageRead = await http_(
     'GET',
-    `/api/groups/${enc(jid)}/context-usage`,
+    `/api/groups/${enc(jid)}/context-usage?agentId=${enc(session.sessionId)}`,
     { cookie: ctx.cookie },
   );
   check(
@@ -816,9 +856,7 @@ async function runScenario(ctx, { label, interaction, visibility, expect }) {
   }
 
   // 3. Persisted history + trace.
-  const history = await http_('GET', `/api/groups/${enc(jid)}/messages`, {
-    cookie: ctx.cookie,
-  });
+  const history = await historyOf(ctx.cookie, session);
   const agentMessages = (history.json.messages || []).filter(
     (m) => m.is_from_me,
   );
@@ -857,7 +895,7 @@ async function runScenario(ctx, { label, interaction, visibility, expect }) {
   // client is told afterwards which message carries it. An assistant reply
   // carries `has_trace` itself.
   const traceNotices = live.filter(
-    (e) => e.type === 'message_trace' && e.chatJid === jid,
+    (e) => e.type === 'message_trace' && mine(e),
   );
   if (interaction === 'proactive' && expect.trace !== 'none') {
     check(
@@ -897,11 +935,7 @@ async function runScenario(ctx, { label, interaction, visibility, expect }) {
       `flagged ${flagged.length}`,
     );
     if (finalMsg?.turn_id) {
-      const r = await http_(
-        'GET',
-        `/api/groups/${enc(jid)}/turn-traces/${enc(finalMsg.turn_id)}`,
-        { cookie: ctx.cookie },
-      );
+      const r = await traceOf(ctx.cookie, session, finalMsg.turn_id);
       check(
         label,
         'turn-traces is 404 while the process is hidden',
@@ -918,11 +952,7 @@ async function runScenario(ctx, { label, interaction, visibility, expect }) {
     );
     const turnId = (flagged[flagged.length - 1] || finalMsg)?.turn_id;
     storedTurnId = turnId;
-    const r = await http_(
-      'GET',
-      `/api/groups/${enc(jid)}/turn-traces/${enc(turnId)}`,
-      { cookie: ctx.cookie },
-    );
+    const r = await traceOf(ctx.cookie, session, turnId);
     check(
       label,
       'GET turn-traces answers 200',
@@ -1016,7 +1046,7 @@ async function runScenario(ctx, { label, interaction, visibility, expect }) {
   }
 
   for (const c of [conn, conn2, conn3]) c.ws.close();
-  return { jid, counts, turnId: storedTurnId };
+  return { jid, session, counts, turnId: storedTurnId };
 }
 
 /** Every leaf of a value: facts must hold numbers and booleans only. */
@@ -1050,20 +1080,18 @@ async function runFactsScenario(ctx, { label, interaction, visibility }) {
     throw new Error(
       `create workspace: HTTP ${created.status} ${JSON.stringify(created.json).slice(0, 300)}`,
     );
-  const jid = created.json.jid;
+  const session = await openSession(ctx.cookie, created.json.jid, label);
+  const mine = ofSession(session);
   const conn = openWs(ctx.cookie);
   await conn.ready;
-  conn.ws.send(
-    JSON.stringify({ type: 'send_message', chatJid: jid, content: 'look' }),
-  );
+  sendTo(conn.ws, session, 'look');
   await waitUntil(
-    () =>
-      conn.events.some((e) => e.chatJid === jid && e.type === 'run_finished'),
+    () => conn.events.some((e) => mine(e) && e.type === 'run_finished'),
     150_000,
     'run_finished',
   );
   await sleep(1500);
-  const live = conn.events.filter((e) => e.chatJid === jid);
+  const live = conn.events.filter(mine);
   const streamEvents = live
     .filter((e) => e.type === 'stream_event')
     .map((e) => e.event);
@@ -1104,18 +1132,12 @@ async function runFactsScenario(ctx, { label, interaction, visibility }) {
     JSON.stringify([summaryOf('Read'), summaryOf('Glob'), summaryOf('Bash')]),
   );
 
-  const history = await http_('GET', `/api/groups/${enc(jid)}/messages`, {
-    cookie: ctx.cookie,
-  });
+  const history = await historyOf(ctx.cookie, session);
   const flagged = (history.json.messages || []).filter(
     (m) => m.is_from_me && m.has_trace === true,
   );
   const turnId = flagged[flagged.length - 1]?.turn_id;
-  const trace = await http_(
-    'GET',
-    `/api/groups/${enc(jid)}/turn-traces/${enc(turnId)}`,
-    { cookie: ctx.cookie },
-  );
+  const trace = await traceOf(ctx.cookie, session, turnId);
   check(
     label,
     'the stored turn is readable',
@@ -1471,7 +1493,7 @@ async function main() {
     '\n== steps-level (full -> activity -> hidden -> full, stored turn)',
   );
   const fullRun = outcomes[3];
-  const stepsUrl = `/api/groups/${enc(fullRun.jid)}/turn-traces/${enc(fullRun.turnId)}`;
+  const stepsUrl = `/api/groups/${enc(fullRun.session.sessionJid)}/turn-traces/${enc(fullRun.turnId)}`;
   const setLevel = (process_visibility) =>
     http_('PATCH', `/api/groups/${enc(fullRun.jid)}`, {
       cookie,
@@ -1526,11 +1548,7 @@ async function main() {
       !JSON.stringify(atHidden.json).includes('Planning the demo'),
     `HTTP ${atHidden.status} ${JSON.stringify(atHidden.json)?.slice(0, 200)}`,
   );
-  const listedAtHidden = await http_(
-    'GET',
-    `/api/groups/${enc(fullRun.jid)}/messages`,
-    { cookie },
-  );
+  const listedAtHidden = await historyOf(cookie, fullRun.session);
   check(
     'steps-level',
     'and its reply is still listed as carrying a trace',
@@ -1583,23 +1601,15 @@ async function main() {
   const conn = openWs(cookie);
   await conn.ready;
   stub.setMode('proactive');
-  conn.ws.send(
-    JSON.stringify({
-      type: 'send_message',
-      chatJid: switched.jid,
-      content: 'run the demo again',
-    }),
-  );
+  const switchedOwn = ofSession(switched.session);
+  sendTo(conn.ws, switched.session, 'run the demo again');
   await waitUntil(
-    () =>
-      conn.events.some(
-        (e) => e.chatJid === switched.jid && e.type === 'run_finished',
-      ),
+    () => conn.events.some((e) => switchedOwn(e) && e.type === 'run_finished'),
     150_000,
     'run_finished after the switch',
   );
   const after = conn.events
-    .filter((e) => e.chatJid === switched.jid && e.type === 'stream_event')
+    .filter((e) => switchedOwn(e) && e.type === 'stream_event')
     .map((e) => e.event);
   check(
     'proactive-switch',
@@ -1649,7 +1659,7 @@ async function main() {
   console.log('\n== access control');
   const anon = await http_(
     'GET',
-    `/api/groups/${enc(switched.jid)}/turn-traces/whatever`,
+    `/api/groups/${enc(switched.session.sessionJid)}/turn-traces/whatever`,
   );
   check(
     'acl',
@@ -1703,13 +1713,11 @@ async function proactiveStopKeepsProgress(ctx) {
   });
   if (created.status >= 300)
     throw new Error(`create workspace: HTTP ${created.status}`);
-  const jid = created.json.jid;
+  const session = await openSession(ctx.cookie, created.json.jid, label);
   const conn = openWs(ctx.cookie);
   await conn.ready;
-  const mine = (e) => e.chatJid === jid;
-  conn.ws.send(
-    JSON.stringify({ type: 'send_message', chatJid: jid, content: 'start' }),
-  );
+  const mine = ofSession(session);
+  sendTo(conn.ws, session, 'start');
   await waitUntil(
     () =>
       conn.events.some(
@@ -1721,9 +1729,11 @@ async function proactiveStopKeepsProgress(ctx) {
     90_000,
     'the progress on the Web',
   );
-  const stop = await http_('POST', `/api/groups/${enc(jid)}/interrupt`, {
-    cookie: ctx.cookie,
-  });
+  const stop = await http_(
+    'POST',
+    `/api/groups/${enc(session.sessionJid)}/interrupt`,
+    { cookie: ctx.cookie },
+  );
   check(
     label,
     'the turn is stopped',
@@ -1753,9 +1763,7 @@ async function proactiveStopKeepsProgress(ctx) {
     note.content === '已停止。' && note.has_trace === true && !!note.turn_id,
     JSON.stringify(note).slice(0, 300),
   );
-  const history = await http_('GET', `/api/groups/${enc(jid)}/messages`, {
-    cookie: ctx.cookie,
-  });
+  const history = await historyOf(ctx.cookie, session);
   const stored = (history.json.messages || []).find((m) => m.id === note.id);
   check(
     label,
@@ -1763,11 +1771,7 @@ async function proactiveStopKeepsProgress(ctx) {
     stored?.has_trace === true,
     JSON.stringify(stored)?.slice(0, 200),
   );
-  const trace = await http_(
-    'GET',
-    `/api/groups/${enc(jid)}/turn-traces/${enc(note.turn_id)}`,
-    { cookie: ctx.cookie },
-  );
+  const trace = await traceOf(ctx.cookie, session, note.turn_id);
   check(
     label,
     'and its trace holds the progress, alone at hidden',
@@ -1804,13 +1808,11 @@ async function proactiveNoFinalKeepsProgress(ctx) {
     });
     if (created.status >= 300)
       throw new Error(`create workspace: HTTP ${created.status}`);
-    const jid = created.json.jid;
+    const session = await openSession(ctx.cookie, created.json.jid, label);
     const conn = openWs(ctx.cookie);
     await conn.ready;
-    const mine = (e) => e.chatJid === jid;
-    conn.ws.send(
-      JSON.stringify({ type: 'send_message', chatJid: jid, content: 'go' }),
-    );
+    const mine = ofSession(session);
+    sendTo(conn.ws, session, 'go');
     await waitUntil(
       () => conn.events.some((e) => mine(e) && e.type === 'run_finished'),
       120_000,
@@ -1834,9 +1836,7 @@ async function proactiveNoFinalKeepsProgress(ctx) {
       ) && notes.length === 0,
       JSON.stringify(notes.map((e) => e.message?.content)),
     );
-    const history = await http_('GET', `/api/groups/${enc(jid)}/messages`, {
-      cookie: ctx.cookie,
-    });
+    const history = await historyOf(ctx.cookie, session);
     check(
       label,
       'and the history holds none either',
@@ -1878,6 +1878,7 @@ async function proactiveReplyInTheBrowser(ctx, visibility) {
   if (created.status >= 300)
     throw new Error(`create workspace: HTTP ${created.status}`);
   const folder = created.json.group.folder;
+  const session = await openSession(ctx.cookie, created.json.jid, label);
   const { chromium } = createRequire(path.join(REPO, 'web', 'package.json'))(
     '@playwright/test',
   );
@@ -1899,7 +1900,8 @@ async function proactiveReplyInTheBrowser(ctx, visibility) {
       }),
     );
     const page = await context.newPage();
-    await page.goto(`/chat/${folder}`);
+    // `?agent=` names the session the chat opens on.
+    await page.goto(`/chat/${folder}?agent=${enc(session.sessionId)}`);
     const editor = page.locator('[data-hc-composer] [data-composer-editor]');
     await editor.waitFor({ timeout: 30_000 });
     // Every frame from here on: is the reply there, the panel, the spinner,
