@@ -1,8 +1,7 @@
 import { useEffect } from 'react';
 import { wsManager } from '../api/ws';
 import { useChatStore } from '../stores/chat';
-
-const AGENT_MARKER = '#agent:';
+import { sessionIdOf, workspaceJidOf } from '../lib/session-jid';
 
 /**
  * Apply every workspace's stream deltas and reconnect snapshots to the store,
@@ -19,26 +18,19 @@ export function useGlobalStreamSubscriptions(): void {
         .getState()
         .handleStreamEvent(data.chatJid, data.event, data.agentId, data.runId);
     });
-    // Sent per active runtime on every (re)connect.
+    // Sent per active session runtime on every (re)connect.
     const unsubSnapshot = wsManager.on('stream_snapshot', (data: any) => {
       if (typeof data?.chatJid !== 'string' || !data.snapshot) return;
-      const markerIndex = data.chatJid.indexOf(AGENT_MARKER);
-      const { handleStreamSnapshot } = useChatStore.getState();
-      if (markerIndex >= 0) {
-        handleStreamSnapshot(
-          data.chatJid.slice(0, markerIndex),
+      const agentId = sessionIdOf(data.chatJid);
+      if (!agentId) return;
+      useChatStore
+        .getState()
+        .handleStreamSnapshot(
+          workspaceJidOf(data.chatJid),
           data.snapshot,
-          data.chatJid.slice(markerIndex + AGENT_MARKER.length),
+          agentId,
           data.runId,
         );
-      } else {
-        handleStreamSnapshot(
-          data.chatJid,
-          data.snapshot,
-          undefined,
-          data.runId,
-        );
-      }
     });
     return () => {
       unsubEvent();

@@ -28,10 +28,12 @@ export function hasBindingPolicyMismatch(group: AvailableImGroup): boolean {
   const target = resolveBindingTargetType(group);
   if (!target) return true;
   if (target === 'workspace') return hasSession;
-  // A non-topic mount without an explicit session id represents the main
-  // session in the legacy API. A thread-map mount is never a session bind.
+  // Private chats and ordinary groups bind to a session: a mount of one on a
+  // workspace alone, or a thread-map mount, is left from before.
   return (
-    group.routing_mode === 'thread_map' || group.binding_mode === 'thread_map'
+    !hasSession ||
+    group.routing_mode === 'thread_map' ||
+    group.binding_mode === 'thread_map'
   );
 }
 
@@ -60,9 +62,7 @@ export function isBoundToImDestination(
     group.conversation_kind === 'topic' ||
     group.routing_mode === 'thread_map' ||
     group.binding_mode === 'thread_map';
-  return destination.type === 'workspace'
-    ? workspaceMount
-    : destination.sessionId === 'main' && !workspaceMount;
+  return destination.type === 'workspace' && workspaceMount;
 }
 
 export function buildImBindingRequest(

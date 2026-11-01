@@ -46,11 +46,12 @@ test.describe('phone', () => {
     await expect(sections.nth(1)).toHaveAttribute('aria-label', '主智能体');
     await expect(sections.nth(2)).toHaveAttribute('aria-label', '自定义智能体');
 
-    // Sessions sit directly under their workspace, main conversation first.
+    // Sessions sit directly under their workspace, most recent first, all
+    // alike: none stands for the workspace itself.
     const alpha = workspaceItem(page, 'alpha');
     const rows = alpha.locator('ul > li');
-    await expect(rows.nth(0)).toContainText('当前对话');
-    await expect(rows.nth(1)).toContainText('alpha 会话 1');
+    await expect(rows.nth(0)).toContainText('alpha 会话 1');
+    await expect(rows.nth(1)).toContainText('alpha 会话 2');
     // Five sessions, then the rest behind 显示更多.
     await expect(
       alpha.getByRole('button', { name: '显示更多（2）' }),
@@ -63,24 +64,24 @@ test.describe('phone', () => {
     // Geometry and type after cindy's list: 56px headers, 78px rows.
     const header = workspaceToggle(page, 'alpha').locator('..');
     expect((await header.boundingBox())!.height).toBe(56);
-    const row = rows.nth(1).locator('> div');
+    const row = rows.nth(0).locator('> div');
     expect((await row.boundingBox())!.height).toBe(78);
     const title = rows
-      .nth(1)
+      .nth(0)
       .getByRole('button', { name: 'alpha 会话 1', exact: true });
     const titleStyle = await title.evaluate((element) => {
       const style = getComputedStyle(element);
       return [style.fontSize, style.lineHeight, style.fontWeight];
     });
     expect(titleStyle).toEqual(['18px', '28px', '500']);
-    const preview = rows.nth(1).getByText(/的最后一条消息/);
+    const preview = rows.nth(0).getByText(/的最后一条消息/);
     const previewStyle = await preview.evaluate((element) => {
       const style = getComputedStyle(element);
       return [style.fontSize, style.lineHeight, style.whiteSpace];
     });
     expect(previewStyle).toEqual(['15px', '26px', 'nowrap']);
     // The time sits at the top right, on the title's line.
-    const time = rows.nth(1).getByText('3 分钟前');
+    const time = rows.nth(0).getByText('3 分钟前');
     const timeBox = (await time.boundingBox())!;
     const titleBox = (await title.boundingBox())!;
     const rowBox = (await row.boundingBox())!;

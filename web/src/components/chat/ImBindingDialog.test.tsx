@@ -11,7 +11,6 @@ const mocks = vi.hoisted(() => ({
   loadGroups: vi.fn(),
   loadAgents: vi.fn(),
   unbindImGroup: vi.fn(),
-  unbindMainImGroup: vi.fn(),
   unbindWorkspaceImGroup: vi.fn(),
   put: vi.fn(),
 }));
@@ -62,7 +61,6 @@ beforeEach(() => {
     feishuAccounts: 1,
   });
   mocks.unbindImGroup.mockResolvedValue(true);
-  mocks.unbindMainImGroup.mockResolvedValue(true);
   mocks.unbindWorkspaceImGroup.mockResolvedValue(true);
   container = document.createElement('div');
   document.body.append(container);
@@ -74,9 +72,9 @@ afterEach(async () => {
   container.remove();
 });
 
+/** The dialog of a session, or (null) of the workspace's topic groups. */
 async function render(
   groups: AvailableImGroup[],
-  targetMode: 'session' | 'workspace' = 'session',
   agentId: string | null = 'session-a',
 ) {
   mocks.loadAvailableImGroups.mockResolvedValue(groups);
@@ -86,7 +84,6 @@ async function render(
         open
         groupJid="web:main"
         agentId={agentId}
-        targetMode={targetMode}
         onClose={() => {}}
       />,
     ),
@@ -132,20 +129,16 @@ describe('IM binding dialog destinations', () => {
     expect(mocks.loadGroups).toHaveBeenCalled();
   });
 
-  test('main session remains distinct from the workspace destination', async () => {
-    await render([group('group')], 'session', null);
+  test('another session of the workspace binds to its own endpoint', async () => {
+    await render([group('group')], 'session-b');
     await clickButton(article('group chat'), '绑定');
     expect(mocks.put.mock.calls[0][0]).toBe(
-      '/api/groups/web%3Amain/sessions/main/im-binding',
+      '/api/groups/web%3Amain/sessions/session-b/im-binding',
     );
   });
 
   test('workspace binding offers only native topic groups', async () => {
-    await render(
-      [group('direct'), group('group'), group('topic')],
-      'workspace',
-      null,
-    );
+    await render([group('direct'), group('group'), group('topic')], null);
     expect(document.querySelectorAll('article')).toHaveLength(1);
     await clickButton(article('topic chat'), '绑定');
     expect(mocks.put.mock.calls[0][0]).toBe(
@@ -175,24 +168,40 @@ describe('IM binding dialog destinations', () => {
     expect(mocks.put).toHaveBeenCalledTimes(1);
   });
 
-  test('unbinding a main-session chat uses the session endpoint and explains that unbound channels do not respond', async () => {
-    await render(
-      [
-        group('group', {
-          bound_main_jid: 'web:main',
-          binding_mode: 'single_context',
-        }),
-      ],
-      'session',
-      null,
-    );
+  test('unbinding a chat of the session uses the session endpoint and explains that unbound channels do not respond', async () => {
+    await render([
+      group('group', {
+        bound_agent_id: 'session-a',
+        bound_session_id: 'session-a',
+      }),
+    ]);
     expect(document.body.textContent).toContain('未绑定时不响应');
     expect(document.body.textContent).not.toContain('恢复默认');
     await clickButton(article('group chat'), '解除绑定');
-    expect(mocks.unbindMainImGroup).toHaveBeenCalledWith(
+    expect(mocks.unbindImGroup).toHaveBeenCalledWith(
       'web:main',
+      'session-a',
       'feishu:group#account:bot-a',
     );
     expect(mocks.unbindWorkspaceImGroup).not.toHaveBeenCalled();
+  });
+
+  test('a Feishu ordinary group bound to the session offers team mode', async () => {
+    await render([
+      group('group', {
+        bound_agent_id: 'session-a',
+        bound_session_id: 'session-a',
+      }),
+      group('direct', {
+        bound_agent_id: 'session-a',
+        bound_session_id: 'session-a',
+      }),
+    ]);
+    const teamButton = (name: string) =>
+      [...article(name).querySelectorAll('button')].find(
+        (item) => item.textContent?.trim() === '团队模式',
+      );
+    expect(teamButton('group chat')).toBeDefined();
+    expect(teamButton('direct chat')).toBeUndefined();
   });
 });

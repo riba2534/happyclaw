@@ -184,12 +184,29 @@ beforeEach(() => {
     agents: {
       'web:home': [
         {
+          id: 's0',
+          name: '日常对话',
+          prompt: '',
+          status: 'idle',
+          kind: 'conversation',
+          created_at: '2026-09-01T00:00:00Z',
+        },
+        {
           id: 's1',
           name: '周报会话',
           prompt: '',
           status: 'idle',
           kind: 'conversation',
           created_at: '2026-10-01T00:00:00Z',
+        },
+        {
+          id: 's2',
+          name: '置顶会话',
+          prompt: '',
+          status: 'idle',
+          kind: 'conversation',
+          created_at: '2026-08-01T00:00:00Z',
+          pinned_at: '2026-10-02T00:00:00Z',
         },
       ],
     },
@@ -289,10 +306,12 @@ describe('automation form', () => {
     expect(mocks.post).not.toHaveBeenCalled();
 
     const select = byLabel<HTMLSelectElement>('目标会话');
+    // The session lists' order: pinned first, then by recent activity.
     expect([...select.options].map((option) => option.textContent)).toEqual([
       '选择一个会话',
-      '直接对话',
+      '置顶会话',
       '周报会话',
+      '日常对话',
     ]);
     await type(select, 'web:home#agent:s1');
     await submit();
@@ -313,12 +332,17 @@ describe('automation form', () => {
 
   test('from a session: prefilled and bound to it', async () => {
     await render({
-      prefill: { workspaceJid: 'web:home', targetSessionJid: 'web:home' },
+      prefill: {
+        workspaceJid: 'web:home',
+        targetSessionJid: 'web:home#agent:s1',
+      },
     });
     expect(
       segment('运行会话', '绑定已有会话').getAttribute('aria-pressed'),
     ).toBe('true');
-    expect(byLabel<HTMLSelectElement>('目标会话').value).toBe('web:home');
+    expect(byLabel<HTMLSelectElement>('目标会话').value).toBe(
+      'web:home#agent:s1',
+    );
   });
 
   test('scripts and pre-run checks need an admin host workspace', async () => {

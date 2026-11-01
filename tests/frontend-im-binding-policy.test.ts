@@ -161,10 +161,11 @@ describe('IM binding destinations', () => {
     }
   });
 
-  test('ordinary groups on main remain valid while old mention thread-map mounts need correction', () => {
+  test('an ordinary group binds to a session: one left on a workspace alone, or thread-mapped, needs correction', () => {
     const group = makeGroup({
       conversation_kind: 'group',
-      bound_main_jid: 'web:a',
+      bound_agent_id: 's-a',
+      bound_session_id: 's-a',
       binding_mode: 'single_context',
     });
     expect(hasBindingPolicyMismatch(group)).toBe(false);
@@ -172,7 +173,7 @@ describe('IM binding destinations', () => {
       isBoundToImDestination(group, {
         type: 'session',
         groupJid: 'web:a',
-        sessionId: 'main',
+        sessionId: 's-a',
       }),
     ).toBe(true);
     expect(
@@ -181,12 +182,23 @@ describe('IM binding destinations', () => {
     expect(
       hasBindingPolicyMismatch({ ...group, routing_mode: 'thread_map' }),
     ).toBe(true);
+    // A mount from before sessions were all alike: the workspace, no session.
+    const leftOver = makeGroup({
+      conversation_kind: 'group',
+      bound_main_jid: 'web:a',
+      binding_mode: 'single_context',
+    });
+    expect(hasBindingPolicyMismatch(leftOver)).toBe(true);
     expect(
-      hasBindingPolicyMismatch({ ...group, bound_agent_id: 'named' }),
+      isBoundToImDestination(leftOver, {
+        type: 'session',
+        groupJid: 'web:a',
+        sessionId: 's-a',
+      }),
     ).toBe(false);
   });
 
-  test('a workspace binding does not claim its child sessions, and topic mounts are distinct from main', () => {
+  test('a workspace binding does not claim its child sessions, and topic mounts are distinct from sessions', () => {
     const group = makeGroup({
       conversation_kind: 'group',
       bound_workspace_jid: 'web:a',
@@ -199,7 +211,7 @@ describe('IM binding destinations', () => {
       isBoundToImDestination(group, {
         type: 'session',
         groupJid: 'web:a',
-        sessionId: 'main',
+        sessionId: 's-b',
       }),
     ).toBe(false);
     expect(
@@ -221,7 +233,7 @@ describe('IM binding destinations', () => {
       isBoundToImDestination(topic, {
         type: 'session',
         groupJid: 'web:a',
-        sessionId: 'main',
+        sessionId: 's-a',
       }),
     ).toBe(false);
     expect(

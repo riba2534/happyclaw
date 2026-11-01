@@ -99,8 +99,23 @@ function sessions(folder: string): AgentInfo[] {
     kind: 'conversation',
     created_at: '2026-01-01T00:00:00.000Z',
     last_active_at: new Date(Date.now() - n * 60_000).toISOString(),
+    latest_message: {
+      content: `${folder} 会话 ${n} 的消息`,
+      timestamp: new Date(Date.now() - n * 60_000).toISOString(),
+    },
+    // alpha's second session answers a Feishu group.
+    ...(folder === 'alpha' && n === 2
+      ? { linked_im_groups: [{ jid: 'feishu:oc_dev', name: '研发群' }] }
+      : {}),
   }));
 }
+
+/** What the sidebar asked the store to do, for assertions. */
+const calls = {
+  deletes: [] as Array<{ agentId: string; options?: unknown }>,
+  pins: [] as Array<{ agentId: string; pinned: boolean }>,
+};
+Object.assign(window, { sidebarHarness: calls });
 
 useAuthStore.setState({
   authenticated: true,
@@ -149,10 +164,8 @@ useChatStore.setState({
     'web:bill1': sessions('bill1'),
     'web:bill2': sessions('bill2'),
   },
-  messages: {},
   loading: false,
   loadGroups: async () => undefined,
-  loadMessages: async () => undefined,
   loadAgents: async () => undefined,
   createConversation: async (jid: string) => {
     const state = useChatStore.getState();
@@ -173,12 +186,43 @@ useChatStore.setState({
     });
     return session;
   },
-  deleteAgentAction: async (jid: string, agentId: string) => {
+  deleteAgentAction: async (
+    jid: string,
+    agentId: string,
+    options?: { confirmBindings?: boolean; rebindTo?: string | null },
+  ) => {
+    calls.deletes.push({ agentId, options });
     const state = useChatStore.getState();
+    const session = state.agents[jid]?.find((a) => a.id === agentId);
+    // The server refuses until its bindings are confirmed (409).
+    if (session?.linked_im_groups?.length && !options?.confirmBindings) {
+      return {
+        bindings: {
+          linkedImGroups: session.linked_im_groups,
+          threadBindings: [],
+          automations: [],
+        },
+      };
+    }
     useChatStore.setState({
       agents: {
         ...state.agents,
         [jid]: (state.agents[jid] ?? []).filter((a) => a.id !== agentId),
+      },
+    });
+    return true;
+  },
+  pinSession: async (jid: string, agentId: string, pinned: boolean) => {
+    calls.pins.push({ agentId, pinned });
+    const state = useChatStore.getState();
+    useChatStore.setState({
+      agents: {
+        ...state.agents,
+        [jid]: (state.agents[jid] ?? []).map((a) =>
+          a.id === agentId
+            ? { ...a, pinned_at: pinned ? new Date().toISOString() : null }
+            : a,
+        ),
       },
     });
     return true;

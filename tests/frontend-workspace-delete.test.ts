@@ -16,10 +16,14 @@ function state(
     impact: {
       has_channel_bindings: true,
       channel_binding_count: 2,
-      bound_main_im_groups: [{ jid: 'feishu:one', name: '飞书调研群' }],
       bound_sessions: [
         {
           sessionId: 'session-1',
+          sessionName: '调研会话',
+          imGroups: [{ jid: 'feishu:one', name: '飞书调研群' }],
+        },
+        {
+          sessionId: 'session-2',
           sessionName: '账单会话',
           imGroups: [{ jid: 'qq:two', name: 'QQ 账单群' }],
         },
@@ -38,7 +42,7 @@ function state(
 }
 
 describe('workspace deletion confirmation', () => {
-  it('deduplicates channel names across main, session and thread bindings', () => {
+  it('deduplicates channel names across session and thread bindings', () => {
     expect(workspaceDeleteBindingNames(state())).toEqual([
       '飞书调研群',
       'QQ 账单群',
@@ -60,7 +64,6 @@ describe('workspace deletion confirmation', () => {
         impact: {
           has_channel_bindings: false,
           channel_binding_count: 0,
-          bound_main_im_groups: [],
           bound_sessions: [],
           bound_thread_contexts: [],
         },

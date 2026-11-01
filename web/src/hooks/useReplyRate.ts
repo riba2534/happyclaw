@@ -14,15 +14,12 @@ import {
  * nothing but this value, and that at most once a second; the second's tick
  * runs only while it measures.
  */
-export function useReplyRate(
-  groupJid: string,
-  agentId?: string,
-): number | null {
+export function useReplyRate(agentId: string): number | null {
   const [rate, setRate] = useState<number | null>(null);
   useEffect(() => {
     setRate(null);
     const read = (state: ReturnType<typeof useChatStore.getState>) =>
-      agentId ? state.agentStreaming[agentId] : state.streaming[groupJid];
+      state.agentStreaming[agentId];
     let track: ReplyRateTrack | null = null;
     let timer: number | undefined;
     const observe = (streaming: StreamingState | undefined) => {
@@ -54,6 +51,6 @@ export function useReplyRate(
       unsubscribe();
       window.clearInterval(timer);
     };
-  }, [groupJid, agentId]);
+  }, [agentId]);
   return rate;
 }

@@ -44,22 +44,21 @@ import { AutomationRunGroup } from './AutomationRunCard';
 import { PhonePageHeader, PhoneBarButton } from '../layout/PhonePageHeader';
 import { useIsPhone } from '../layout/phone';
 
-/** A session JID as the user knows it: its name, or the main conversation. */
+/** A session JID as the user knows it: its name. */
 export function useSessionLabel(): (sessionJid: string) => string {
-  const groups = useChatStore((s) => s.groups);
   const agents = useChatStore((s) => s.agents);
   return useCallback(
     (sessionJid: string) => {
       const sessionId = sessionIdOf(sessionJid);
       const workspaceJid = workspaceJidOf(sessionJid);
-      if (!sessionId)
-        return groups[workspaceJid]?.is_my_home ? '直接对话' : '主会话';
       return (
-        agents[workspaceJid]?.find((agent) => agent.id === sessionId)?.name ||
+        (sessionId &&
+          agents[workspaceJid]?.find((agent) => agent.id === sessionId)
+            ?.name) ||
         '会话'
       );
     },
-    [groups, agents],
+    [agents],
   );
 }
 
@@ -113,12 +112,15 @@ export function AutomationDetail({
     [runs, automation.sessionMode],
   );
 
-  const openSession = (sessionJid: string) =>
+  const openSession = (sessionJid: string) => {
+    const sessionId = sessionIdOf(sessionJid);
+    if (!sessionId) return;
     openWorkspaceSession(
       navigate,
       { jid: automation.workspaceJid, folder: automation.workspaceFolder },
-      sessionIdOf(sessionJid),
+      sessionId,
     );
+  };
   const handleCancel = async (runId: string) => {
     try {
       await cancelRun(automation.id, runId);

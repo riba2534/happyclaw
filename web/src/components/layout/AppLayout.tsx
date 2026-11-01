@@ -92,17 +92,12 @@ export function AppLayout() {
   useEffect(() => {
     const unsubRunner = wsManager.on('runner_state', (data: any) => {
       if (data.chatJid && data.state) {
-        if (!data.chatJid.includes('#agent:')) {
-          useGroupsStore.getState().setRunnerState(data.chatJid, data.state);
-        }
-        useChatStore.getState().handleRunnerState(data.chatJid, data.state);
+        useGroupsStore.getState().setRunnerState(data.chatJid, data.state);
       }
     });
     const unsubStarted = wsManager.on('run_started', (data: any) => {
       if (!data.chatJid) return;
-      if (!data.chatJid.includes('#agent:')) {
-        useGroupsStore.getState().setRunnerState(data.chatJid, 'running');
-      }
+      useGroupsStore.getState().setRunnerState(data.chatJid, 'running');
       useChatStore.getState().handleRunStarted(data.chatJid, data.runId);
     });
     const unsubFinished = wsManager.on('run_finished', (data: any) => {
@@ -116,8 +111,7 @@ export function AppLayout() {
         : [];
       useChatStore.getState().handleActiveRunSnapshot(runs, queuedChatJids);
       for (const run of runs) {
-        if (!run?.chatJid) continue;
-        if (!run.chatJid.includes('#agent:')) {
+        if (run?.chatJid) {
           useGroupsStore.getState().setRunnerState(run.chatJid, 'running');
         }
       }

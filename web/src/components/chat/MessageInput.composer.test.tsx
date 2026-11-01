@@ -162,7 +162,6 @@ beforeEach(() => {
   clearPaletteSourceCache();
   useChatStore.setState({
     groups: {},
-    messages: {},
     agentMessages: {},
     drafts: {},
   });
@@ -302,8 +301,8 @@ describe('conversation isolation', () => {
       <MessageInput groupJid="web:g1" draftKey={key} onSend={onSend} />
     );
 
-    await render(view('web:g1'));
-    await type('主会话草稿');
+    await render(view('web:g1#agent:b1'));
+    await type('会话 B 草稿');
     await pickImage('main.png');
     expect(thumbnails()).toHaveLength(1);
 
@@ -311,11 +310,13 @@ describe('conversation isolation', () => {
     expect(text()).toBe('');
     expect(thumbnails()).toHaveLength(0);
     expect(revoked).toContain('blob:preview-' + blobCount);
-    expect(useChatStore.getState().drafts).toEqual({ 'web:g1': '主会话草稿' });
+    expect(useChatStore.getState().drafts).toEqual({
+      'web:g1#agent:b1': '会话 B 草稿',
+    });
 
     await type('会话 A 草稿');
-    await render(view('web:g1'));
-    expect(text()).toBe('主会话草稿');
+    await render(view('web:g1#agent:b1'));
+    expect(text()).toBe('会话 B 草稿');
     await render(view('web:g1#agent:a1'));
     expect(text()).toBe('会话 A 草稿');
   });
@@ -1188,9 +1189,10 @@ describe('uploaded files', () => {
 });
 
 describe('recalling sent messages', () => {
+  const KEY = 'web:g1#agent:s1';
   const sent = (content: string, sender = 'u1') => ({
     id: content,
-    chat_jid: 'web:g1',
+    chat_jid: KEY,
     sender,
     sender_name: 'U',
     content,
@@ -1201,8 +1203,8 @@ describe('recalling sent messages', () => {
   beforeEach(() => {
     useAuthStore.setState({ user: { id: 'u1' } as never });
     useChatStore.setState({
-      messages: {
-        'web:g1': [
+      agentMessages: {
+        s1: [
           sent('第一条'),
           sent('别人发的', 'someone-else'),
           { ...sent('助手回复'), is_from_me: true },
@@ -1213,7 +1215,9 @@ describe('recalling sent messages', () => {
   });
 
   test('↑ in an empty composer walks back through what this user sent', async () => {
-    await render(<MessageInput groupJid="web:g1" onSend={vi.fn()} />);
+    await render(
+      <MessageInput groupJid="web:g1" draftKey={KEY} onSend={vi.fn()} />,
+    );
     await keyDown('ArrowUp');
     expect(text()).toBe('第二条');
     await keyDown('ArrowUp');
@@ -1228,7 +1232,9 @@ describe('recalling sent messages', () => {
   });
 
   test('↑ leaves a draft alone, and editing a recalled message keeps it', async () => {
-    await render(<MessageInput groupJid="web:g1" onSend={vi.fn()} />);
+    await render(
+      <MessageInput groupJid="web:g1" draftKey={KEY} onSend={vi.fn()} />,
+    );
     await type('草稿');
     await keyDown('ArrowUp');
     expect(text()).toBe('草稿');
@@ -1245,9 +1251,11 @@ describe('recalling sent messages', () => {
 
   test('the arrows move the caret inside a recalled message, stepping only from its edge lines', async () => {
     useChatStore.setState({
-      messages: { 'web:g1': [sent('第一条'), sent('上一行\n下一行')] },
+      agentMessages: { s1: [sent('第一条'), sent('上一行\n下一行')] },
     });
-    await render(<MessageInput groupJid="web:g1" onSend={vi.fn()} />);
+    await render(
+      <MessageInput groupJid="web:g1" draftKey={KEY} onSend={vi.fn()} />,
+    );
     await keyDown('ArrowUp');
     expect(text()).toBe('上一行\n下一行');
     // The caret is on the last line: ↑ moves it, it does not step.
@@ -1261,7 +1269,14 @@ describe('recalling sent messages', () => {
   });
 
   test('a recalled message is not saved as a draft until it is edited', async () => {
-    await render(<MessageInput key="a" groupJid="web:g1" onSend={vi.fn()} />);
+    await render(
+      <MessageInput
+        key="a"
+        groupJid="web:g1"
+        draftKey={KEY}
+        onSend={vi.fn()}
+      />,
+    );
     await keyDown('ArrowUp');
     expect(text()).toBe('第二条');
     await wait(350);
@@ -1269,7 +1284,14 @@ describe('recalling sent messages', () => {
     expect([...storage.keys()]).toEqual([]);
 
     // Leaving and coming back offers recall again, not a stale draft.
-    await render(<MessageInput key="b" groupJid="web:g1" onSend={vi.fn()} />);
+    await render(
+      <MessageInput
+        key="b"
+        groupJid="web:g1"
+        draftKey={KEY}
+        onSend={vi.fn()}
+      />,
+    );
     expect(text()).toBe('');
 
     await keyDown('ArrowUp');
@@ -1279,15 +1301,17 @@ describe('recalling sent messages', () => {
     await typeAtCaret('，改了');
     await wait(350);
     expect(useChatStore.getState().drafts).toEqual({
-      'web:g1': '第二条，改了',
+      [KEY]: '第二条，改了',
     });
   });
 
   test('a save still waiting when a recall starts does not store the recalled message', async () => {
-    await render(<MessageInput groupJid="web:g1" onSend={vi.fn()} />);
+    await render(
+      <MessageInput groupJid="web:g1" draftKey={KEY} onSend={vi.fn()} />,
+    );
     await typeAtCaret('草稿');
     await wait(350);
-    expect(useChatStore.getState().drafts).toEqual({ 'web:g1': '草稿' });
+    expect(useChatStore.getState().drafts).toEqual({ [KEY]: '草稿' });
     // Clearing schedules a save; ↑ recalls before it runs.
     await act(async () => {
       editor().commands.clearContent(true);

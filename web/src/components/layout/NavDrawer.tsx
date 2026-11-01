@@ -215,7 +215,7 @@ export function NavDrawer() {
                 disabled={creatingSession}
                 onClick={() => {
                   setOpen(false);
-                  void startNewConversation({ inHome: true });
+                  void startNewConversation({ target: 'home' });
                 }}
               >
                 <SquarePen />

@@ -12,8 +12,6 @@ const { load, wsHandlers } = vi.hoisted(() => ({
 vi.mock('../../../stores/chat', async () => {
   const { create } = await import('zustand');
   return {
-    contextUsageKey: (jid: string, agentId?: string | null) =>
-      agentId ? `${jid}#agent:${agentId}` : jid,
     useChatStore: create(() => ({
       contextUsage: {} as Record<string, unknown>,
       loadContextUsage: load,
@@ -143,7 +141,7 @@ describe('ConversationContextUsage', () => {
   test('shows the usage stored for its conversation only', () => {
     useChatStore.setState({
       contextUsage: {
-        'web:g1': usage(10_000, 200_000),
+        'web:g1#agent:a0': usage(10_000, 200_000),
         'web:g1#agent:a1': usage(150_000, 200_000),
       },
     });
@@ -152,7 +150,7 @@ describe('ConversationContextUsage', () => {
         ?.textContent,
     ).toBe('75%');
     expect(
-      render(<ConversationContextUsage jid="web:g1" agentId={null} />)
+      render(<ConversationContextUsage jid="web:g1" agentId="a0" />)
         ?.textContent,
     ).toBe('5%');
     expect(
@@ -164,8 +162,8 @@ describe('ConversationContextUsage', () => {
 describe('loading', () => {
   test('a shown ring loads its conversation, again after a reconnect', () => {
     load.mockClear();
-    render(<ConversationContextUsage jid="web:g1" agentId={null} />);
-    expect(load.mock.calls).toEqual([['web:g1', null]]);
+    render(<ConversationContextUsage jid="web:g1" agentId="a0" />);
+    expect(load.mock.calls).toEqual([['web:g1', 'a0']]);
 
     render(<ConversationContextUsage jid="web:g1" agentId="a1" />);
     expect(load.mock.calls.at(-1)).toEqual(['web:g1', 'a1']);

@@ -52,7 +52,7 @@ function readExpanded(key: string): Record<string, boolean> {
 /** A request from the sidebar or palette for ChatView to open IM binding. */
 export interface BindingRequest {
   groupJid: string;
-  /** `__main__`, `__workspace__`, or a session id. */
+  /** `__workspace__` (the workspace topic groups) or a session id. */
   target: string;
   nonce: number;
 }

@@ -50,7 +50,7 @@ const SESSION = `${JID}#agent:s1`;
 
 const utterance = (id: string, over: Partial<Message> = {}): Message => ({
   id,
-  chat_jid: JID,
+  chat_jid: SESSION,
   sender: 'happyclaw-agent',
   sender_name: 'HappyClaw',
   content: '你好。',
@@ -63,28 +63,25 @@ const utterance = (id: string, over: Partial<Message> = {}): Message => ({
 
 beforeEach(() => {
   vi.clearAllMocks();
-  useChatStore.setState(
-    { ...initialState, messages: {}, agentMessages: {} },
-    true,
-  );
+  useChatStore.setState({ ...initialState, agentMessages: {} }, true);
 });
 
 describe('a trace stored after its message was announced', () => {
-  it('marks the message of a workspace chat, and only that one', () => {
+  it('marks the message of a session, and only that one', () => {
     useChatStore.setState({
-      messages: {
-        [JID]: [utterance('m1'), utterance('m2', { turn_id: 'turn-2' })],
+      agentMessages: {
+        s1: [utterance('m1'), utterance('m2', { turn_id: 'turn-2' })],
       },
     });
-    useChatStore.getState().handleMessageTrace(JID, 'm1');
-    const [first, second] = useChatStore.getState().messages[JID];
+    useChatStore.getState().handleMessageTrace(SESSION, 'm1');
+    const [first, second] = useChatStore.getState().agentMessages.s1;
     expect(first.has_trace).toBe(true);
     expect(second.has_trace).toBeUndefined();
   });
 
   it('marks a message of a Runtime Session and keeps its stored snapshot in step', () => {
     useChatStore.setState({
-      agentMessages: { s1: [utterance('m1', { chat_jid: SESSION })] },
+      agentMessages: { s1: [utterance('m1')] },
       agentHasMore: { s1: true },
     });
     useChatStore.getState().handleMessageTrace(SESSION, 'm1');
@@ -100,49 +97,60 @@ describe('a trace stored after its message was announced', () => {
 
   it('matches the whole composite key: the same id in another chat is left alone', () => {
     useChatStore.setState({
-      messages: { [JID]: [utterance('m1')] },
-      agentMessages: { s1: [utterance('m1', { chat_jid: SESSION })] },
+      agentMessages: {
+        s1: [utterance('m1')],
+        s2: [utterance('m1', { chat_jid: `${JID}#agent:s2` })],
+      },
     });
     useChatStore.getState().handleMessageTrace(SESSION, 'm1');
-    expect(useChatStore.getState().messages[JID][0].has_trace).toBeUndefined();
+    expect(
+      useChatStore.getState().agentMessages.s2[0].has_trace,
+    ).toBeUndefined();
     expect(useChatStore.getState().agentMessages.s1[0].has_trace).toBe(true);
   });
 
   it('keeps a mark that arrives before its message, and applies it when the message does', () => {
     // A message with attachments is announced after its thumbnails are made, so
     // the trace notice can overtake it.
-    useChatStore.getState().handleMessageTrace(JID, 'late');
-    useChatStore.getState().handleWsNewMessage(JID, {
-      ...utterance('late'),
-      source_kind: 'sdk_send_message',
-    } as never);
+    useChatStore.getState().handleMessageTrace(SESSION, 'late');
+    useChatStore
+      .getState()
+      .handleWsNewMessage(JID, utterance('late') as never, 's1');
     const arrived = useChatStore
       .getState()
-      .messages[JID].find((message) => message.id === 'late');
+      .agentMessages.s1.find((message) => message.id === 'late');
     expect(arrived?.has_trace).toBe(true);
     // Spent: a later message with that id is not marked again.
-    useChatStore.setState({ messages: { [JID]: [] } });
-    useChatStore.getState().handleWsNewMessage(JID, utterance('late') as never);
-    expect(useChatStore.getState().messages[JID][0]?.has_trace).toBeUndefined();
+    useChatStore.setState({ agentMessages: { s1: [] } });
+    useChatStore
+      .getState()
+      .handleWsNewMessage(JID, utterance('late') as never, 's1');
+    expect(
+      useChatStore.getState().agentMessages.s1[0]?.has_trace,
+    ).toBeUndefined();
   });
 
   it('does not keep a mark for a message it already has', () => {
-    useChatStore.setState({ messages: { [JID]: [utterance('m1')] } });
-    useChatStore.getState().handleMessageTrace(JID, 'm1');
-    useChatStore.setState({ messages: { [JID]: [] } });
+    useChatStore.setState({ agentMessages: { s1: [utterance('m1')] } });
+    useChatStore.getState().handleMessageTrace(SESSION, 'm1');
+    useChatStore.setState({ agentMessages: { s1: [] } });
     // Had the mark been kept, this arrival would be marked a second time.
-    useChatStore.getState().handleWsNewMessage(JID, utterance('m1') as never);
-    expect(useChatStore.getState().messages[JID][0]?.has_trace).toBeUndefined();
+    useChatStore
+      .getState()
+      .handleWsNewMessage(JID, utterance('m1') as never, 's1');
+    expect(
+      useChatStore.getState().agentMessages.s1[0]?.has_trace,
+    ).toBeUndefined();
   });
 
   it('ignores a message this tab never loaded, and one already marked', () => {
     useChatStore.setState({
-      messages: { [JID]: [utterance('m1', { has_trace: true })] },
+      agentMessages: { s1: [utterance('m1', { has_trace: true })] },
     });
-    const before = useChatStore.getState().messages;
-    useChatStore.getState().handleMessageTrace(JID, 'm1');
-    useChatStore.getState().handleMessageTrace(JID, 'nope');
-    expect(useChatStore.getState().messages).toBe(before);
+    const before = useChatStore.getState().agentMessages;
+    useChatStore.getState().handleMessageTrace(SESSION, 'm1');
+    useChatStore.getState().handleMessageTrace(SESSION, 'nope');
+    expect(useChatStore.getState().agentMessages).toBe(before);
     expect(saveAgentMessageSnapshotMock).not.toHaveBeenCalled();
   });
 });

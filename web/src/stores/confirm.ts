@@ -9,6 +9,13 @@ export interface ConfirmChoice {
   dangerConfirmText?: string;
 }
 
+/** A dropdown a confirm dialog asks to pick from; see confirmSelectDialog(). */
+export interface ConfirmSelect {
+  label: string;
+  options: Array<{ value: string; label: string }>;
+  defaultValue: string;
+}
+
 export interface ConfirmOptions {
   title: string;
   message: string;
@@ -19,6 +26,8 @@ export interface ConfirmOptions {
   /** Radio options shown under the message; see confirmChoiceDialog(). */
   choices?: ConfirmChoice[];
   defaultChoice?: string;
+  /** A dropdown shown under the message instead of radio options. */
+  select?: ConfirmSelect;
 }
 
 interface PendingConfirm extends ConfirmOptions {
@@ -60,6 +69,23 @@ function request(
  */
 export function confirmDialog(options: ConfirmOptions): Promise<boolean> {
   return new Promise((resolve) => request(options, resolve));
+}
+
+/**
+ * confirmDialog() with a dropdown under the message: resolves the picked
+ * value, or null when cancelled.
+ */
+export function confirmSelectDialog(
+  options: Omit<ConfirmOptions, 'choices' | 'defaultChoice' | 'select'> & {
+    select: ConfirmSelect;
+  },
+): Promise<string | null> {
+  return new Promise((resolve) =>
+    request(
+      { ...options, defaultChoice: options.select.defaultValue },
+      (confirmed, choice) => resolve(confirmed ? (choice ?? '') : null),
+    ),
+  );
 }
 
 /**

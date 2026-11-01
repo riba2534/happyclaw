@@ -36,7 +36,6 @@ describe('Web logical-run refresh contract', () => {
     const store = read('web/src/stores/chat.ts');
     const layout = read('web/src/components/layout/AppLayout.tsx');
 
-    expect(store).toMatch(/const startsDirectRun/);
     expect(store).toMatch(/hasExactQueryAttempt\(g\)/);
     expect(store).not.toMatch(/g\.queryInFlight \|\| g\.pendingMessages/);
     expect(store).not.toMatch(/const inferredWaiting/);
@@ -68,23 +67,17 @@ describe('Web logical-run refresh contract', () => {
     expect(view).not.toMatch(/wsManager\.on\('stream_event'/);
   });
 
-  test('A-late interrupted is fenced before main or agent terminal branches', () => {
+  test('A-late interrupted is fenced before the terminal branch', () => {
     const store = read('web/src/stores/chat.ts');
     const handler = store.slice(
       store.indexOf('handleStreamEvent: (chatJid, event, agentId, runId)'),
       store.indexOf('handleWsNewMessage: (chatJid, wsMsg'),
     );
     const fence = handler.indexOf('shouldApplyRunScopedPayload');
-    const firstInterrupted = handler.indexOf(
-      "event.statusText === 'interrupted'",
-    );
-    const lastInterrupted = handler.lastIndexOf(
-      "event.statusText === 'interrupted'",
-    );
+    const interrupted = handler.indexOf("event.statusText === 'interrupted'");
 
     expect(fence).toBeGreaterThan(0);
-    expect(firstInterrupted).toBeGreaterThan(fence);
-    expect(lastInterrupted).toBeGreaterThan(firstInterrupted);
+    expect(interrupted).toBeGreaterThan(fence);
   });
 
   test('exact terminal clears duration and run ownership', () => {
@@ -94,7 +87,9 @@ describe('Web logical-run refresh contract', () => {
       store.indexOf('handleActiveRunSnapshot: (runs)'),
     );
 
-    expect(finished).toMatch(/delete nextPendingThinkingDuration\[chatJid\]/);
+    expect(finished).toMatch(
+      /agentStreaming: withoutKey\(s\.agentStreaming, agentId\)/,
+    );
     expect(finished).toMatch(/cancelPendingDeltaForRuntime\(chatJid\)/);
   });
 

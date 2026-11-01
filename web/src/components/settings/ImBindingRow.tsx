@@ -8,7 +8,6 @@ import {
   AlertTriangle,
   Trash2,
 } from 'lucide-react';
-import { teamModeWorkspaceOf } from '../../lib/team-mode';
 import { Button } from '@/components/ui/button';
 import {
   NativeSelect,
@@ -21,10 +20,7 @@ import {
   ACTIVATION_MODE_OPTIONS,
   AUDIENCE_MODE_OPTIONS,
 } from '../../constants/im';
-import {
-  hasBindingPolicyMismatch,
-  resolveBindingTargetType,
-} from '../../utils/im-binding-policy';
+import { hasBindingPolicyMismatch } from '../../utils/im-binding-policy';
 import { getImChannelCapabilities } from '../../constants/im-capabilities';
 
 interface ImBindingRowProps {
@@ -36,7 +32,7 @@ interface ImBindingRowProps {
   onActivationModeChange: (jid: string, mode: string) => void;
   onAudienceModeChange: (jid: string, mode: 'everyone' | 'owner_only') => void;
   onDelete: (group: AvailableImGroup) => void;
-  /** Feishu ordinary groups bound to a main session. */
+  /** Given for a Feishu ordinary group bound to a session (team mode). */
   onTeamMode?: (group: AvailableImGroup) => void;
 }
 
@@ -85,9 +81,7 @@ export function ImBindingRow({
       return !policyMismatch ? `会话 · ${target}` : `异常会话绑定 · ${target}`;
     }
     if (boundWorkspaceJid && group.bound_target_name) {
-      return resolveBindingTargetType(group) === 'session'
-        ? `主会话 · ${group.bound_target_name}`
-        : `工作区 · ${group.bound_target_name}`;
+      return `工作区 · ${group.bound_target_name}`;
     }
     return '未绑定';
   };
@@ -200,7 +194,7 @@ export function ImBindingRow({
               }
             />
           )}
-          {onTeamMode && teamModeWorkspaceOf(group) && (
+          {onTeamMode && (
             <IconButton
               label="团队模式"
               onClick={() => onTeamMode(group)}

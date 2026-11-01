@@ -155,7 +155,7 @@ describe('frontend workspace interaction mode contract', () => {
     const chatView = read('web/src/components/chat/ChatView.tsx');
     const store = read('web/src/stores/chat.ts');
 
-    expect(chatView).toContain('}, [activeAgentTab, groupJid, markChatRead]);');
+    expect(chatView).toContain('}, [sessionId, groupJid, markChatRead]);');
     expect(store).toContain('s.currentGroup === jid && s.unreadReplies[jid]');
     expect(store).toContain('delete nextUnreadReplies[jid]');
     expect(store).toContain('unreadReplies: nextUnreadReplies');

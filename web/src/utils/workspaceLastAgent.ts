@@ -1,9 +1,9 @@
-// Per-workspace last-active sub-conversation memory.
-// When the user re-enters a workspace via sidebar/URL without `?agent=`,
-// ChatView consults this map to auto-restore the previous tab.
-// Entries are cleared by `selectTab(null)` (explicit return to main).
+// Which session this device opened last: per workspace, so entering a
+// workspace without `?agent=` returns to it, and overall, so opening the app
+// (`/chat`) does. An entry naming a session that is gone is ignored.
 
 const STORAGE_KEY = 'happyclaw-workspace-last-agent';
+const LAST_SESSION_KEY = 'happyclaw-last-session';
 
 function safeStorage(): Storage | null {
   try {
@@ -20,21 +20,17 @@ function readMap(): Record<string, string> {
     const raw = ls.getItem(STORAGE_KEY);
     if (!raw) return {};
     const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed
+      : {};
   } catch {
     return {};
   }
 }
 
 function writeMap(map: Record<string, string>): void {
-  const ls = safeStorage();
-  if (!ls) return;
   try {
-    if (Object.keys(map).length === 0) {
-      ls.removeItem(STORAGE_KEY);
-    } else {
-      ls.setItem(STORAGE_KEY, JSON.stringify(map));
-    }
+    safeStorage()?.setItem(STORAGE_KEY, JSON.stringify(map));
   } catch {
     /* quota exceeded — ignore */
   }
@@ -44,12 +40,43 @@ export function getWorkspaceLastAgent(jid: string): string | null {
   return readMap()[jid] || null;
 }
 
-export function setWorkspaceLastAgent(jid: string, agentId: string | null): void {
-  const map = readMap();
-  if (agentId) {
-    map[jid] = agentId;
-  } else {
-    delete map[jid];
+/** The session last opened on this device, by workspace folder. */
+export interface LastOpenedSession {
+  folder: string;
+  sessionId: string;
+}
+
+export function getLastOpenedSession(): LastOpenedSession | null {
+  const ls = safeStorage();
+  if (!ls) return null;
+  try {
+    const parsed = JSON.parse(ls.getItem(LAST_SESSION_KEY) || 'null');
+    return parsed &&
+      typeof parsed.folder === 'string' &&
+      typeof parsed.sessionId === 'string' &&
+      parsed.folder &&
+      parsed.sessionId
+      ? { folder: parsed.folder, sessionId: parsed.sessionId }
+      : null;
+  } catch {
+    return null;
   }
-  writeMap(map);
+}
+
+/** Remember a session as the one last opened, overall and in its workspace. */
+export function rememberOpenedSession(
+  workspace: { jid: string; folder: string },
+  sessionId: string,
+): void {
+  writeMap({ ...readMap(), [workspace.jid]: sessionId });
+  const ls = safeStorage();
+  if (!ls) return;
+  try {
+    ls.setItem(
+      LAST_SESSION_KEY,
+      JSON.stringify({ folder: workspace.folder, sessionId }),
+    );
+  } catch {
+    /* quota exceeded — ignore */
+  }
 }

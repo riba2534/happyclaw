@@ -10,12 +10,14 @@ const params = new URLSearchParams(window.location.search);
 const role = params.get('role') === 'member' ? 'member' : 'admin';
 const executionMode = params.get('runtime') === 'host' ? 'host' : 'container';
 const canModify = params.get('canModify') !== 'false';
+const groupJid = 'web:e2e-mobile';
+/** The session the harness opens. */
+const sessionId = 'mobile-session';
 // ?sessions=1 opens the phone session list, as ChatView's own URL flag does.
 const route =
   params.get('sessions') === '1'
-    ? '/chat/e2e-mobile?sessions=1'
-    : '/chat/e2e-mobile';
-const groupJid = 'web:e2e-mobile';
+    ? `/chat/e2e-mobile?agent=${sessionId}&sessions=1`
+    : `/chat/e2e-mobile?agent=${sessionId}`;
 
 const user: UserPublic = {
   id: `${role}-user`,
@@ -98,18 +100,27 @@ useChatStore.setState({
     },
   },
   currentGroup: groupJid,
-  messages: { [groupJid]: [] },
-  waiting: {},
-  hasMore: { [groupJid]: false },
-  agents: { [groupJid]: [] },
-  activeAgentTab: { [groupJid]: null },
-  agentMessages: {},
+  agents: {
+    [groupJid]: [
+      {
+        id: sessionId,
+        name: '移动端测试会话',
+        prompt: '',
+        status: 'idle',
+        kind: 'conversation',
+        created_at: '2026-01-01T00:00:00.000Z',
+      },
+    ],
+  },
+  activeAgentTab: { [groupJid]: sessionId },
+  agentMessages: { [sessionId]: [] },
   agentWaiting: {},
-  agentHasMore: {},
-  followUps: { [groupJid]: [] },
+  agentHasMore: { [sessionId]: false },
+  followUps: {},
   loading: false,
-  loadMessages: async () => undefined,
-  refreshMessages: async () => undefined,
+  loadAgentMessages: async () => undefined,
+  hydrateAgentMessages: async () => undefined,
+  refreshAgentMessages: async () => undefined,
   restoreActiveState: async () => undefined,
   loadAgents: async () => undefined,
   loadFollowUps: async () => undefined,

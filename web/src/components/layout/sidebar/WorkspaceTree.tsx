@@ -35,7 +35,7 @@ import { cn } from '@/lib/utils';
 import { EmojiAvatar } from '../../common/EmojiAvatar';
 import { useAuthStore, type AppearanceConfig } from '../../../stores/auth';
 import { useChatStore } from '../../../stores/chat';
-import { useGroupsStore } from '../../../stores/groups';
+import { isWorkspaceRunning, useGroupsStore } from '../../../stores/groups';
 import type { GroupEntry } from '../../../utils/group-utils';
 import {
   type AgentWorkspaceSection,
@@ -436,8 +436,9 @@ function AgentGroup({
   const { directGroup, workspaces } = getAgentNavigationTargets(section);
   const runningCount = useGroupsStore(
     (s) =>
-      section.items.filter((item) => s.runnerStates[item.jid] === 'running')
-        .length,
+      section.items.filter((item) =>
+        isWorkspaceRunning(s.runnerStates, item.jid),
+      ).length,
   );
   // An agent that owns the home workspace opens it from its own row, like
   // the primary agent; otherwise the row only expands and collapses.
@@ -599,8 +600,8 @@ const WorkspaceRow = memo(function WorkspaceRow({
   actions: WorkspaceActions;
 }) {
   const currentUser = useAuthStore((s) => s.user);
-  const isRunning = useGroupsStore(
-    (s) => s.runnerStates[group.jid] === 'running',
+  const isRunning = useGroupsStore((s) =>
+    isWorkspaceRunning(s.runnerStates, group.jid),
   );
   const unread = useChatStore((s) => s.unreadReplies[group.jid] ?? 0);
   const touch = variant === 'mobile';
