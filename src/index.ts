@@ -16113,6 +16113,34 @@ function admitWarmSessionInputs(input: {
   return false;
 }
 
+/**
+ * Billing's per-user runner limit for a lane about to start: every active
+ * runner of the owner's workspaces counts, one per session.
+ */
+function checkOwnerConcurrentLimit(groupJid: string): {
+  allowed: boolean;
+  userId: string | null;
+} {
+  const baseJid = stripVirtualJidSuffix(groupJid);
+  const group = registeredGroups[baseJid] ?? getRegisteredGroup(baseJid);
+  const userId = group?.created_by ?? null;
+  if (!isBillingEnabled()) return { allowed: true, userId };
+  if (!userId) return { allowed: true, userId: null };
+  const owner = getUserById(userId);
+  if (!owner || owner.role === 'admin') return { allowed: true, userId };
+  const limit = getUserConcurrentContainerLimit(owner.id, owner.role);
+  if (limit == null) return { allowed: true, userId: owner.id };
+  let userActive = 0;
+  for (const lane of queue.getStatus().groups) {
+    if (!lane.active) continue;
+    const laneBaseJid = stripVirtualJidSuffix(lane.jid);
+    const laneGroup =
+      registeredGroups[laneBaseJid] ?? getRegisteredGroup(laneBaseJid);
+    if (laneGroup?.created_by === owner.id) userActive++;
+  }
+  return { allowed: userActive < limit, userId: owner.id };
+}
+
 function buildOnAgentMessage(): (baseChatJid: string, agentId: string) => void {
   return (baseChatJid: string, agentId: string) => {
     // The IM sockets deliberately remain connected while graceful shutdown
@@ -18791,27 +18819,7 @@ async function main(): Promise<void> {
     },
   );
   // Billing: user-level concurrent container limit
-  queue.setUserConcurrentLimitChecker((groupJid: string) => {
-    const baseJid = stripVirtualJidSuffix(groupJid);
-    const group = registeredGroups[baseJid] ?? getRegisteredGroup(baseJid);
-    const userId = group?.created_by ?? null;
-    if (!isBillingEnabled()) return { allowed: true, userId };
-    if (!userId) return { allowed: true, userId: null };
-    const owner = getUserById(userId);
-    if (!owner || owner.role === 'admin') return { allowed: true, userId };
-    const limit = getUserConcurrentContainerLimit(owner.id, owner.role);
-    if (limit == null) return { allowed: true, userId: owner.id };
-    // Every active runner of the user's workspaces counts, one per session.
-    let userActive = 0;
-    for (const lane of queue.getStatus().groups) {
-      if (!lane.active) continue;
-      const laneBaseJid = stripVirtualJidSuffix(lane.jid);
-      const laneGroup =
-        registeredGroups[laneBaseJid] ?? getRegisteredGroup(laneBaseJid);
-      if (laneGroup?.created_by === owner.id) userActive++;
-    }
-    return { allowed: userActive < limit, userId: owner.id };
-  });
+  queue.setUserConcurrentLimitChecker(checkOwnerConcurrentLimit);
   // Recovery: when agent process exits with unconsumed IPC messages,
   // re-enqueue processAgentConversation to pick them up. See issue #240.
   queue.setOnUnconsumedAgentIpc((groupJid: string) => {

@@ -56,7 +56,10 @@ afterAll(() => {
   fs.rmSync(paths.root, { recursive: true, force: true });
 });
 
-const LANE = 'web:park-lane';
+// A Home session migrated from the old main session (source_kind
+// legacy_main): its lane is an ordinary session lane.
+const LANE_SESSION = '6f1c2d3e-4b5a-4c6d-8e7f-9a0b1c2d3e4f';
+const LANE = `web:park-lane#agent:${LANE_SESSION}`;
 const EMPTY_CURSOR = { timestamp: '', id: '', sequence: 0 };
 
 function inbound(id: string, minute: number): void {
@@ -130,7 +133,7 @@ describe('parking an input that waits for a usage-limit reset', () => {
 
     const note = g.parkInputForUsageLimitWait({
       laneJid: LANE,
-      agentId: null,
+      agentId: LANE_SESSION,
       inputId: 'm2',
       messageIds: g.usageLimitParkedMessageIds(LANE, {}, [{ id: 'm2' }]),
       replySourceImJid: 'feishu:oc_park',
@@ -201,7 +204,7 @@ describe('parking an input that waits for a usage-limit reset', () => {
     });
     g.parkInputForUsageLimitWait({
       laneJid: lane,
-      agentId: null,
+      agentId: LANE_SESSION,
       inputId: 'w1',
       messageIds: ['w1'],
       replySourceImJid: null,
