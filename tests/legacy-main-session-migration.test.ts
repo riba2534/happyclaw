@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -9,6 +10,7 @@ const root = fs.mkdtempSync(path.join(os.tmpdir(), 'legacy-main-session-'));
 const storeDir = path.join(root, 'db');
 const groupsDir = path.join(root, 'groups');
 const databasePath = path.join(storeDir, 'messages.db');
+const repositoryRoot = path.resolve(import.meta.dirname, '..');
 
 vi.mock('../src/config.js', async (importOriginal) => ({
   ...((await importOriginal()) as Record<string, unknown>),
@@ -1018,4 +1020,87 @@ describe('v88 legacy main session migration', () => {
     conn.close();
     expect(checks.filter((c) => c.ok).map((c) => c.id)).toEqual([]);
   });
+
+  test('the report script migrates a copy and exits non-zero on a failed check', () => {
+    const tsxCli = path.join(
+      repositoryRoot,
+      'node_modules',
+      'tsx',
+      'dist',
+      'cli.mjs',
+    );
+    const scriptPath = path.join(
+      repositoryRoot,
+      'scripts',
+      'legacy-main-session-report.ts',
+    );
+    const runOn = (seed: (conn: Conn) => void, name: string) => {
+      buildV87(seed);
+      const checkout = path.join(root, name);
+      fs.mkdirSync(path.join(checkout, 'data', 'db'), { recursive: true });
+      for (const suffix of ['', '-wal']) {
+        if (fs.existsSync(databasePath + suffix)) {
+          fs.copyFileSync(
+            databasePath + suffix,
+            path.join(checkout, 'data', 'db', `messages.db${suffix}`),
+          );
+        }
+      }
+      fs.mkdirSync(path.join(checkout, 'data', 'sessions', 'main', '.claude'), {
+        recursive: true,
+      });
+      const result = spawnSync(process.execPath, [tsxCli, scriptPath], {
+        cwd: checkout,
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          HAPPYCLAW_MIGRATION_BACKUP_DIR: path.join(root, 'nope'),
+        },
+      });
+      return { result, checkout };
+    };
+
+    const good = runOn(seedRich, 'checkout-good');
+    expect(good.result.status, good.result.stderr).toBe(0);
+    const output = JSON.parse(good.result.stdout);
+    expect(output).toMatchObject({
+      ok: true,
+      schemaVersionBefore: '87',
+      migrated: true,
+      messagesBefore: 15,
+      messagesAfter: 14,
+      summary: {
+        sessionsCreated: 2,
+        messagesMoved: 10,
+        duplicatesRemoved: 1,
+        bindingsRebound: 2,
+        automationsRetargeted: 1,
+        pendingInputs: 1,
+      },
+      pendingMessageIds: ['work-2'],
+      directories: expect.arrayContaining([
+        expect.objectContaining({ workspaceJid: HOME, status: 'would_move' }),
+      ]),
+    });
+    // Planned only: the session directory stays where it was.
+    expect(
+      fs.existsSync(
+        path.join(good.checkout, 'data', 'sessions', 'main', '.claude'),
+      ),
+    ).toBe(true);
+    expect(fs.existsSync(path.join(root, 'nope'))).toBe(false);
+
+    const bad = runOn((conn) => {
+      seedRich(conn);
+      group(conn, 'feishu:oc_weird', { folder: 'x', targetMainJid: DM });
+    }, 'checkout-bad');
+    expect(bad.result.status).toBe(1);
+    const failed = JSON.parse(bad.result.stdout);
+    expect(failed.ok).toBe(false);
+    expect(
+      failed.checks
+        .filter((c: { ok: boolean }) => !c.ok)
+        .map((c: { id: string }) => c.id),
+    ).toEqual(['I2_bindings_target_sessions']);
+  }, 60_000);
 });
