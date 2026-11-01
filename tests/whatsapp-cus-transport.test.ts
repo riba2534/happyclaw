@@ -66,9 +66,6 @@ const db = vi.hoisted(() => ({
   isDatabaseInitialized: vi.fn(() => false),
 }));
 vi.mock('../src/db.js', () => db);
-vi.mock('../src/message-notifier.js', () => ({
-  notifyNewImMessage: vi.fn(),
-}));
 vi.mock('../src/web.js', () => ({ broadcastNewMessage: vi.fn() }));
 vi.mock('../src/logger.js', () => ({
   logger: {

@@ -25,6 +25,7 @@ import {
   formatContextMessages,
   isDirectMessageJid,
   resolveBoundChatTarget,
+  resolveSessionTarget,
 } from '../src/im-command-utils.js';
 import { createRuntimeSourceHarness } from './helpers/runtime-source.js';
 
@@ -226,12 +227,16 @@ function recallLane() {
       bindings[`${jid}|${contextId}`],
     buildResolveEffectiveChatJid: () => router,
     findGroupNameByFolder: () => 'Workspace',
+    resolveBoundChatTarget,
+    resolveSessionTarget,
     getMessagesPage,
     summarizeWithClaude: vi.fn(async () => null),
     formatContextMessages,
   };
   const harness = createRuntimeSourceHarness(globals);
   for (const name of [
+    'UNBOUND_CHAT_REPLY',
+    'resolveCommandSession',
     'recallCooldowns',
     'resolveRecallTarget',
     'handleRecallCommand',
@@ -291,6 +296,129 @@ describe('/recall reads the Session this message routes to (P0-2)', () => {
       'web:ws#agent:session-normal',
       undefined,
       10,
+    );
+  });
+
+  test('an unbound chat reads nothing and says so', async () => {
+    const l = recallLane();
+    l.globals.registeredGroups['feishu:oc_unbound'] = {
+      name: 'Unbound',
+      folder: 'home-u1',
+      feishu_chat_mode: 'p2p',
+    };
+    await expect(l.recall('feishu:oc_unbound')).resolves.toBe(
+      '本聊天未绑定会话。',
+    );
+    expect(l.getMessagesPage).not.toHaveBeenCalled();
+  });
+});
+
+/** The generic `/clear` and `/fresh` handlers of handleCommand. */
+function slashResetLane(groups: Record<string, any>) {
+  const executeSessionReset = vi.fn(async () => {});
+  const executeFreshWindowReset = vi.fn(async () => {});
+  const globals: Record<string, any> = {
+    logger,
+    path: { join: (...parts: string[]) => parts.join('/') },
+    GROUPS_DIR: '/groups',
+    registeredGroups: groups,
+    getRegisteredGroup: (jid: string) => groups[jid],
+    getAgent: (id: string) =>
+      id === 'session-dm'
+        ? { id, chat_jid: 'web:ws', name: 'DM session', group_folder: 'ws' }
+        : undefined,
+    isNativeContextContainer,
+    resolveNativeThreadContext,
+    getImContextBinding: () => undefined,
+    findGroupNameByFolder: () => 'Workspace',
+    resolveBoundChatTarget,
+    resolveSessionTarget,
+    queue: {},
+    sessions: {},
+    broadcastNewMessage: vi.fn(),
+    setCursors: vi.fn(),
+    executeSessionReset,
+    executeFreshWindowReset,
+    captureWorkspaceSnapshot: async () => ({}),
+    resolveWorkspaceProjectRoot: () => '/groups/ws',
+    formatFreshWindowHandoff: () => 'handoff',
+    FRESH_WINDOW_SUCCESS_REPLY: 'FRESH_OK',
+    FRESH_WINDOW_FAILURE_REPLY: 'FRESH_FAILED',
+  };
+  const harness = createRuntimeSourceHarness(globals);
+  for (const name of [
+    'UNBOUND_CHAT_REPLY',
+    'resolveCommandSession',
+    'handleClearCommand',
+    'handleFreshCommand',
+  ]) {
+    harness.install(name);
+  }
+  return {
+    executeSessionReset,
+    executeFreshWindowReset,
+    clear: (jid: string) => globals.handleClearCommand(jid) as Promise<string>,
+    fresh: (jid: string) =>
+      globals.handleFreshCommand(jid, '') as Promise<string>,
+  };
+}
+
+describe('slash /clear and /fresh act on the bound session only', () => {
+  const groups = () => ({
+    // An unbound private chat whose row still records the Home folder.
+    'feishu:oc_unbound': {
+      name: 'unbound',
+      folder: 'home-u1',
+      feishu_chat_mode: 'p2p',
+      owner_im_id: OWNER,
+    },
+    // A stale workspace binding on an ordinary chat names no session.
+    'feishu:oc_stale': {
+      name: 'stale',
+      folder: 'ws',
+      feishu_chat_mode: 'group',
+      owner_im_id: OWNER,
+      target_main_jid: 'web:ws',
+    },
+    'feishu:oc_dm': {
+      name: 'dm',
+      folder: 'ws',
+      feishu_chat_mode: 'p2p',
+      owner_im_id: OWNER,
+      target_agent_id: 'session-dm',
+    },
+    'web:ws': { name: 'Workspace', folder: 'ws' },
+    'web:home-u1': { name: 'Home', folder: 'home-u1', is_home: true },
+  });
+
+  test.each(['feishu:oc_unbound', 'feishu:oc_stale', 'feishu:oc_missing'])(
+    '%s resets nothing and replies 本聊天未绑定会话。',
+    async (jid) => {
+      const l = slashResetLane(groups());
+      await expect(l.clear(jid)).resolves.toBe('本聊天未绑定会话。');
+      await expect(l.fresh(jid)).resolves.toBe('本聊天未绑定会话。');
+      expect(l.executeSessionReset).not.toHaveBeenCalled();
+      expect(l.executeFreshWindowReset).not.toHaveBeenCalled();
+    },
+  );
+
+  test('a bound chat resets exactly its session', async () => {
+    const l = slashResetLane(groups());
+    await expect(l.clear('feishu:oc_dm')).resolves.toBe(
+      'Session context cleared.',
+    );
+    expect(l.executeSessionReset).toHaveBeenCalledWith(
+      'web:ws',
+      'ws',
+      expect.anything(),
+      'session-dm',
+    );
+    await expect(l.fresh('feishu:oc_dm')).resolves.toBe('FRESH_OK');
+    expect(l.executeFreshWindowReset).toHaveBeenCalledWith(
+      'web:ws',
+      'ws',
+      expect.anything(),
+      expect.objectContaining({ agentId: 'session-dm' }),
     );
   });
 });

@@ -218,6 +218,106 @@ describe('PATCH /:jid preserves owner fields on rename (regression)', () => {
   });
 });
 
+describe('GET / workspace activity', () => {
+  test('a workspace is as recent as its most recent session', async () => {
+    const jid = 'web:activity-ws';
+    const folder = 'activity-ws';
+    db.setRegisteredGroup(jid, {
+      name: 'Activity',
+      folder,
+      added_at: '2026-01-01T00:00:00.000Z',
+      executionMode: 'container',
+      created_by: OWNER_ID,
+    } as any);
+    for (const [id, lastActiveAt] of [
+      ['act-quiet', '2026-02-01T00:00:00.000Z'],
+      ['act-busy', '2026-03-01T00:00:00.000Z'],
+    ]) {
+      db.createAgent({
+        id,
+        group_folder: folder,
+        chat_jid: jid,
+        name: id,
+        prompt: '',
+        status: 'idle',
+        kind: 'conversation',
+        created_by: OWNER_ID,
+        created_at: '2026-01-01T00:00:00.000Z',
+        completed_at: null,
+        result_summary: null,
+        last_im_jid: null,
+        spawned_from_jid: null,
+        last_active_at: lastActiveAt,
+      });
+    }
+    const list = async () => {
+      asUser(OWNER_ID, 'member');
+      const res = await groupRoutes.request('/');
+      return (await res.json()).groups[jid];
+    };
+    try {
+      // No message yet: the newest session activity.
+      expect(await list()).toMatchObject({
+        lastMessageTime: '2026-03-01T00:00:00.000Z',
+      });
+      // A message in another session that is newer still.
+      db.ensureChatExists(`${jid}#agent:act-quiet`);
+      db.storeMessageDirect(
+        'act-msg',
+        `${jid}#agent:act-quiet`,
+        OWNER_ID,
+        'Alice',
+        'latest words',
+        '2026-04-01T00:00:00.000Z',
+        false,
+      );
+      expect(await list()).toMatchObject({
+        lastMessage: 'latest words',
+        lastMessageTime: '2026-04-01T00:00:00.000Z',
+      });
+    } finally {
+      db.deleteGroupData(jid, folder);
+    }
+  });
+});
+
+describe('POST /:jid/reset-session names a session', () => {
+  test('without a session it is 400 session_required and stops nothing', async () => {
+    const jid = 'web:reset-needs-session';
+    db.setRegisteredGroup(jid, {
+      name: 'Reset',
+      folder: 'reset-needs-session',
+      added_at: new Date().toISOString(),
+      executionMode: 'container',
+      created_by: OWNER_ID,
+    } as any);
+    const stopGroup = vi.fn(async () => {});
+    webContext.setWebDeps({
+      getRegisteredGroups: () => ({}),
+      queue: { stopGroup },
+    } as unknown as Parameters<typeof webContext.setWebDeps>[0]);
+    try {
+      asUser(OWNER_ID, 'member');
+      const res = await groupRoutes.request(
+        `/${encodeURIComponent(jid)}/reset-session`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({}),
+        },
+      );
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({
+        error: 'Session required',
+        code: 'session_required',
+      });
+      expect(stopGroup).not.toHaveBeenCalled();
+    } finally {
+      db.deleteRegisteredGroup(jid);
+    }
+  });
+});
+
 describe('PATCH /:jid execution mode runtime boundary', () => {
   test('admin host-only mode rejects switching a workspace to Docker', async () => {
     const jid = 'web:host-only-policy';
@@ -267,10 +367,8 @@ describe('PATCH /:jid execution mode runtime boundary', () => {
     db.setSession(folder, 'sdk-session-before-switch');
 
     const stopGroup = vi.fn(async () => {});
-    const sessions = { [folder]: 'sdk-session-before-switch' };
     webContext.setWebDeps({
       getRegisteredGroups: () => webDepsCache,
-      sessions,
       queue: {
         pauseGroupsForMutation: () => ({ id: 1 }),
         resumeGroupsAfterMutation: vi.fn(),
@@ -289,7 +387,6 @@ describe('PATCH /:jid execution mode runtime boundary', () => {
     expect(response.status).toBe(200);
     expect(db.getRegisteredGroup(jid)?.executionMode).toBe('container');
     expect(db.getSession(folder)).toBeUndefined();
-    expect(sessions[folder]).toBeUndefined();
     expect(stopGroup).toHaveBeenCalledTimes(2);
 
     db.deleteGroupData(jid, folder);
@@ -1299,7 +1396,8 @@ describe('POST / workspace Agent membership publication lock', () => {
       agent_profile_version: target.version + 1,
     });
     expect(db.getWorkspaceAgentProfileId(body.group.folder)).toBe(target.id);
-    expect(ensureTerminalContainerStarted).toHaveBeenCalledWith(body.jid);
+    // A workspace has no runner of its own to warm.
+    expect(ensureTerminalContainerStarted).not.toHaveBeenCalled();
     db.deleteGroupData(body.jid, body.group.folder);
   });
 

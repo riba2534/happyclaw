@@ -182,7 +182,6 @@ async function commitActiveAdminHostOnlyGrant(
         const fresh = getRegisteredGroup(jid);
         if (fresh) liveGroups[jid] = fresh;
       }
-      for (const folder of folders) delete deps.sessions[folder];
     }
   };
 

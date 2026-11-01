@@ -3,7 +3,6 @@ import { describe, expect, test } from 'vitest';
 import {
   buildDetachedWorkspaceUpdate,
   buildNativeThreadWorkspaceUpdate,
-  buildRestoreDefaultChannelMountUpdate,
   buildSessionMountUpdate,
   normalizeChannelBindingPolicy,
   buildWorkspaceMountUpdate,
@@ -18,12 +17,7 @@ import {
   IM_CHANNEL_CAPABILITIES,
   isThreadMapCapableChat,
 } from '../src/im-channel-capabilities.js';
-import type {
-  ChannelAccount,
-  ChannelProvider,
-  RegisteredGroup,
-  SubAgent,
-} from '../src/types.js';
+import type { RegisteredGroup, SubAgent } from '../src/types.js';
 
 function makeWorkspace(name: string, folder: string): RegisteredGroup {
   return {
@@ -51,50 +45,28 @@ function makeSession(id: string, chatJid: string): SubAgent {
   };
 }
 
-function makeAccount(
-  id: string,
-  provider: ChannelProvider,
-  defaultWorkspaceJid: string | null,
-  legacy = false,
-): ChannelAccount {
-  return {
-    id,
-    owner_user_id: 'owner-a',
-    provider,
-    name: id,
-    secret_ref: `secret:${id}`,
-    enabled: true,
-    is_default: true,
-    is_legacy_default: legacy,
-    auth_mode: 'bot_token',
-    auth_status: 'authorized',
-    transport_status: 'connected',
-    status: 'connected',
-    default_agent_profile_id: null,
-    default_workspace_jid: defaultWorkspaceJid,
-    last_error: null,
-    connected_at: null,
-    created_at: '2026-07-09T00:00:00.000Z',
-    updated_at: '2026-07-09T00:00:00.000Z',
-  };
-}
-
 describe('resolveChannelMountTarget', () => {
+  const workspaceA = (jid: string) =>
+    jid === 'web:workspace-a'
+      ? makeWorkspace('Workspace A', 'workspace-a')
+      : undefined;
+
   test('resolves a session mount through the session owner workspace', () => {
     const result = resolveChannelMountTarget(
-      { session_id: 'session-a', workspace_jid: 'web:workspace-a' },
+      {
+        session_id: 'session-a',
+        workspace_jid: 'web:workspace-a',
+        routing_mode: 'single_session',
+      },
       {
         getAgent: (id) =>
           id === 'session-a' ? makeSession(id, 'web:workspace-a') : undefined,
-        getRegisteredGroup: (jid) =>
-          jid === 'web:workspace-a'
-            ? makeWorkspace('Workspace A', 'workspace-a')
-            : undefined,
+        getRegisteredGroup: workspaceA,
       },
     );
 
     expect(result).toMatchObject({
-      status: 'resolved',
+      status: 'session',
       effectiveJid: 'web:workspace-a#agent:session-a',
       workspaceJid: 'web:workspace-a',
       agentId: 'session-a',
@@ -103,14 +75,12 @@ describe('resolveChannelMountTarget', () => {
 
   test('does not fall back when a session mount points at a missing session', () => {
     const result = resolveChannelMountTarget(
-      { session_id: 'missing-session', workspace_jid: 'web:workspace-a' },
       {
-        getAgent: () => undefined,
-        getRegisteredGroup: (jid) =>
-          jid === 'web:workspace-a'
-            ? makeWorkspace('Workspace A', 'workspace-a')
-            : undefined,
+        session_id: 'missing-session',
+        workspace_jid: 'web:workspace-a',
+        routing_mode: 'single_session',
       },
+      { getAgent: () => undefined, getRegisteredGroup: workspaceA },
     );
 
     expect(result).toEqual({
@@ -121,21 +91,55 @@ describe('resolveChannelMountTarget', () => {
     });
   });
 
+  test('a single-session mount without its session reaches nothing, never the workspace', () => {
+    const result = resolveChannelMountTarget(
+      {
+        session_id: null,
+        workspace_jid: 'web:workspace-a',
+        routing_mode: 'single_session',
+      },
+      { getAgent: () => undefined, getRegisteredGroup: workspaceA },
+    );
+
+    expect(result).toEqual({
+      status: 'stale',
+      reason: 'missing_session',
+      workspaceJid: 'web:workspace-a',
+    });
+  });
+
+  test('a thread-map mount targets its workspace', () => {
+    const result = resolveChannelMountTarget(
+      {
+        session_id: null,
+        workspace_jid: 'web:workspace-a',
+        routing_mode: 'thread_map',
+      },
+      { getAgent: () => undefined, getRegisteredGroup: workspaceA },
+    );
+
+    expect(result).toMatchObject({
+      status: 'thread_map',
+      workspaceJid: 'web:workspace-a',
+    });
+  });
+
   test('uses the session owner workspace when stored workspace_jid is stale', () => {
     const result = resolveChannelMountTarget(
-      { session_id: 'session-a', workspace_jid: 'web:old-workspace' },
+      {
+        session_id: 'session-a',
+        workspace_jid: 'web:old-workspace',
+        routing_mode: 'single_session',
+      },
       {
         getAgent: (id) =>
           id === 'session-a' ? makeSession(id, 'web:workspace-a') : undefined,
-        getRegisteredGroup: (jid) =>
-          jid === 'web:workspace-a'
-            ? makeWorkspace('Workspace A', 'workspace-a')
-            : undefined,
+        getRegisteredGroup: workspaceA,
       },
     );
 
     expect(result).toMatchObject({
-      status: 'resolved',
+      status: 'session',
       effectiveJid: 'web:workspace-a#agent:session-a',
       workspaceJid: 'web:workspace-a',
       agentId: 'session-a',
@@ -148,7 +152,11 @@ describe('resolveChannelMountTarget', () => {
 
   test('does not fall back when a workspace mount points at a missing workspace', () => {
     const result = resolveChannelMountTarget(
-      { session_id: null, workspace_jid: 'web:missing-workspace' },
+      {
+        session_id: null,
+        workspace_jid: 'web:missing-workspace',
+        routing_mode: 'thread_map',
+      },
       {
         getAgent: () => undefined,
         getRegisteredGroup: () => undefined,
@@ -258,137 +266,6 @@ describe('channel binding product contract', () => {
         activation_mode: 'when_mentioned',
       }),
     ).toBe(false);
-  });
-
-  test('restores to account default atomically and preserves channel policy', () => {
-    const account = makeAccount('telegram-a', 'telegram', 'web:workspace-a');
-    const workspace = {
-      ...makeWorkspace('Workspace A', 'workspace-a'),
-      created_by: 'owner-a',
-    };
-    const source: RegisteredGroup = {
-      ...makeWorkspace('Forum', 'forum'),
-      created_by: 'owner-a',
-      channel_account_id: account.id,
-      target_agent_id: 'session-old',
-      activation_mode: 'owner_mentioned',
-      audience_mode: 'owner_only',
-      owner_im_id: 'owner-im',
-      sender_allowlist: ['sender-a'],
-      reply_policy: 'mirror',
-      native_context_type: 'thread',
-    };
-    const restored = buildRestoreDefaultChannelMountUpdate(
-      'telegram:chat#account:telegram-a',
-      source,
-      'owner-a',
-      {
-        getAccount: (id) => (id === account.id ? account : undefined),
-        getDefaultAccount: () => undefined,
-        getGroup: (jid) => (jid === 'web:workspace-a' ? workspace : undefined),
-        getHome: () => undefined,
-      },
-    );
-
-    expect(restored).toMatchObject({
-      status: 'resolved',
-      workspaceJid: 'web:workspace-a',
-      routingMode: 'thread_map',
-      updated: {
-        target_main_jid: 'web:workspace-a',
-        target_agent_id: undefined,
-        binding_mode: 'thread_map',
-        activation_mode: 'owner_mentioned',
-        audience_mode: 'owner_only',
-        owner_im_id: 'owner-im',
-        sender_allowlist: ['sender-a'],
-        reply_policy: 'source_only',
-      },
-    });
-  });
-
-  test('falls back from an invalid account default to the owner home workspace', () => {
-    const account = makeAccount('qq-a', 'qq', 'web:deleted');
-    const home = {
-      ...makeWorkspace('Home', 'home-a'),
-      jid: 'web:home-a',
-      created_by: 'owner-a',
-      is_home: true,
-    };
-    const restored = buildRestoreDefaultChannelMountUpdate(
-      'qq:c2c:user#account:qq-a',
-      {
-        ...makeWorkspace('QQ', 'qq'),
-        created_by: 'owner-a',
-      },
-      'owner-a',
-      {
-        getAccount: () => account,
-        getDefaultAccount: () => undefined,
-        getGroup: () => undefined,
-        getHome: () => home,
-      },
-    );
-    expect(restored).toMatchObject({
-      status: 'resolved',
-      workspaceJid: 'web:home-a',
-      routingMode: 'single_session',
-      updated: {
-        target_main_jid: 'web:home-a',
-        channel_account_id: account.id,
-      },
-    });
-  });
-
-  test('returns unavailable without clearing the current mount', () => {
-    const source: RegisteredGroup = {
-      ...makeWorkspace('Legacy', 'legacy'),
-      created_by: 'owner-a',
-      target_agent_id: 'keep-this-session',
-    };
-    const restored = buildRestoreDefaultChannelMountUpdate(
-      'whatsapp:user@s.whatsapp.net',
-      source,
-      'owner-a',
-      {
-        getAccount: () => undefined,
-        getDefaultAccount: () => undefined,
-        getLegacyAccount: () => undefined,
-        getGroup: () => undefined,
-        getHome: () => undefined,
-      },
-    );
-    expect(restored).toEqual({
-      status: 'unavailable',
-      reason: 'missing_default_workspace',
-    });
-    expect(source.target_agent_id).toBe('keep-this-session');
-  });
-
-  test('rejects an account id owned by another user', () => {
-    const foreign = {
-      ...makeAccount('telegram-foreign', 'telegram', 'web:foreign'),
-      owner_user_id: 'owner-b',
-    };
-    const restored = buildRestoreDefaultChannelMountUpdate(
-      'telegram:chat#account:telegram-foreign',
-      {
-        ...makeWorkspace('Foreign chat', 'foreign-chat'),
-        created_by: 'owner-a',
-        channel_account_id: foreign.id,
-      },
-      'owner-a',
-      {
-        getAccount: () => foreign,
-        getDefaultAccount: () => undefined,
-        getGroup: () => undefined,
-        getHome: () => undefined,
-      },
-    );
-    expect(restored).toEqual({
-      status: 'unavailable',
-      reason: 'account_mismatch',
-    });
   });
 
   test('workspace and session targets remain mutually exclusive', () => {
@@ -543,10 +420,10 @@ describe('channel binding product contract', () => {
 });
 
 describe('legacy binding policy reconciliation', () => {
-  test('ordinary group mention flags become one main session without changing the chosen workspace', () => {
+  test('ordinary group mention flags become one session binding without changing the chosen session', () => {
     const group: RegisteredGroup = {
       ...makeWorkspace('Group', 'home'),
-      target_main_jid: 'web:chosen',
+      target_agent_id: 'session-chosen',
       binding_mode: 'thread_map',
       feishu_chat_mode: 'group',
       feishu_group_message_type: 'chat',
@@ -556,7 +433,7 @@ describe('legacy binding policy reconciliation', () => {
     };
     const updated = normalizeChannelBindingPolicy('feishu:ordinary', group);
     expect(updated).toMatchObject({
-      target_main_jid: 'web:chosen',
+      target_agent_id: 'session-chosen',
       binding_mode: 'single_context',
       native_context_type: 'none',
       activation_mode: 'when_mentioned',

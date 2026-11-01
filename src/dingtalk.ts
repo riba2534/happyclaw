@@ -22,7 +22,6 @@ import {
   type DWClientDownStream,
 } from 'dingtalk-stream';
 import { storeChatMetadata, storeMessageDirect } from './db.js';
-import { notifyNewImMessage } from './message-notifier.js';
 import { logger } from './logger.js';
 import {
   saveDownloadedFile,
@@ -3032,15 +3031,6 @@ export function createDingTalkConnection(
             'DingTalk message queued behind the active run',
           );
           return;
-        }
-
-        try {
-          notifyNewImMessage();
-        } catch (err) {
-          logger.error(
-            { err, jid, targetJid, msgId },
-            'DingTalk post-persist notifier failed',
-          );
         }
 
         if (agentRouting?.agentId) {

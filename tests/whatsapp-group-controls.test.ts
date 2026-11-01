@@ -81,8 +81,6 @@ const db = vi.hoisted(() => ({
 }));
 vi.mock('../src/db.js', () => db);
 
-const notify = vi.hoisted(() => ({ notifyNewImMessage: vi.fn() }));
-vi.mock('../src/message-notifier.js', () => notify);
 vi.mock('../src/web.js', () => ({ broadcastNewMessage: vi.fn() }));
 vi.mock('../src/logger.js', () => ({
   logger: {
@@ -380,14 +378,13 @@ describe('WhatsApp durable queue and runtime controls', () => {
     expect(host.onFollowUpsChanged).toHaveBeenCalledWith(
       `whatsapp:${OUTSIDER}`,
     );
-    expect(notify.notifyNewImMessage).not.toHaveBeenCalled();
   });
 
   test('with no active run the input starts a turn as before', async () => {
     const host = followUpHost('started');
     const { deliver } = await connect(host);
     await deliver(dm('now'));
-    expect(notify.notifyNewImMessage).toHaveBeenCalledOnce();
+    expect(host.onFollowUpMessage).toHaveBeenCalledOnce();
   });
 
   test('/steer and /break in a private chat', async () => {

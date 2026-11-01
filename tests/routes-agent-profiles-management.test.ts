@@ -903,13 +903,15 @@ describe('governance and capability preview', () => {
       connection_missing: false,
     });
 
+    // A workspace has no pick of its own: the preview is what a session that
+    // picked nothing runs, whatever a pre-v88 workspace-level row says.
     registerWorkspace('picked-ws', MEMBER, unbound.id);
     db.setSessionModelSelection('picked-ws', null, bound.id, MEMBER, {
       model: 'bound-large',
     });
     expect(await preview(unbound.id, 'web:picked-ws')).toMatchObject({
-      source: 'session',
-      model: 'bound-large',
+      source: 'owner_main',
+      model: 'bound-default',
     });
     db.updateAgentProfile(main.id, MEMBER, { modelConfigId: null });
   });

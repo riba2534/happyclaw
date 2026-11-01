@@ -8,7 +8,6 @@ import { Agent as HttpsAgent } from 'node:https';
 import { ProxyAgent } from 'proxy-agent';
 import { storeChatMetadata, storeMessageDirect, updateChatName } from './db.js';
 import { createDedupCache } from './im-utils.js';
-import { notifyNewImMessage } from './message-notifier.js';
 import { logger } from './logger.js';
 import {
   saveDownloadedFile,
@@ -102,7 +101,7 @@ export interface TelegramConnectOpts
   ignoreMessagesBefore?: number;
   /** 根据 jid 解析群组 folder，用于下载文件/图片到工作区 */
   resolveGroupFolder?: (jid: string) => string | undefined;
-  /** 将 IM chatJid 解析为绑定目标 JID（conversation agent 或工作区主对话） */
+  /** 将 IM chatJid 解析为绑定的会话（话题群为该话题的会话） */
   resolveEffectiveChatJid?: (
     chatJid: string,
     messageMeta?: ChannelMessageMeta,
@@ -1205,7 +1204,6 @@ export function createTelegramConnection(
       { agentId: input.agentId, requestedMode: input.requestedMode },
     );
     if (followUp.shouldStartTurn) {
-      notifyNewImMessage();
       if (input.agentId) opts.onAgentMessage?.(input.jid, input.agentId);
     }
     return followUp;

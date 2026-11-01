@@ -362,22 +362,22 @@ describe('GET /:jid/context-usage', () => {
     return { status: res.status, body: await res.json() };
   };
 
-  test("reads the main conversation's and a side conversation's own", async () => {
+  test("reads the named session's own; a workspace has none", async () => {
     session([assistant('glm-5.3', 1_000, 0, 0)]);
     session([assistant('kimi-k3', 3_000, 0, 0)], { agentId: AGENT });
-    expect(await get()).toMatchObject({
-      status: 200,
-      body: { usedTokens: 1_000, model: 'glm-5.3' },
-    });
     expect(await get(`?agentId=${AGENT}`)).toMatchObject({
       status: 200,
       body: { usedTokens: 3_000, model: 'kimi-k3' },
+    });
+    expect(await get()).toEqual({
+      status: 400,
+      body: { error: 'Session required', code: 'session_required' },
     });
   });
 
   test('hides another account’s workspace', async () => {
     harness.userId = 'ctx-other';
-    expect((await get()).status).toBe(404);
+    expect((await get(`?agentId=${AGENT}`)).status).toBe(404);
   });
 });
 

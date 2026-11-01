@@ -82,6 +82,7 @@ const STALE_REVISION_ERROR = '自动化已被修改，请刷新后重试';
 const NOT_A_RUN_ERROR = '当前不是自动化运行，无法使用这个工具';
 const SESSION_REQUIRED_ERROR = '请选择要绑定的会话';
 const SESSION_MISSING_ERROR = '绑定的会话不存在或不属于这个工作区';
+const TARGET_NOT_SESSION_ERROR = '自动化只能绑定到一个具体的会话';
 const SESSION_DELETED_REASON = '绑定的会话已删除';
 const SUSPENDED_REASON = '工作区重建中';
 const MANUAL_CANCEL_ERROR = '已手动终止';
@@ -111,10 +112,15 @@ function isHostWorkspace(workspaceJid: string): boolean {
 }
 
 function belongsToWorkspace(sessionJid: string, workspaceJid: string): boolean {
-  return (
-    sessionJid === workspaceJid ||
-    sessionJid.startsWith(`${workspaceJid}#agent:`)
-  );
+  return sessionJid.startsWith(`${workspaceJid}#agent:`);
+}
+
+/** A target that is no session address at all (a workspace JID). */
+export class AutomationTargetNotSessionError extends AutomationError {
+  readonly code = 'automation_target_not_session';
+  constructor() {
+    super(400, TARGET_NOT_SESSION_ERROR);
+  }
 }
 
 function trimOrNull(value: string | null | undefined): string | null {
@@ -306,6 +312,9 @@ export function createAutomationCore(
     if (sessionMode === 'fresh') return null;
     if (sessionMode === 'persistent' && !sessionJid) return null;
     if (!sessionJid) throw new AutomationError(400, SESSION_REQUIRED_ERROR);
+    if (!sessionJid.includes('#agent:')) {
+      throw new AutomationTargetNotSessionError();
+    }
     if (
       !belongsToWorkspace(sessionJid, workspaceJid) ||
       !deps.sessionExists(sessionJid)

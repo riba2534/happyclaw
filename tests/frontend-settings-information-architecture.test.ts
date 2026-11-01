@@ -282,15 +282,22 @@ describe('settings information architecture', () => {
     expect(bindings).toContain('解除渠道绑定');
     expect(mobileChat).toMatch(/onRename[:=]|onTogglePin[:=]|onDelete[:=]/);
     expect(createWorkspace).toContain('effective_runtime_policy');
-    expect(bindingRoute).toContain(
+    // A workspace binding is a topic thread map; ordinary chats bind sessions.
+    expect(bindingRoute).not.toContain(
       "threadCapable ? 'thread_map' : 'single_session'",
+    );
+    expect(bindingRoute).toMatch(
+      /conversationBindingPolicyError\(\s*getConversationKind\([^)]*\),\s*'workspace',/,
     );
     expect(bindingRoute).not.toContain(
       'ordinary channels must bind to a session',
     );
     const sessionBindingRoute = read('src/routes/agents.ts');
-    expect(sessionBindingRoute).toContain(
+    expect(sessionBindingRoute).not.toContain(
       "threadCapable ? 'thread_map' : 'single_session'",
+    );
+    expect(sessionBindingRoute).toMatch(
+      /conversationBindingPolicyError\(\s*getConversationKind\([^)]*\),\s*'workspace',/,
     );
     const frontendTypes = read('web/src/types.ts');
     expect(frontendTypes).toContain("'native_thread'");

@@ -881,10 +881,12 @@ export class AutomationEngine implements AutomationScheduler {
       preferredRouteJid: automation.deliveryRouteJid,
     });
     const imRoute = isImRoute(resolved) ? resolved : null;
-    const failureRoute = imRoute ?? sessionJid ?? automation.workspaceJid;
     const send = (routeJid: string, text: string) =>
       this.deps.sendAutomationNotice({ automation, routeJid, text });
 
+    // Failure and recovery notices go out only over an IM route; without one
+    // the run record and the automation's status carry them, and nothing is
+    // written into any session.
     if (run.status === 'failed') {
       const error = run.error ?? '未知错误';
       const { notify } = recordAutomationFailure(
@@ -893,18 +895,17 @@ export class AutomationEngine implements AutomationScheduler {
         error,
         run.finishedAt ?? this.now().toISOString(),
       );
-      if (notify)
-        await send(
-          failureRoute,
-          `自动化「${automation.name}」运行失败：${error}`,
-        );
+      if (notify && imRoute)
+        await send(imRoute, `自动化「${automation.name}」运行失败：${error}`);
       return;
     }
     if (run.status !== 'success') return;
-    if (clearAutomationFailure(automation.id)) {
-      await send(failureRoute, `自动化「${automation.name}」已恢复正常`);
+    const recovered = clearAutomationFailure(automation.id);
+    if (!imRoute) return;
+    if (recovered) {
+      await send(imRoute, `自动化「${automation.name}」已恢复正常`);
     }
-    if (automation.sessionMode !== 'bound' && !run.silenced && imRoute) {
+    if (automation.sessionMode !== 'bound' && !run.silenced) {
       const summary = summarize(run.resultText);
       await send(
         imRoute,

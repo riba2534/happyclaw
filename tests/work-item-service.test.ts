@@ -87,13 +87,17 @@ function installHooks(): void {
   });
 }
 
+/** The workspace session the group is bound to, and another one. */
+const BOUND_SESSION = 'team-bound-session';
+const OTHER_SESSION = 'team-other-session';
+
 function setGroup(jid: string, extra: Record<string, unknown> = {}): void {
   db.setRegisteredGroup(jid, {
     name: '研发群',
     folder: FOLDER,
     added_at: new Date().toISOString(),
     created_by: OWNER,
-    target_main_jid: WORKSPACE,
+    target_agent_id: BOUND_SESSION,
     feishu_chat_mode: 'group',
     owner_im_id: 'ou_owner',
     sender_allowlist: ['ou_listed'],
@@ -204,6 +208,23 @@ beforeAll(() => {
     executionMode: 'container',
     created_by: OWNER,
   });
+  for (const id of [BOUND_SESSION, OTHER_SESSION]) {
+    db.createAgent({
+      id,
+      group_folder: FOLDER,
+      chat_jid: WORKSPACE,
+      name: id,
+      prompt: '',
+      status: 'idle',
+      kind: 'conversation',
+      created_by: OWNER,
+      created_at: new Date().toISOString(),
+      completed_at: null,
+      result_summary: null,
+      last_im_jid: null,
+      spawned_from_jid: null,
+    });
+  }
   setGroup(CHAT);
   webContext.setWebDeps({
     broadcastAgentStatus: vi.fn(),
@@ -246,9 +267,33 @@ describe('team mount settings', () => {
     ]);
   });
 
+  test('a group bound to any session of the workspace can run it; an unbound one cannot', async () => {
+    const other = 'feishu:oc_other';
+    setGroup(other, { target_agent_id: OTHER_SESSION });
+    expect(service.teamMountIneligibility(other, WORKSPACE)).toBeNull();
+    expect(
+      service
+        .listTeamMountViews(WORKSPACE)
+        .find((view) => view.channelJid === other),
+    ).toMatchObject({ eligible: true, ineligibleReason: null });
+    // A single-session mount without its session (never written after v88).
+    expect(
+      service.teamMountIneligibility(other, WORKSPACE, {
+        ...db.getChannelMount(other)!,
+        session_id: null,
+      }),
+    ).toBe('群需要绑定到工作区的会话');
+    db.deleteRegisteredGroup(other);
+  });
+
   test('a topic group or a private chat cannot run team mode', async () => {
     const topic = 'feishu:oc_topic';
-    setGroup(topic, { feishu_chat_mode: 'topic' });
+    setGroup(topic, {
+      feishu_chat_mode: 'topic',
+      target_agent_id: undefined,
+      target_main_jid: WORKSPACE,
+      binding_mode: 'thread_map',
+    });
     expect(service.teamMountIneligibility(topic, WORKSPACE)).toMatch(/普通群/);
     await expect(
       service.saveTeamMountSettings(
@@ -1388,6 +1433,23 @@ describe('after the review on the Mac mini', () => {
     expect(service.teamRouteStillHolds(CHAT, routerLaneRoute)).toBe(false);
     expect(service.teamRouteStillHolds(CHAT, 'reject')).toBe(false);
     await enable();
+  });
+
+  test('rebinding the group to another session of the workspace keeps team mode', async () => {
+    storeCandidate('om_rebind_session');
+    const item = store.getWorkItem(
+      (await accept('om_rebind_session')).workItemId as string,
+    )!;
+    db.setChannelMountChangeListener(service.reconcileTeamGroup);
+    try {
+      setGroup(CHAT, { target_agent_id: OTHER_SESSION });
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(service.resolveTeamGroup(CHAT)).not.toBeNull();
+      expect(store.getWorkItem(item.id)?.status).toBe('open');
+    } finally {
+      db.setChannelMountChangeListener(null);
+      setGroup(CHAT);
+    }
   });
 
   test('a binding change reconciles the group', async () => {

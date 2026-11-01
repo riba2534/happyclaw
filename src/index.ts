@@ -176,6 +176,7 @@ import {
   getRouterStateByPrefix,
   deleteRouterState,
   getUserHomeGroup,
+  getUserPinnedSessions,
   forceActiveAdminRuntimesToHost,
   initDatabase,
   listUsers,
@@ -410,11 +411,14 @@ import {
   formatSystemStatus,
   resolveBoundChatTarget,
   resolveLocationInfo,
+  resolveSessionTarget,
   checkImOwnerCommand,
   isDirectMessageJid,
   OWNER_REQUIRED_IM_COMMANDS,
+  type BoundChatTarget,
   type WorkspaceInfo,
 } from './im-command-utils.js';
+import { sortSessionsForList } from './session-order.js';
 import { resolveImGroupDefaults } from './im-group-defaults.js';
 import { canSendCrossGroupMessage as canSendCrossGroupMessagePure } from './cross-group-acl.js';
 import { resolveIpcDeliveryTargetGroup } from './ipc-delivery-routing.js';
@@ -5121,9 +5125,9 @@ async function handleCommand(
 
   switch (cmd) {
     case 'clear':
-      return handleClearCommand(chatJid);
+      return handleClearCommand(chatJid, messageMeta);
     case 'fresh':
-      return handleFreshCommand(chatJid, rawArgs);
+      return handleFreshCommand(chatJid, rawArgs, messageMeta);
     case 'list':
     case 'ls':
       return handleListCommand(chatJid);
@@ -5160,19 +5164,50 @@ async function handleCommand(
   }
 }
 
-async function handleClearCommand(chatJid: string): Promise<string> {
-  const group = registeredGroups[chatJid] ?? getRegisteredGroup(chatJid);
-  if (!group) return '未找到当前工作区';
+const UNBOUND_CHAT_REPLY = '本聊天未绑定会话。';
 
-  const target = resolveBoundChatTarget(
-    chatJid,
-    group,
-    (jid) => registeredGroups[jid] ?? getRegisteredGroup(jid),
-    getAgent,
-    findGroupNameByFolder,
-    resolveWorkspaceJid,
+/**
+ * The session `/clear`, `/fresh` and `/recall` act on: in a topic container
+ * the existing session of this message's topic, otherwise the one session
+ * the chat is bound to. Lookup only; the reply to send when there is none.
+ */
+function resolveCommandSession(
+  command: string,
+  chatJid: string,
+  group: RegisteredGroup | undefined,
+  messageMeta?: ChannelMessageMeta,
+): BoundChatTarget | string {
+  if (!group) return UNBOUND_CHAT_REPLY;
+  const lookupGroup = (jid: string) =>
+    registeredGroups[jid] ?? getRegisteredGroup(jid);
+  if (isNativeContextContainer(chatJid, group)) {
+    const thread =
+      messageMeta?.nativeContextType === 'thread'
+        ? resolveNativeThreadContext(messageMeta)
+        : null;
+    if (!thread) {
+      return `📭 话题群中每个话题是独立会话，请在具体话题内发送 /${command}。`;
+    }
+    const binding = getImContextBinding(chatJid, 'thread', thread.contextId);
+    return (
+      (binding &&
+        resolveSessionTarget(binding.agent_id, lookupGroup, getAgent)) ||
+      '📭 该话题暂无会话记录'
+    );
+  }
+  return (
+    resolveBoundChatTarget(chatJid, group, lookupGroup, getAgent) ??
+    UNBOUND_CHAT_REPLY
   );
-  if (!target) return '当前绑定目标不存在，请先重新绑定工作区或会话。';
+}
+
+async function handleClearCommand(
+  chatJid: string,
+  messageMeta?: ChannelMessageMeta,
+): Promise<string> {
+  const group = registeredGroups[chatJid] ?? getRegisteredGroup(chatJid);
+  const target = resolveCommandSession('clear', chatJid, group, messageMeta);
+  if (typeof target === 'string') return target;
 
   try {
     await executeSessionReset(
@@ -5184,7 +5219,7 @@ async function handleClearCommand(chatJid: string): Promise<string> {
         broadcast: broadcastNewMessage,
         setLastAgentTimestamp: setCursors,
       },
-      target.agentId ?? undefined,
+      target.agentId,
     );
     return 'Session context cleared.';
   } catch (err) {
@@ -5205,19 +5240,11 @@ async function handleClearCommand(chatJid: string): Promise<string> {
 async function handleFreshCommand(
   chatJid: string,
   rawNotes: string,
+  messageMeta?: ChannelMessageMeta,
 ): Promise<string> {
   const group = registeredGroups[chatJid] ?? getRegisteredGroup(chatJid);
-  if (!group) return '未找到当前工作区';
-
-  const target = resolveBoundChatTarget(
-    chatJid,
-    group,
-    (jid) => registeredGroups[jid] ?? getRegisteredGroup(jid),
-    getAgent,
-    findGroupNameByFolder,
-    resolveWorkspaceJid,
-  );
-  if (!target) return '当前绑定目标不存在，请先重新绑定工作区或会话。';
+  const target = resolveCommandSession('fresh', chatJid, group, messageMeta);
+  if (typeof target === 'string') return target;
 
   try {
     const targetGroup =
@@ -5241,7 +5268,7 @@ async function handleFreshCommand(
         setLastAgentTimestamp: setCursors,
       },
       {
-        agentId: target.agentId ?? undefined,
+        agentId: target.agentId,
         handoff,
       },
     );
@@ -5262,10 +5289,12 @@ async function handleFreshCommand(
 }
 
 /**
- * Collect all accessible workspaces for a user as pure WorkspaceInfo[].
+ * The user's workspaces as pure WorkspaceInfo[], each with its sessions in
+ * the shared list order (the user's pins first, then most recent activity).
  */
 function collectWorkspaces(userId: string): WorkspaceInfo[] {
   const ownedGroups = getGroupsByOwner(userId);
+  const pins = getUserPinnedSessions(userId);
 
   const seen = new Set<string>();
   const workspaces: WorkspaceInfo[] = [];
@@ -5275,23 +5304,28 @@ function collectWorkspaces(userId: string): WorkspaceInfo[] {
     if (seen.has(g.folder)) continue;
     seen.add(g.folder);
 
-    const agents = listAgentsByJid(g.jid)
-      .filter((a) => a.kind === 'conversation')
-      .map((a) => ({ id: a.id, name: a.name, status: a.status }));
+    const agents = sortSessionsForList(
+      listAgentsByJid(g.jid)
+        .filter((a) => a.kind === 'conversation')
+        .map((a) => ({ ...a, pinned_at: pins[a.id] ?? null })),
+    ).map((a) => ({ id: a.id, name: a.name, status: a.status }));
 
-    workspaces.push({ folder: g.folder, name: g.name, agents });
+    workspaces.push({ jid: g.jid, folder: g.folder, name: g.name, agents });
   }
 
   return workspaces;
 }
 
+/**
+ * `/bind <workspace>[/<session>]`: the workspace, and the session named by
+ * its short id or name when one is given. Null when either is not found.
+ */
 function resolveBindingTarget(
   userId: string,
   rawSpec: string,
 ): {
-  target_agent_id?: string;
-  target_main_jid?: string;
-  display: string;
+  workspace: WorkspaceInfo;
+  session: WorkspaceInfo['agents'][number] | null;
 } | null {
   const spec = rawSpec.trim();
   if (!spec) return null;
@@ -5299,39 +5333,20 @@ function resolveBindingTarget(
   const [workspaceSpecRaw, sessionSpecRaw] = spec.split('/', 2);
   const workspaceSpec = workspaceSpecRaw.trim().toLowerCase();
   const sessionSpec = sessionSpecRaw?.trim().toLowerCase();
-  const workspaces = collectWorkspaces(userId);
-  const workspace = workspaces.find(
+  const workspace = collectWorkspaces(userId).find(
     (ws) =>
       ws.folder.toLowerCase() === workspaceSpec ||
       ws.name.trim().toLowerCase() === workspaceSpec,
   );
   if (!workspace) return null;
+  if (!sessionSpec) return { workspace, session: null };
 
-  if (
-    !sessionSpec ||
-    sessionSpec === 'main' ||
-    sessionSpec === '主会话' ||
-    sessionSpec === '主对话'
-  ) {
-    const mainJid = findWebJidForFolder(workspace.folder);
-    if (!mainJid) return null;
-    return {
-      target_main_jid: mainJid,
-      display: `${workspace.name} / 主会话`,
-    };
-  }
-
-  const agent = workspace.agents.find(
+  const session = workspace.agents.find(
     (item) =>
       item.id.toLowerCase().startsWith(sessionSpec) ||
       item.name.trim().toLowerCase() === sessionSpec,
   );
-  if (!agent) return null;
-
-  return {
-    target_agent_id: agent.id,
-    display: `${workspace.name} / ${agent.name}`,
-  };
+  return session ? { workspace, session } : null;
 }
 
 /**
@@ -5370,25 +5385,23 @@ function handleListCommand(chatJid: string): string {
   const workspaces = collectWorkspaces(userId);
   if (workspaces.length === 0) return '没有可用的工作区';
 
-  const lookupGroup = (jid: string) =>
-    registeredGroups[jid] ?? getRegisteredGroup(jid);
-  const location = resolveLocationInfo(
-    group,
-    lookupGroup,
-    getAgent,
-    findGroupNameByFolder,
-  );
-
-  const currentAgentId = group.target_agent_id ?? null;
-  const currentOnMain = !currentAgentId;
-
+  const location = resolveChatLocation(group);
   return (
     formatWorkspaceList(
       workspaces,
       location.folder,
-      currentAgentId,
-      currentOnMain,
-    ) + '\n💡 使用 /bind <workspace> 或 /bind <workspace>/<会话短ID>'
+      location.sessionJid ? (group.target_agent_id ?? null) : null,
+    ) +
+    '\n💡 /bind <工作区> 新建会话并绑定 · /bind <工作区>/<会话短ID> 绑定已有会话'
+  );
+}
+
+function resolveChatLocation(group: RegisteredGroup) {
+  return resolveLocationInfo(
+    group,
+    (jid) => registeredGroups[jid] ?? getRegisteredGroup(jid),
+    getAgent,
+    resolveWorkspaceJid,
   );
 }
 
@@ -5396,28 +5409,20 @@ function handleStatusCommand(chatJid: string): string {
   const group = registeredGroups[chatJid] ?? getRegisteredGroup(chatJid);
   if (!group) return '当前 IM 未绑定工作区';
 
-  const lookupGroup = (jid: string) =>
-    registeredGroups[jid] ?? getRegisteredGroup(jid);
-  const location = resolveLocationInfo(
-    group,
-    lookupGroup,
-    getAgent,
-    findGroupNameByFolder,
-  );
-
+  const location = resolveChatLocation(group);
   const queueStatus = queue.getStatus();
   const settings = getSystemSettings();
 
-  // Check if the current group's folder is active or queued
-  const groupState = queueStatus.groups.find((g) => {
-    const rg = lookupGroup(g.jid);
-    return rg?.folder === location.folder;
-  });
-  const isActive = !!groupState?.active;
+  // The bound session's own lane, active or waiting.
+  const sessionJid = location.sessionJid;
+  const isActive =
+    !!sessionJid &&
+    queueStatus.groups.some((g) => g.jid === sessionJid && g.active);
+  const waitingIndex = sessionJid
+    ? queueStatus.waitingGroupJids.indexOf(sessionJid)
+    : -1;
   const queuePosition =
-    !isActive && queueStatus.waitingGroupJids.includes(chatJid)
-      ? queueStatus.waitingGroupJids.indexOf(chatJid) + 1
-      : null;
+    !isActive && waitingIndex >= 0 ? waitingIndex + 1 : null;
 
   const status = formatSystemStatus(
     location,
@@ -5441,15 +5446,7 @@ function handleWhereCommand(chatJid: string): string {
   const group = registeredGroups[chatJid] ?? getRegisteredGroup(chatJid);
   if (!group) return '当前 IM 未绑定工作区';
 
-  const lookupGroup = (jid: string) =>
-    registeredGroups[jid] ?? getRegisteredGroup(jid);
-  const location = resolveLocationInfo(
-    group,
-    lookupGroup,
-    getAgent,
-    findGroupNameByFolder,
-  );
-
+  const location = resolveChatLocation(group);
   const lines = [`📍 当前绑定: ${location.locationLine}`];
   if (location.replyPolicy) {
     lines.push(`🔁 回复策略: ${location.replyPolicy}`);
@@ -5471,33 +5468,55 @@ function isAdminHostOnlyOwner(ownerId: string | null | undefined): boolean {
   return canExecuteOnHost(getUserById(ownerId));
 }
 
+/**
+ * `/bind <workspace>/<session>` binds the chat to that session; `/bind
+ * <workspace>` makes a new session there, named after the chat, and binds
+ * it. A topic container binds the workspace itself: each topic gets its own
+ * session.
+ */
 function handleBindCommand(chatJid: string, rawSpec: string): string {
   const group = registeredGroups[chatJid] ?? getRegisteredGroup(chatJid);
   if (!group) return '当前 IM 未绑定工作区';
   const userId = group.created_by;
   if (!userId) return '无法确定当前聊天所属用户';
   if (!rawSpec)
-    return '用法: /bind <workspace> 或 /bind <workspace>/<会话短ID>';
+    return '用法: /bind <工作区> 新建会话并绑定，或 /bind <工作区>/<会话短ID>';
 
   const resolved = resolveBindingTarget(userId, rawSpec);
   if (!resolved) {
-    return '未找到目标。先用 /list 查看工作区和会话短 ID，再执行 /bind <workspace>/<会话短ID>';
+    return '未找到目标。先用 /list 查看工作区和会话短 ID，再执行 /bind <工作区>/<会话短ID>';
   }
+  const { workspace } = resolved;
 
-  const threadMapCapable = isNativeContextContainer(chatJid, group);
-  if (threadMapCapable && resolved.target_agent_id) {
-    return '飞书话题群只能绑定工作区，不能绑定单个会话。请使用 /bind <workspace>。';
+  let updated: RegisteredGroup;
+  let display: string;
+  if (isNativeContextContainer(chatJid, group)) {
+    if (resolved.session) {
+      return '飞书话题群只能绑定工作区，不能绑定单个会话。请使用 /bind <工作区>。';
+    }
+    updated = buildWorkspaceMountUpdate(group, workspace.jid, 'thread_map', {
+      replyPolicy: 'source_only',
+    });
+    display = `${workspace.name}（每个话题一个会话）`;
+  } else {
+    let sessionId = resolved.session?.id;
+    display = `${workspace.name} / ${resolved.session?.name}`;
+    if (!sessionId) {
+      const name = group.name?.trim() || '新对话';
+      const created = createAutoImConversationAgent({
+        userId,
+        sourceJid: chatJid,
+        groupFolder: workspace.folder,
+        name,
+      });
+      if (!created) return '新建会话失败，请稍后重试。';
+      sessionId = created.agentId;
+      display = `${workspace.name} / ${name}（新会话）`;
+    }
+    updated = buildSessionMountUpdate(group, sessionId, {
+      replyPolicy: 'source_only',
+    });
   }
-  const updated: RegisteredGroup = resolved.target_agent_id
-    ? buildSessionMountUpdate(group, resolved.target_agent_id, {
-        replyPolicy: 'source_only',
-      })
-    : buildWorkspaceMountUpdate(
-        group,
-        resolved.target_main_jid!,
-        threadMapCapable ? 'thread_map' : 'single_session',
-        { replyPolicy: 'source_only' },
-      );
   setRegisteredGroup(chatJid, updated);
   registeredGroups[chatJid] = updated;
   if (updated.binding_mode === 'thread_map') {
@@ -5505,7 +5524,7 @@ function handleBindCommand(chatJid: string, rawSpec: string): string {
   }
   imSendFailCounts.delete(chatJid);
   imHealthCheckFailCounts.delete(chatJid);
-  return `已切换到 ${resolved.display}\n🔁 回复策略: source_only`;
+  return `已切换到 ${display}\n🔁 回复策略: source_only`;
 }
 
 async function handleNewCommand(
@@ -5829,51 +5848,19 @@ function handleAllowlistCommand(chatJid: string): string {
 
 const recallCooldowns = new Map<string, number>();
 
-interface RecallTarget {
-  targetJid?: string;
-  folder: string;
-  agentId: string | null;
-  headerName: string;
-}
-
 /**
- * The Session this exact command message routes to. A topic container maps
- * every native topic to its own Session, so the Workspace main Session is
- * never a valid fallback there; without routed topic metadata the command
- * cannot name a Session and is refused. Lookup only: `/recall` never creates
- * a topic Session.
+ * The Session this exact command message routes to. In a topic container
+ * it is the existing session of the message's topic; without routed topic
+ * metadata the command cannot name one and is refused. Lookup only:
+ * `/recall` never creates a topic Session.
  */
 function resolveRecallTarget(
   chatJid: string,
   group: RegisteredGroup,
   messageMeta?: ChannelMessageMeta,
-): RecallTarget | string {
-  const lookupGroup = (jid: string) =>
-    registeredGroups[jid] ?? getRegisteredGroup(jid);
-  const describeAgent = (agentId: string): RecallTarget | string => {
-    const agent = getAgent(agentId);
-    if (!agent) return '当前会话不存在，请重新绑定后再试。';
-    const parent = lookupGroup(agent.chat_jid);
-    const workspaceName = parent?.name || parent?.folder || agent.group_folder;
-    return {
-      targetJid: `${agent.chat_jid}#agent:${agent.id}`,
-      folder: parent?.folder || agent.group_folder,
-      agentId: agent.id,
-      headerName: `${workspaceName} / ${agent.name || agent.id}`,
-    };
-  };
-
+): BoundChatTarget | string {
   if (isNativeContextContainer(chatJid, group)) {
-    const thread =
-      messageMeta?.nativeContextType === 'thread'
-        ? resolveNativeThreadContext(messageMeta)
-        : null;
-    if (!thread) {
-      return '📭 话题群中每个话题是独立会话，请在具体话题内发送 /recall。';
-    }
-    const binding = getImContextBinding(chatJid, 'thread', thread.contextId);
-    if (!binding?.agent_id) return '🧠 当前话题\n\n📭 该话题暂无会话记录';
-    return describeAgent(binding.agent_id);
+    return resolveCommandSession('recall', chatJid, group, messageMeta);
   }
 
   let routed: ReturnType<ReturnType<typeof buildResolveEffectiveChatJid>>;
@@ -5884,15 +5871,14 @@ function resolveRecallTarget(
     logger.warn({ err, chatJid }, '/recall: route resolution failed');
     routed = null;
   }
-  if (!routed) return '当前 IM 未绑定会话，请先绑定后再使用 /recall。';
-  if (routed.agentId) return describeAgent(routed.agentId);
-  const target = lookupGroup(routed.effectiveJid);
-  return {
-    targetJid: routed.effectiveJid,
-    folder: target?.folder || group.folder,
-    agentId: null,
-    headerName: `${target?.name || findGroupNameByFolder(target?.folder || group.folder)} / 主会话`,
-  };
+  if (!routed) return UNBOUND_CHAT_REPLY;
+  return (
+    resolveSessionTarget(
+      routed.agentId,
+      (jid) => registeredGroups[jid] ?? getRegisteredGroup(jid),
+      getAgent,
+    ) ?? '当前会话不存在，请重新绑定后再试。'
+  );
 }
 
 async function handleRecallCommand(
@@ -5911,20 +5897,14 @@ async function handleRecallCommand(
   const group = registeredGroups[chatJid] ?? getRegisteredGroup(chatJid);
   if (!group) {
     logger.warn({ chatJid }, '/recall: no registered group found');
-    return '当前 IM 未绑定工作区';
+    return UNBOUND_CHAT_REPLY;
   }
 
   const resolvedTarget = resolveRecallTarget(chatJid, group, messageMeta);
   if (typeof resolvedTarget === 'string') return resolvedTarget;
-  const { targetJid, headerName } = resolvedTarget;
-  const targetFolder = resolvedTarget.folder;
+  const { targetChatJid: targetJid, locationLine } = resolvedTarget;
 
-  const header = `🧠 ${headerName}`;
-
-  if (!targetJid) {
-    logger.warn({ chatJid, targetFolder }, '/recall: no JID found for target');
-    return `${header}\n\n📭 该对话暂无消息记录`;
-  }
+  const header = `🧠 ${locationLine}`;
 
   // Fetch recent messages for summarization
   const messages = getMessagesPage(targetJid, undefined, 10);
@@ -21410,32 +21390,16 @@ function queueSerializationKey(groupJid: string): string {
  * The queue JID of the Session a card answers for. The card is keyed by its
  * reply route (topic and root included) and the chat's own folder is not the
  * bound workspace's, so resolve the Session as `/break` does: an `#agent:`
- * route names its Session, any other route answers for the chat's bound main
- * Session. Null when that Session is gone.
+ * route names its Session; any other route names none. Null when that
+ * Session is gone.
  */
 function cardSessionJid(
   cardJid: string,
-  conversationJid: string,
+  _conversationJid: string,
 ): string | null {
-  const agentSep = cardJid.indexOf('#agent:');
-  if (agentSep >= 0) {
-    const agentId = cardJid.slice(agentSep + 7);
-    const agent = getAgent(agentId);
-    return agent?.chat_jid ? `${agent.chat_jid}#agent:${agentId}` : null;
-  }
-  const lookup = (jid: string) =>
-    registeredGroups[jid] ?? getRegisteredGroup(jid);
-  const group = lookup(conversationJid);
-  if (!group) return null;
-  const target = resolveBoundChatTarget(
-    conversationJid,
-    group,
-    lookup,
-    getAgent,
-    findGroupNameByFolder,
-    resolveWorkspaceJid,
-  );
-  return target && target.agentId === null ? target.targetChatJid : null;
+  const agentId = agentIdOfJid(cardJid);
+  const agent = agentId ? getAgent(agentId) : undefined;
+  return agent?.chat_jid ? `${agent.chat_jid}#agent:${agentId}` : null;
 }
 
 /**
