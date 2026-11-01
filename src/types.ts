@@ -1037,7 +1037,13 @@ export type WsMessageOut =
       userId: string;
       usage: BillingAccessResult;
     }
-  | { type: 'ws_error'; error: string; chatJid?: string }
+  | {
+      type: 'ws_error';
+      error: string;
+      chatJid?: string;
+      /** `session_required`: a workspace JID was sent without a session. */
+      code?: 'session_required';
+    }
   | { type: 'pong' }
   | {
       type: 'stream_snapshot';

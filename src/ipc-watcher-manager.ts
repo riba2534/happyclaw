@@ -10,8 +10,9 @@ export const DEFAULT_IPC_WATCHER_FALLBACK_MS = 2000;
  */
 export const DEFAULT_IPC_ORPHAN_SWEEP_MS = 30_000;
 
+/** One session's IPC root, `{ipcBaseDir}/{folder}/agents/{agentId}`. */
 export interface IpcRuntimeNamespace {
-  agentId?: string | null;
+  agentId: string;
 }
 
 export interface IpcWatcherErrorContext {
@@ -31,10 +32,10 @@ export interface IpcWatcherManagerOptions {
 }
 
 /**
- * Which IPC roots of one workspace folder to drain. `all` walks the main root
- * plus every `agents/*` namespace; otherwise only the listed
- * namespaces are read, so one runner's request no longer costs a directory
- * read per historical session of the workspace.
+ * Which IPC roots of one workspace folder to drain. `all` walks every
+ * `agents/*` namespace; otherwise only the listed namespaces are read, so one
+ * runner's request no longer costs a directory read per historical session of
+ * the workspace.
  */
 export type IpcProcessScope =
   | { all: true }
@@ -63,30 +64,17 @@ function isSafeNamespaceSegment(value: string): boolean {
   );
 }
 
-/** Concrete IPC roots for a scoped drain, main first. */
+/** Concrete IPC roots for a scoped drain. */
 export function resolveScopedIpcRoots(
   groupIpcRoot: string,
   namespaces: IpcRuntimeNamespace[],
-): Array<{ path: string; agentId: string | null }> {
-  const roots: Array<{ path: string; agentId: string | null }> = [];
+): Array<{ path: string; agentId: string }> {
+  const roots: Array<{ path: string; agentId: string }> = [];
   const seen = new Set<string>();
-  const ordered = [...namespaces].sort(
-    (a, b) => Number(!!a.agentId) - Number(!!b.agentId),
-  );
-  for (const ns of ordered) {
-    if (ns.agentId) {
-      if (!isSafeNamespaceSegment(ns.agentId)) continue;
-      const key = `agent:${ns.agentId}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      roots.push({
-        path: path.join(groupIpcRoot, 'agents', ns.agentId),
-        agentId: ns.agentId,
-      });
-    } else if (!seen.has('main')) {
-      seen.add('main');
-      roots.push({ path: groupIpcRoot, agentId: null });
-    }
+  for (const { agentId } of namespaces) {
+    if (!isSafeNamespaceSegment(agentId) || seen.has(agentId)) continue;
+    seen.add(agentId);
+    roots.push({ path: path.join(groupIpcRoot, 'agents', agentId), agentId });
   }
   return roots;
 }
@@ -94,9 +82,9 @@ export function resolveScopedIpcRoots(
 /**
  * Event-driven watcher for every concrete IPC runtime namespace.
  *
- * Main and conversation-agent runners mount different roots;
- * watching only the workspace-level messages/tasks directories leaves nested
- * requests dependent on the slow full-scan fallback. Entries are reference
+ * Each session runner mounts its own root; watching only the workspace-level
+ * directory would leave nested requests dependent on the slow full-scan
+ * fallback. Entries are reference
  * counted because provider fallback and overlapping warm turns can briefly
  * share the same namespace.
  */
@@ -130,7 +118,7 @@ export class IpcWatcherManager {
   }
 
   private namespaceKey(namespace: IpcRuntimeNamespace): string {
-    return namespace.agentId ? `agent:${namespace.agentId}` : 'main';
+    return `agent:${namespace.agentId}`;
   }
 
   private runtimeKey(folder: string, namespace: IpcRuntimeNamespace): string {
@@ -138,19 +126,21 @@ export class IpcWatcherManager {
   }
 
   /** True while at least one live runner holds this exact namespace. */
-  isWatched(folder: string, namespace: IpcRuntimeNamespace = {}): boolean {
+  isWatched(folder: string, namespace: IpcRuntimeNamespace): boolean {
     return this.watchers.has(this.runtimeKey(folder, namespace));
   }
 
   private runtimeRoot(folder: string, namespace: IpcRuntimeNamespace): string {
-    const groupRoot = path.join(this.options.ipcBaseDir, folder);
-    return namespace.agentId
-      ? path.join(groupRoot, 'agents', namespace.agentId)
-      : groupRoot;
+    return path.join(
+      this.options.ipcBaseDir,
+      folder,
+      'agents',
+      namespace.agentId,
+    );
   }
 
   /** Acquire watchers for the exact root mounted into one runner. */
-  watchRuntime(folder: string, namespace: IpcRuntimeNamespace = {}): void {
+  watchRuntime(folder: string, namespace: IpcRuntimeNamespace): void {
     const key = this.runtimeKey(folder, namespace);
     const existing = this.watchers.get(key);
     if (existing) {
@@ -160,7 +150,7 @@ export class IpcWatcherManager {
 
     const root = this.runtimeRoot(folder, namespace);
     const runtimeNamespace: IpcRuntimeNamespace = {
-      agentId: namespace.agentId ?? null,
+      agentId: namespace.agentId,
     };
     const runtimeWatchers: fs.FSWatcher[] = [];
     for (const dir of [path.join(root, 'messages'), path.join(root, 'tasks')]) {
@@ -191,7 +181,7 @@ export class IpcWatcherManager {
   }
 
   /** Release one runtime acquisition and close its leaf watchers at zero. */
-  unwatchRuntime(folder: string, namespace: IpcRuntimeNamespace = {}): void {
+  unwatchRuntime(folder: string, namespace: IpcRuntimeNamespace): void {
     const key = this.runtimeKey(folder, namespace);
     const entry = this.watchers.get(key);
     if (!entry) return;

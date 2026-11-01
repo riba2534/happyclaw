@@ -992,27 +992,17 @@ function generateTurnId(): string {
   return `ipc-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-/**
- * Normalize isMain/isHome/isAdminHome flags for backward compatibility.
- * If the host sends the old `isMain` field, treat it as isHome=true + isAdminHome=true.
- */
+/** Home capabilities belong to every session of the Home workspace. */
 function normalizeHomeFlags(input: ContainerInput): {
   isHome: boolean;
   isAdminHome: boolean;
 } {
-  if (input.isHome !== undefined) {
-    return { isHome: !!input.isHome, isAdminHome: !!input.isAdminHome };
-  }
-  // Legacy: isMain was the only flag
-  const legacy = !!input.isMain;
-  return { isHome: legacy, isAdminHome: legacy };
+  return { isHome: !!input.isHome, isAdminHome: !!input.isAdminHome };
 }
 
-function resolveAgentBuilderEnabled(
-  input: ContainerInput,
-  isHome: boolean,
-): boolean {
-  return input.agentBuilderEnabled ?? (isHome && !input.agentId);
+/** Agent Builder is a host decision for each session; absent means off. */
+function resolveAgentBuilderEnabled(input: ContainerInput): boolean {
+  return input.agentBuilderEnabled === true;
 }
 
 /**
@@ -2728,11 +2718,7 @@ async function runQueryAttempt(
     }, backgroundProtocolDebtWatchdog.remainingMs(BACKGROUND_PROTOCOL_DEBT_TIMEOUT_MS));
   };
 
-  const { isHome } = normalizeHomeFlags(containerInput);
-  const agentBuilderEnabled = resolveAgentBuilderEnabled(
-    containerInput,
-    isHome,
-  );
+  const agentBuilderEnabled = resolveAgentBuilderEnabled(containerInput);
   const memoryPromptName = 'memory-system.workspace' as const;
   const hasMemoryTools = allowedTools.some(
     (tool) =>
@@ -4704,10 +4690,7 @@ async function main(): Promise<void> {
   let sessionId = containerInput.sessionId;
   latestSessionId = sessionId;
   const { isHome, isAdminHome } = normalizeHomeFlags(containerInput);
-  const agentBuilderEnabled = resolveAgentBuilderEnabled(
-    containerInput,
-    isHome,
-  );
+  const agentBuilderEnabled = resolveAgentBuilderEnabled(containerInput);
 
   // Create in-process SDK MCP server (replaces the stdio subprocess)
   // NOTE: chatJid and currentInputTurnId are mutated in-place by the main loop

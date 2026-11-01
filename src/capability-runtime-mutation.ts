@@ -139,7 +139,6 @@ export const CAPABILITY_CHANGE_HISTORY_INTRO =
 function invalidateWorkspaceSessions(
   targets: WorkspaceRuntimeQuiesceTarget[],
 ): void {
-  const deps = getWebDeps();
   for (const target of targets) {
     try {
       markFolderSessionsForHistoryReinjection(target.folder);
@@ -151,7 +150,6 @@ function invalidateWorkspaceSessions(
       );
     }
     deleteWorkspaceSessions(target.folder);
-    if (deps) delete deps.sessions[target.folder];
   }
 }
 
@@ -163,13 +161,11 @@ function invalidateWorkspaceSessions(
  */
 export function invalidateSessionAfterRunnerExit(
   groupFolder: string,
-  agentId: string | null,
+  agentId: string,
 ): void {
   if (!getSession(groupFolder, agentId)) return;
   markSessionForHistoryReinjection(groupFolder, agentId);
   deleteSession(groupFolder, agentId);
-  const deps = getWebDeps();
-  if (deps && !agentId) delete deps.sessions[groupFolder];
 }
 
 /**

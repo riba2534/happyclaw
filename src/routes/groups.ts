@@ -1636,7 +1636,6 @@ groupRoutes.patch('/:jid', authMiddleware, async (c) => {
         // into a container, or an assistant/proactive transcript across output
         // authorities, after the old runner is stopped.
         deleteWorkspaceSessions(existing.folder);
-        delete deps.sessions[existing.folder];
       }
     };
 
@@ -2173,7 +2172,6 @@ groupRoutes.delete('/:jid', authMiddleware, async (c) => {
     }
 
     delete registeredGroups[jid];
-    delete deps.getSessions()[freshExisting.folder];
     deps.setLastAgentTimestamp(jid, { timestamp: '', id: '' });
 
     removeFlowArtifacts(freshExisting.folder);
@@ -2299,7 +2297,7 @@ groupRoutes.post('/:jid/interrupt', authMiddleware, async (c) => {
 });
 
 // POST /api/groups/:jid/reset-session - 重置会话上下文
-// Optional body: { agentId?: string } — when provided, only reset that agent's session
+// Body: { agentId: string } — the session to reset
 groupRoutes.post('/:jid/reset-session', authMiddleware, async (c) => {
   const deps = getWebDeps();
   if (!deps) return c.json({ error: 'Server not initialized' }, 500);
@@ -2320,38 +2318,20 @@ groupRoutes.post('/:jid/reset-session', authMiddleware, async (c) => {
     );
   }
 
-  // Read optional agentId from request body
-  let agentId: string | undefined;
-  try {
-    const body = await c.req.json().catch(() => ({}));
-    if (body && typeof body.agentId === 'string' && body.agentId) {
-      agentId = body.agentId;
-    }
-  } catch {
-    /* no body or invalid JSON — treat as main session reset */
+  const body = (await c.req.json().catch(() => ({}))) as { agentId?: unknown };
+  const agentId =
+    typeof body?.agentId === 'string' && body.agentId ? body.agentId : null;
+  if (!agentId) {
+    return c.json({ error: 'Session required', code: 'session_required' }, 400);
+  }
+  const agent = getAgent(agentId);
+  if (!agent || agent.chat_jid !== jid) {
+    return c.json({ error: 'Agent not found' }, 404);
   }
 
-  // Validate agentId belongs to this group
-  if (agentId) {
-    const agent = getAgent(agentId);
-    if (!agent || agent.chat_jid !== jid) {
-      return c.json({ error: 'Agent not found' }, 404);
-    }
-  }
-
-  // 1. Stop running processes
+  // 1. Stop the session's runner
   try {
-    if (agentId) {
-      // Agent-specific: only stop the agent's virtual JID process
-      const virtualJid = `${jid}#agent:${agentId}`;
-      await deps.queue.stopGroup(virtualJid, { force: true });
-    } else {
-      // Main session: stop ALL processes for this folder
-      const siblingJids = getJidsByFolder(group.folder);
-      await Promise.all(
-        siblingJids.map((j) => deps.queue.stopGroup(j, { force: true })),
-      );
-    }
+    await deps.queue.stopGroup(`${jid}#agent:${agentId}`, { force: true });
   } catch (err) {
     logger.error(
       { jid, agentId, err },
@@ -2381,10 +2361,7 @@ groupRoutes.post('/:jid/reset-session', authMiddleware, async (c) => {
   try {
     deleteSession(group.folder, agentId);
     clearSessionChannelOwner(group.folder, agentId);
-    if (!agentId) {
-      delete deps.getSessions()[group.folder];
-    }
-    notifyConversationContextCleared(group.folder, agentId ?? null);
+    notifyConversationContextCleared(group.folder, agentId);
   } catch (err) {
     logger.error(
       { jid, folder: group.folder, agentId, err },
@@ -2397,7 +2374,7 @@ groupRoutes.post('/:jid/reset-session', authMiddleware, async (c) => {
   }
 
   // 4. Insert system divider message into the correct JID (best-effort).
-  const targetJid = agentId ? `${jid}#agent:${agentId}` : jid;
+  const targetJid = `${jid}#agent:${agentId}`;
   const dividerMessageId = crypto.randomUUID();
   const timestamp = new Date().toISOString();
   try {
@@ -2930,7 +2907,6 @@ groupRoutes.post('/:jid/clear-history', authMiddleware, async (c) => {
     // refresh failure must not turn a successfully committed rebuild into a
     // misleading 500 response: the authoritative state is already in SQLite.
     try {
-      delete deps.getSessions()[group.folder];
       for (const siblingJid of siblingJids) {
         deps.setLastAgentTimestamp(siblingJid, { timestamp: '', id: '' });
       }

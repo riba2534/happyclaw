@@ -1,9 +1,6 @@
 import { describe, expect, test, vi } from 'vitest';
 
-import {
-  resolveIpcDeliveryTargetGroup,
-  resolveIpcImRoute,
-} from '../src/ipc-delivery-routing.js';
+import { resolveIpcDeliveryTargetGroup } from '../src/ipc-delivery-routing.js';
 import type { RegisteredGroup } from '../src/types.js';
 
 function makeGroup(): RegisteredGroup {
@@ -57,72 +54,5 @@ describe('IPC delivery target authorization lookup', () => {
       resolveIpcDeliveryTargetGroup('web:workspace#agent:agent-a', lookup),
     ).toBe(target);
     expect(lookup).toHaveBeenCalledWith('web:workspace');
-  });
-});
-
-describe('IPC live IM reply route resolution', () => {
-  test('conversation Agent looks up the route by its canonical Web virtual JID', () => {
-    const currentTopic = 'feishu:oc_topic_group#thread:omt_topic#root:om_root';
-    const getActiveRoute = vi.fn((runtimeJid: string) =>
-      runtimeJid === 'web:workspace#agent:agent-a' ? currentTopic : null,
-    );
-
-    expect(
-      resolveIpcImRoute({
-        ipcAgentId: 'agent-a',
-        isHome: false,
-        chatJid: currentTopic,
-        sourceGroup: 'flow-x',
-        getActiveRoute,
-        getAgentChatJid: () => 'web:workspace',
-        isImJid: () => true,
-      }),
-    ).toBe(currentTopic);
-    expect(getActiveRoute).toHaveBeenCalledWith('web:workspace#agent:agent-a');
-    expect(getActiveRoute).not.toHaveBeenCalledWith(
-      `${currentTopic}#agent:agent-a`,
-    );
-  });
-
-  test('conversation Agent fails closed when its canonical chat is unavailable', () => {
-    expect(
-      resolveIpcImRoute({
-        ipcAgentId: 'missing-agent',
-        isHome: false,
-        chatJid: 'feishu:oc_topic_group#thread:omt_topic#root:om_root',
-        sourceGroup: 'flow-x',
-        getActiveRoute: () => 'feishu:unexpected',
-        getAgentChatJid: () => null,
-        isImJid: () => true,
-      }),
-    ).toBeNull();
-  });
-
-  test('regular workspace preserves the exact topic route for delivery', () => {
-    const currentTopic = 'feishu:oc_topic_group#thread:omt_topic#root:om_root';
-    expect(
-      resolveIpcImRoute({
-        isHome: false,
-        chatJid: currentTopic,
-        sourceGroup: 'flow-x',
-        getActiveRoute: () => null,
-        getAgentChatJid: () => null,
-        isImJid: () => true,
-      }),
-    ).toBe(currentTopic);
-  });
-
-  test('home workspace prefers its current dynamic route', () => {
-    expect(
-      resolveIpcImRoute({
-        isHome: true,
-        chatJid: 'feishu:stale-route',
-        sourceGroup: 'main',
-        getActiveRoute: (runtimeJid) =>
-          runtimeJid === 'main' ? 'feishu:current-route' : null,
-        getAgentChatJid: () => null,
-        isImJid: () => true,
-      }),
-    ).toBe('feishu:current-route');
   });
 });

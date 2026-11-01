@@ -678,8 +678,6 @@ export interface ContainerInput {
   currentSourceJid?: string;
   /** Sanitized provider identity for the exact input turn. */
   channelContext?: ChannelTurnContext;
-  /** @deprecated Use isHome + isAdminHome instead */
-  isMain: boolean;
   turnId?: string;
   /** Persisted message IDs already represented by this cold-run prompt. */
   readonly currentBatchMessageIds?: readonly string[];
@@ -3145,7 +3143,7 @@ export async function runContainerAgent(
         group: group.name,
         containerName,
         mountCount: mounts.length,
-        isMain: input.isMain,
+        agentId: input.agentId,
         imageProfile:
           containerImage === CONTAINER_IMAGE_HEADROOM ? 'headroom' : 'core',
       },
@@ -4455,7 +4453,7 @@ export async function runHostAgent(
       {
         group: group.name,
         workingDir: groupDir,
-        isMain: input.isMain,
+        agentId: input.agentId,
       },
       'Spawning host agent',
     );
