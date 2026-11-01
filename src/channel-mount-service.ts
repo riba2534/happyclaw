@@ -1,39 +1,20 @@
-import crypto from 'crypto';
 import type {
-  ChannelAccount,
-  ChannelProvider,
   ChannelMount,
   ChannelRoutingMode,
   RegisteredGroup,
   SubAgent,
 } from './types.js';
 import { getChannelType } from './im-channel.js';
-import {
-  channelConversationJid,
-  parseChannelAddress,
-} from './channel-address.js';
 import { applyChannelAccountRegistrationFallback } from './channel-account-routing.js';
 import { resolveChannelConversationKind } from './channel-conversation-kind.js';
-import { canonicalizeWhatsAppConversationJid } from './whatsapp-jid.js';
 import { isThreadMapCapableChat } from './im-channel-capabilities.js';
 import {
-  createAgent,
-  ensureChatExists,
-  getChannelAccount,
   getAllRegisteredGroups,
-  getDefaultChannelAccount,
   getJidsByFolder,
-  getLegacyChannelAccount,
   getRegisteredGroup,
-  getUserHomeGroup,
-  listAgentsByJid,
-  setRegisteredGroupAndClearMatchingMainOwner,
+  runImmediateTransaction,
   setRegisteredGroup,
-  updateAgentLastImJid,
-  updateChatName,
 } from './db.js';
-import { logger } from './logger.js';
-import { ensureAgentDirectories } from './utils.js';
 
 export interface ChannelMountRuntimePort {
   getRegisteredGroups: () => Record<string, RegisteredGroup>;
@@ -71,44 +52,11 @@ export interface NativeContextMetadata {
   activation_mode?: RegisteredGroup['activation_mode'] | null;
 }
 
-export interface RestoreDefaultChannelMountDeps {
-  getAccount: (id: string) => ChannelAccount | undefined;
-  getDefaultAccount: (
-    ownerUserId: string,
-    provider: ChannelProvider,
-  ) => ChannelAccount | undefined;
-  getLegacyAccount?: (
-    ownerUserId: string,
-    provider: ChannelProvider,
-  ) => ChannelAccount | undefined;
-  getGroup: (jid: string) => RegisteredGroup | undefined;
-  getHome: (
-    ownerUserId: string,
-  ) => (RegisteredGroup & { jid: string }) | undefined;
-  getJidsByFolder?: (folder: string) => string[];
-}
-
 export interface ThreadMapMountLookupDeps {
   getAllGroups: () => Record<string, RegisteredGroup>;
   getGroup: (jid: string) => RegisteredGroup | undefined;
   getJidsByFolder?: (folder: string) => string[];
 }
-
-export type RestoreDefaultChannelMountResult =
-  | {
-      status: 'resolved';
-      workspaceJid: string;
-      routingMode: ChannelRoutingMode;
-      accountId: string | null;
-      updated: RegisteredGroup;
-    }
-  | {
-      status: 'unavailable';
-      reason:
-        | 'missing_owner'
-        | 'account_mismatch'
-        | 'missing_default_workspace';
-    };
 
 export type NativeContextMountUpgradeResult =
   | { status: 'upgraded' | 'unchanged'; updated: RegisteredGroup }
@@ -117,17 +65,27 @@ export type NativeContextMountUpgradeResult =
       reason: 'bound_to_session' | 'missing_workspace';
     };
 
+/**
+ * Where a channel mount sends a message: one session (direct chats and
+ * ordinary groups), or a workspace whose native topics each get their own
+ * session (thread_map). A single-session mount always names its session.
+ */
 export type ChannelMountTargetResolution =
   | {
-      status: 'resolved';
+      status: 'session';
       effectiveJid: string;
       workspaceJid: string;
       workspace: RegisteredGroup;
-      agentId: string | null;
+      agentId: string;
       workspaceMismatch?: {
         storedWorkspaceJid: string;
         actualWorkspaceJid: string;
       };
+    }
+  | {
+      status: 'thread_map';
+      workspaceJid: string;
+      workspace: RegisteredGroup;
     }
   | {
       status: 'stale';
@@ -139,8 +97,7 @@ export type ChannelMountTargetResolution =
 /**
  * A native-context container owns many platform conversations (for example a
  * Feishu topic group or Telegram Forum). It must route through thread_map;
- * ordinary chats can route either to a workspace main conversation or one
- * explicitly selected session.
+ * ordinary chats route to one explicitly selected session.
  */
 export function isNativeContextContainer(
   channelJid: string,
@@ -171,255 +128,6 @@ export function isNativeContextContainer(
       liveInfo.native_context_type ?? persisted.native_context_type,
     thread_capable: liveInfo.thread_capable ?? persisted.thread_capable,
   });
-}
-
-/**
- * Resolve the account-owned default workspace before mutating a mount. This
- * lets REST endpoints perform a single committed update: a failed restore can
- * never leave a channel temporarily unbound.
- */
-export function buildRestoreDefaultChannelMountUpdate(
-  channelJid: string,
-  group: RegisteredGroup,
-  ownerUserId: string | undefined,
-  deps: RestoreDefaultChannelMountDeps,
-  liveInfo: NativeContextMetadata = {},
-): RestoreDefaultChannelMountResult {
-  const provider = getChannelType(channelJid) as ChannelProvider | null;
-  const encodedAccountId = parseChannelAddress(channelJid)?.channelAccountId;
-  const storedAccountId = group.channel_account_id;
-  if (
-    storedAccountId &&
-    encodedAccountId &&
-    storedAccountId !== encodedAccountId
-  ) {
-    return { status: 'unavailable', reason: 'account_mismatch' };
-  }
-  const accountId = storedAccountId ?? encodedAccountId ?? null;
-
-  let account = accountId ? deps.getAccount(accountId) : undefined;
-  if (account && ownerUserId && account.owner_user_id !== ownerUserId) {
-    return { status: 'unavailable', reason: 'account_mismatch' };
-  }
-  const effectiveOwner =
-    account?.owner_user_id ?? ownerUserId ?? group.created_by;
-  if (!effectiveOwner || !provider) {
-    return { status: 'unavailable', reason: 'missing_owner' };
-  }
-
-  // Historical unscoped JIDs belong to the legacy default account, even if
-  // the user later selected another account as the UI default.
-  if (!account && !encodedAccountId && !storedAccountId) {
-    account =
-      deps.getLegacyAccount?.(effectiveOwner, provider) ??
-      deps.getDefaultAccount(effectiveOwner, provider);
-  }
-
-  let workspaceJid: string | null = null;
-  if (account?.default_workspace_jid) {
-    const resolved = resolveWorkspaceJid(account.default_workspace_jid, {
-      getRegisteredGroup: deps.getGroup,
-      getJidsByFolder: deps.getJidsByFolder,
-    });
-    const workspace = resolved ? deps.getGroup(resolved) : undefined;
-    if (resolved && workspace?.created_by === effectiveOwner) {
-      workspaceJid = resolved;
-    }
-  }
-
-  if (!workspaceJid) {
-    workspaceJid = deps.getHome(effectiveOwner)?.jid ?? null;
-  }
-  if (!workspaceJid) {
-    return { status: 'unavailable', reason: 'missing_default_workspace' };
-  }
-
-  const routingMode: ChannelRoutingMode = isNativeContextContainer(
-    channelJid,
-    group,
-    liveInfo,
-  )
-    ? 'thread_map'
-    : 'single_session';
-  return {
-    status: 'resolved',
-    workspaceJid,
-    routingMode,
-    accountId: account?.id ?? accountId,
-    updated: {
-      ...buildWorkspaceMountUpdate(group, workspaceJid, routingMode, {
-        replyPolicy: 'source_only',
-      }),
-      ...((account?.id ?? accountId)
-        ? { channel_account_id: account?.id ?? accountId ?? undefined }
-        : {}),
-    },
-  };
-}
-
-/** Resolve and commit the default target in one write. */
-export function restoreDefaultChannelMount(
-  channelJid: string,
-  group: RegisteredGroup,
-  ownerUserId: string | undefined,
-  liveInfo: NativeContextMetadata = {},
-): RestoreDefaultChannelMountResult {
-  const resolved = buildRestoreDefaultChannelMountUpdate(
-    channelJid,
-    group,
-    ownerUserId,
-    {
-      getAccount: getChannelAccount,
-      getDefaultAccount: getDefaultChannelAccount,
-      getLegacyAccount: getLegacyChannelAccount,
-      getGroup: getRegisteredGroup,
-      getHome: getUserHomeGroup,
-      getJidsByFolder,
-    },
-    liveInfo,
-  );
-  if (resolved.status !== 'resolved') return resolved;
-
-  // Infer kind from the JID only. Feishu P2P metadata must not opt Feishu
-  // into a channel_direct session; that path stays auto_im.
-  if (resolveChannelConversationKind(channelJid) === 'direct') {
-    const previousWorkspaceJid = resolveWorkspaceJid(group.target_main_jid, {
-      getRegisteredGroup,
-      getJidsByFolder,
-    });
-    const previousWorkspaceFolder = previousWorkspaceJid
-      ? getRegisteredGroup(previousWorkspaceJid)?.folder
-      : undefined;
-    const mounted = ensureDirectChannelSessionMount({
-      sourceJid: channelJid,
-      group: {
-        ...group,
-        ...((resolved.accountId ?? group.channel_account_id)
-          ? {
-              channel_account_id:
-                resolved.accountId ?? group.channel_account_id,
-            }
-          : {}),
-      },
-      workspaceJid: resolved.workspaceJid,
-      userId: ownerUserId ?? group.created_by ?? '',
-      force: true,
-      mountOptions: { replyPolicy: 'source_only' },
-    });
-    commitChannelMountUpdate(channelJid, mounted, {
-      clearMatchingMainOwnerFolder: previousWorkspaceFolder,
-    });
-    return { ...resolved, updated: mounted };
-  }
-
-  commitChannelMountUpdate(channelJid, resolved.updated);
-  return resolved;
-}
-
-export interface EnsureDirectChannelSessionMountParams {
-  sourceJid: string;
-  group: RegisteredGroup;
-  workspaceJid: string;
-  userId: string;
-  /** Remount even when the chat already has a workspace or session bind. */
-  force?: boolean;
-  mountOptions?: ChannelMountUpdateOptions;
-  /** Called before a newly allocated Agent is persisted or creates directories. */
-  onCreating?: (agent: SubAgent, workspaceJid: string) => void;
-  onCreated?: (agent: SubAgent, workspaceJid: string) => void;
-}
-
-function matchesDirectConversationJid(
-  lastImJid: string | null,
-  conversationJid: string,
-): boolean {
-  if (!lastImJid) return false;
-  const canonicalConversation = canonicalizeWhatsAppConversationJid(
-    channelConversationJid(conversationJid),
-  );
-  return (
-    canonicalizeWhatsAppConversationJid(channelConversationJid(lastImJid)) ===
-    canonicalConversation
-  );
-}
-
-/**
- * Mount an unbound (or force-restored) direct chat onto a dedicated
- * conversation session in the fallback workspace. Reuses an existing
- * `channel_direct` session for the same conversation JID when one exists.
- */
-export function ensureDirectChannelSessionMount(
-  params: EnsureDirectChannelSessionMountParams,
-): RegisteredGroup {
-  if (
-    !params.force &&
-    (params.group.target_agent_id || params.group.target_main_jid)
-  ) {
-    return params.group;
-  }
-
-  const workspace = getRegisteredGroup(params.workspaceJid);
-  if (!workspace) return params.group;
-
-  const conversationJid = channelConversationJid(params.sourceJid);
-  const reusable = listAgentsByJid(params.workspaceJid).find(
-    (agent) =>
-      agent.source_kind === 'channel_direct' &&
-      matchesDirectConversationJid(agent.last_im_jid, conversationJid),
-  );
-
-  if (
-    reusable &&
-    params.group.target_agent_id === reusable.id &&
-    !params.group.target_main_jid
-  ) {
-    return params.group;
-  }
-
-  const now = new Date().toISOString();
-  const agent =
-    reusable ??
-    (() => {
-      const created: SubAgent = {
-        id: crypto.randomUUID(),
-        group_folder: workspace.folder,
-        chat_jid: params.workspaceJid,
-        name: params.group.name || conversationJid,
-        prompt: '',
-        status: 'idle',
-        kind: 'conversation',
-        created_by: params.userId || workspace.created_by || null,
-        created_at: now,
-        completed_at: null,
-        result_summary: null,
-        last_im_jid: conversationJid,
-        spawned_from_jid: null,
-        source_kind: 'channel_direct',
-        last_active_at: now,
-      };
-      params.onCreating?.(created, params.workspaceJid);
-      createAgent(created);
-      ensureAgentDirectories(workspace.folder, created.id);
-      const virtualChatJid = `${params.workspaceJid}#agent:${created.id}`;
-      ensureChatExists(virtualChatJid);
-      updateChatName(virtualChatJid, created.name);
-      params.onCreated?.(created, params.workspaceJid);
-      logger.info(
-        {
-          sourceJid: params.sourceJid,
-          agentId: created.id,
-          workspaceJid: params.workspaceJid,
-        },
-        'Created channel_direct session mount for direct chat',
-      );
-      return created;
-    })();
-
-  if (reusable) {
-    updateAgentLastImJid(reusable.id, conversationJid);
-  }
-
-  return buildSessionMountUpdate(params.group, agent.id, params.mountOptions);
 }
 
 /** Record the discovering Bot account without selecting a conversation target. */
@@ -500,7 +208,7 @@ export function resolveWorkspaceJid(
 }
 
 export function resolveChannelMountTarget(
-  mount: Pick<ChannelMount, 'session_id' | 'workspace_jid'>,
+  mount: Pick<ChannelMount, 'session_id' | 'workspace_jid' | 'routing_mode'>,
   deps: Pick<ChannelMountResolutionDeps, 'getAgent' | 'getRegisteredGroup'>,
 ): ChannelMountTargetResolution {
   if (mount.session_id) {
@@ -523,7 +231,7 @@ export function resolveChannelMountTarget(
       };
     }
     return {
-      status: 'resolved',
+      status: 'session',
       effectiveJid: `${session.chat_jid}#agent:${mount.session_id}`,
       workspaceJid: session.chat_jid,
       workspace,
@@ -539,6 +247,15 @@ export function resolveChannelMountTarget(
     };
   }
 
+  // A workspace is a target only for a topic container's thread map; a
+  // single-session mount without its session reaches nothing.
+  if (mount.routing_mode !== 'thread_map') {
+    return {
+      status: 'stale',
+      reason: 'missing_session',
+      workspaceJid: mount.workspace_jid,
+    };
+  }
   const workspace = deps.getRegisteredGroup(mount.workspace_jid);
   if (!workspace) {
     return {
@@ -547,13 +264,7 @@ export function resolveChannelMountTarget(
       workspaceJid: mount.workspace_jid,
     };
   }
-  return {
-    status: 'resolved',
-    effectiveJid: mount.workspace_jid,
-    workspaceJid: mount.workspace_jid,
-    workspace,
-    agentId: null,
-  };
+  return { status: 'thread_map', workspaceJid: mount.workspace_jid, workspace };
 }
 
 export function buildSessionMountUpdate(
@@ -671,21 +382,36 @@ export function unbindChannelMount(
 export function commitChannelMountUpdate(
   channelJid: string,
   updated: RegisteredGroup,
-  options: { clearMatchingMainOwnerFolder?: string } = {},
 ): void {
-  if (options.clearMatchingMainOwnerFolder) {
-    setRegisteredGroupAndClearMatchingMainOwner(
-      channelJid,
-      updated,
-      options.clearMatchingMainOwnerFolder,
-    );
-  } else {
-    setRegisteredGroup(channelJid, updated);
-  }
+  commitChannelMountUpdates([[channelJid, updated]]);
+}
+
+/** Several binding changes in one transaction: all of them land, or none. */
+export function commitChannelMountUpdates(
+  updates: ReadonlyArray<readonly [string, RegisteredGroup]>,
+): void {
+  runImmediateTransaction(() => {
+    for (const [channelJid, updated] of updates) {
+      setRegisteredGroup(channelJid, updated);
+    }
+  });
   if (!channelMountRuntimePort) return;
   const groups = channelMountRuntimePort.getRegisteredGroups();
-  if (groups[channelJid]) groups[channelJid] = updated;
-  channelMountRuntimePort.clearImFailCounts?.(channelJid);
+  for (const [channelJid, updated] of updates) {
+    if (groups[channelJid]) groups[channelJid] = updated;
+    channelMountRuntimePort.clearImFailCounts?.(channelJid);
+  }
+}
+
+/** Reload chats whose bindings changed in the database into the live cache. */
+export function refreshChannelMountCache(channelJids: readonly string[]): void {
+  if (!channelMountRuntimePort) return;
+  const groups = channelMountRuntimePort.getRegisteredGroups();
+  for (const channelJid of channelJids) {
+    const fresh = getRegisteredGroup(channelJid);
+    if (fresh && groups[channelJid]) groups[channelJid] = fresh;
+    channelMountRuntimePort.clearImFailCounts?.(channelJid);
+  }
 }
 
 export function hasSessionMountConflict(
