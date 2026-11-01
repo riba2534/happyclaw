@@ -149,6 +149,22 @@ describe('group broadcast attribution ACL', () => {
     expect([...getGroupAllowedUserIds(imJid)!]).toEqual(['legacy-owner']);
   });
 
+  test("an unbound IM chat never reaches the guests of its folder's workspace", () => {
+    const imJid = 'qq:c2c:unbound-in-home';
+    state.groups.set(
+      'web:home-u1',
+      group('web:home-u1', 'home-u1', 'u1', { is_home: true }),
+    );
+    state.groups.set(imJid, group(imJid, 'home-u1', 'u1'));
+    state.guests.set('web:home-u1|u1', ['guest-home']);
+
+    expect([...getGroupAllowedUserIds(imJid)!]).toEqual(['u1']);
+    expect([...getGroupAllowedUserIds('web:home-u1')!].sort()).toEqual([
+      'guest-home',
+      'u1',
+    ]);
+  });
+
   test('adds guests with an active grant on the attributed workspace', () => {
     state.groups.set(
       'web:flow-x',
