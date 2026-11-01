@@ -152,7 +152,7 @@ describe('PR #547: conversation agent stays warm after final reply', () => {
 
 describe('PR #547: cleanupIpcSentinels clears _interrupt alongside _close/_drain', () => {
   const folder = `sentinel-test-${process.pid}-${Date.now()}`;
-  const inputDir = path.join(DATA_DIR, 'ipc', folder, 'input');
+  const inputDir = path.join(DATA_DIR, 'ipc', folder, 'agents', 's', 'input');
 
   afterEach(() => {
     fs.rmSync(path.join(DATA_DIR, 'ipc', folder), {
@@ -171,9 +171,9 @@ describe('PR #547: cleanupIpcSentinels clears _interrupt alongside _close/_drain
     // cleanupIpcSentinels is private; call it the same way the finally blocks do.
     (
       q as unknown as {
-        cleanupIpcSentinels(folder: string, agentId?: string | null): void;
+        cleanupIpcSentinels(folder: string, agentId: string | null): void;
       }
-    ).cleanupIpcSentinels(folder);
+    ).cleanupIpcSentinels(folder, 's');
 
     for (const name of ['_drain', '_close', '_interrupt']) {
       expect(fs.existsSync(path.join(inputDir, name))).toBe(false);

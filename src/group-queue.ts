@@ -265,6 +265,11 @@ function sessionIpcInputDir(groupFolder: string, agentId: string): string {
 /** A lane whose runner has registered: it always serves one session. */
 type ActiveGroupState = GroupState & { groupFolder: string; agentId: string };
 
+/** The runner registered its session, so its IPC directory is known. */
+function hasRunnerIpc(state: GroupState): state is ActiveGroupState {
+  return !!state.groupFolder && !!state.agentId;
+}
+
 export interface QueueGroupStatus {
   jid: string;
   active: boolean;
@@ -1367,13 +1372,13 @@ export class GroupQueue {
 
   private resolveActiveState(groupJid: string): ActiveGroupState | null {
     const own = this.getGroup(groupJid);
-    if (own.active && own.groupFolder) return own as ActiveGroupState;
+    if (own.active && hasRunnerIpc(own)) return own;
 
     const activeRunner = this.findActiveRunnerFor(groupJid);
     if (!activeRunner) return null;
     const shared = this.getGroup(activeRunner);
-    if (!shared.active || !shared.groupFolder) return null;
-    return shared as ActiveGroupState;
+    if (!shared.active || !hasRunnerIpc(shared)) return null;
+    return shared;
   }
 
   /**
@@ -1387,8 +1392,7 @@ export class GroupQueue {
     const state = this.groups.get(groupJid);
     if (
       !state?.active ||
-      !state.groupFolder ||
-      !state.agentId ||
+      !hasRunnerIpc(state) ||
       !groupJid.endsWith(`#agent:${state.agentId}`)
     ) {
       return false;
@@ -1398,7 +1402,7 @@ export class GroupQueue {
       return true;
     }
 
-    if (!this.writeDrainSentinel(state as ActiveGroupState)) return false;
+    if (!this.writeDrainSentinel(state)) return false;
     state.drainSentinelWritten = true;
     logger.info({ groupJid }, reason);
     return true;
@@ -2294,11 +2298,10 @@ export class GroupQueue {
   /**
    * Check for unconsumed IPC messages after a runner exit and recover.
    * Handles the race where sendMessage() wrote a file but the process
-   * exited before reading it (issue #240). A runner registered without a
-   * session has no session callback; its lane is started from durable state.
+   * exited before reading it (issue #240).
    */
   private recoverUnconsumedIpc(groupJid: string, state: GroupState): void {
-    if (!state.groupFolder) return;
+    if (!hasRunnerIpc(state)) return;
     // 刚被 stopGroup 普通停止的 lane 不在这里重新入队，否则 stop 之后会立刻
     // 拉起一个新 runner。
     if (
@@ -2311,7 +2314,7 @@ export class GroupQueue {
       if (!this.hasRemainingIpcMessages(state.groupFolder, state.agentId))
         return;
 
-      if (state.agentId && this.onUnconsumedAgentIpcFn) {
+      if (this.onUnconsumedAgentIpcFn) {
         logger.warn(
           { groupJid, agentId: state.agentId },
           'Unconsumed IPC messages found after runner exit, re-enqueuing',
@@ -2370,8 +2373,8 @@ export class GroupQueue {
     state: GroupState,
     deliveryIds: Set<string>,
   ): boolean {
-    if (!state.groupFolder || deliveryIds.size === 0) return true;
-    const inputDir = this.resolveIpcInputDir(state as ActiveGroupState);
+    if (!hasRunnerIpc(state) || deliveryIds.size === 0) return true;
+    const inputDir = this.resolveIpcInputDir(state);
     let filenames: string[];
     try {
       filenames = fs.readdirSync(inputDir).filter(isIpcInputPayloadFilename);
@@ -2473,8 +2476,8 @@ export class GroupQueue {
   closeAllActiveForCredentialRefresh(): number {
     let closed = 0;
     for (const [jid, state] of this.groups) {
-      if (state.active && state.groupFolder) {
-        const inputDir = this.resolveIpcInputDir(state as ActiveGroupState);
+      if (state.active && hasRunnerIpc(state)) {
+        const inputDir = this.resolveIpcInputDir(state);
         try {
           fs.mkdirSync(inputDir, { recursive: true });
           fs.writeFileSync(path.join(inputDir, '_close'), '');
@@ -2511,13 +2514,13 @@ export class GroupQueue {
       if (
         !state.active ||
         !state.process ||
-        !state.groupFolder ||
+        !hasRunnerIpc(state) ||
         state.selectedProviderId !== providerId ||
         state.drainSentinelWritten
       ) {
         continue;
       }
-      if (!this.writeDrainSentinel(state as ActiveGroupState)) continue;
+      if (!this.writeDrainSentinel(state)) continue;
       state.drainSentinelWritten = true;
       drained++;
       logger.info(
@@ -2545,14 +2548,14 @@ export class GroupQueue {
       const state = this.groups.get(jid);
       if (
         !state?.active ||
-        !state.groupFolder ||
+        !hasRunnerIpc(state) ||
         state.drainSentinelWritten ||
         (targetProviderId !== null &&
           state.selectedProviderId === targetProviderId)
       ) {
         continue;
       }
-      if (!this.writeDrainSentinel(state as ActiveGroupState)) continue;
+      if (!this.writeDrainSentinel(state)) continue;
       state.drainSentinelWritten = true;
       drained++;
       logger.info(
@@ -2593,7 +2596,7 @@ export class GroupQueue {
     // 中断把已积累的 backoff 进度归零。
     this.cancelRetryTimer(state);
 
-    if (!state.groupFolder) {
+    if (!hasRunnerIpc(state)) {
       if (!state.queryId) return false;
       const stopPending =
         state.pendingInterruptQueryId === state.queryId &&
@@ -2608,7 +2611,7 @@ export class GroupQueue {
     }
     state.pendingInterruptQueryId = null;
 
-    const inputDir = this.resolveIpcInputDir(state as ActiveGroupState);
+    const inputDir = this.resolveIpcInputDir(state);
     try {
       fs.mkdirSync(inputDir, { recursive: true });
       try {
@@ -3259,8 +3262,8 @@ export class GroupQueue {
     // 写入后 agent 看到 sentinel 自然 break loop、走 finally 清理、conversation
     // archive 完成。和 closeAllActiveForCredentialRefresh 的策略一致。
     for (const [, state] of this.groups) {
-      if (!state.active || !state.groupFolder || !state.agentId) continue;
-      const inputDir = sessionIpcInputDir(state.groupFolder, state.agentId);
+      if (!state.active || !hasRunnerIpc(state)) continue;
+      const inputDir = this.resolveIpcInputDir(state);
       try {
         fs.mkdirSync(inputDir, { recursive: true });
         fs.writeFileSync(path.join(inputDir, '_close'), '');

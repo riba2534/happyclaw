@@ -35,10 +35,8 @@ const settle = async () => {
   for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r));
 };
 
-function inputDir(agentId: string | null = AGENT_ID): string {
-  return agentId
-    ? path.join(DATA_DIR, 'ipc', FOLDER, 'agents', agentId, 'input')
-    : path.join(DATA_DIR, 'ipc', FOLDER, 'input');
+function inputDir(agentId: string = AGENT_ID): string {
+  return path.join(DATA_DIR, 'ipc', FOLDER, 'agents', agentId, 'input');
 }
 
 let queue: Queue;
@@ -62,7 +60,7 @@ function startRunner(
   options: {
     acceptsInput?: boolean;
     register?: boolean;
-    agentId?: string | null;
+    agentId?: string;
     containerName?: string | null;
   } = {},
 ): { exit: () => void; ran: () => boolean } {
@@ -88,7 +86,7 @@ function startRunner(
 function register(
   jid: string,
   exit: () => void,
-  options: { agentId?: string | null; containerName?: string | null } = {},
+  options: { agentId?: string; containerName?: string | null } = {},
 ): void {
   runnerExits.set(jid, exit);
   queue.registerProcess(
@@ -103,8 +101,7 @@ function register(
     {
       containerName: options.containerName ?? null,
       groupFolder: FOLDER,
-      agentId:
-        options.agentId === null ? undefined : (options.agentId ?? AGENT_ID),
+      agentId: options.agentId ?? AGENT_ID,
     },
   );
 }
@@ -279,24 +276,6 @@ describe('restarting a lane', () => {
     await settle();
     await queue.restartGroup(LANE);
     expect(queue.getStatus().activeCount).toBe(0);
-  });
-});
-
-describe('IPC input left behind by a runner without a session', () => {
-  test('starts its lane through the host', async () => {
-    const starts: string[] = [];
-    queue.setLaneStarter((jid) => starts.push(jid));
-    const runner = startRunner(LANE, 'terminal-warmup', {
-      acceptsInput: false,
-      agentId: null,
-    });
-    await settle();
-    fs.mkdirSync(inputDir(null), { recursive: true });
-    fs.writeFileSync(path.join(inputDir(null), 'left.json'), '{}');
-
-    runner.exit();
-    await settle();
-    expect(starts).toEqual([LANE]);
   });
 });
 

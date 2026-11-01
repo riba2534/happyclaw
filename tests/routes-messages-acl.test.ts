@@ -127,10 +127,8 @@ const testDeps = {
     },
     getActiveQueryId: () => activeQueryId,
   },
-  getSessions: () => ({}) as Record<string, string>,
   setLastAgentTimestamp: () => {},
   getRegisteredGroups: () => registeredGroupsCache,
-  advanceGlobalCursor: () => {},
   promoteFollowUp: (
     chatJid: string,
     messageId: string,
@@ -185,28 +183,6 @@ function seedTestGroup(): void {
       spawned_from_jid: null,
     });
   }
-}
-
-const SESSION_ID = 'messages-acl-session';
-const SESSION_JID = `${GROUP_JID}#agent:${SESSION_ID}`;
-
-function seedSession(): void {
-  if (db.getAgent(SESSION_ID)) return;
-  db.createAgent({
-    id: SESSION_ID,
-    group_folder: GROUP_FOLDER,
-    chat_jid: GROUP_JID,
-    name: 'Session',
-    prompt: '',
-    status: 'idle',
-    kind: 'conversation',
-    created_by: OWNER_ID,
-    created_at: new Date().toISOString(),
-    completed_at: null,
-    result_summary: null,
-    last_im_jid: null,
-    spawned_from_jid: null,
-  });
 }
 
 function asUser(userId: string, role: 'admin' | 'member' = 'member'): void {
@@ -288,7 +264,6 @@ describe('GET /api/groups/:jid/messages — stable sequence cursor', () => {
   test('paginates same-timestamp messages and polls late arrivals', async () => {
     seedTestGroup();
     asUser(OWNER_ID);
-    seedSession();
     const timestamp = '2026-08-31T00:00:00.000Z';
     for (let index = 0; index < 52; index++) {
       db.ensureChatExists(SESSION_JID);

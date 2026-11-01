@@ -24,13 +24,14 @@ const { GroupQueue } = await import('../src/group-queue.js');
 describe('GroupQueue query identity', () => {
   test('drains only matching Provider runners without interrupting the current query', () => {
     const queue = new GroupQueue();
-    const matchingJid = 'web:credential-drain-match';
-    const otherJid = 'web:credential-drain-other';
-    const bootingJid = 'web:credential-drain-booting';
+    const matchingJid = 'web:credential-drain-match#agent:s';
+    const otherJid = 'web:credential-drain-other#agent:s';
+    const bootingJid = 'web:credential-drain-booting#agent:s';
     const matching = (queue as any).getGroup(matchingJid);
     matching.active = true;
     matching.process = { pid: 1001 };
     matching.groupFolder = 'credential-drain-match';
+    matching.agentId = 's';
     matching.selectedProviderId = 'provider-refresh';
     matching.queryInFlight = true;
     matching.queryId = 'query-in-progress';
@@ -38,6 +39,7 @@ describe('GroupQueue query identity', () => {
     other.active = true;
     other.process = { pid: 1002 };
     other.groupFolder = 'credential-drain-other';
+    other.agentId = 's';
     other.selectedProviderId = 'provider-other';
     // Marked active but not yet spawned: it reads rotated credentials at
     // launch, and its selectedProviderId is left over from the last run.
@@ -45,6 +47,7 @@ describe('GroupQueue query identity', () => {
     booting.active = true;
     booting.process = null;
     booting.groupFolder = 'credential-drain-booting';
+    booting.agentId = 's';
     booting.selectedProviderId = 'provider-refresh';
 
     expect(
@@ -56,12 +59,16 @@ describe('GroupQueue query identity', () => {
       '/tmp/happyclaw-query-identity-test',
       'ipc',
       'credential-drain-match',
+      'agents',
+      's',
       'input',
     );
     const otherInput = path.join(
       '/tmp/happyclaw-query-identity-test',
       'ipc',
       'credential-drain-other',
+      'agents',
+      's',
       'input',
     );
     expect(fs.existsSync(path.join(matchingInput, '_drain'))).toBe(true);
@@ -73,6 +80,8 @@ describe('GroupQueue query identity', () => {
           '/tmp/happyclaw-query-identity-test',
           'ipc',
           'credential-drain-booting',
+          'agents',
+          's',
           'input',
           '_drain',
         ),
@@ -92,10 +101,11 @@ describe('GroupQueue query identity', () => {
 
   test('matches coalescing only against physical inputs covered by the active query', () => {
     const queue = new GroupQueue();
-    const jid = 'web:query-covered-input';
+    const jid = 'web:query-covered-input#agent:s';
     const state = (queue as any).getGroup(jid);
     state.active = true;
     state.groupFolder = 'query-covered-input';
+    state.agentId = 's';
     state.queryInFlight = true;
     state.queryId = 'run-root';
 
@@ -146,7 +156,7 @@ describe('GroupQueue query identity', () => {
 
   test('defers a cold-boot interrupt until the runner IPC path is registered', () => {
     const queue = new GroupQueue();
-    const jid = 'web:boot-interrupt';
+    const jid = 'web:boot-interrupt#agent:s';
     const state = (queue as any).getGroup(jid);
     state.active = true;
     state.groupFolder = null;
@@ -159,11 +169,14 @@ describe('GroupQueue query identity', () => {
     queue.registerProcess(jid, { pid: 123 } as any, {
       containerName: null,
       groupFolder: 'boot-interrupt',
+      agentId: 's',
     });
     const sentinel = path.join(
       '/tmp/happyclaw-query-identity-test',
       'ipc',
       'boot-interrupt',
+      'agents',
+      's',
       'input',
       '_interrupt',
     );
@@ -182,6 +195,7 @@ describe('GroupQueue query identity', () => {
     const state = (queue as any).getGroup(jid);
     state.active = true;
     state.groupFolder = 'home';
+    state.agentId = 's';
     state.queryInFlight = true;
     state.queryId = 'agent-root';
 
@@ -211,10 +225,11 @@ describe('GroupQueue query identity', () => {
 
   test('does not let a later warm input replace current-query coverage', () => {
     const queue = new GroupQueue();
-    const jid = 'web:warm-later-input';
+    const jid = 'web:warm-later-input#agent:s';
     const state = (queue as any).getGroup(jid);
     state.active = true;
     state.groupFolder = 'warm-later-input';
+    state.agentId = 's';
     state.queryInFlight = true;
     state.queryId = 'run-current';
     queue.setCurrentQueryCoverage(jid, 'run-current', {
@@ -248,10 +263,11 @@ describe('GroupQueue query identity', () => {
 
   test('binds an IPC batch immediately when an idle warm runner starts it', () => {
     const queue = new GroupQueue();
-    const jid = 'web:warm-idle-root';
+    const jid = 'web:warm-idle-root#agent:s';
     const state = (queue as any).getGroup(jid);
     state.active = true;
     state.groupFolder = 'warm-idle-root';
+    state.agentId = 's';
     state.queryInFlight = false;
     state.queryId = null;
 
@@ -279,10 +295,11 @@ describe('GroupQueue query identity', () => {
 
   test('clears the completed id before the idle callback reserves the next query', () => {
     const queue = new GroupQueue();
-    const jid = 'web:query-id';
+    const jid = 'web:query-id#agent:s';
     const state = (queue as any).getGroup(jid);
     state.active = true;
     state.groupFolder = 'query-id';
+    state.agentId = 's';
     state.queryInFlight = true;
     state.queryId = 'run-1';
 
@@ -306,10 +323,11 @@ describe('GroupQueue query identity', () => {
 
   test('publishes the old exact terminal before a queued callback starts its replacement', () => {
     const queue = new GroupQueue();
-    const jid = 'web:query-order';
+    const jid = 'web:query-order#agent:s';
     const state = (queue as any).getGroup(jid);
     state.active = true;
     state.groupFolder = 'query-order';
+    state.agentId = 's';
     state.queryInFlight = true;
     state.queryId = 'run-old';
     state.queryStartedAt = Date.now();
@@ -336,10 +354,11 @@ describe('GroupQueue query identity', () => {
 
   test('stale reservation release cannot terminalize the current query', () => {
     const queue = new GroupQueue();
-    const jid = 'web:query-release-fence';
+    const jid = 'web:query-release-fence#agent:s';
     const state = (queue as any).getGroup(jid);
     state.active = true;
     state.groupFolder = 'query-release-fence';
+    state.agentId = 's';
     state.queryInFlight = true;
     state.queryId = 'run-new';
     state.queryStartedAt = Date.now();
@@ -355,10 +374,11 @@ describe('GroupQueue query identity', () => {
 
   test('a reservation released before it was announced publishes no terminal', () => {
     const queue = new GroupQueue();
-    const jid = 'web:query-release-unannounced';
+    const jid = 'web:query-release-unannounced#agent:s';
     const state = (queue as any).getGroup(jid);
     state.active = true;
     state.groupFolder = 'query-release-unannounced';
+    state.agentId = 's';
 
     const finishes: string[] = [];
     queue.setOnQueryFinish((_jid, queryId, reason) =>

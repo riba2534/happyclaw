@@ -87,12 +87,11 @@ async function fixture(
     accountId?: string;
     host?: boolean;
     mode?: 'assistant' | 'proactive';
-    main?: boolean;
   } = {},
 ) {
   const queue = new GroupQueue();
-  const jid = options.main ? 'web:review' : 'web:review#agent:agent1';
-  const agentId = options.main ? null : 'agent1';
+  const jid = 'web:review#agent:agent1';
+  const agentId = 'agent1';
   const group = {
     folder: 'review',
     executionMode: options.host ? 'host' : 'container',
@@ -106,43 +105,37 @@ async function fixture(
     taskRunId: null,
   };
   const auth = issueWorkspaceMemoryWriteCapability(capabilityScope, 'cold-a');
-  if (options.main) {
-    queue.setProcessMessagesFn(
-      () => new Promise<void>((resolve) => releases.push(resolve)),
-    );
-    queue.enqueueMessageCheck(jid);
-  } else
-    queue.enqueueTask(
-      jid,
-      'running',
-      () => new Promise<void>((resolve) => releases.push(resolve)),
-    );
+  queue.enqueueTask(
+    jid,
+    'running',
+    () => new Promise<void>((resolve) => releases.push(resolve)),
+  );
   await tick();
   queue.registerProcess(jid, { kill: () => true, killed: false } as never, {
     containerName: options.host ? null : 'container-a',
     groupFolder: 'review',
-    agentId: agentId ?? undefined,
+    agentId,
     feishuCliAccountId: 'account-a',
     interactionMode: 'assistant',
   });
-  // A main runner sharing the folder must never receive this agent's sentinel.
-  if (!options.main) {
-    queue.enqueueTask(
-      'web:review',
-      'main',
-      () => new Promise<void>((resolve) => releases.push(resolve)),
-    );
-    await tick();
-    queue.registerProcess(
-      'web:review',
-      { kill: () => true, killed: false } as never,
-      {
-        containerName: 'container-main',
-        groupFolder: 'review',
-        interactionMode: 'assistant',
-      },
-    );
-  }
+  // Another session's runner in the folder must never receive this one's
+  // sentinel.
+  queue.enqueueTask(
+    'web:review#agent:sibling',
+    'sibling',
+    () => new Promise<void>((resolve) => releases.push(resolve)),
+  );
+  await tick();
+  queue.registerProcess(
+    'web:review#agent:sibling',
+    { kill: () => true, killed: false } as never,
+    {
+      containerName: 'container-sibling',
+      groupFolder: 'review',
+      agentId: 'sibling',
+      interactionMode: 'assistant',
+    },
+  );
   const message = {
     id: 'warm-b',
     timestamp: '2026-10-07T00:00:00.000Z',
@@ -163,7 +156,6 @@ async function fixture(
     dispose: vi.fn(),
   }));
   const globals: Record<string, any> = {
-    inputUsageProjection: new InputUsageProjection('cold-a'),
     agentInputUsageProjection: new InputUsageProjection('cold-a'),
     fs,
     path,
@@ -243,7 +235,9 @@ async function fixture(
     agentProcessingIndicatorJidsByInput: new Map(),
     trackProcessingIndicator: vi.fn(),
     activeRouteAdmissions: new Map(),
+    streamingSessionJid: undefined,
     agentId: 'agent1',
+    admitWarmSessionInputs: () => true,
     virtualChatJid: jid,
     virtualJid: jid,
     getChannelType: () => 'feishu',
@@ -255,28 +249,9 @@ async function fixture(
     getMessageChannelTurnContext: (_jid: string, id: string) =>
       id === 'warm-b' ? warm : null,
     agentStreamingSessionsByInput: new Map(),
-    channelStreamingSessionsByInput: new Map(),
-    streamingSessionJid: undefined,
     activeChannelTurnActivators: new Map(),
     healthyAgentCompletedInputTurns: new Set(),
-    healthyCompletedInputTurns: new Set(),
-    currentChannelContext: cold,
-    mainAdmissionKey: scope,
-    admittedWarmMainInputs: new Map(),
-    currentInputCursor: { id: '', timestamp: '' },
-    resolveScheduledGroupDeliveryRoute: () => null,
     getAgentBuilderInputMessage: () => null,
-    activeSessionId: 'sdk-session',
-    channelTurnRuntimes: new Map(),
-    channelOutboxScopesByInput: new Map(),
-    genuineReplyDeliveredByInput: new Map(),
-    processingIndicatorInputsByCompletion: new Map(),
-    processingTypingLeaseIdsByCompletion: new Map(),
-    processingIndicatorJidsByInput: new Map(),
-    rememberScheduledGroupRuns: vi.fn(),
-    messagesToSend: [],
-    lastSourceJidForRoute: warm.sourceJid,
-    invokeActiveRouteUpdater: vi.fn(),
     SAFE_REQUEST_ID_RE: /^[A-Za-z0-9-]+$/,
     verifyAndConsumeWorkspaceMemoryMutation,
     canAccessGroup: vi.fn(),
@@ -290,7 +265,7 @@ async function fixture(
   const harness = createRuntimeSourceHarness(globals);
   harness.installCallArgument(
     'realAgentAdmission',
-    options.main ? 'processGroupMessages' : 'processAgentConversation',
+    'processAgentConversation',
     'activeRouteAdmissions.set',
     1,
   );
@@ -299,56 +274,30 @@ async function fixture(
   harness.install('bindActiveChannelTurn');
   harness.install('createChannelTurnActivator');
   harness.install('isCursorAfter');
-  const activationName = options.main
-    ? 'activateMainChannelTurn'
-    : 'activateAgentChannelTurn';
-  harness.install(
-    activationName,
-    options.main ? 'processGroupMessages' : 'processAgentConversation',
+  harness.install('activateAgentChannelTurn', 'processAgentConversation');
+  globals.activeChannelTurnActivators.set(
+    scope,
+    globals.activateAgentChannelTurn,
   );
-  globals.activeChannelTurnActivators.set(scope, globals[activationName]);
   harness.install('activateRequestedChannelTurn');
   harness.install('processTaskIpc');
   harness.install('writeTaskResult');
   harness.install('resolveImRoute');
-  const projectionName = options.main
-    ? 'activateMainProjectionForInput'
-    : 'activateAgentProjectionForInput';
   harness.install(
-    projectionName,
-    options.main ? 'processGroupMessages' : 'processAgentConversation',
+    'activateAgentProjectionForInput',
+    'processAgentConversation',
   );
-  globals.activateProjectionForInput = globals[projectionName];
+  globals.activateProjectionForInput = globals.activateAgentProjectionForInput;
   harness.install('buildOnAgentMessage');
-  const input = options.main
-    ? path.join(paths.root, 'ipc', 'review', 'input')
-    : path.join(paths.root, 'ipc', 'review', 'agents', 'agent1', 'input');
-  if (options.main)
-    harness.installCallArgument(
-      'realMainInjected',
-      'startMessageLoop',
-      'queue.sendMessage',
-      3,
-    );
-  const trigger = options.main
-    ? () =>
-        queue.sendMessage(
-          jid,
-          'Warm input',
-          undefined,
-          globals.realMainInjected,
-          warm.sourceJid,
-          globals.createIpcDeliveryTarget(),
-          warm,
-          (receipt) =>
-            globals.invokeActiveRouteAdmission(
-              'review',
-              warm.sourceJid,
-              receipt,
-            ),
-          { feishuCliAccountId: 'account-a', interactionMode: 'assistant' },
-        )
-    : () => globals.buildOnAgentMessage()(warm.sourceJid, 'agent1');
+  const input = path.join(
+    paths.root,
+    'ipc',
+    'review',
+    'agents',
+    'agent1',
+    'input',
+  );
+  const trigger = () => globals.buildOnAgentMessage()(warm.sourceJid, 'agent1');
   const tasksDir = path.join(path.dirname(input), 'tasks');
   const dispatch = (request: Record<string, unknown>) =>
     globals.processTaskIpc(
@@ -526,15 +475,10 @@ function runner(f: Awaited<ReturnType<typeof fixture>>) {
   };
 }
 
-test.each([
-  { main: false, idleRace: false },
-  { main: false, idleRace: true },
-  { main: true, idleRace: false },
-  { main: true, idleRace: true },
-])(
+test.each([{ idleRace: false }, { idleRace: true }])(
   'first Feishu tool for B waits for real activation and host ACK before text: %j',
-  async ({ main, idleRace }) => {
-    const f = await fixture({ main });
+  async ({ idleRace }) => {
+    const f = await fixture();
     const r = runner(f);
     r.activate('cold-a');
     f.trigger();
@@ -826,93 +770,87 @@ test('normal Web runner activation emits no channel IPC', async () => {
   expect(fs.existsSync(f.tasksDir)).toBe(false);
 });
 
-test.each([false, true])(
-  'Feishu to Web clears ownership and rejects a delayed B activation (main=%s)',
-  async (main) => {
-    const f = await fixture({ main });
-    const r = runner(f);
-    r.activate('cold-a');
-    await f.flushRequest('activate_channel_turn', 'cold-a');
-    await r.ctx.channelTurnActivation!.ready;
-    f.trigger();
-    const [b] = f.payloads();
-    r.tracker.acceptTurn([b]);
-    r.tracker.completeNextTurn();
-    r.activate();
-    const bActivation = r.ctx.channelTurnActivation!;
-    const web = normalizeChannelTurnContext(undefined, 'web:review')!;
-    f.globals.getMessageChannelTurnContext = (_jid: string, id: string) =>
-      id === 'web-c' ? web : f.warm;
-    const cursor = { id: 'web-c', timestamp: '2026-10-07T00:00:01.000Z' };
-    const result = f.queue.sendMessage(
-      f.jid,
-      'Web C',
-      undefined,
-      (receipt) => {
-        if (receipt)
-          grantWorkspaceMemoryTurnToCurrentRunner(
-            f.capabilityScope,
-            receipt.deliveryId,
-          );
-      },
-      'web:review',
-      { chatJid: f.jid, cursor, coveredCursors: [cursor] },
-      web,
-      (receipt) =>
-        f.globals.invokeActiveRouteAdmission(
-          'review',
-          'web:review',
-          receipt,
-          f.agentId ?? undefined,
-        ),
-      { feishuCliAccountId: 'account-a', interactionMode: 'assistant' },
-    );
-    expect(result).toBe('sent');
-    const c = f
-      .payloads()
-      .find((payload) => payload.receipt.cursor.id === 'web-c');
-    r.tracker.acceptTurn([c]);
-    r.tracker.completeNextTurn();
-    r.activate();
-    await f.flushRequest('activate_channel_turn', c.receipt.deliveryId);
-    await r.ctx.channelTurnActivation!.ready;
-    expect(() => f.registry.require(f.scope, 'cold-a')).toThrow(/active input/);
-    expect(() => f.registry.require(f.scope, c.receipt.deliveryId)).toThrow(
-      /not a Feishu/,
-    );
-    const rejected = expect(bActivation.ready).rejects.toThrow(/superseded/);
-    await f.flushRequest('activate_channel_turn', b.receipt.deliveryId);
-    await rejected;
-    expect(() => f.registry.require(f.scope, b.receipt.deliveryId)).toThrow(
-      /active input/,
-    );
-    activateMcpChannelTurn(r.ctx); // Another normal Web activation has no IPC.
-    await r.ctx.channelTurnActivation!.ready;
-    expect(fs.readdirSync(f.tasksDir)).toEqual([]);
-  },
-);
+test('Feishu to Web clears ownership and rejects a delayed B activation', async () => {
+  const f = await fixture();
+  const r = runner(f);
+  r.activate('cold-a');
+  await f.flushRequest('activate_channel_turn', 'cold-a');
+  await r.ctx.channelTurnActivation!.ready;
+  f.trigger();
+  const [b] = f.payloads();
+  r.tracker.acceptTurn([b]);
+  r.tracker.completeNextTurn();
+  r.activate();
+  const bActivation = r.ctx.channelTurnActivation!;
+  const web = normalizeChannelTurnContext(undefined, 'web:review')!;
+  f.globals.getMessageChannelTurnContext = (_jid: string, id: string) =>
+    id === 'web-c' ? web : f.warm;
+  const cursor = { id: 'web-c', timestamp: '2026-10-07T00:00:01.000Z' };
+  const result = f.queue.sendMessage(
+    f.jid,
+    'Web C',
+    undefined,
+    (receipt) => {
+      if (receipt)
+        grantWorkspaceMemoryTurnToCurrentRunner(
+          f.capabilityScope,
+          receipt.deliveryId,
+        );
+    },
+    'web:review',
+    { chatJid: f.jid, cursor, coveredCursors: [cursor] },
+    web,
+    (receipt) =>
+      f.globals.invokeActiveRouteAdmission(
+        'review',
+        'web:review',
+        receipt,
+        f.agentId ?? undefined,
+      ),
+    { feishuCliAccountId: 'account-a', interactionMode: 'assistant' },
+  );
+  expect(result).toBe('sent');
+  const c = f
+    .payloads()
+    .find((payload) => payload.receipt.cursor.id === 'web-c');
+  r.tracker.acceptTurn([c]);
+  r.tracker.completeNextTurn();
+  r.activate();
+  await f.flushRequest('activate_channel_turn', c.receipt.deliveryId);
+  await r.ctx.channelTurnActivation!.ready;
+  expect(() => f.registry.require(f.scope, 'cold-a')).toThrow(/active input/);
+  expect(() => f.registry.require(f.scope, c.receipt.deliveryId)).toThrow(
+    /not a Feishu/,
+  );
+  const rejected = expect(bActivation.ready).rejects.toThrow(/superseded/);
+  await f.flushRequest('activate_channel_turn', b.receipt.deliveryId);
+  await rejected;
+  expect(() => f.registry.require(f.scope, b.receipt.deliveryId)).toThrow(
+    /active input/,
+  );
+  activateMcpChannelTurn(r.ctx); // Another normal Web activation has no IPC.
+  await r.ctx.channelTurnActivation!.ready;
+  expect(fs.readdirSync(f.tasksDir)).toEqual([]);
+});
 
-test.each([false, true])(
-  'A tool awaiting activation cannot publish after B becomes current (main=%s)',
-  async (main) => {
-    const f = await fixture({ main });
-    const r = runner(f);
-    r.activate('cold-a');
-    const getChat = r.tools.find((tool) => tool.name === 'feishu_get_chat')!;
-    const pending = getChat.handler({}, {} as never);
-    const rejected = expect(pending).rejects.toThrow(
-      /superseded during activation/,
-    );
-    f.trigger();
-    const [b] = f.payloads();
-    r.tracker.acceptTurn([b]);
-    r.tracker.completeNextTurn();
-    r.activate();
-    await f.flushRequest('activate_channel_turn', 'cold-a');
-    await rejected;
-    expect(f.globals.imManager.executeFeishuCapability).not.toHaveBeenCalled();
-    await f.flushRequest('activate_channel_turn', b.receipt.deliveryId);
-    await r.ctx.channelTurnActivation!.ready;
-    expect(fs.readdirSync(f.tasksDir)).toEqual([]);
-  },
-);
+test('A tool awaiting activation cannot publish after B becomes current', async () => {
+  const f = await fixture();
+  const r = runner(f);
+  r.activate('cold-a');
+  const getChat = r.tools.find((tool) => tool.name === 'feishu_get_chat')!;
+  const pending = getChat.handler({}, {} as never);
+  const rejected = expect(pending).rejects.toThrow(
+    /superseded during activation/,
+  );
+  f.trigger();
+  const [b] = f.payloads();
+  r.tracker.acceptTurn([b]);
+  r.tracker.completeNextTurn();
+  r.activate();
+  await f.flushRequest('activate_channel_turn', 'cold-a');
+  await rejected;
+  expect(f.globals.imManager.executeFeishuCapability).not.toHaveBeenCalled();
+  await f.flushRequest('activate_channel_turn', b.receipt.deliveryId);
+  await r.ctx.channelTurnActivation!.ready;
+  expect(fs.readdirSync(f.tasksDir)).toEqual([]);
+});
