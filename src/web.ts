@@ -1098,7 +1098,7 @@ async function handleAgentConversationMessage(
   const eagerExpandAgentActive =
     !deps.queue.requiresFeishuCliContainerRestart(virtualChatJid, {
       feishuCliAccountId: requiredFeishuCliAccountId,
-    }) && deps.queue.hasActiveMainRunnerForMessage(virtualChatJid);
+    }) && deps.queue.hasActiveRunnerForMessage(virtualChatJid);
   if (eagerExpandAgentActive) {
     if (parentGroup) {
       // Use the effective (sibling-resolved) parent group so a non-home parent

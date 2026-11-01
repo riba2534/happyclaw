@@ -16225,7 +16225,7 @@ function buildOnAgentMessage(): (baseChatJid: string, agentId: string) => void {
 
     if (
       missedMessages.length > 0 &&
-      queue.hasActiveMainRunnerForMessage(virtualChatJid) &&
+      queue.hasActiveRunnerForMessage(virtualChatJid) &&
       !admitWarmSessionInputs({
         workspaceJid: homeChatJid,
         agentId,
