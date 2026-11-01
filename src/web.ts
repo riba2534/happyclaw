@@ -1422,6 +1422,59 @@ async function handleAgentConversationMessage(
     agentId,
   );
 
+  const ownerId = parentGroup?.created_by;
+  const owner = ownerId ? getUserById(ownerId) : undefined;
+  const billingAccess =
+    ownerId && owner && owner.role !== 'admin'
+      ? checkBillingAccess(ownerId, owner.role)
+      : null;
+  if (billingAccess && !billingAccess.allowed) {
+    if (queueForLater) {
+      // The input gets its terminal billing answer now: it belongs in the
+      // transcript right before that answer, not in the queue.
+      setMessageFollowUp(virtualChatJid, messageId, {
+        mode: effectiveFollowUpBehavior,
+        status: 'released',
+        runId: activeRunId,
+      });
+      broadcastFollowUpUpdate(virtualChatJid, {
+        id: messageId,
+        delivery_status: 'released',
+        delivery_run_id: activeRunId,
+        delivery_updated_at: new Date().toISOString(),
+      });
+    }
+    const sysMsg = formatBillingAccessDeniedMessage(billingAccess);
+    const sysMsgId = `sys_quota_${Date.now()}`;
+    const sysTimestamp = new Date().toISOString();
+    storeMessageDirect(
+      sysMsgId,
+      virtualChatJid,
+      '__billing__',
+      ASSISTANT_NAME,
+      sysMsg,
+      sysTimestamp,
+      true,
+    );
+    broadcastNewMessage(virtualChatJid, {
+      id: sysMsgId,
+      chat_jid: virtualChatJid,
+      sender: '__billing__',
+      sender_name: ASSISTANT_NAME,
+      content: sysMsg,
+      timestamp: sysTimestamp,
+      is_from_me: true,
+    });
+    completeWebOutOfBandMessage(deps, virtualChatJid, agentMessageCursor);
+    return {
+      ok: true,
+      messageId,
+      timestamp,
+      ingestSequence: agentMessageCursor.sequence,
+      disposition: 'started',
+    };
+  }
+
   if (queueForLater) {
     broadcastFollowUpUpdate(virtualChatJid);
     if (effectiveFollowUpBehavior === 'steer') {

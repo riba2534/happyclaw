@@ -1387,10 +1387,28 @@ const STUCK_RUNNER_FORCE_RESTART_MS = parseStuckRunnerForceRestartMs(
 );
 let stuckRunnerCheckCounter = 0;
 
-// OOM auto-recovery: track consecutive OOM (exit code 137) exits per folder.
-// After OOM_AUTO_RESET_THRESHOLD consecutive OOMs, auto-clear the session.
+// OOM auto-recovery: consecutive OOM (exit code 137) exits per session, keyed
+// `folder#agentId` and persisted as router_state `oom_exits:<key>`. After
+// OOM_AUTO_RESET_THRESHOLD consecutive OOMs the session is reset.
 const consecutiveOomExits: Record<string, number> = {};
 const OOM_AUTO_RESET_THRESHOLD = 2;
+
+function recordSessionOomExit(key: string): number {
+  const count = (consecutiveOomExits[key] || 0) + 1;
+  consecutiveOomExits[key] = count;
+  setRouterState(`oom_exits:${key}`, String(count));
+  logger.warn(
+    { key, consecutive: count, threshold: OOM_AUTO_RESET_THRESHOLD },
+    'OOM exit detected (code 137)',
+  );
+  return count;
+}
+
+function clearSessionOomExits(key: string): void {
+  if (!consecutiveOomExits[key]) return;
+  delete consecutiveOomExits[key];
+  deleteRouterState(`oom_exits:${key}`);
+}
 
 // Per-folder reply route updater: lets sendMessage callers update the
 // reply routing of a running processGroupMessages without killing the process.
@@ -4760,6 +4778,70 @@ function sendBillingDeniedMessage(jid: string, content: string): string {
   return msgId;
 }
 
+/** The quota notice a non-admin owner over quota gets instead of a turn. */
+function billingDeniedNoticeOf(
+  ownerId: string | null | undefined,
+): string | null {
+  if (!ownerId) return null;
+  const owner = getUserById(ownerId);
+  if (!owner || owner.role === 'admin') return null;
+  const access = checkBillingAccessFresh(ownerId, owner.role);
+  return access.allowed ? null : formatBillingAccessDeniedMessage(access);
+}
+
+/**
+ * Answer a session batch with the quota notice instead of running it: on the
+ * batch's IM route when it has one, else in the session's Web transcript. The
+ * batch is consumed; a notice the channel did not acknowledge leaves it for a
+ * retry (false).
+ */
+async function answerSessionBatchWithBillingNotice(input: {
+  laneJid: string;
+  folder: string;
+  agentId: string;
+  text: string;
+  messages: NewMessage[];
+  replySourceImJid: string | null;
+}): Promise<boolean> {
+  const last = input.messages[input.messages.length - 1];
+  if (input.replySourceImJid) {
+    const route = resolveDurableChannelRoute(input.replySourceImJid);
+    const acknowledged = route
+      ? await deliverIndependentChannelSystemNotice({
+          logicalChatJid: input.laneJid,
+          scopeKey: channelTurnScope(input.folder, input.agentId),
+          targetJid: input.replySourceImJid,
+          originalInputTurnId: last.id,
+          originalRunId: `billing:${last.id}`,
+          noticeKey: 'billing-denied',
+          text: input.text,
+          sender: '__billing__',
+          agentId: input.agentId,
+          route,
+        })
+      : false;
+    if (!acknowledged) {
+      logger.warn(
+        { laneJid: input.laneJid, messageId: last.id },
+        'Quota notice not acknowledged; preserving input cursor for retry',
+      );
+      return false;
+    }
+  } else {
+    sendBillingDeniedMessage(input.laneJid, input.text);
+  }
+  completeOutOfBandMessages(input.laneJid, input.messages);
+  await clearStandaloneProcessingIndicatorsForMessages(
+    input.laneJid,
+    input.messages,
+  );
+  logger.info(
+    { laneJid: input.laneJid, messageCount: input.messages.length },
+    'Billing access denied, session batch answered with the quota notice',
+  );
+  return true;
+}
+
 type PluginReplyOptions = {
   originalMessageId: string;
   groupFolder: string;
@@ -6718,11 +6800,14 @@ function loadState(): void {
 
   // Restore persisted OOM counters
   for (const { key, value } of getRouterStateByPrefix('oom_exits:')) {
-    const folder = key.slice('oom_exits:'.length);
+    const sessionKey = key.slice('oom_exits:'.length);
     const count = parseInt(value, 10);
-    if (count > 0) {
-      consecutiveOomExits[folder] = count;
-      logger.info({ folder, count }, 'Restored OOM counter from DB');
+    if (!sessionKey.includes('#')) {
+      // A per-workspace counter: no session reads it.
+      deleteRouterState(key);
+    } else if (count > 0) {
+      consecutiveOomExits[sessionKey] = count;
+      logger.info({ sessionKey, count }, 'Restored OOM counter from DB');
     }
   }
 
@@ -7229,6 +7314,91 @@ function learnDirectMessageOwners(
       { conversationJid, ownerUserId },
       'Learned IM owner from a trusted direct message',
     );
+  }
+}
+
+/** Push the owner's fresh quota usage to their clients after a usage event. */
+function broadcastOwnerBillingUsage(ownerId: string | null | undefined): void {
+  if (!ownerId) return;
+  const owner = getUserById(ownerId);
+  if (!owner || owner.role === 'admin') return;
+  const access = checkBillingAccessFresh(ownerId, owner.role);
+  if (access.usage) broadcastBillingUpdate(ownerId, { ...access });
+}
+
+/** Sub-agent Tasks still running in each session lane's runner. */
+const runningSubagentTasksByLane = new Map<string, Set<string>>();
+const NON_SUBAGENT_TASK_TYPES = new Set(['local_bash', 'monitor', 'mcp_task']);
+
+/**
+ * Follow a session's sub-agent (SDK Task) lifecycle from one stream event:
+ * checkpoint the Task against the DB input whose turn launched it, and keep
+ * the lane's set of running Tasks, which holds an idle container from being
+ * reclaimed. Shell, monitor and MCP tasks are not sub-agents;
+ * `nonSubagentTaskIds` remembers theirs for the runner's lifetime.
+ */
+function trackSubagentTaskEvent(input: {
+  laneJid: string;
+  folder: string;
+  event: StreamEvent;
+  inputMessageId: () => string;
+  nonSubagentTaskIds: Set<string>;
+}): void {
+  const { event: se, laneJid, nonSubagentTaskIds } = input;
+  const isNonSubagentTask = NON_SUBAGENT_TASK_TYPES.has(se.taskType ?? '');
+  if (isNonSubagentTask) {
+    if (se.toolUseId) nonSubagentTaskIds.add(se.toolUseId);
+    if (se.taskId) nonSubagentTaskIds.add(se.taskId);
+    return;
+  }
+  const running = (): Set<string> => {
+    let set = runningSubagentTasksByLane.get(laneJid);
+    if (!set) {
+      set = new Set();
+      runningSubagentTasksByLane.set(laneJid, set);
+    }
+    return set;
+  };
+  if (
+    se.toolUseId &&
+    (se.eventType === 'task_start' ||
+      (se.eventType === 'tool_use_start' && se.toolName === 'Task'))
+  ) {
+    running().add(se.toolUseId);
+    upsertSubagentCheckpoint({
+      taskId: se.toolUseId,
+      groupFolder: input.folder,
+      chatJid: laneJid,
+      inputMessageId: input.inputMessageId(),
+      description: se.taskDescription || se.toolInputSummary || '',
+    });
+    return;
+  }
+  if (se.eventType === 'tool_use_end' && se.toolUseId) {
+    runningSubagentTasksByLane.get(laneJid)?.delete(se.toolUseId);
+    return;
+  }
+  if (
+    se.eventType === 'task_notification' &&
+    se.taskId &&
+    !nonSubagentTaskIds.has(se.taskId) &&
+    (!se.toolUseId || !nonSubagentTaskIds.has(se.toolUseId))
+  ) {
+    runningSubagentTasksByLane.get(laneJid)?.delete(se.taskId);
+    upsertSubagentCheckpoint({
+      taskId: se.taskId,
+      groupFolder: input.folder,
+      chatJid: laneJid,
+      inputMessageId: input.inputMessageId(),
+      status:
+        se.taskStatus === 'completed'
+          ? 'completed'
+          : se.taskStatus === 'stopped' || se.taskStatus === 'killed'
+            ? 'stopped'
+            : 'failed',
+      summary: se.taskSummary?.slice(0, 2000) ?? null,
+      resultText: se.taskResult?.slice(0, 16_000) ?? null,
+    });
   }
 }
 
@@ -13113,7 +13283,6 @@ function startIpcWatcher(): void {
                   'Unauthorized IPC message attempt blocked',
                 );
               }
-              const isMainUserTurnReply = !ipcAgentId;
               if (
                 messageDelivered &&
                 !messageStaged &&
@@ -13130,13 +13299,13 @@ function startIpcWatcher(): void {
               if (
                 messageDelivered &&
                 !messageStaged &&
-                isMainUserTurnReply &&
                 hostOutputRoute.deliveryRole === 'final' &&
                 typeof data.inputTurnId === 'string' &&
                 data.inputTurnId
               ) {
-                const activeTracker =
-                  activeIpcReplyTurnTrackers.get(sourceGroup);
+                const activeTracker = activeIpcReplyTurnTrackers.get(
+                  channelTurnScope(sourceGroup, ipcAgentId),
+                );
                 if (activeTracker) {
                   acknowledgeIpcReplyTurn(activeTracker, data.inputTurnId);
                 }
@@ -15767,6 +15936,43 @@ async function processAgentConversation(
     }
   }
 
+  if (effectiveGroup.created_by) {
+    learnDirectMessageOwners(effectiveGroup.created_by, missedMessages);
+  }
+  const billingNotice = billingDeniedNoticeOf(effectiveGroup.created_by);
+  if (billingNotice) {
+    const batchInputId = missedMessages[missedMessages.length - 1].id;
+    const answered = await answerSessionBatchWithBillingNotice({
+      laneJid: virtualChatJid,
+      folder: effectiveGroup.folder,
+      agentId,
+      text: billingNotice,
+      messages: missedMessages,
+      replySourceImJid: teamRole
+        ? null
+        : automationTurns.holdReplyRoute(
+            batchInputId,
+            missedMessages,
+            resolveBatchChannelReplySource(missedMessages),
+          ),
+    });
+    if (!answered) return false;
+    automationTurns.remember(batchInputId, missedMessages);
+    automationTurns.settleAll(UNSETTLED_RUN_OUTCOME);
+    if (agent.kind === 'spawn') {
+      updateAgentStatus(agentId, 'error', billingNotice);
+      broadcastAgentStatus(
+        chatJid,
+        agentId,
+        'error',
+        agent.name,
+        agent.prompt,
+        billingNotice,
+      );
+    }
+    return true;
+  }
+
   // The batch runtime id is needed before the rest of the conversation setup.
   // Keep this declaration above startBatch so startup recovery cannot hit the
   // temporal dead zone while rebuilding an agent turn.
@@ -15858,8 +16064,31 @@ async function processAgentConversation(
   const knownReferencedMessageIds = historyContext
     ? new Set(historyContext.messageIds)
     : activeSessionReferencedMessageIds;
+  // A replayed input may already have launched sub-agents in an earlier,
+  // uncommitted attempt. Hand their checkpoints back so finished work is
+  // summarized rather than redone (and side effects are verified first).
+  const subagentCheckpoint = buildSubagentCheckpointContext(
+    listSubagentCheckpointsForInputs(
+      effectiveGroup.folder,
+      virtualChatJid,
+      missedMessages.map((message) => message.id),
+    ),
+  );
+  if (subagentCheckpoint) {
+    logger.info(
+      {
+        chatJid,
+        agentId,
+        completed: subagentCheckpoint.completed,
+        unfinished: subagentCheckpoint.unfinished,
+      },
+      'Replay: injected sub-agent checkpoints into prompt',
+    );
+  }
+  const promptPreamble =
+    (historyContext?.context ?? '') + (subagentCheckpoint?.context ?? '');
   let prompt =
-    (historyContext?.context ?? '') +
+    promptPreamble +
     formatMessages(missedMessages, {
       knownMessageIds: knownReferencedMessageIds,
     });
@@ -15868,7 +16097,7 @@ async function processAgentConversation(
   });
   const imagesForAgent = images.length > 0 ? images : undefined;
   // Session bindings share context; each input retains its own reply route.
-  // A quiet automation run keeps its IM route aside (see processGroupMessages).
+  // A quiet automation run keeps its IM route aside.
   // A team-mode lane has none at all: it speaks only through the team tools,
   // and every framework notice of its turns (usage-limit waits, failures)
   // stays in the Web.
@@ -16605,7 +16834,33 @@ async function processAgentConversation(
     inputMessageId: string;
   }
   const admittedWarmAgentInputs = new Map<string, AdmittedWarmAgentInput>();
+  // Sub-agent Tasks are checkpointed against the DB input whose turn launched
+  // them, so a replay of that input can reuse their finished answers.
+  const batchMessageIds = new Set(missedMessages.map((message) => message.id));
+  const nonSubagentTaskIds = new Set<string>();
+  const subagentTaskInputMessageId = (
+    output: Pick<ContainerOutput, 'inputTurnId' | 'ipcReceipts'>,
+  ): string => {
+    const inputTurnId = resolveContainerOutputInputTurnId(
+      output,
+      lastProcessed.id,
+    );
+    if (batchMessageIds.has(inputTurnId)) return inputTurnId;
+    return (
+      admittedWarmAgentInputs.get(inputTurnId)?.inputMessageId ??
+      queue.getPendingIpcDeliveryMessageId(virtualJid, inputTurnId) ??
+      lastProcessed.id
+    );
+  };
   const agentAdmissionKey = channelTurnScope(effectiveGroup.folder, agentId);
+  const oomKey = `${effectiveGroup.folder}#${agentId}`;
+  // A send_message final the host acknowledged for the active input: after
+  // it, a late runner error must not replay the input into a second answer.
+  const agentIpcReplyTracker: IpcReplyTurnTracker = {
+    inputTurnId: lastProcessed.id,
+    delivered: false,
+  };
+  activeIpcReplyTurnTrackers.set(agentAdmissionKey, agentIpcReplyTracker);
   const agentTurnOutputCoordinators = new Map<string, TurnOutputCoordinator>();
   const bindAgentTurnOutputCoordinator = (
     inputTurnId: string,
@@ -16848,6 +17103,7 @@ async function processAgentConversation(
         : resolveInputChannelReplySource(newSourceJid);
     if (inputTurnId) {
       activeAgentInputTurnId = inputTurnId;
+      setIpcReplyInputTurn(agentIpcReplyTracker, inputTurnId);
       bindAgentTurnOutputCoordinator(inputTurnId);
       lastAgentReplyText = undefined;
       agentReplySentByInput.set(inputTurnId, false);
@@ -17130,7 +17386,7 @@ async function processAgentConversation(
     await clearAgentProcessingIndicatorForInput(inputTurnId);
   };
 
-  // AgentProfile 引用的能力或模型连接不可用：确定性配置错误，与主会话一样
+  // AgentProfile 引用的能力或模型连接不可用：确定性配置错误，
   // 提交游标、不重试，并把原因告诉用户。
   let agentConfigFailureSettled = false;
   const settleAgentConfigFailure = async (error: string): Promise<boolean> => {
@@ -17149,6 +17405,121 @@ async function processAgentConversation(
       message,
       message,
     );
+    return true;
+  };
+
+  // An Assistant turn that failed before its input completed. Returns whether
+  // the queue replays the input after its backoff.
+  const settleAgentErrorExit = async (
+    errorDetail: string,
+  ): Promise<boolean> => {
+    const inputTurnId = activeAgentInputTurnId;
+    if (automationTurns.wasSettled(inputTurnId)) {
+      commitCursor(inputTurnId);
+      await clearAgentProcessingIndicatorForInput(inputTurnId);
+      return false;
+    }
+    // A replay after a delivered answer (the SDK final, or an acknowledged
+    // send_message final) would answer the same request twice. A DB-only
+    // interrupt partial is no delivery.
+    if (
+      shouldSkipRetryAfterLateError({
+        genuineReplyDelivered: wasGenuineReplyDeliveredForInput(
+          agentGenuineReplyDeliveredByInput,
+          inputTurnId,
+        ),
+        ipcReplyDeliveredForInputTurn:
+          agentIpcReplyTracker.inputTurnId === inputTurnId &&
+          agentIpcReplyTracker.delivered,
+      })
+    ) {
+      automationTurns.settle(inputTurnId, {
+        status: 'failed',
+        error: errorDetail || 'Agent 发送消息后异常退出',
+      });
+      commitCursor(inputTurnId);
+      await clearAgentProcessingIndicatorForInput(inputTurnId);
+      return false;
+    }
+    // The prompt/context budget of this turn's immutable snapshot, and an
+    // overflowing context, cannot change on replay.
+    const budgetError = /^(?:context_budget_exceeded|prompt_plan_invalid):\s*/;
+    if (budgetError.test(errorDetail)) {
+      const message = errorDetail.replace(budgetError, '');
+      logger.warn(
+        { chatJid, agentId, error: message },
+        'Static prompt/context budget is invalid; skipping retry',
+      );
+      await settleAgentDeterministicFailure(
+        'context-budget',
+        'context_overflow',
+        message,
+        message,
+      );
+      return false;
+    }
+    if (errorDetail.startsWith('context_overflow:')) {
+      const message = errorDetail.replace(/^context_overflow:\s*/, '');
+      logger.warn(
+        { chatJid, agentId, error: message },
+        'Context overflow detected, skipping retry',
+      );
+      await settleAgentDeterministicFailure(
+        'context-overflow',
+        'context_overflow',
+        message,
+        message,
+      );
+      return false;
+    }
+    // Consecutive Docker OOM kills (exit 137) of one session reset it to break
+    // the death loop. A user stop also ends a container with 137.
+    if (!queue.isRecentlyStopped(virtualJid) && OOM_EXIT_RE.test(errorDetail)) {
+      if (recordSessionOomExit(oomKey) >= OOM_AUTO_RESET_THRESHOLD) {
+        logger.warn(
+          { chatJid, agentId },
+          'Consecutive OOM threshold reached, auto-resetting session to break death loop',
+        );
+        clearSessionOomExits(oomKey);
+        await clearSessionRuntimeFiles(effectiveGroup.folder, agentId);
+        deleteSession(effectiveGroup.folder, agentId);
+        await settleAgentDeterministicFailure(
+          'oom-context-reset',
+          'context_reset',
+          '会话文件过大导致内存溢出（OOM），已自动重置会话。之前的对话上下文已清除，请重新描述您的需求。',
+          '会话文件过大导致内存溢出（OOM），已自动重置会话。',
+        );
+        return false;
+      }
+    } else {
+      clearSessionOomExits(oomKey);
+    }
+    // Retry rounds stay quiet: the final failure is announced once by the
+    // max-retries notice. The idle status ends the Web's waiting state.
+    if (queue.willRetryAfterFailure(virtualJid)) {
+      logger.warn(
+        {
+          chatJid,
+          agentId,
+          error: errorDetail,
+          retry: queue.getRetryCount(virtualJid),
+        },
+        'Agent error (no reply sent), will retry silently with backoff',
+      );
+      broadcastStreamEvent(
+        chatJid,
+        {
+          eventType: 'status',
+          statusText: 'idle',
+          turnId: inputTurnId,
+          inputTurnId,
+          sessionId: currentAgentSessionId,
+        },
+        agentId,
+      );
+    } else {
+      sendSystemMessage(virtualChatJid, 'agent_error', errorDetail);
+    }
     return true;
   };
 
@@ -17696,6 +18067,21 @@ async function processAgentConversation(
         }
       }
 
+      try {
+        trackSubagentTaskEvent({
+          laneJid: virtualChatJid,
+          folder: effectiveGroup.folder,
+          event: output.streamEvent,
+          inputMessageId: () => subagentTaskInputMessageId(output),
+          nonSubagentTaskIds,
+        });
+      } catch (err) {
+        logger.warn(
+          { err, chatJid, agentId, eventType: output.streamEvent.eventType },
+          'Failed to checkpoint a sub-agent task event',
+        );
+      }
+
       // Persist token usage for agent conversations
       if (
         output.streamEvent.eventType === 'usage' &&
@@ -17713,6 +18099,9 @@ async function processAgentConversation(
               messageId,
               total.costUSD,
             );
+          // The usage event already updated quotas and balance; only the
+          // realtime push to the owner's clients happens here.
+          broadcastOwnerBillingUsage(effectiveGroup.created_by);
         } catch (err) {
           logger.warn(
             { err, chatJid, agentId },
@@ -18641,7 +19030,7 @@ async function processAgentConversation(
     }
     if (runnableInputs !== missedMessages) {
       prompt =
-        (historyContext?.context ?? '') +
+        promptPreamble +
         formatMessages(runnableInputs, {
           knownMessageIds: knownReferencedMessageIds,
         });
@@ -18815,6 +19204,22 @@ async function processAgentConversation(
         retryUnfinishedTurn = true;
       }
     }
+    const errorExit = output.status === 'error' || hadError;
+    if (
+      errorExit &&
+      publishesFrameworkAnswer(interactionMode) &&
+      output.status !== 'closed' &&
+      stopDisposition !== 'discard' &&
+      !agentDeterministicTerminalError &&
+      !isCursorCommitted() &&
+      !healthyAgentCompletedInputTurns.has(activeAgentInputTurnId)
+    ) {
+      retryUnfinishedTurn = await settleAgentErrorExit(
+        output.error || lastError || '未知错误',
+      );
+    } else if (!errorExit) {
+      clearSessionOomExits(oomKey);
+    }
   } catch (err) {
     hadError = true;
     logger.error({ agentId, chatJid, err }, 'Agent conversation error');
@@ -18836,6 +19241,21 @@ async function processAgentConversation(
         agentPhysicalDeliveryAckByInput.get(activeAgentInputTurnId) === true;
       if (utteranceDelivered) commitCursor();
       retryUnfinishedTurn = !utteranceDelivered;
+    } else if (!isCursorCommitted()) {
+      // The runner threw before returning a terminal output. A delivered
+      // answer completes the turn; anything else replays after the backoff.
+      const delivered =
+        wasGenuineReplyDeliveredForInput(
+          agentGenuineReplyDeliveredByInput,
+          activeAgentInputTurnId,
+        ) ||
+        (agentIpcReplyTracker.inputTurnId === activeAgentInputTurnId &&
+          agentIpcReplyTracker.delivered);
+      if (delivered) {
+        commitCursor();
+      } else {
+        retryUnfinishedTurn = true;
+      }
     }
   } finally {
     if (idleTimer) clearTimeout(idleTimer);
@@ -19373,6 +19793,12 @@ async function processAgentConversation(
     }
     activeAgentBuilderTurns.delete(agentBuilderScope);
     activeChannelTurns.delete(channelTurnScope(effectiveGroup.folder, agentId));
+    runningSubagentTasksByLane.delete(virtualChatJid);
+    if (
+      activeIpcReplyTurnTrackers.get(agentAdmissionKey) === agentIpcReplyTracker
+    ) {
+      activeIpcReplyTurnTrackers.delete(agentAdmissionKey);
+    }
     ipcWatcherManager?.unwatchRuntime(effectiveGroup.folder, { agentId });
   }
 
@@ -21092,6 +21518,57 @@ function findNativeThreadAgent(
 /**
  * Build callback that triggers processAgentConversation when an IM message is routed to an agent.
  */
+/**
+ * The owner and billing gates for IM inputs about to join a session's warm
+ * runner (its cold start applies the same gates). Inputs a gate stops are
+ * consumed here; a quota notice the channel did not acknowledge leaves them
+ * for the lane's next run. Returns whether the inputs may be piped.
+ */
+function admitWarmSessionInputs(input: {
+  workspaceJid: string;
+  agentId: string;
+  folder: string;
+  ownerId: string | null | undefined;
+  teamLane: boolean;
+  messages: NewMessage[];
+}): boolean {
+  const { ownerId, messages, agentId, workspaceJid } = input;
+  if (!ownerId) return true;
+  const laneJid = `${workspaceJid}#agent:${agentId}`;
+  if (!checkOwnerActive(getUserById(ownerId)).allowed) {
+    completeOutOfBandMessages(laneJid, messages);
+    void clearStandaloneProcessingIndicatorsForMessages(laneJid, messages);
+    logger.info(
+      { laneJid, userId: ownerId },
+      'Dropping warm session input: owner is not active',
+    );
+    return false;
+  }
+  learnDirectMessageOwners(ownerId, messages);
+  const notice = billingDeniedNoticeOf(ownerId);
+  if (!notice) return true;
+  void answerSessionBatchWithBillingNotice({
+    laneJid,
+    folder: input.folder,
+    agentId,
+    text: notice,
+    messages,
+    replySourceImJid: input.teamLane
+      ? null
+      : resolveBatchChannelReplySource(messages),
+  })
+    .then((answered) => {
+      if (answered) return;
+      queue.enqueueTask(laneJid, `agent-channel-next:${agentId}`, () =>
+        processAgentConversation(workspaceJid, agentId),
+      );
+    })
+    .catch((err) =>
+      logger.warn({ err, laneJid }, 'Failed to answer warm input with quota'),
+    );
+  return false;
+}
+
 function buildOnAgentMessage(): (baseChatJid: string, agentId: string) => void {
   return (baseChatJid: string, agentId: string) => {
     // The IM sockets deliberately remain connected while graceful shutdown
@@ -21143,9 +21620,24 @@ function buildOnAgentMessage(): (baseChatJid: string, agentId: string) => void {
           })
         : null;
 
-    // IM and Web share one pipe-first path, mirroring the main conversation
-    // loop: a warm runner admits the input through activeRouteAdmissions,
-    // which rebinds the exact per-input IM reply scope. Never closeStdin here:
+    if (
+      missedMessages.length > 0 &&
+      queue.hasActiveMainRunnerForMessage(virtualChatJid) &&
+      !admitWarmSessionInputs({
+        workspaceJid: homeChatJid,
+        agentId,
+        folder: effectiveGroup.folder,
+        ownerId: effectiveGroup.created_by,
+        teamLane: !!warmTeamRole,
+        messages: missedMessages,
+      })
+    ) {
+      return;
+    }
+
+    // IM and Web share one pipe-first path: a warm runner admits the input
+    // through activeRouteAdmissions, which rebinds the exact per-input IM
+    // reply scope. Never closeStdin here:
     // a runner held open for background Tasks would be killed mid-flight and
     // their completion summary would never be delivered.
     logger.debug(
@@ -23710,14 +24202,11 @@ async function main(): Promise<void> {
   });
   // An idle runner that still owes its lane queued input or a running
   // background agent keeps its container slot.
-  queue.setIdleRunnerReclaimBlocker((jid) => {
-    const baseJid = stripVirtualJidSuffix(jid);
-    return (
+  queue.setIdleRunnerReclaimBlocker(
+    (jid) =>
       listQueuedFollowUps(jid).length > 0 ||
-      getRunningTaskAgentsByChat(jid).length > 0 ||
-      (baseJid !== jid && getRunningTaskAgentsByChat(baseJid).length > 0)
-    );
-  });
+      (runningSubagentTasksByLane.get(jid)?.size ?? 0) > 0,
+  );
   // IM attachments must land where the Agent's cwd resolves the relative
   // path it is given: a worktree session's worktree, a Host workspace's
   // customCwd, else data/groups/{folder} (same root as the Web file panel).
@@ -23740,18 +24229,21 @@ async function main(): Promise<void> {
   });
   queue.setSerializationKeyResolver(queueSerializationKey);
   queue.setOnMaxRetriesExceeded(
-    async (groupJid: string, snapshot: MessageRetrySnapshot | null) => {
+    async (laneJid: string, snapshot: MessageRetrySnapshot | null) => {
       try {
+        const agentId = agentIdOfJid(laneJid);
+        const workspaceJid = stripVirtualJidSuffix(laneJid);
         const group =
-          registeredGroups[groupJid] ?? getRegisteredGroup(groupJid);
-        const name = group?.name || groupJid;
+          registeredGroups[workspaceJid] ?? getRegisteredGroup(workspaceJid);
+        const session = agentId ? getAgent(agentId) : undefined;
+        const name = session?.name || group?.name || laneJid;
         const error = `${name} 处理失败，已达最大重试次数`;
         let notifyChannel: (() => Promise<void>) | undefined;
         // Use only the immutable batch read by the final failed attempt. A
         // prompt arriving while this callback runs belongs to a future
         // attempt and must not be marked failed or consumed here.
         const exactMessages = (snapshot?.coveredCursors ?? [])
-          .map((cursor) => getAgentBuilderInputMessage(groupJid, cursor.id))
+          .map((cursor) => getAgentBuilderInputMessage(laneJid, cursor.id))
           .filter((message) => message !== null);
         const automationRunIds = exactMessages
           .map(automationRunIdOf)
@@ -23763,7 +24255,7 @@ async function main(): Promise<void> {
           // Retry exhaustion terminates this final-attempt batch. Commit the
           // bounded snapshot so crash recovery cannot replay the run's input;
           // later messages sort after this cursor and remain pending.
-          advanceCursors(groupJid, snapshot.cursor);
+          advanceCursors(laneJid, snapshot.cursor);
         }
         if (group && snapshot?.coveredCursors.length) {
           const { effectiveGroup } = resolveEffectiveGroup(group);
@@ -23775,14 +24267,15 @@ async function main(): Promise<void> {
           const inputTurnId = snapshot.cursor.id;
           notifyChannel = () =>
             deliverTerminalFailureNotice({
-              logicalChatJid: groupJid,
-              scopeKey: channelTurnScope(effectiveGroup.folder),
+              logicalChatJid: laneJid,
+              scopeKey: channelTurnScope(effectiveGroup.folder, agentId),
               targetJid,
               originalInputTurnId: inputTurnId,
               // The same batch can exhaust its retries again after the next
               // message; each exhaustion is a new notice, not a replay.
               noticeKey: `agent-max-retries:${crypto.randomUUID()}`,
               text: error,
+              agentId,
               presentation:
                 targetJid &&
                 resolveTrustedInteractionMode(effectiveGroup, targetJid) ===
@@ -23791,10 +24284,10 @@ async function main(): Promise<void> {
                   : 'default',
             });
         }
-        sendSystemMessage(groupJid, 'agent_max_retries', error);
+        sendSystemMessage(laneJid, 'agent_max_retries', error);
         await notifyChannel?.();
       } finally {
-        await clearTrackedProcessingIndicators(groupJid);
+        await clearTrackedProcessingIndicators(laneJid);
       }
     },
   );
@@ -23809,11 +24302,14 @@ async function main(): Promise<void> {
     if (!owner || owner.role === 'admin') return { allowed: true, userId };
     const limit = getUserConcurrentContainerLimit(owner.id, owner.role);
     if (limit == null) return { allowed: true, userId: owner.id };
-    // Count active containers for this user
+    // Every active runner of the user's workspaces counts, one per session.
     let userActive = 0;
-    for (const [jid, g] of Object.entries(registeredGroups)) {
-      if (g.created_by !== owner.id) continue;
-      if (queue.hasDirectActiveRunner(jid)) userActive++;
+    for (const lane of queue.getStatus().groups) {
+      if (!lane.active) continue;
+      const laneBaseJid = stripVirtualJidSuffix(lane.jid);
+      const laneGroup =
+        registeredGroups[laneBaseJid] ?? getRegisteredGroup(laneBaseJid);
+      if (laneGroup?.created_by === owner.id) userActive++;
     }
     return { allowed: userActive < limit, userId: owner.id };
   });
