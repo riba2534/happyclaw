@@ -616,6 +616,7 @@ Web 持久设置 > 环境变量 > 代码默认值
 | `IDLE_TIMEOUT`                       | `1800000`                         | 暖 Runner 空闲时间                 |
 | `STUCK_RUNNER_FORCE_RESTART_MINUTES` | `10`                              | IPC 债务强制恢复上限（4–120 分钟） |
 | `MAX_CONCURRENT_CONTAINERS`          | `20`                              | Docker 并发                        |
+| `CONTAINER_MEMORY_LIMIT`             | 不限制                            | 单个容器内存上限（同设 swap）      |
 | `MAX_FILE_SIZE_MB`                   | `50`                              | Web/IM 入站文件上限                |
 | `CORS_ALLOWED_ORIGINS`               | 仅 localhost                      | WebSocket Origin 白名单            |
 | `TRUST_PROXY`                        | `false`                           | 是否信任反向代理来源头             |

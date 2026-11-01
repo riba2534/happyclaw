@@ -336,6 +336,7 @@ HappyClaw 优先通过 Web 设置管理配置，不要求用户维护一组庞�
 | `STUCK_RUNNER_FORCE_RESTART_MINUTES` | `10`                              | IPC 债务强制恢复上限（整数分钟，范围 4–120；非法值回退默认）                       |
 | `ADMIN_HOST_ONLY_MODE`               | `false`                           | 管理员工作区与任务强制使用宿主机                                                   |
 | `MAX_CONCURRENT_CONTAINERS`          | `20`                              | 最大并发容器数                                                                     |
+| `CONTAINER_MEMORY_LIMIT`             | 不限制                            | 单个 Agent 容器内存上限，如 `3g`；同时设为 `--memory-swap`                         |
 | `MAX_FILE_SIZE_MB`                   | `50`                              | Web 和 IM 入站文件大小上限                                                         |
 | `CORS_ALLOWED_ORIGINS`               | 仅 localhost                      | 公网部署的 WebSocket Origin 白名单                                                 |
 | `TRUST_PROXY`                        | `false`                           | 位于可信反向代理后时设为 `true`                                                    |
