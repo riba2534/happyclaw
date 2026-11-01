@@ -267,10 +267,8 @@ describe('PATCH /:jid execution mode runtime boundary', () => {
     db.setSession(folder, 'sdk-session-before-switch');
 
     const stopGroup = vi.fn(async () => {});
-    const sessions = { [folder]: 'sdk-session-before-switch' };
     webContext.setWebDeps({
       getRegisteredGroups: () => webDepsCache,
-      sessions,
       queue: {
         pauseGroupsForMutation: () => ({ id: 1 }),
         resumeGroupsAfterMutation: vi.fn(),
@@ -289,7 +287,6 @@ describe('PATCH /:jid execution mode runtime boundary', () => {
     expect(response.status).toBe(200);
     expect(db.getRegisteredGroup(jid)?.executionMode).toBe('container');
     expect(db.getSession(folder)).toBeUndefined();
-    expect(sessions[folder]).toBeUndefined();
     expect(stopGroup).toHaveBeenCalledTimes(2);
 
     db.deleteGroupData(jid, folder);
@@ -562,13 +559,8 @@ describe('DELETE /:jid mutation pause', () => {
       const cached = webDepsCache[groupJid] as { folder?: string } | undefined;
       return cached?.folder ?? groupJid;
     });
-    let messageRuns = 0;
     let taskRuns = 0;
     let droppedTasks = 0;
-    queue.setProcessMessagesFn(async () => {
-      messageRuns += 1;
-      return true;
-    });
     // Keep an overlapping profile-style mutation token alive after DELETE
     // consumes its own token. This exercises the terminal tombstone window.
     const overlappingToken = queue.pauseGroupsForMutation([jid]);
@@ -607,9 +599,18 @@ describe('DELETE /:jid mutation pause', () => {
       });
       await firstStopEnteredPromise;
 
-      // These model message/task POST handlers that passed their DB/ACL checks
-      // just before DELETE began and enqueue while its synchronous gate is held.
-      queue.enqueueMessageCheck(jid, OWNER_ID);
+      // These model session sends that passed their DB/ACL checks just
+      // before DELETE began and enqueue while its synchronous gate is held.
+      expect(
+        queue.enqueueTask(
+          `${jid}#agent:sent-before-delete`,
+          'sent-before-delete',
+          async () => {
+            taskRuns += 1;
+          },
+          { onDropped: () => (droppedTasks += 1) },
+        ),
+      ).toBe(true);
       expect(
         queue.enqueueTask(
           descendantJid,
@@ -631,9 +632,8 @@ describe('DELETE /:jid mutation pause', () => {
       await new Promise((resolve) => setImmediate(resolve));
       await new Promise((resolve) => setImmediate(resolve));
 
-      expect(messageRuns).toBe(0);
       expect(taskRuns).toBe(0);
-      expect(droppedTasks).toBe(1);
+      expect(droppedTasks).toBe(2);
 
       // This descendant did not exist while the group/cache still provided a
       // folder resolver. A stable base-JID alias must still reject it after
@@ -648,11 +648,10 @@ describe('DELETE /:jid mutation pause', () => {
           { onDropped: () => (droppedTasks += 1) },
         ),
       ).toBe(false);
-      expect(droppedTasks).toBe(2);
+      expect(droppedTasks).toBe(3);
 
       queue.resumeGroupsAfterMutation(overlappingToken);
       await new Promise((resolve) => setImmediate(resolve));
-      expect(messageRuns).toBe(0);
       expect(taskRuns).toBe(0);
       expect(
         queue.enqueueTask(
@@ -664,7 +663,7 @@ describe('DELETE /:jid mutation pause', () => {
           { onDropped: () => (droppedTasks += 1) },
         ),
       ).toBe(false);
-      expect(droppedTasks).toBe(3);
+      expect(droppedTasks).toBe(4);
       expect(queue.getStatus()).toMatchObject({
         activeCount: 0,
         waitingCount: 0,

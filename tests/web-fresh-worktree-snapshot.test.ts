@@ -68,6 +68,7 @@ const store = await import('../src/session-worktree-store.js');
 
 const JID = 'web:fresh-worktree';
 const SESSION_ID = '11111111-2222-4333-8444-555555555555';
+const PLAIN_SESSION_ID = '11111111-2222-4333-8444-666666666666';
 const FOLDER = 'fresh-worktree';
 const CUSTOM_CWD = path.join(ROOT, 'repo');
 const WORKTREE = path.join(ROOT, 'data', 'worktrees', FOLDER, SESSION_ID);
@@ -107,6 +108,21 @@ beforeAll(() => {
     last_im_jid: null,
     spawned_from_jid: null,
   });
+  db.createAgent({
+    id: PLAIN_SESSION_ID,
+    group_folder: FOLDER,
+    chat_jid: JID,
+    name: 'Plain',
+    prompt: '',
+    status: 'idle',
+    kind: 'conversation',
+    created_by: 'owner',
+    created_at: new Date().toISOString(),
+    completed_at: null,
+    result_summary: null,
+    last_im_jid: null,
+    spawned_from_jid: null,
+  });
   store.insertSessionWorktree({
     agent_id: SESSION_ID,
     group_folder: FOLDER,
@@ -135,10 +151,16 @@ async function fresh(body: Record<string, unknown>) {
 }
 
 describe('Web /fresh snapshot directory', () => {
-  test('a worktree session snapshots its worktree; the main session the custom directory', async () => {
+  test('a worktree session snapshots its worktree; another session the custom directory', async () => {
     snapshots.dirs.length = 0;
     expect(await fresh({ agentId: SESSION_ID })).toBe(200);
-    expect(await fresh({})).toBe(200);
+    expect(await fresh({ agentId: PLAIN_SESSION_ID })).toBe(200);
     expect(snapshots.dirs).toEqual([WORKTREE, CUSTOM_CWD]);
+  });
+
+  test('without a session nothing is switched', async () => {
+    snapshots.dirs.length = 0;
+    expect(await fresh({})).toBe(400);
+    expect(snapshots.dirs).toEqual([]);
   });
 });

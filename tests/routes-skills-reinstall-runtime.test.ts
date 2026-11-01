@@ -18,7 +18,6 @@ const state = vi.hoisted(() => ({
   quiesced: 0,
   deletedFolders: [] as string[],
   unblocked: [] as string[][],
-  sessions: { 'workspace-folder': 'stale-session' } as Record<string, string>,
 }));
 
 vi.mock('../src/config.js', () => ({ DATA_DIR: dataDir }));
@@ -47,7 +46,6 @@ vi.mock('../src/db.js', () => ({
 }));
 vi.mock('../src/web-context.js', () => ({
   getWebDeps: () => ({
-    sessions: state.sessions,
     queue: {
       blockGroupsForRuntimeSafety: vi.fn(),
       unblockGroupsForRuntimeSafety: (jids: string[]) =>
@@ -126,7 +124,6 @@ beforeEach(() => {
   state.quiesced = 0;
   state.deletedFolders.length = 0;
   state.unblocked.length = 0;
-  state.sessions = { 'workspace-folder': 'stale-session' };
 });
 
 afterAll(() => {
@@ -147,7 +144,6 @@ describe('Skill reinstall runtime invalidation', () => {
     });
     expect(state.quiesced).toBe(1);
     expect(state.deletedFolders).toEqual(['workspace-folder']);
-    expect(state.sessions).not.toHaveProperty('workspace-folder');
     expect(state.unblocked).toEqual([['web:workspace']]);
     expect(
       fs.readFileSync(
