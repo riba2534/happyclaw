@@ -20,6 +20,8 @@ const env = vi.hoisted(() => ({
   deferEncode: false,
   /** Responses of the mocked API client, by path. */
   api: {} as Record<string, unknown>,
+  /** The transcript's display mode; compact rows fill the whole width. */
+  displayMode: 'chat' as 'chat' | 'compact',
 }));
 
 vi.mock('../../stores/chat', async () => {
@@ -70,7 +72,7 @@ vi.mock('../../api/client', () => {
 });
 
 vi.mock('../../hooks/useDisplayMode', () => ({
-  useDisplayMode: () => ({ mode: 'default' }),
+  useDisplayMode: () => ({ mode: env.displayMode }),
 }));
 
 vi.mock('../layout/phone', () => ({
@@ -157,6 +159,7 @@ beforeEach(() => {
   env.deferEncode = false;
   env.encodes = [];
   env.api = {};
+  env.displayMode = 'chat';
   revoked.length = 0;
   storage.clear();
   clearPaletteSourceCache();
@@ -681,7 +684,7 @@ describe('layout', () => {
     await render(view('centered'));
     const root = container!.querySelector('[data-hc-composer]')!;
     expect(root.getAttribute('data-composer-layout')).toBe('centered');
-    expect(root.querySelector('.min-h-\\[140px\\]')).not.toBeNull();
+    expect(root.querySelector('.min-h-\\[120px\\]')).not.toBeNull();
 
     const { card, animate } = await dock();
     expect(animate).toHaveBeenCalledWith(
@@ -694,6 +697,21 @@ describe('layout', () => {
     // Later commits leave the docked card alone.
     await render(view('docked', 'c'));
     expect(animate).toHaveBeenCalledTimes(1);
+  });
+
+  test('a compact transcript still centres the hero at the starter width', async () => {
+    env.displayMode = 'compact';
+    const column = () =>
+      container!.querySelector('[data-composer-card]')!.parentElement!
+        .parentElement!;
+
+    await render(view('centered'));
+    expect(column().className).toContain('max-w-3xl');
+
+    // Docked, compact mode keeps the full width to line up with the
+    // compact message rows.
+    await render(view('docked'));
+    expect(column().className).not.toContain('max-w-3xl');
   });
 
   test('the context ring sits in the toolbar after the tools, off phones', async () => {
