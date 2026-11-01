@@ -71,6 +71,9 @@ function completedWorkflow() {
   };
 }
 
+/** The session whose transcripts and workflows the fixtures write. */
+const SESSION = 'session-a';
+
 describe('Claude Code Workflow session projection', () => {
   test('normalizes phases, agents and authoritative totals', () => {
     const run = normalizeWorkflowRun(completedWorkflow());
@@ -104,6 +107,8 @@ describe('Claude Code Workflow session projection', () => {
       DATA_DIR,
       'sessions',
       group,
+      'agents',
+      SESSION,
       '.claude',
       'projects',
       `-${os.platform()}-fixture`,
@@ -177,7 +182,7 @@ describe('Claude Code Workflow session projection', () => {
           }),
         },
       ],
-      { groupFolder: group, agentId: null },
+      { groupFolder: group, agentId: SESSION },
     );
 
     expect(messages[0].workflow_runs).toBeUndefined();
@@ -230,7 +235,7 @@ describe('Claude Code Workflow session projection', () => {
     });
     const midWrite = attachSessionWorkflowRuns([followUpMessage()], {
       groupFolder: group,
-      agentId: null,
+      agentId: SESSION,
     });
     expect(JSON.parse(midWrite[0].token_usage ?? '{}').inputTokens ?? 0).toBe(
       0,
@@ -239,7 +244,7 @@ describe('Claude Code Workflow session projection', () => {
     fs.appendFileSync(transcript, turn2Assistant.slice(40));
     const completed = attachSessionWorkflowRuns([followUpMessage()], {
       groupFolder: group,
-      agentId: null,
+      agentId: SESSION,
     });
     expect(JSON.parse(completed[0].token_usage ?? '{}')).toMatchObject({
       inputTokens: 7,
@@ -262,6 +267,8 @@ describe('session workflow host caches', () => {
       DATA_DIR,
       'sessions',
       group,
+      'agents',
+      SESSION,
       '.claude',
       'projects',
       `-${os.platform()}-fixture`,
@@ -337,7 +344,7 @@ describe('session workflow host caches', () => {
           token_usage: JSON.stringify({ inputTokens: 0, outputTokens: 0 }),
         },
       ],
-      { groupFolder: group, agentId: null },
+      { groupFolder: group, agentId: SESSION },
     );
     return {
       inputTokens: JSON.parse(message.token_usage ?? '{}').inputTokens ?? 0,
@@ -477,7 +484,7 @@ describe('session workflow host caches', () => {
             token_usage: JSON.stringify({ inputTokens: 42, outputTokens: 3 }),
           },
         ],
-        { groupFolder: group, agentId: null },
+        { groupFolder: group, agentId: SESSION },
       );
       expect(
         openSpy.mock.calls.some(([target]) => String(target) === transcript),

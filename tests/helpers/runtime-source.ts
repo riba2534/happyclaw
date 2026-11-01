@@ -122,6 +122,17 @@ function automationDefaults(): Record<string, unknown> {
     agentIdOfJid: (jid: string) =>
       jid.includes('#agent:') ? jid.split('#agent:')[1] || null : null,
     getAgentBuilderInputMessage: () => null,
+    // Session lane bookkeeping a test of another concern runs without:
+    // sub-agent checkpoints, IPC reply acknowledgement, the billing push and
+    // the OOM counter.
+    runningSubagentTasksByLane: new Map(),
+    trackSubagentTaskEvent: () => {},
+    nonSubagentTaskIds: new Set(),
+    subagentTaskInputMessageId: () => '',
+    activeIpcReplyTurnTrackers: new Map(),
+    agentIpcReplyTracker: { inputTurnId: '', delivered: false },
+    broadcastOwnerBillingUsage: () => {},
+    clearSessionOomExits: () => {},
   };
 }
 

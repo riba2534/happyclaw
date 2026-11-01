@@ -369,18 +369,13 @@ describe('Assistant primary projection boundary', () => {
     });
   });
 
-  test('wires the strict boundary and canonical turn identity into main and conversation paths', () => {
+  test('wires the strict boundary and canonical turn identity into the session path', () => {
     const source = fs.readFileSync(
       path.join(process.cwd(), 'src/index.ts'),
       'utf8',
     );
 
-    expect(
-      source.match(/decideAssistantPrimaryProjection\(\{/g)?.length,
-    ).toBeGreaterThanOrEqual(2);
-    expect(source).toContain(
-      'const effectiveTurnId = outputChannelScope.inputId;',
-    );
+    expect(source).toContain('decideAssistantPrimaryProjection({');
     expect(source).toContain('? heldAgentDbTurnId || outputAgentScope.inputId');
     expect(source).toContain(
       'const agentAnyReplyProjectedByInput = new Map<string, boolean>',
@@ -391,18 +386,13 @@ describe('Assistant primary projection boundary', () => {
     expect(source).toContain(
       'agentAnyReplyProjectedByInput.set(outputAgentScope.inputId, true);',
     );
-    expect(source).toMatch(
-      /activeRouteAdmissions\.set\(\s+mainAdmissionKey,\s+\(newSourceJid, inputTurnId, inputCursor, coveredInputs, receipt\) => \{/,
-    );
-    expect(source).toMatch(
-      /beforePublish hook,[\s\S]{0,500}if \(receipt\?\.deliveryId === inputTurnId\) \{\s+automationTurns\.remember\(inputTurnId, admittedMessages\);/,
+    expect(source).toContain(
+      'automationTurns.remember(inputTurnId, admittedMessages);',
     );
     expect(source).toContain('automationTurns.forget(inputTurnId);');
-    expect(
-      source.match(
-        /finalizeChannelCardAfterDelivery\(\s+pending(?:StreamingCard|AgentCard)Completion,\s+dbText,/g,
-      ),
-    ).toHaveLength(2);
+    expect(source).toMatch(
+      /finalizeChannelCardAfterDelivery\(\s+pendingAgentCardCompletion,\s+dbText,/,
+    );
     expect(source).not.toContain(
       'outputAlreadySent && effectiveTurnId === lastSavedTurnId',
     );

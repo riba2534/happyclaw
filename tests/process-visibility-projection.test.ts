@@ -8,7 +8,6 @@ import type { InteractionMode, ProcessVisibility } from '../src/types.js';
 import {
   projectProgressForWeb,
   projectSdkStreamEventForWeb,
-  shouldBroadcastTaskAgentStatus,
 } from '../src/workspace-interaction-runtime.js';
 
 const LEVELS: ProcessVisibility[] = ['hidden', 'activity', 'full'];
@@ -268,13 +267,6 @@ describe('process visibility projection for the Web', () => {
     expect(proactive('activity', start)).toBe(start);
     const lifecycle = event('status', { statusText: 'idle' });
     expect(proactive('hidden', lifecycle)).toBe(lifecycle);
-  });
-
-  test('task tabs follow the task events: sent unless a proactive workspace is hidden', () => {
-    expect(shouldBroadcastTaskAgentStatus('assistant', 'hidden')).toBe(true);
-    expect(shouldBroadcastTaskAgentStatus('proactive', 'hidden')).toBe(false);
-    expect(shouldBroadcastTaskAgentStatus('proactive', 'activity')).toBe(true);
-    expect(shouldBroadcastTaskAgentStatus('proactive', 'full')).toBe(true);
   });
 });
 

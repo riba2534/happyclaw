@@ -6,58 +6,6 @@ import {
   hasUnfinishedProactiveOutput,
   resolveTurnOutcome,
 } from '../src/turn-outcome.js';
-import { resolveStreamingCardReplyAcknowledgement } from '../src/reply-delivery.js';
-
-describe('resolveStreamingCardReplyAcknowledgement', () => {
-  const base = {
-    streamingDeliveryUncertain: false,
-    streamingCardHandled: false,
-    attachmentsDelivered: true,
-    postFinalizationStaticRequired: false,
-    postFinalizationStaticDelivered: false,
-    projectedTargetDelivered: true,
-  };
-
-  test('never treats a Web projection as the required failed static fallback', () => {
-    expect(
-      resolveStreamingCardReplyAcknowledgement({
-        ...base,
-        postFinalizationStaticRequired: true,
-        postFinalizationStaticDelivered: false,
-      }),
-    ).toBe(false);
-  });
-
-  test('requires both the post-finalizer text and every attachment ACK', () => {
-    expect(
-      resolveStreamingCardReplyAcknowledgement({
-        ...base,
-        postFinalizationStaticRequired: true,
-        postFinalizationStaticDelivered: true,
-      }),
-    ).toBe(true);
-    expect(
-      resolveStreamingCardReplyAcknowledgement({
-        ...base,
-        attachmentsDelivered: false,
-        postFinalizationStaticRequired: true,
-        postFinalizationStaticDelivered: true,
-      }),
-    ).toBe(false);
-  });
-
-  test('uncertain card evidence dominates every apparent delivery ACK', () => {
-    expect(
-      resolveStreamingCardReplyAcknowledgement({
-        ...base,
-        streamingDeliveryUncertain: true,
-        streamingCardHandled: true,
-        postFinalizationStaticRequired: true,
-        postFinalizationStaticDelivered: true,
-      }),
-    ).toBe(false);
-  });
-});
 
 describe('resolveTurnOutcome', () => {
   test('requires a final after progress or separate Proactive output', () => {
@@ -197,14 +145,17 @@ describe('resolveTurnOutcome', () => {
       'utf8',
     );
     const branch = main.slice(
-      main.indexOf("errorDetail.startsWith('context_budget_exceeded:')"),
-      main.indexOf('// 上下文溢出错误'),
+      main.indexOf('const settleAgentErrorExit = async'),
+      main.indexOf("errorDetail.startsWith('context_overflow:')"),
     );
 
-    expect(branch).toContain("errorDetail.startsWith('prompt_plan_invalid:')");
-    expect(branch).toContain('deterministicFailure: true');
+    expect(branch).toContain(
+      'const budgetError = /^(?:context_budget_exceeded|prompt_plan_invalid):\\s*/;',
+    );
     // Commits and resolves the attempt (see terminal-system-notice.test.ts).
-    expect(branch).toContain('return settleDeterministicFailure(');
+    expect(branch).toMatch(
+      /await settleAgentDeterministicFailure\(\s*'context-budget',/,
+    );
   });
 
   test('does not treat a DB-only interrupted partial as a delivered close reply', () => {
@@ -213,14 +164,16 @@ describe('resolveTurnOutcome', () => {
       'utf8',
     );
     const closedBranch = main.slice(
-      main.indexOf("if (output.status === 'closed')"),
-      main.indexOf('// Query 出错时'),
+      main.indexOf(
+        "} else if (output.status === 'closed' && !runnerClosedBySteer) {",
+      ),
+      main.indexOf("'Conversation agent close resolved without replay',"),
     );
 
     expect(closedBranch).toContain(
-      'activeGenuineReplyDelivered || ipcReplyTurnTracker.delivered',
+      'replyDelivered: activeAgentInputPhysicallyAcknowledged',
     );
-    expect(closedBranch).not.toContain('replyDelivered: sentReply');
+    expect(closedBranch).not.toContain('agentReplySentByInput');
   });
 
   test('commits an already-delivered reply when the runner throws before returning output', () => {
@@ -228,90 +181,40 @@ describe('resolveTurnOutcome', () => {
       path.join(process.cwd(), 'src/index.ts'),
       'utf8',
     );
+    const start = main.indexOf(
+      '// The runner threw before returning a terminal output.',
+    );
     const missingOutputBranch = main.slice(
-      main.indexOf('if (!output) {'),
-      main.indexOf('const stopDisposition ='),
+      start,
+      main.indexOf('  } finally {', start),
     );
 
-    expect(missingOutputBranch).toContain(
-      'activeGenuineReplyDelivered || ipcReplyTurnTracker.delivered',
-    );
+    expect(missingOutputBranch).toContain('wasGenuineReplyDeliveredForInput(');
+    expect(missingOutputBranch).toContain('agentIpcReplyTracker.delivered');
     expect(missingOutputBranch).toContain('commitCursor();');
-    expect(missingOutputBranch).not.toContain('sentReply');
+    expect(missingOutputBranch).toContain('retryUnfinishedTurn = true;');
+    expect(missingOutputBranch).not.toContain('agentReplySentByInput');
   });
 
-  test('does not mark or commit a final reply until the physical channel ACKs it', () => {
+  test('does not complete a final reply until the physical channel ACKs it', () => {
     const main = fs.readFileSync(
       path.join(process.cwd(), 'src/index.ts'),
       'utf8',
     );
     const deliveryBranch = main.slice(
-      main.indexOf('const replySendOutcome = await sendMessageWithOutcome'),
-      main.indexOf('// Only reset idle timer on actual results'),
+      main.indexOf('const agentReplyDeliveryAcknowledged ='),
+      main.indexOf('// Per-turn snapshot cleanup'),
     );
 
-    expect(deliveryBranch).toContain('let replyDeliveryAcknowledged');
+    expect(deliveryBranch).toContain('if (!agentReplyDeliveryAcknowledged) {');
     expect(deliveryBranch).toContain(
-      'const routedFallbackDelivered = await sendImWithRetry',
+      'host_turn_settlement_failed: final agent reply was not physically acknowledged',
     );
-    expect(deliveryBranch).toContain(
-      'replyDeliveryAcknowledged =\n                    routedFallbackDelivered',
+    expect(
+      deliveryBranch.indexOf('if (!agentReplyDeliveryAcknowledged) {'),
+    ).toBeLessThan(
+      deliveryBranch.indexOf('completeAgentChannelRuntimesForOutput(output)'),
     );
-    expect(deliveryBranch).toContain(
-      'postFinalizationStaticDelivered = await sendImWithRetry',
-    );
-    expect(deliveryBranch).toContain(
-      'replyDeliveryAcknowledged &&\n                isGenuineReplyResult',
-    );
-    expect(deliveryBranch).toContain('if (result.inputTurnCompleted) {');
-    expect(deliveryBranch).toContain(
-      'if (!(await completeChannelRuntimesForOutput(result)))',
-    );
-    expect(deliveryBranch).toContain(
-      'replyDeliveryAcknowledged ||\n                  Boolean(',
-    );
-    expect(deliveryBranch).toContain('getFailedChannelOutboxForTurn(');
-    expect(deliveryBranch).not.toContain(
-      'if (result.inputTurnCompleted) commitCursor()',
-    );
-  });
-
-  test('routes streaming-card local images through the exact turn outbox and includes their ACK', () => {
-    const main = fs.readFileSync(
-      path.join(process.cwd(), 'src/index.ts'),
-      'utf8',
-    );
-    const cardAttachmentBranch = main.slice(
-      main.indexOf(
-        '// Streaming card strips local image references (only img_xxx keys',
-      ),
-      main.indexOf('// Skip IM send to the original chatJid when:'),
-    );
-    const deliveryAckBranch = main.slice(
-      main.indexOf('let replyDeliveryAcknowledged ='),
-      main.indexOf('// For routed IM (web JID with IM source)'),
-    );
-
-    expect(cardAttachmentBranch).toContain(
-      'const delivered = await sendTaskImageWithRetry',
-    );
-    expect(cardAttachmentBranch).toContain(
-      'scopeToken: outputChannelScope.scope.token',
-    );
-    expect(cardAttachmentBranch).toContain(
-      'ordinalSlot: `streaming-card-image:${imageIndex}`',
-    );
-    expect(cardAttachmentBranch).not.toContain('imManager.sendImage');
-    expect(deliveryAckBranch).toContain(
-      'resolveStreamingCardReplyAcknowledgement({',
-    );
-    expect(deliveryAckBranch).toContain(
-      'streamingDeliveryUncertain: streamingCardDeliveryUncertain',
-    );
-    expect(deliveryAckBranch).toContain(
-      'attachmentsDelivered: streamingCardAttachmentsDelivered',
-    );
-    expect(deliveryAckBranch).toContain('postFinalizationStaticRequired');
   });
 
   test('conversation card safe fallback never replays ACKed images and requires their ACK', () => {
@@ -371,20 +274,16 @@ describe('resolveTurnOutcome', () => {
     );
   });
 
-  test('main and agent definitive outbox failures terminalize failed with an independent notice', () => {
+  test('definitive outbox failures terminalize failed with an independent notice', () => {
     const main = fs.readFileSync(
       path.join(process.cwd(), 'src/index.ts'),
       'utf8',
-    );
-    const mainCompletion = main.slice(
-      main.indexOf('const completeChannelRuntimesForOutput'),
-      main.indexOf('const channelScopeForOutput'),
     );
     const agentCompletion = main.slice(
       main.indexOf('const completeAgentChannelRuntimesForOutput'),
       main.indexOf('const agentScopeForOutput'),
     );
-    for (const branch of [mainCompletion, agentCompletion]) {
+    for (const branch of [agentCompletion]) {
       expect(branch).toContain('getFailedChannelOutboxForTurn(runtime.runId)');
       expect(branch.indexOf('getUncertainChannelOutboxForTurn')).toBeLessThan(
         branch.indexOf('getFailedChannelOutboxForTurn'),
@@ -430,31 +329,6 @@ describe('resolveTurnOutcome', () => {
       path.join(process.cwd(), 'src/index.ts'),
       'utf8',
     );
-    const mainCleanup = main.slice(
-      main.indexOf('if (channelTurnRuntimes.size > 0)'),
-      main.indexOf('// ── 保存中断内容到数据库'),
-    );
-    expect(mainCleanup).toContain('getUncertainChannelOutboxForTurn');
-    expect(mainCleanup).toContain('runtime.interrupt');
-    expect(mainCleanup).toContain('commitCursor();');
-    expect(mainCleanup).toContain(
-      'await deliverChannelManualReconciliationNotice',
-    );
-    expect(mainCleanup).toContain(
-      "interactionMode === 'proactive' ? 'native' : 'default'",
-    );
-
-    const postCleanup = main.slice(
-      main.indexOf('// runAgent threw — output is undefined'),
-      main.indexOf('const stopDisposition ='),
-    );
-    expect(postCleanup).toContain(
-      'if (channelDeliveryNeedsManualReconciliation)',
-    );
-    expect(postCleanup).toContain(
-      'return channelManualNoticesAcknowledged && activeCursorCommitted;',
-    );
-
     const agentCleanup = main.slice(
       main.indexOf('if (agentChannelTurnRuntimes.size > 0)'),
       main.indexOf('// ── 保存中断内容 ──'),
@@ -463,6 +337,12 @@ describe('resolveTurnOutcome', () => {
     expect(agentCleanup).toContain('runtime.interrupt');
     expect(agentCleanup).toContain('retryUnfinishedTurn = false');
     expect(agentCleanup).toContain('retryUnfinishedTurn = true');
+    expect(agentCleanup).toContain(
+      'await deliverChannelManualReconciliationNotice',
+    );
+    expect(agentCleanup).toContain(
+      "interactionMode === 'proactive' ? 'native' : 'default'",
+    );
   });
 
   test('projects MCP send_message to Web but delivers raw native content through the exact input Outbox', () => {

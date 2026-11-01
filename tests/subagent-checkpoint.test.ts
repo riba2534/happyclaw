@@ -268,30 +268,36 @@ describe('sub-agent checkpoint prompt', () => {
 
 describe('host wiring contract', () => {
   const source = fs.readFileSync('src/index.ts', 'utf8');
-  const start = source.indexOf('async function processGroupMessages(');
+  const start = source.indexOf('async function processAgentConversation(');
   const end = source.indexOf('\nasync function ', start + 1);
   const body = source.slice(start, end);
+  const trackerStart = source.indexOf('function trackSubagentTaskEvent(');
+  const tracker = source.slice(
+    trackerStart,
+    source.indexOf('\nfunction ', trackerStart + 1),
+  );
 
   test('a replayed batch gets its checkpoints between history and the messages', () => {
     expect(body).toMatch(
-      /listSubagentCheckpointsForInputs\(\s*group\.folder,\s*chatJid,\s*missedMessages\.map\(\(message\) => message\.id\),?\s*\)/,
+      /listSubagentCheckpointsForInputs\(\s*effectiveGroup\.folder,\s*virtualChatJid,\s*missedMessages\.map\(\(message\) => message\.id\),?\s*\)/,
     );
     expect(body).toMatch(
-      /\(historyContext\?\.context \?\? ''\) \+\s*\(subagentCheckpoint\?\.context \?\? ''\) \+\s*formatMessages\(missedMessages/,
+      /const promptPreamble =\s*\(historyContext\?\.context \?\? ''\) \+ \(subagentCheckpoint\?\.context \?\? ''\);/,
     );
+    // Both the batch prompt and a narrowed runnable batch carry it.
+    expect(body.match(/promptPreamble \+\s*formatMessages\(/g)).toHaveLength(2);
   });
 
   test('Task start and completion are checkpointed against their input', () => {
-    const upserts = body.match(/upsertSubagentCheckpoint\(\{[\s\S]*?\}\);/g);
+    const upserts = tracker.match(/upsertSubagentCheckpoint\(\{[\s\S]*?\}\);/g);
     expect(upserts).toHaveLength(2);
     for (const upsert of upserts!) {
-      expect(upsert).toContain('inputMessageId: taskInputMessageId(result)');
+      expect(upsert).toContain('inputMessageId: input.inputMessageId()');
+      expect(upsert).toContain('chatJid: laneJid');
     }
     expect(upserts![1]).toContain('resultText: se.taskResult');
-    // getAgent() matches by id alone; ownership is checked before writing.
-    expect(body).toContain('if (!existing || existing.chat_jid === chatJid) {');
-    expect(body).toMatch(
-      /existing\.kind === 'task' && existing\.chat_jid === chatJid\)\s*\)\s*\{\s*upsertSubagentCheckpoint/,
+    expect(body).toContain(
+      'inputMessageId: () => subagentTaskInputMessageId(output),',
     );
   });
 });

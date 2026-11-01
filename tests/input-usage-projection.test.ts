@@ -117,7 +117,7 @@ function hostRecord(
 }
 
 describe('input cumulative display projection', () => {
-  for (const scope of ['main', 'agent'] as const) {
+  for (const scope of ['agent'] as const) {
     test(`${scope}: actual host handles multiple SDK results, batches and replay without charging/displaying twice`, () => {
       const prefix = `${scope}-${serial++}`;
       const p = new InputUsageProjection('input-a');
@@ -214,7 +214,7 @@ describe('input cumulative display projection', () => {
     p.rollback('c');
     expect(p.admit('d')).toBe(true);
   });
-  for (const scope of ['main', 'agent'] as const) {
+  for (const scope of ['agent'] as const) {
     test(`${scope}: late usage persists only its exact A row after B is active`, () => {
       const prefix = `late-${scope}-${serial++}`;
       const p = new InputUsageProjection('a');
@@ -276,7 +276,9 @@ describe('input cumulative display projection', () => {
         virtualChatJid,
         effectiveGroup: { folder: 'projection-test' },
         registeredGroups: {},
+        agentId: 'projection-agent',
         updateLatestMessageTokenUsage: db.updateLatestMessageTokenUsage,
+        broadcastOwnerBillingUsage: vi.fn(),
         logger: { debug: vi.fn(), warn: vi.fn() },
         getUserById: vi.fn(),
       };
@@ -393,7 +395,7 @@ describe('input cumulative display projection', () => {
     expect(JSON.parse(row.token_usage)).toEqual(total);
     expect(projected[0].token_usage).toBe(row.token_usage);
   });
-  for (const scope of ['main', 'agent'] as const) {
+  for (const scope of ['agent'] as const) {
     test(`${scope}: held truncation finalizer retains the full input total`, async () => {
       const prefix = `held-${scope}-${serial++}`;
       const p = new InputUsageProjection(prefix);

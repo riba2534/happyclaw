@@ -400,17 +400,6 @@ export function projectProgressForWeb(
   };
 }
 
-/**
- * Whether the Web is told about sub-agent task lifecycle (agent_status) so its
- * Task tabs match the task events it receives.
- */
-export function shouldBroadcastTaskAgentStatus(
-  mode: InteractionMode,
-  visibility: ProcessVisibility,
-): boolean {
-  return mode === 'assistant' || visibility !== 'hidden';
-}
-
 /** How a proactive turn that sent progress ended without a reply. */
 export type ProactiveTurnEnding = 'stopped' | 'steered' | 'failed';
 
