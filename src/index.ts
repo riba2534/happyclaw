@@ -2559,27 +2559,37 @@ function markThreadMapWorkspace(targetMainJid?: string): void {
   registeredGroups[workspaceJid] = updatedWorkspace;
 }
 
+/**
+ * Persist an activation change. A topic container keeps its workspace mount;
+ * any other chat is bound to one session or to nothing, so a workspace target
+ * left on it is dropped rather than written as a session mount without a
+ * session.
+ */
 function persistActivationAwareGroupUpdate(
   chatJid: string,
   previous: RegisteredGroup,
   candidate: RegisteredGroup,
 ): boolean {
-  const threadMapped = isNativeContextContainer(chatJid, candidate, {
-    activation_mode: candidate.activation_mode,
-  });
+  const threadMapped = isNativeContextContainer(chatJid, candidate);
   if (threadMapped && candidate.target_agent_id) return false;
 
-  const updated = candidate.target_main_jid
-    ? buildWorkspaceMountUpdate(
-        candidate,
-        candidate.target_main_jid,
-        threadMapped ? 'thread_map' : 'single_session',
-        {
-          activationMode: candidate.activation_mode,
-          ownerImId: candidate.owner_im_id ?? null,
-        },
-      )
-    : candidate;
+  const updated = !candidate.target_main_jid
+    ? candidate
+    : threadMapped
+      ? buildWorkspaceMountUpdate(
+          candidate,
+          candidate.target_main_jid,
+          'thread_map',
+          {
+            activationMode: candidate.activation_mode,
+            ownerImId: candidate.owner_im_id ?? null,
+          },
+        )
+      : {
+          ...candidate,
+          target_main_jid: undefined,
+          binding_mode: 'single_context' as const,
+        };
   persistGroupUpdate(chatJid, updated, registeredGroups);
   if (previous.binding_mode === 'thread_map' && !threadMapped) {
     detachThreadMapWorkspace(previous.target_main_jid, chatJid);
@@ -5136,7 +5146,7 @@ async function handleCommand(
       return handleReleaseOwnerCommand(chatJid);
     case 'sw':
     case 'spawn':
-      return handleSpawnCommand(chatJid, rawArgs, chatJid);
+      return handleSpawnCommand(chatJid, rawArgs, chatJid, messageMeta);
     case 'allow':
       return handleAllowCommand(chatJid, senderImId, mentions);
     case 'disallow':
@@ -5343,18 +5353,6 @@ function findWebJidForFolder(folder: string): string | null {
     if (jid.startsWith('web:')) return jid;
   }
   return null;
-}
-
-/**
- * Find the display name for a folder by looking up its web group.
- */
-function findGroupNameByFolder(folder: string): string {
-  const webJid = findWebJidForFolder(folder);
-  if (webJid) {
-    const group = registeredGroups[webJid] ?? getRegisteredGroup(webJid);
-    if (group) return group.name;
-  }
-  return folder;
 }
 
 function handleListCommand(chatJid: string): string {
@@ -6022,56 +6020,64 @@ interface SpawnOrigin {
   originJid: string;
   workspaceJid: string;
   effectiveGroup: RegisteredGroup;
+  /** The IM route the command arrived on: its topic inside a topic group. */
+  imRouteJid: string;
 }
 
 /**
- * The session a /spawn command came from: a Web session's runtime JID, or the
- * session an IM chat is bound to. Returns the reply text when there is none.
+ * The session a /spawn command came from: a Web session's runtime JID, the
+ * session of this message's topic in a topic group, or the session an IM chat
+ * is bound to. Returns the reply text when there is none.
  */
-function resolveSpawnOrigin(chatJid: string): SpawnOrigin | string {
+function resolveSpawnOrigin(
+  chatJid: string,
+  messageMeta?: ChannelMessageMeta,
+): SpawnOrigin | string {
   let sessionId = agentIdOfJid(chatJid);
+  let imRouteJid = chatJid;
   if (!sessionId) {
     const group = registeredGroups[chatJid] ?? getRegisteredGroup(chatJid);
-    const target = group
-      ? resolveBoundChatTarget(
-          chatJid,
-          group,
-          (jid) => registeredGroups[jid] ?? getRegisteredGroup(jid),
-          getAgent,
-          findGroupNameByFolder,
-          resolveWorkspaceJid,
-        )
-      : null;
-    if (!target?.agentId) {
-      return group?.target_agent_id
-        ? '绑定会话所属的工作区不存在'
-        : '本聊天未绑定会话。';
-    }
+    const target = resolveCommandSession('sw', chatJid, group, messageMeta);
+    if (typeof target === 'string') return target;
     sessionId = target.agentId;
+    const thread =
+      group && isNativeContextContainer(chatJid, group)
+        ? resolveNativeThreadContext(messageMeta)
+        : null;
+    if (thread) {
+      imRouteJid = buildNativeThreadRouteJid(
+        chatJid,
+        thread.contextId,
+        thread.rootMessageId,
+      );
+    }
   }
   const session = getAgent(sessionId);
-  if (session?.kind !== 'conversation') return '本聊天未绑定会话。';
+  if (session?.kind !== 'conversation') return UNBOUND_CHAT_REPLY;
   const workspace =
     registeredGroups[session.chat_jid] ?? getRegisteredGroup(session.chat_jid);
-  if (!workspace) return '绑定会话所属的工作区不存在';
+  if (!workspace) return UNBOUND_CHAT_REPLY;
   return {
     originJid: `${session.chat_jid}#agent:${session.id}`,
     workspaceJid: session.chat_jid,
     effectiveGroup: resolveEffectiveGroup(workspace).effectiveGroup,
+    imRouteJid,
   };
 }
 
 async function handleSpawnCommand(
   chatJid: string,
   rawMessage: string,
-  sourceImJid?: string,
+  imChatJid?: string,
+  messageMeta?: ChannelMessageMeta,
 ): Promise<string> {
   const message = rawMessage.trim();
   if (!message) return '用法: /sw <任务描述>\n在当前工作区创建并行任务';
 
-  const origin = resolveSpawnOrigin(chatJid);
+  const origin = resolveSpawnOrigin(chatJid, messageMeta);
   if (typeof origin === 'string') return origin;
   const { originJid, workspaceJid, effectiveGroup } = origin;
+  const sourceImJid = imChatJid ? origin.imRouteJid : undefined;
   const userId = effectiveGroup.created_by;
   if (!userId) return '无法确定当前聊天所属用户';
 
@@ -15990,15 +15996,10 @@ function resolveRouteSession(routeJid: string): string | null {
     }
     return null;
   }
-  const target = resolveBoundChatTarget(
-    conversationJid,
-    group,
-    lookup,
-    getAgent,
-    findGroupNameByFolder,
-    resolveWorkspaceJid,
+  return (
+    resolveBoundChatTarget(conversationJid, group, lookup, getAgent)
+      ?.targetChatJid ?? null
   );
-  return target?.agentId ? target.targetChatJid : null;
 }
 
 /** The IM chats bound to a session as a whole (topic containers excluded). */
@@ -16841,10 +16842,8 @@ function resolveRuntimeControlTarget(
     group,
     (jid) => registeredGroups[jid] ?? getRegisteredGroup(jid),
     getAgent,
-    findGroupNameByFolder,
-    resolveWorkspaceJid,
   );
-  if (target?.agentId) return target.targetChatJid;
+  if (target) return target.targetChatJid;
   // A binding whose session is gone is a missing target, not an unbound chat.
   return group.target_agent_id ? undefined : 'unbound';
 }
@@ -18862,11 +18861,8 @@ async function main(): Promise<void> {
     createAutomationRuntimeDeps({
       getGroup: (jid) => registeredGroups[jid] ?? getRegisteredGroup(jid),
       admitInput: admitComposedLaneInput,
-      wake: (session) => {
-        if (session.agentId) {
-          buildOnAgentMessage()(session.workspaceJid, session.agentId);
-        }
-      },
+      wake: (session) =>
+        buildOnAgentMessage()(session.workspaceJid, session.agentId),
       broadcastNewMessage: (laneJid, message) =>
         broadcastNewMessage(laneJid, message),
       routeSessionOf: resolveRouteSession,
