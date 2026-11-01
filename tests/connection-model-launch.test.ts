@@ -44,6 +44,7 @@ const { applyProviderSwitchToInput } =
   await import('../src/provider-switch-context.js');
 
 const FOLDER = 'model-launch';
+const SESSION = 'session-1';
 let glm: ReturnType<typeof runtimeConfig.createProvider>;
 let kimi: ReturnType<typeof runtimeConfig.createProvider>;
 let relay: ReturnType<typeof runtimeConfig.createProvider>;
@@ -145,17 +146,16 @@ function envOf(
       added_at: new Date().toISOString(),
     } as never,
     false,
+    SESSION,
     false,
     undefined,
-    undefined,
     selection.resolved,
-    undefined,
     profile as never,
     undefined,
     { envLines: [], addHostGateway: false },
   );
   const envFile = fs.readFileSync(
-    path.join(runner.getContainerRuntimeEnvDir(FOLDER), 'env'),
+    path.join(runner.getContainerRuntimeEnvDir(FOLDER, SESSION), 'env'),
     'utf8',
   );
   return (key) => new RegExp(`^${key}='([^']*)'$`, 'm').exec(envFile)?.[1];
@@ -184,7 +184,6 @@ function launch(agent: Agent = {}) {
       chatJid: `web:${FOLDER}`,
     },
     selection,
-    null,
   );
   if (!sessionId || selection.resetSession) {
     sdkSessions += 1;
@@ -309,15 +308,16 @@ describe('an Agent runs the model it is bound to', () => {
       prompt: 'next',
       groupFolder: FOLDER,
       chatJid: `web:${FOLDER}`,
-      isMain: true,
+      agentId: SESSION,
     };
-    expect(
-      runner.prepareLaunchInput(input, tellsNone, undefined),
-    ).toHaveProperty('launchEffort', null);
+    expect(runner.prepareLaunchInput(input, tellsNone)).toHaveProperty(
+      'launchEffort',
+      null,
+    );
     // No connection: the runner keeps sending the Agent's own effort.
-    expect(
-      runner.prepareLaunchInput(input, null, undefined),
-    ).not.toHaveProperty('launchEffort');
+    expect(runner.prepareLaunchInput(input, null)).not.toHaveProperty(
+      'launchEffort',
+    );
     const tells = select({ modelConfigId: kimi.id, effort: 'high' });
     expect(tells.launchEffort).toBe('high');
   });

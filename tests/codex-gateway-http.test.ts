@@ -1064,7 +1064,7 @@ describe('reasoning effort policy', () => {
       issueCodexGatewayToken(provider.id as string, {
         kind: 'container',
         groupFolder: 'pick-workspace',
-        sessionAgentId: null,
+        agentId: null,
         ...owner,
       });
 

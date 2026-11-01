@@ -87,6 +87,7 @@ const { runHostAgent } = await import('../src/container-runner.js');
 const { hashRuntimePolicy } = await import('../src/run-context-snapshot.js');
 
 const FOLDER = 'host-conversation-effort';
+const SESSION = 'session-1';
 const DATA_DIR = path.join(SHARED_TMP, 'data');
 
 function writeFakeRunner(): void {
@@ -137,8 +138,8 @@ async function launch(runtimePolicy: unknown): Promise<unknown> {
       {
         prompt: 'hello',
         groupFolder: FOLDER,
-        chatJid: `web:${FOLDER}`,
-        isMain: true,
+        chatJid: `web:${FOLDER}#agent:${SESSION}`,
+        agentId: SESSION,
         agentProfile: {
           id: 'agent-effort',
           name: 'Agent',
@@ -182,7 +183,7 @@ describe("a conversation's effort at launch", () => {
       anthropicModel: 'kimi-k3',
       enabled: true,
     });
-    db.setSessionModelSelection(FOLDER, null, provider.id, 'user-1', {
+    db.setSessionModelSelection(FOLDER, SESSION, provider.id, 'user-1', {
       model: 'kimi-k3',
       effort: 'low',
     });

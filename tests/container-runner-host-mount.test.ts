@@ -97,10 +97,15 @@ function group(additionalMounts: unknown) {
   };
 }
 
+const SESSION = 'session-1';
+
 function runtimeAdditionalMounts(additionalMounts: unknown) {
-  return buildVolumeMounts(group(additionalMounts) as any, false, false).filter(
-    (mount) => mount.containerPath.startsWith('/workspace/extra/'),
-  );
+  return buildVolumeMounts(
+    group(additionalMounts) as any,
+    false,
+    SESSION,
+    false,
+  ).filter((mount) => mount.containerPath.startsWith('/workspace/extra/'));
 }
 
 beforeAll(() => {
@@ -235,7 +240,7 @@ describe.sequential(
 
       const loaded = db.getRegisteredGroup(jid);
       expect(loaded?.containerConfigError).toBeTruthy();
-      expect(() => buildVolumeMounts(loaded!, false, false)).toThrow();
+      expect(() => buildVolumeMounts(loaded!, false, SESSION, false)).toThrow();
     });
 
     it('does not let a structurally invalid raw database value bypass validation', () => {
@@ -272,7 +277,7 @@ describe.sequential(
       }
 
       const loaded = db.getRegisteredGroup(jid);
-      expect(() => buildVolumeMounts(loaded!, false, false)).toThrow();
+      expect(() => buildVolumeMounts(loaded!, false, SESSION, false)).toThrow();
     });
 
     it('re-reads a tightened allowlist without restarting the process', () => {
@@ -334,6 +339,8 @@ describe.sequential(
         'data',
         'sessions',
         folder,
+        'agents',
+        SESSION,
         '.claude',
       );
       fs.mkdirSync(envDir, { recursive: true });
@@ -354,7 +361,7 @@ describe.sequential(
         JSON.stringify({ claudeAiOauth: { accessToken: 'old' } }),
       );
 
-      buildVolumeMounts(group([]) as any, false, false);
+      buildVolumeMounts(group([]) as any, false, SESSION, false);
 
       expect(
         JSON.parse(
