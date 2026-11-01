@@ -293,6 +293,19 @@ describe('processAgentConversation deterministic failure settlement', () => {
 });
 
 describe('processAgentConversation error exits (Assistant mode)', () => {
+  test('the lane takes the retry decision from the error exit', () => {
+    const source = fs.readFileSync('src/index.ts', 'utf8');
+    const lane = source.slice(
+      source.indexOf('async function processAgentConversation('),
+      source.indexOf('async function startRunnerSupervisor('),
+    );
+    expect(lane).toMatch(
+      /\) \{\n\s+retryUnfinishedTurn = await settleAgentErrorExit\(\n\s+output\.error \|\| lastError \|\| '未知错误',\n\s+\);\n\s+\} else if \(!errorExit\) \{\n\s+clearSessionOomExits\(oomKey\);/,
+    );
+    // A retried turn is reported as not done, so the queue runs it again.
+    expect(lane).toMatch(/\n {2}return !retryUnfinishedTurn;\n\}/);
+  });
+
   function errorLane(options: { retryCount?: number; stopped?: boolean } = {}) {
     const lane = agentLane({ imSend: async () => {} });
     const queue = {

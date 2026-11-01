@@ -194,15 +194,6 @@ export function createRuntimeSourceHarness(
         named(name, source, owner ? named(owner, source) : source),
       );
     },
-    installMainOutput(): void {
-      const call = unique(
-        named('processGroupMessages', source),
-        (node) =>
-          ts.isCallExpression(node) &&
-          node.expression.getText(source) === 'runAgent',
-      ) as ts.CallExpression;
-      installNode('handleMainOutput', call.arguments[4]);
-    },
     /** Install the argument of the unique `callee(...)` call in `owner`. */
     installCallArgument(
       name: string,

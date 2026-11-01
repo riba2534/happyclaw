@@ -631,6 +631,41 @@ describe('formal sessions API', () => {
     expect((await list()).map((s) => s.id)).toEqual([newer, older]);
   });
 
+  test('the agent list leaves out rows of the retired task kind', async () => {
+    seedTestGroup();
+    asUser(OWNER_ID);
+    const session = await newSessionId('Kept');
+    for (const [id, kind] of [
+      ['retired-task-row', 'task'],
+      ['spawned-task-row', 'spawn'],
+    ] as const) {
+      db.createAgent({
+        id,
+        group_folder: GROUP_FOLDER,
+        chat_jid: GROUP_JID,
+        name: id,
+        prompt: '',
+        status: 'completed',
+        kind,
+        created_by: OWNER_ID,
+        created_at: new Date().toISOString(),
+        completed_at: null,
+        result_summary: null,
+        last_im_jid: null,
+        spawned_from_jid: null,
+      });
+    }
+    const res = await agentRoutes.request(
+      `/${encodeURIComponent(GROUP_JID)}/agents`,
+    );
+    const ids = ((await res.json()).agents as Array<{ id: string }>).map(
+      (a) => a.id,
+    );
+    expect(ids).toContain(session);
+    expect(ids).toContain('spawned-task-row');
+    expect(ids).not.toContain('retired-task-row');
+  });
+
   test('the topic of a deleted session opens a new session on its next message', async () => {
     seedTestGroup();
     asUser(OWNER_ID);

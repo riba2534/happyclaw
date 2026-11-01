@@ -1390,13 +1390,7 @@ export class GroupQueue {
     reason: string,
   ): boolean {
     const state = this.groups.get(groupJid);
-    if (
-      !state?.active ||
-      !hasRunnerIpc(state) ||
-      !groupJid.endsWith(`#agent:${state.agentId}`)
-    ) {
-      return false;
-    }
+    if (!state?.active || !hasRunnerIpc(state)) return false;
 
     if (state.drainSentinelWritten) {
       return true;

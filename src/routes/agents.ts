@@ -272,10 +272,11 @@ router.get('/:jid/agents', authMiddleware, async (c) => {
     all.filter((a) => a.kind === 'conversation'),
     getUserPinnedSessions(user.id),
   );
-  // Conversation sessions first, in the shared list order; then the rest.
+  // Conversation sessions first, in the shared list order; then /sw tasks.
+  // Rows of the retired `task` kind stay in the database but are not listed.
   const agents: Array<SubAgent & { pinned_at?: string | null }> = [
     ...conversations,
-    ...all.filter((a) => a.kind !== 'conversation'),
+    ...all.filter((a) => a.kind === 'spawn'),
   ];
   const automationNames = automationNamesFor(user, jid, agents);
   const latestByChatJid = getLatestMessagePreviewPerChat(
