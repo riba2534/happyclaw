@@ -37,7 +37,11 @@ function seedCatalogSnapshot(opts: {
   /** Extra files to drop alongside .claude-plugin/plugin.json. */
   files?: Record<string, string>;
 }): string {
-  const dir = getCatalogSnapshotDir(opts.marketplace, opts.plugin, opts.snapshot);
+  const dir = getCatalogSnapshotDir(
+    opts.marketplace,
+    opts.plugin,
+    opts.snapshot,
+  );
   fs.mkdirSync(path.join(dir, '.claude-plugin'), { recursive: true });
   fs.writeFileSync(
     path.join(dir, '.claude-plugin', 'plugin.json'),
@@ -102,9 +106,7 @@ describe('paths', () => {
   });
 
   test('getUserPluginRuntimeDir nests under snapshots/{snapshotId}/{mp}/{plugin}', () => {
-    expect(
-      getUserPluginRuntimeDir(USER, 'sha256-abc', 'mp1', 'p1'),
-    ).toBe(
+    expect(getUserPluginRuntimeDir(USER, 'sha256-abc', 'mp1', 'p1')).toBe(
       path.join(
         tmpDataDir,
         'plugins',
@@ -119,8 +121,12 @@ describe('paths', () => {
   });
 
   test('rejects path traversal in name segments', () => {
-    expect(() => getUserPluginRuntimeDir(USER, 'sha256-abc', '..', 'p')).toThrow();
-    expect(() => getUserPluginRuntimeDir(USER, 'sha256-abc', 'mp', '../escape')).toThrow();
+    expect(() =>
+      getUserPluginRuntimeDir(USER, 'sha256-abc', '..', 'p'),
+    ).toThrow();
+    expect(() =>
+      getUserPluginRuntimeDir(USER, 'sha256-abc', 'mp', '../escape'),
+    ).toThrow();
   });
 });
 
@@ -157,24 +163,36 @@ describe('materializeUserRuntime', () => {
     expect(r.reused).toBe(0);
 
     const rtDir = getUserPluginRuntimeDir(USER, 'sha256-aaa', 'mp1', 'p1');
-    expect(fs.existsSync(path.join(rtDir, '.claude-plugin', 'plugin.json'))).toBe(true);
-    expect(fs.readFileSync(path.join(rtDir, 'commands', 'hello.md'), 'utf-8')).toBe('# hi');
+    expect(
+      fs.existsSync(path.join(rtDir, '.claude-plugin', 'plugin.json')),
+    ).toBe(true);
+    expect(
+      fs.readFileSync(path.join(rtDir, 'commands', 'hello.md'), 'utf-8'),
+    ).toBe('# hi');
 
     // Critical safety contract: independent (dev, ino) tuple from catalog.
     // Hard-links would share the inode and let host-mode bypass-permissions
     // writes through runtime corrupt the immutable catalog snapshot.
     const sStat = fs.statSync(
-      path.join(getCatalogSnapshotDir('mp1', 'p1', 'sha256-aaa'), 'commands', 'hello.md'),
+      path.join(
+        getCatalogSnapshotDir('mp1', 'p1', 'sha256-aaa'),
+        'commands',
+        'hello.md',
+      ),
     );
     const dStat = fs.statSync(path.join(rtDir, 'commands', 'hello.md'));
     expect([dStat.dev, dStat.ino]).not.toEqual([sStat.dev, sStat.ino]);
 
     // Marker is at sibling path (snapshot root), NOT inside plugin root.
-    expect(
-      fs.existsSync(path.join(rtDir, '@happyclaw-runtime-markers')),
-    ).toBe(false);
+    expect(fs.existsSync(path.join(rtDir, '@happyclaw-runtime-markers'))).toBe(
+      false,
+    );
     const markerPath = path.join(
-      getUserSnapshotsDir(USER), 'sha256-aaa', '@happyclaw-runtime-markers', 'mp1', 'p1.json',
+      getUserSnapshotsDir(USER),
+      'sha256-aaa',
+      '@happyclaw-runtime-markers',
+      'mp1',
+      'p1.json',
     );
     expect(fs.existsSync(markerPath)).toBe(true);
     const marker = JSON.parse(fs.readFileSync(markerPath, 'utf-8'));
@@ -184,7 +202,11 @@ describe('materializeUserRuntime', () => {
   });
 
   test('idempotent — re-running with same config reuses existing tree', () => {
-    seedCatalogSnapshot({ marketplace: 'mp1', plugin: 'p1', snapshot: 'sha256-aaa' });
+    seedCatalogSnapshot({
+      marketplace: 'mp1',
+      plugin: 'p1',
+      snapshot: 'sha256-aaa',
+    });
     writeUserPluginsV2(USER, {
       schemaVersion: 1,
       enabled: {
@@ -233,7 +255,9 @@ describe('materializeUserRuntime', () => {
 
     const r = materializeUserRuntime(USER);
     expect(r.built).toBe(0);
-    expect(r.warnings.some((w) => w.includes('Catalog snapshot missing'))).toBe(true);
+    expect(r.warnings.some((w) => w.includes('Catalog snapshot missing'))).toBe(
+      true,
+    );
   });
 
   test('legacy hard-link runtime is migrated with rename + backup rollback', () => {
@@ -288,13 +312,19 @@ describe('materializeUserRuntime', () => {
 
     // Marker present at sibling path.
     const markerPath = path.join(
-      getUserSnapshotsDir(USER), 'sha256-aaa', '@happyclaw-runtime-markers', 'mp1', 'p1.json',
+      getUserSnapshotsDir(USER),
+      'sha256-aaa',
+      '@happyclaw-runtime-markers',
+      'mp1',
+      'p1.json',
     );
     expect(fs.existsSync(markerPath)).toBe(true);
 
     // No legacy backup left around.
     const parent = path.dirname(rtDir);
-    const leftovers = fs.readdirSync(parent).filter((n) => n.includes('.legacy-bak@'));
+    const leftovers = fs
+      .readdirSync(parent)
+      .filter((n) => n.includes('.legacy-bak@'));
     expect(leftovers).toEqual([]);
 
     // Idempotent: next materialize is a no-op.
@@ -311,7 +341,9 @@ describe('materializeUserRuntime', () => {
 
   test('writing through runtime path does not corrupt catalog snapshot', () => {
     seedCatalogSnapshot({
-      marketplace: 'mp1', plugin: 'p1', snapshot: 'sha256-aaa',
+      marketplace: 'mp1',
+      plugin: 'p1',
+      snapshot: 'sha256-aaa',
       files: { 'commands/hello.md': '# original' },
     });
     writeUserPluginsV2(USER, {
@@ -330,12 +362,15 @@ describe('materializeUserRuntime', () => {
 
     const rtFile = path.join(
       getUserPluginRuntimeDir(USER, 'sha256-aaa', 'mp1', 'p1'),
-      'commands', 'hello.md',
+      'commands',
+      'hello.md',
     );
     fs.writeFileSync(rtFile, '# tampered by agent');
 
     const catalogFile = path.join(
-      getCatalogSnapshotDir('mp1', 'p1', 'sha256-aaa'), 'commands', 'hello.md',
+      getCatalogSnapshotDir('mp1', 'p1', 'sha256-aaa'),
+      'commands',
+      'hello.md',
     );
     expect(fs.readFileSync(catalogFile, 'utf-8')).toBe('# original');
   });
@@ -343,7 +378,9 @@ describe('materializeUserRuntime', () => {
   test('symlinks in catalog snapshot are skipped during materialize', () => {
     if (process.platform === 'win32') return;
     seedCatalogSnapshot({
-      marketplace: 'mp1', plugin: 'p1', snapshot: 'sha256-aaa',
+      marketplace: 'mp1',
+      plugin: 'p1',
+      snapshot: 'sha256-aaa',
       files: { 'commands/real.md': '# real' },
     });
     const catalogDir = getCatalogSnapshotDir('mp1', 'p1', 'sha256-aaa');
@@ -369,7 +406,11 @@ describe('materializeUserRuntime', () => {
   });
 
   test('corrupt marker is treated as missing and triggers re-materialize', () => {
-    seedCatalogSnapshot({ marketplace: 'mp1', plugin: 'p1', snapshot: 'sha256-aaa' });
+    seedCatalogSnapshot({
+      marketplace: 'mp1',
+      plugin: 'p1',
+      snapshot: 'sha256-aaa',
+    });
     writeUserPluginsV2(USER, {
       schemaVersion: 1,
       enabled: {
@@ -388,7 +429,11 @@ describe('materializeUserRuntime', () => {
 
     // Corrupt the marker.
     const markerPath = path.join(
-      getUserSnapshotsDir(USER), 'sha256-aaa', '@happyclaw-runtime-markers', 'mp1', 'p1.json',
+      getUserSnapshotsDir(USER),
+      'sha256-aaa',
+      '@happyclaw-runtime-markers',
+      'mp1',
+      'p1.json',
     );
     fs.writeFileSync(markerPath, '{"materializerVersion":999}', 'utf-8');
 
@@ -399,7 +444,11 @@ describe('materializeUserRuntime', () => {
   });
 
   test('partial leftover dir without manifest is wiped before rebuild', () => {
-    seedCatalogSnapshot({ marketplace: 'mp1', plugin: 'p1', snapshot: 'sha256-aaa' });
+    seedCatalogSnapshot({
+      marketplace: 'mp1',
+      plugin: 'p1',
+      snapshot: 'sha256-aaa',
+    });
     writeUserPluginsV2(USER, {
       schemaVersion: 1,
       enabled: {
@@ -435,8 +484,16 @@ describe('materializeUserRuntime — does NOT auto-cleanup (PR1 codex fix)', () 
     // materialize from one process could then delete the runtime tree another
     // live agent had mounted. The new contract is "materialize never deletes";
     // GC happens via an explicit cleanupOrphanRuntime caller in PR2.
-    seedCatalogSnapshot({ marketplace: 'mp1', plugin: 'p1', snapshot: 'sha256-aaa' });
-    seedCatalogSnapshot({ marketplace: 'mp1', plugin: 'p1', snapshot: 'sha256-bbb' });
+    seedCatalogSnapshot({
+      marketplace: 'mp1',
+      plugin: 'p1',
+      snapshot: 'sha256-aaa',
+    });
+    seedCatalogSnapshot({
+      marketplace: 'mp1',
+      plugin: 'p1',
+      snapshot: 'sha256-bbb',
+    });
 
     writeUserPluginsV2(USER, {
       schemaVersion: 1,
@@ -482,8 +539,16 @@ describe('materializeUserRuntime — does NOT auto-cleanup (PR1 codex fix)', () 
     // behind an explicit opt-in flag), but in PR1 passing it must NOT cause
     // any deletion. Verifies callers that already pass `{ isSnapshotInUse }`
     // don't accidentally lose snapshots.
-    seedCatalogSnapshot({ marketplace: 'mp1', plugin: 'p1', snapshot: 'sha256-aaa' });
-    seedCatalogSnapshot({ marketplace: 'mp1', plugin: 'p1', snapshot: 'sha256-bbb' });
+    seedCatalogSnapshot({
+      marketplace: 'mp1',
+      plugin: 'p1',
+      snapshot: 'sha256-aaa',
+    });
+    seedCatalogSnapshot({
+      marketplace: 'mp1',
+      plugin: 'p1',
+      snapshot: 'sha256-bbb',
+    });
 
     writeUserPluginsV2(USER, {
       schemaVersion: 1,
@@ -526,8 +591,16 @@ describe('materializeUserRuntime — does NOT auto-cleanup (PR1 codex fix)', () 
 
 describe('cleanupOrphanRuntime (explicit GC)', () => {
   test('removes snapshots not referenced by current plugins.json', () => {
-    seedCatalogSnapshot({ marketplace: 'mp1', plugin: 'p1', snapshot: 'sha256-aaa' });
-    seedCatalogSnapshot({ marketplace: 'mp1', plugin: 'p1', snapshot: 'sha256-bbb' });
+    seedCatalogSnapshot({
+      marketplace: 'mp1',
+      plugin: 'p1',
+      snapshot: 'sha256-aaa',
+    });
+    seedCatalogSnapshot({
+      marketplace: 'mp1',
+      plugin: 'p1',
+      snapshot: 'sha256-bbb',
+    });
 
     // Materialize an old enabled snapshot, then flip the user config to a new one.
     writeUserPluginsV2(USER, {
@@ -566,8 +639,16 @@ describe('cleanupOrphanRuntime (explicit GC)', () => {
   });
 
   test('respects isSnapshotInUse hook to keep pinned snapshots alive', () => {
-    seedCatalogSnapshot({ marketplace: 'mp1', plugin: 'p1', snapshot: 'sha256-aaa' });
-    seedCatalogSnapshot({ marketplace: 'mp1', plugin: 'p1', snapshot: 'sha256-bbb' });
+    seedCatalogSnapshot({
+      marketplace: 'mp1',
+      plugin: 'p1',
+      snapshot: 'sha256-aaa',
+    });
+    seedCatalogSnapshot({
+      marketplace: 'mp1',
+      plugin: 'p1',
+      snapshot: 'sha256-bbb',
+    });
 
     writeUserPluginsV2(USER, {
       schemaVersion: 1,
@@ -597,10 +678,7 @@ describe('cleanupOrphanRuntime (explicit GC)', () => {
       },
     });
     materializeUserRuntime(USER);
-    const r = cleanupOrphanRuntime(
-      USER,
-      (_uid, snap) => snap === 'sha256-aaa',
-    );
+    const r = cleanupOrphanRuntime(USER, (_uid, snap) => snap === 'sha256-aaa');
     expect(r.cleaned).toBe(0);
 
     const snapshotsDir = getUserSnapshotsDir(USER);
@@ -613,7 +691,11 @@ describe('cleanupOrphanRuntime (explicit GC)', () => {
   test('immutable old snapshots survive a disable toggle', () => {
     // The plan's correctness rule: disabling a plugin must NOT remove the
     // runtime tree that an in-flight agent might still be reading.
-    seedCatalogSnapshot({ marketplace: 'mp1', plugin: 'p1', snapshot: 'sha256-aaa' });
+    seedCatalogSnapshot({
+      marketplace: 'mp1',
+      plugin: 'p1',
+      snapshot: 'sha256-aaa',
+    });
 
     writeUserPluginsV2(USER, {
       schemaVersion: 1,
@@ -635,7 +717,9 @@ describe('cleanupOrphanRuntime (explicit GC)', () => {
     cleanupOrphanRuntime(USER, (_uid, snap) => snap === 'sha256-aaa');
 
     const rtDir = getUserPluginRuntimeDir(USER, 'sha256-aaa', 'mp1', 'p1');
-    expect(fs.existsSync(path.join(rtDir, '.claude-plugin', 'plugin.json'))).toBe(true);
+    expect(
+      fs.existsSync(path.join(rtDir, '.claude-plugin', 'plugin.json')),
+    ).toBe(true);
   });
 
   test('safely no-ops when snapshots dir is missing', () => {
@@ -644,4 +728,3 @@ describe('cleanupOrphanRuntime (explicit GC)', () => {
     expect(r.warnings).toEqual([]);
   });
 });
-

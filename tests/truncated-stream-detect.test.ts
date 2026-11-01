@@ -8,7 +8,10 @@ import { isSuspectTruncatedStreamResult } from '../container/agent-runner/src/ut
 describe('isSuspectTruncatedStreamResult', () => {
   test('零 usage + 正文非空 → 疑似截断', () => {
     expect(
-      isSuspectTruncatedStreamResult({ input_tokens: 0, output_tokens: 0 }, 907),
+      isSuspectTruncatedStreamResult(
+        { input_tokens: 0, output_tokens: 0 },
+        907,
+      ),
     ).toBe(true);
   });
 
@@ -27,13 +30,19 @@ describe('isSuspectTruncatedStreamResult', () => {
 
   test('仅 output 为 0 但 input 为正（缓存命中等）不误报', () => {
     expect(
-      isSuspectTruncatedStreamResult({ input_tokens: 1200, output_tokens: 0 }, 30),
+      isSuspectTruncatedStreamResult(
+        { input_tokens: 1200, output_tokens: 0 },
+        30,
+      ),
     ).toBe(false);
   });
 
   test('仅 input 为 0 但 output 为正不误报', () => {
     expect(
-      isSuspectTruncatedStreamResult({ input_tokens: 0, output_tokens: 15 }, 30),
+      isSuspectTruncatedStreamResult(
+        { input_tokens: 0, output_tokens: 15 },
+        30,
+      ),
     ).toBe(false);
   });
 

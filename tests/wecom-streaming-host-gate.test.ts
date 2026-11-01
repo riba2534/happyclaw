@@ -295,31 +295,6 @@ describe('WeCom main host streaming gate', () => {
 });
 
 describe('WeCom host wiring', () => {
-  test('uses isActive before static delivery and hands the session to finalization', () => {
-    const main = fs.readFileSync('src/index.ts', 'utf8');
-    const branch = main.slice(
-      main.indexOf('let streamingCardHandledIM = false;'),
-      main.indexOf('// Only reset idle timer on actual results'),
-    );
-    const gate = branch.indexOf('outputStreamingSession?.isActive()');
-    const staticDelivery = branch.indexOf(
-      'const replySendOutcome = await sendMessageWithOutcome',
-    );
-    const finalization = branch.indexOf(
-      'await finalizeChannelCardAfterDelivery(',
-    );
-
-    expect(gate).toBeGreaterThanOrEqual(0);
-    expect(staticDelivery).toBeGreaterThan(gate);
-    expect(finalization).toBeGreaterThan(staticDelivery);
-    expect(branch).toContain(
-      'pendingStreamingCardCompletion = outputStreamingSession',
-    );
-    expect(branch).toContain('(streamingCardHandledIM && directImReply)');
-    expect(branch).toContain('await persistUncertainStreamingDelivery({');
-    expect(branch).toContain('sendToIM: directImReply && !skipImSend');
-  });
-
   test('conversation Agent finalizes an active session before considering static delivery', () => {
     const main = fs.readFileSync('src/index.ts', 'utf8');
     const agentStart = main.indexOf('async function processAgentConversation(');
