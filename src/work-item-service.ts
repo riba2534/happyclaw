@@ -159,8 +159,8 @@ export function teamMountIneligibility(
   if (resolveChannelConversationKind(channelJid, chat ?? {}) !== 'group') {
     return '团队模式只支持飞书普通群（不支持私聊和话题群）';
   }
-  if (mount.routing_mode !== 'single_session' || mount.session_id) {
-    return '群需要绑定到工作区的主会话';
+  if (mount.routing_mode !== 'single_session' || !mount.session_id) {
+    return '群需要绑定到工作区的会话';
   }
   return null;
 }
@@ -419,7 +419,6 @@ function deliverFollowupCopy(
 export function listTeamMountViews(workspaceJid: string): TeamMountView[] {
   return listChannelMountsByWorkspace(workspaceJid)
     .filter((mount) => getChannelType(mount.channel_jid) === 'feishu')
-    .filter((mount) => !mount.session_id)
     .map((mount) => {
       const team = getTeamMount(mount.channel_jid);
       const ineligibleReason = teamMountIneligibility(

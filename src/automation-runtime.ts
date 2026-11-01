@@ -64,7 +64,7 @@ import {
   createConversationSession,
   deleteConversationSession,
 } from './session-factory.js';
-import type { NewMessage, RegisteredGroup } from './types.js';
+import type { NewMessage, RegisteredGroup, SubAgent } from './types.js';
 import { agentIdOfJid, stripVirtualJidSuffix } from './utils.js';
 
 export * from './automation-run-ledger.js';
@@ -185,9 +185,9 @@ export interface ResolvedAutomationSession {
   /** The `web:*` JID of the workspace. */
   workspaceJid: string;
   group: RegisteredGroup;
-  /** Null for the Main Session. */
-  agentId: string | null;
-  /** Queue/message JID: the workspace JID or `<workspace>#agent:<id>`. */
+  agent: SubAgent;
+  agentId: string;
+  /** Queue/message JID: `<workspace>#agent:<id>`. */
   laneJid: string;
 }
 
@@ -224,7 +224,10 @@ export interface AutomationRuntimeHooks {
   broadcastAutomationEvent(event: AutomationWsEvent): void;
 }
 
-/** `web:<ws>` or `web:<ws>#agent:<id>` → the live session, or null. */
+/**
+ * `web:<ws>#agent:<id>` → the live session, or null. A workspace JID is no
+ * session.
+ */
 export function resolveAutomationSession(
   sessionJid: string,
   getGroup: (jid: string) => RegisteredGroup | undefined,
@@ -235,9 +238,6 @@ export function resolveAutomationSession(
   const group = getGroup(workspaceJid);
   if (!group) return null;
   const agentId = agentIdOfJid(sessionJid);
-  if (agentId === null && sessionJid === workspaceJid) {
-    return { workspaceJid, group, agentId: null, laneJid: workspaceJid };
-  }
   const agent = agentId ? getAgent(agentId) : undefined;
   // An archived (completed) session still resolves: an input revives it, as
   // a new message in an old topic does.
@@ -251,8 +251,9 @@ export function resolveAutomationSession(
   return {
     workspaceJid,
     group,
-    agentId,
-    laneJid: `${workspaceJid}#agent:${agentId}`,
+    agent,
+    agentId: agent.id,
+    laneJid: `${workspaceJid}#agent:${agent.id}`,
   };
 }
 
@@ -393,19 +394,17 @@ export function createAutomationRuntimeDeps(
 
     async archiveAutomationSession(sessionJid) {
       const session = resolveAutomationSession(sessionJid, hooks.getGroup);
-      const agent = session?.agentId ? getAgent(session.agentId) : undefined;
-      if (!session || !agent) return;
-      archiveConversationSession(session.workspaceJid, agent);
+      if (session)
+        archiveConversationSession(session.workspaceJid, session.agent);
     },
 
     async deleteAutomationSession(sessionJid) {
       const session = resolveAutomationSession(sessionJid, hooks.getGroup);
-      const agent = session?.agentId ? getAgent(session.agentId) : undefined;
-      if (!session || !agent) return;
+      if (!session) return;
       await deleteConversationSession({
         workspaceJid: session.workspaceJid,
         group: session.group,
-        session: agent,
+        session: session.agent,
       });
     },
 
@@ -416,13 +415,12 @@ export function createAutomationRuntimeDeps(
     },
 
     async sendAutomationNotice({ routeJid, text }) {
-      if (getChannelType(routeJid)) {
-        const accepted = await hooks.sendImText(routeJid, text);
-        if (!accepted) throw new Error('渠道没有确认收到自动化通知');
-        return;
+      // Notices go out over a channel only; none is written into a session.
+      if (!getChannelType(routeJid)) {
+        throw new Error('自动化通知只能发往渠道');
       }
-      requireSession(routeJid);
-      await hooks.postSessionMessage(routeJid, text);
+      const accepted = await hooks.sendImText(routeJid, text);
+      if (!accepted) throw new Error('渠道没有确认收到自动化通知');
     },
 
     async postScriptOutput({ sessionJid, text }) {

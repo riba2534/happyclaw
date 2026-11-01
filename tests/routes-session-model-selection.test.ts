@@ -157,21 +157,38 @@ function bindOwnerMain(modelConfigId: string | null): void {
 const GROUP_JID = 'web:model-selection-group';
 const GROUP_FOLDER = 'model-selection-group';
 const AGENT_ID = 'agent-model-1';
+/** The session a request addresses unless it names another. */
+const SESSION_ID = 'agent-model-0';
+const SESSION_JID = `${GROUP_JID}#agent:${SESSION_ID}`;
 
 async function call(
   method: 'GET' | 'PUT',
   query = '',
   body?: unknown,
+  options: { session?: string | null } = {},
 ): Promise<{ status: number; body: any }> {
+  const session = options.session === undefined ? SESSION_ID : options.session;
+  const scopedQuery =
+    method === 'GET' && session && !query.includes('agentId=')
+      ? `${query ? `${query}&` : '?'}agentId=${session}`
+      : query;
+  const scopedBody =
+    method === 'PUT' &&
+    session &&
+    body &&
+    typeof body === 'object' &&
+    !('agentId' in body)
+      ? { ...body, agentId: session }
+      : body;
   const res = await groupRoutes.request(
-    `/${encodeURIComponent(GROUP_JID)}/model-selection${query}`,
+    `/${encodeURIComponent(GROUP_JID)}/model-selection${scopedQuery}`,
     {
       method,
-      ...(body === undefined
+      ...(scopedBody === undefined
         ? {}
         : {
             headers: { 'content-type': 'application/json' },
-            body: JSON.stringify(body),
+            body: JSON.stringify(scopedBody),
           }),
     },
   );
@@ -202,21 +219,26 @@ beforeAll(() => {
     created_by: OWNER_ID,
     is_home: false,
   } as any);
-  db.createAgent({
-    id: AGENT_ID,
-    group_folder: GROUP_FOLDER,
-    chat_jid: GROUP_JID,
-    name: 'Side conversation',
-    prompt: '',
-    status: 'idle',
-    kind: 'conversation',
-    created_by: OWNER_ID,
-    created_at: new Date().toISOString(),
-    completed_at: null,
-    result_summary: null,
-    last_im_jid: null,
-    spawned_from_jid: null,
-  } as any);
+  for (const [id, name] of [
+    [SESSION_ID, 'Conversation'],
+    [AGENT_ID, 'Side conversation'],
+  ]) {
+    db.createAgent({
+      id,
+      group_folder: GROUP_FOLDER,
+      chat_jid: GROUP_JID,
+      name,
+      prompt: '',
+      status: 'idle',
+      kind: 'conversation',
+      created_by: OWNER_ID,
+      created_at: new Date().toISOString(),
+      completed_at: null,
+      result_summary: null,
+      last_im_jid: null,
+      spawned_from_jid: null,
+    } as any);
+  }
   webContext.setWebDeps({
     queue: {
       drainRunnersForModelSelection: (
@@ -239,7 +261,7 @@ beforeEach(() => {
   mocks.workspaceEnv = {};
   mocks.drainCalls = [];
   mocks.refresh.mockClear();
-  db.setSessionModelSelection(GROUP_FOLDER, null, null);
+  db.setSessionModelSelection(GROUP_FOLDER, SESSION_ID, null);
   db.setSessionModelSelection(GROUP_FOLDER, AGENT_ID, null);
 });
 
@@ -488,7 +510,7 @@ describe('GET /:jid/model-selection', () => {
   });
 
   test('reports the stored model and effort, reading what the user may not use as unset', async () => {
-    db.setSessionModelSelection(GROUP_FOLDER, null, 'chatgpt', OWNER_ID, {
+    db.setSessionModelSelection(GROUP_FOLDER, SESSION_ID, 'chatgpt', OWNER_ID, {
       model: 'gpt-6-astra',
       effort: 'xhigh',
     });
@@ -500,7 +522,7 @@ describe('GET /:jid/model-selection', () => {
     });
 
     // An effort chosen when the user could pick it, and no longer backed.
-    db.setSessionModelSelection(GROUP_FOLDER, null, 'chatgpt', OWNER_ID, {
+    db.setSessionModelSelection(GROUP_FOLDER, SESSION_ID, 'chatgpt', OWNER_ID, {
       model: 'gpt-6-astra',
       effort: 'ultra',
     });
@@ -514,7 +536,7 @@ describe('GET /:jid/model-selection', () => {
 
   test('a model the list no longer offers, or an effort the model does not take, reads as unset', async () => {
     // The stale model runs the default, which takes `high`.
-    db.setSessionModelSelection(GROUP_FOLDER, null, 'glm', OWNER_ID, {
+    db.setSessionModelSelection(GROUP_FOLDER, SESSION_ID, 'glm', OWNER_ID, {
       model: 'gpt-6-astra',
       effort: 'high',
     });
@@ -523,7 +545,7 @@ describe('GET /:jid/model-selection', () => {
       selectedModel: null,
       selectedEffort: 'high',
     });
-    db.setSessionModelSelection(GROUP_FOLDER, null, 'glm', OWNER_ID, {
+    db.setSessionModelSelection(GROUP_FOLDER, SESSION_ID, 'glm', OWNER_ID, {
       model: 'glm-5.3-air',
       effort: 'high',
     });
@@ -541,15 +563,28 @@ describe('GET /:jid/model-selection', () => {
   test('rejects a session from another workspace', async () => {
     expect((await call('GET', '?agentId=missing')).status).toBe(404);
   });
+
+  test('a workspace has no pick of its own: no session is 400 session_required', async () => {
+    for (const result of [
+      await call('GET', '', undefined, { session: null }),
+      await call('PUT', '', { modelConfigId: 'glm' }, { session: null }),
+    ]) {
+      expect(result).toEqual({
+        status: 400,
+        body: { error: 'Session required', code: 'session_required' },
+      });
+    }
+    expect(mocks.drainCalls).toEqual([]);
+  });
 });
 
 describe('PUT /:jid/model-selection', () => {
-  test('pins the main conversation and drains its runners', async () => {
+  test('pins the addressed session and drains its runners', async () => {
     const { status, body } = await call('PUT', '', { modelConfigId: 'glm' });
     expect(status).toBe(200);
     expect(body.selectedModelConfigId).toBe('glm');
-    expect(db.getSessionModelSelection(GROUP_FOLDER, null)).toBe('glm');
-    expect(mocks.drainCalls).toEqual([{ jids: [GROUP_JID], target: 'glm' }]);
+    expect(db.getSessionModelSelection(GROUP_FOLDER, SESSION_ID)).toBe('glm');
+    expect(mocks.drainCalls).toEqual([{ jids: [SESSION_JID], target: 'glm' }]);
   });
 
   test('pins only the addressed Runtime Session', async () => {
@@ -559,7 +594,7 @@ describe('PUT /:jid/model-selection', () => {
     });
     expect(status).toBe(200);
     expect(db.getSessionModelSelection(GROUP_FOLDER, AGENT_ID)).toBe('chatgpt');
-    expect(db.getSessionModelSelection(GROUP_FOLDER, null)).toBeNull();
+    expect(db.getSessionModelSelection(GROUP_FOLDER, SESSION_ID)).toBeNull();
     expect(mocks.drainCalls).toEqual([
       { jids: [`${GROUP_JID}#agent:${AGENT_ID}`], target: 'chatgpt' },
     ]);
@@ -574,7 +609,7 @@ describe('PUT /:jid/model-selection', () => {
     const { body } = await call('PUT', '', { modelConfigId: null });
     expect(body.selectedModelConfigId).toBeNull();
     expect(mocks.drainCalls.at(-1)).toEqual({
-      jids: [GROUP_JID],
+      jids: [SESSION_JID],
       target: null,
     });
   });
@@ -583,24 +618,25 @@ describe('PUT /:jid/model-selection', () => {
     const { status, body } = await call('PUT', '', { modelConfigId: 'copy' });
     expect(status).toBe(400);
     expect(body.error).toContain('缺少凭据');
-    expect(db.getSessionModelSelection(GROUP_FOLDER, null)).toBeNull();
+    expect(db.getSessionModelSelection(GROUP_FOLDER, SESSION_ID)).toBeNull();
   });
 
   test('rejects an unknown configuration and non-owners', async () => {
     expect((await call('PUT', '', { modelConfigId: 'nope' })).status).toBe(404);
     mocks.userId = 'mallory';
     expect((await call('PUT', '', { modelConfigId: 'glm' })).status).toBe(404);
-    expect(db.getSessionModelSelection(GROUP_FOLDER, null)).toBeNull();
+    expect(db.getSessionModelSelection(GROUP_FOLDER, SESSION_ID)).toBeNull();
   });
 });
 
 describe('PUT /:jid/model-selection inside a ChatGPT configuration', () => {
-  const detail = () => db.getSessionModelSelectionDetail(GROUP_FOLDER, null);
+  const detail = () =>
+    db.getSessionModelSelectionDetail(GROUP_FOLDER, SESSION_ID);
   const live = (owner: Record<string, unknown> = {}) =>
     issueCodexGatewayToken('chatgpt', {
       kind: 'container',
       groupFolder: GROUP_FOLDER,
-      agentId: null,
+      agentId: SESSION_ID,
       ...owner,
     });
 
@@ -626,7 +662,7 @@ describe('PUT /:jid/model-selection inside a ChatGPT configuration', () => {
     });
     // A model is involved, so a runner already on this configuration is not
     // spared: it would keep running the old model.
-    expect(mocks.drainCalls).toEqual([{ jids: [GROUP_JID], target: null }]);
+    expect(mocks.drainCalls).toEqual([{ jids: [SESSION_JID], target: null }]);
   });
 
   test('a different model on the same configuration retires the runner; the same one does not', async () => {
@@ -635,7 +671,7 @@ describe('PUT /:jid/model-selection inside a ChatGPT configuration', () => {
     await call('PUT', '', { modelConfigId: 'chatgpt', model: 'gpt-6-astra' });
     expect(mocks.drainCalls).toEqual([]);
     await call('PUT', '', { modelConfigId: 'chatgpt', model: 'gpt-6-luna' });
-    expect(mocks.drainCalls).toEqual([{ jids: [GROUP_JID], target: null }]);
+    expect(mocks.drainCalls).toEqual([{ jids: [SESSION_JID], target: null }]);
     // Back to the configuration's own model.
     await call('PUT', '', { modelConfigId: 'chatgpt' });
     expect(mocks.drainCalls).toHaveLength(2);
@@ -690,7 +726,7 @@ describe('PUT /:jid/model-selection inside a ChatGPT configuration', () => {
         effort: 'high',
       });
       expect(mocks.drainCalls).toEqual([
-        { jids: [GROUP_JID], target: 'chatgpt' },
+        { jids: [SESSION_JID], target: 'chatgpt' },
       ]);
       expect(body.liveUpdated).toBe(1);
       expect(warm.grant.sessionEffort).toBe('high');
@@ -703,7 +739,7 @@ describe('PUT /:jid/model-selection inside a ChatGPT configuration', () => {
     const leaving = issueCodexGatewayToken('glm', {
       kind: 'container',
       groupFolder: GROUP_FOLDER,
-      agentId: null,
+      agentId: SESSION_ID,
       sessionEffort: 'low',
     });
     try {
@@ -864,7 +900,8 @@ describe('PUT /:jid/model-selection inside a ChatGPT configuration', () => {
 });
 
 describe('model-selection inside a configuration that is not ChatGPT', () => {
-  const detail = () => db.getSessionModelSelectionDetail(GROUP_FOLDER, null);
+  const detail = () =>
+    db.getSessionModelSelectionDetail(GROUP_FOLDER, SESSION_ID);
 
   test('pins a model of its list, hidden ones included, and reports it', async () => {
     const { status, body } = await call('PUT', '', {
@@ -885,7 +922,7 @@ describe('model-selection inside a configuration that is not ChatGPT', () => {
     });
     // A model is involved: a runner already on this configuration would keep
     // running the old one.
-    expect(mocks.drainCalls).toEqual([{ jids: [GROUP_JID], target: null }]);
+    expect(mocks.drainCalls).toEqual([{ jids: [SESSION_JID], target: null }]);
 
     const hidden = await call('PUT', '', {
       modelConfigId: 'glm',
@@ -942,7 +979,7 @@ describe('model-selection inside a configuration that is not ChatGPT', () => {
     expect(raised.status).toBe(200);
     expect(raised.body.drained).toBe(1);
     // Every runner of the conversation, even one on this configuration.
-    expect(mocks.drainCalls).toEqual([{ jids: [GROUP_JID], target: null }]);
+    expect(mocks.drainCalls).toEqual([{ jids: [SESSION_JID], target: null }]);
     mocks.drainCalls = [];
     await call('PUT', '', {
       modelConfigId: 'glm',
@@ -985,26 +1022,26 @@ describe('model-selection inside a configuration that is not ChatGPT', () => {
 
   test('naming the default model is no change, another model is', async () => {
     await call('PUT', '', { modelConfigId: 'glm' });
-    expect(mocks.drainCalls).toEqual([{ jids: [GROUP_JID], target: 'glm' }]);
+    expect(mocks.drainCalls).toEqual([{ jids: [SESSION_JID], target: 'glm' }]);
     mocks.drainCalls = [];
     await call('PUT', '', { modelConfigId: 'glm', model: 'glm-5.3[1m]' });
     expect(mocks.drainCalls).toEqual([]);
     await call('PUT', '', { modelConfigId: 'glm', model: 'glm-5.3-air' });
-    expect(mocks.drainCalls).toEqual([{ jids: [GROUP_JID], target: null }]);
+    expect(mocks.drainCalls).toEqual([{ jids: [SESSION_JID], target: null }]);
     // Back to the configuration's own model.
     await call('PUT', '', { modelConfigId: 'glm' });
     expect(mocks.drainCalls).toEqual([
-      { jids: [GROUP_JID], target: null },
-      { jids: [GROUP_JID], target: null },
+      { jids: [SESSION_JID], target: null },
+      { jids: [SESSION_JID], target: null },
     ]);
   });
 
   test('reports a stored model only while the list still offers it', async () => {
-    db.setSessionModelSelection(GROUP_FOLDER, null, 'glm', OWNER_ID, {
+    db.setSessionModelSelection(GROUP_FOLDER, SESSION_ID, 'glm', OWNER_ID, {
       model: 'glm-5.3-legacy',
     });
     expect((await call('GET')).body.selectedModel).toBe('glm-5.3-legacy');
-    db.setSessionModelSelection(GROUP_FOLDER, null, 'glm', OWNER_ID, {
+    db.setSessionModelSelection(GROUP_FOLDER, SESSION_ID, 'glm', OWNER_ID, {
       model: 'glm-5.2',
     });
     expect((await call('GET')).body).toMatchObject({
@@ -1025,13 +1062,15 @@ describe('model-selection inside a configuration that is not ChatGPT', () => {
       // Unpicked, the conversation ran glm-5.3-air; picking GLM runs its
       // default, so a runner already on GLM must go too.
       await call('PUT', '', { modelConfigId: 'glm' });
-      expect(mocks.drainCalls).toEqual([{ jids: [GROUP_JID], target: null }]);
+      expect(mocks.drainCalls).toEqual([{ jids: [SESSION_JID], target: null }]);
 
-      db.setSessionModelSelection(GROUP_FOLDER, null, null);
+      db.setSessionModelSelection(GROUP_FOLDER, SESSION_ID, null);
       db.updateAgentProfile(profile.id, OWNER_ID, { model: null });
       mocks.drainCalls = [];
       await call('PUT', '', { modelConfigId: 'glm' });
-      expect(mocks.drainCalls).toEqual([{ jids: [GROUP_JID], target: 'glm' }]);
+      expect(mocks.drainCalls).toEqual([
+        { jids: [SESSION_JID], target: 'glm' },
+      ]);
     } finally {
       db.deleteWorkspaceAgentProfile(GROUP_FOLDER);
     }

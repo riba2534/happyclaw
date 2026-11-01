@@ -74,8 +74,6 @@ const db = vi.hoisted(() => ({
 }));
 vi.mock('../src/db.js', () => db);
 
-const notify = vi.hoisted(() => ({ notifyNewImMessage: vi.fn() }));
-vi.mock('../src/message-notifier.js', () => notify);
 vi.mock('../src/web.js', () => ({ broadcastNewMessage: vi.fn() }));
 vi.mock('../src/logger.js', () => ({
   logger: {
@@ -179,7 +177,6 @@ describe('WhatsApp inbound sticker / location / contact (live upsert)', () => {
     expect(downloadMediaMessage).toHaveBeenCalled();
     expect(db.storeMessageDirect).toHaveBeenCalled();
     expect(String(db.storeMessageDirect.mock.calls[0][4])).toMatch(/贴纸/);
-    expect(notify.notifyNewImMessage).toHaveBeenCalled();
   });
 
   test('authorized ptvMessage video note downloads and persists', async () => {
@@ -198,7 +195,6 @@ describe('WhatsApp inbound sticker / location / contact (live upsert)', () => {
     expect(String(db.storeMessageDirect.mock.calls[0][4])).toMatch(
       /视频.*video note/s,
     );
-    expect(notify.notifyNewImMessage).toHaveBeenCalledOnce();
   });
 
   test('authorized Event and group invite persist as bounded text', async () => {
@@ -219,7 +215,6 @@ describe('WhatsApp inbound sticker / location / contact (live upsert)', () => {
     expect(db.storeMessageDirect.mock.calls[0][4]).toBe('[活动: 周五 例会]');
     expect(db.storeMessageDirect.mock.calls[1][4]).toBe('[群邀请: 产品群]');
     expect(downloadMediaMessage).not.toHaveBeenCalled();
-    expect(notify.notifyNewImMessage).toHaveBeenCalledTimes(2);
   });
 
   test('authorized lottieStickerMessage downloads the unwrapped sticker', async () => {
@@ -240,7 +235,6 @@ describe('WhatsApp inbound sticker / location / contact (live upsert)', () => {
     expect(passed.message?.stickerMessage).toBeTruthy();
     expect(passed.message?.lottieStickerMessage).toBeUndefined();
     expect(String(db.storeMessageDirect.mock.calls[0][4])).toMatch(/贴纸/);
-    expect(notify.notifyNewImMessage).toHaveBeenCalledOnce();
   });
 
   test('authorized locationMessage persists as text via messages.upsert', async () => {
@@ -261,7 +255,6 @@ describe('WhatsApp inbound sticker / location / contact (live upsert)', () => {
     expect(db.storeMessageDirect.mock.calls[0][4]).toBe(
       '[位置: 外滩 | 地址: 上海市中山东一路 | 坐标: 31.2, 121.5]',
     );
-    expect(notify.notifyNewImMessage).toHaveBeenCalled();
   });
 
   test('authorized contactMessage persists as text via messages.upsert', async () => {
@@ -281,7 +274,6 @@ describe('WhatsApp inbound sticker / location / contact (live upsert)', () => {
     expect(db.storeMessageDirect.mock.calls[0][4]).toBe(
       '[联系人: 张三]\n电话: +86 13800000000\n邮箱: zhangsan@example.com\n组织: 示例公司 / 研发部',
     );
-    expect(notify.notifyNewImMessage).toHaveBeenCalled();
   });
 
   test('unauthorized stickerMessage does not persist', async () => {
@@ -295,7 +287,6 @@ describe('WhatsApp inbound sticker / location / contact (live upsert)', () => {
       ],
     });
     expect(db.storeMessageDirect).not.toHaveBeenCalled();
-    expect(notify.notifyNewImMessage).not.toHaveBeenCalled();
   });
 
   test.each([
@@ -319,7 +310,6 @@ describe('WhatsApp inbound sticker / location / contact (live upsert)', () => {
 
       expect(downloadMediaMessage).not.toHaveBeenCalled();
       expect(db.storeMessageDirect).not.toHaveBeenCalled();
-      expect(notify.notifyNewImMessage).not.toHaveBeenCalled();
     },
   );
 
@@ -351,7 +341,6 @@ describe('WhatsApp inbound sticker / location / contact (live upsert)', () => {
     releaseDownload(Buffer.from('late-sticker'));
     await Promise.all([oldAttempt, disconnect]);
     expect(db.storeMessageDirect).not.toHaveBeenCalled();
-    expect(notify.notifyNewImMessage).not.toHaveBeenCalled();
 
     downloadMediaMessage.mockResolvedValue(Buffer.from('fresh-sticker'));
     const second = await connect(true);
@@ -364,7 +353,6 @@ describe('WhatsApp inbound sticker / location / contact (live upsert)', () => {
       messages: [inbound],
     });
     expect(db.storeMessageDirect).toHaveBeenCalledTimes(1);
-    expect(notify.notifyNewImMessage).toHaveBeenCalledTimes(1);
     await second.connection.disconnect();
   });
 
@@ -400,7 +388,6 @@ describe('WhatsApp inbound sticker / location / contact (live upsert)', () => {
     releaseDownload(Buffer.from('late-lottie'));
     await Promise.all([oldAttempt, disconnect]);
     expect(db.storeMessageDirect).not.toHaveBeenCalled();
-    expect(notify.notifyNewImMessage).not.toHaveBeenCalled();
 
     downloadMediaMessage.mockResolvedValue(Buffer.from('fresh-lottie'));
     const second = await connect(true);
@@ -409,7 +396,6 @@ describe('WhatsApp inbound sticker / location / contact (live upsert)', () => {
       messages: [inbound],
     });
     expect(db.storeMessageDirect).toHaveBeenCalledOnce();
-    expect(notify.notifyNewImMessage).toHaveBeenCalledOnce();
     await second.connection.disconnect();
   });
 

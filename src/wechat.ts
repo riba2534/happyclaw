@@ -16,7 +16,6 @@ import fs from 'fs';
 import path from 'node:path';
 import { fetch as undiciFetch, type Dispatcher } from 'undici';
 import { storeChatMetadata, storeMessageDirect, updateChatName } from './db.js';
-import { notifyNewImMessage } from './message-notifier.js';
 import { logger } from './logger.js';
 import { saveDownloadedFile, MAX_FILE_SIZE } from './im-downloader.js';
 import {
@@ -1530,8 +1529,6 @@ export function createWeChatConnection(
         );
         return;
       }
-      notifyNewImMessage();
-
       if (agentRouting?.agentId) {
         opts.onAgentMessage?.(jid, agentRouting.agentId);
         logger.info(

@@ -16,8 +16,12 @@ describe('channel binding REST contract', () => {
 
     for (const source of [agents, config]) {
       expect(source).toContain('unbindChannelMount(');
-      expect(source).toContain(
+      // A workspace binding is a topic thread map, never a single session.
+      expect(source).not.toContain(
         "threadCapable ? 'thread_map' : 'single_session'",
+      );
+      expect(source).toMatch(
+        /conversationBindingPolicyError\(\s*getConversationKind\([^)]*\),\s*'workspace',/,
       );
       expect(source).toContain(
         'Native thread containers can only bind to a workspace',

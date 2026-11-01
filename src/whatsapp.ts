@@ -34,7 +34,6 @@ import { ProxyAgent } from 'proxy-agent';
 import { readFile } from 'node:fs/promises';
 import { logger } from './logger.js';
 import { storeChatMetadata, storeMessageDirect, updateChatName } from './db.js';
-import { notifyNewImMessage } from './message-notifier.js';
 import { markdownToPlainText, splitTextChunks } from './im-utils.js';
 import { saveDownloadedFile, FileTooLargeError } from './im-downloader.js';
 import { ProcessingLock, isStale } from './im-safety/index.js';
@@ -1096,8 +1095,6 @@ export function createWhatsAppConnection(
         );
         return;
       }
-      notifyNewImMessage();
-
       if (routing?.agentId) {
         opts.onAgentMessage?.(chatJid, routing.agentId);
         logger.info(

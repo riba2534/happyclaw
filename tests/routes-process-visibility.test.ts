@@ -96,7 +96,7 @@ function workspace(
   slug: string,
   mode: 'assistant' | 'proactive',
   visibility?: 'hidden' | 'activity' | 'full',
-): { jid: string; folder: string } {
+): { jid: string; folder: string; agentId: string; lane: string } {
   const jid = `web:${slug}`;
   db.setRegisteredGroup(jid, {
     name: slug,
@@ -112,7 +112,26 @@ function workspace(
     mode,
     visibility,
   );
-  return { jid, folder: slug };
+  // History and traces live in a session of the workspace.
+  const agentId = `${slug}-session`;
+  if (!db.getAgent(agentId)) {
+    db.createAgent({
+      id: agentId,
+      group_folder: slug,
+      chat_jid: jid,
+      name: 'Session',
+      prompt: '',
+      status: 'idle',
+      kind: 'conversation',
+      created_by: OWNER_ID,
+      created_at: new Date().toISOString(),
+      completed_at: null,
+      result_summary: null,
+      last_im_jid: null,
+      spawned_from_jid: null,
+    });
+  }
+  return { jid, folder: slug, agentId, lane: `${jid}#agent:${agentId}` };
 }
 
 const json = { 'content-type': 'application/json' };
@@ -422,11 +441,12 @@ const STORED_STEPS = [
   },
 ];
 
-const getMessages = async (jid: string) =>
+const getMessages = async (jid: string, agentId: string) =>
   (await (
-    await groupRoutes.request(`/${encodeURIComponent(jid)}/messages`, {
-      method: 'GET',
-    })
+    await groupRoutes.request(
+      `/${encodeURIComponent(jid)}/messages?agentId=${agentId}`,
+      { method: 'GET' },
+    )
   ).json()) as { messages: Array<{ id: string; has_trace?: boolean }> };
 
 const getTrace = (jid: string, turnId: string) =>
@@ -438,15 +458,19 @@ const getTrace = (jid: string, turnId: string) =>
 describe('turn traces over HTTP', () => {
   test('an Assistant workspace lists has_trace and serves the whole trace', async () => {
     asUser(OWNER_ID);
-    const { jid } = workspace('trace-assistant', 'assistant', 'hidden');
-    seedTurn(jid, 'turn-a');
+    const { jid, agentId, lane } = workspace(
+      'trace-assistant',
+      'assistant',
+      'hidden',
+    );
+    seedTurn(lane, 'turn-a');
 
-    const { messages } = await getMessages(jid);
+    const { messages } = await getMessages(jid, agentId);
     expect(messages.filter((m) => m.has_trace).map((m) => m.id)).toEqual([
       'turn-a-b',
     ]);
 
-    const response = await getTrace(jid, 'turn-a');
+    const response = await getTrace(lane, 'turn-a');
     expect(response.status).toBe(200);
     expect(response.headers.get('cache-control')).toContain('no-store');
     await expect(response.json()).resolves.toMatchObject({
@@ -456,38 +480,42 @@ describe('turn traces over HTTP', () => {
       trace: [{ title: '工具 Bash', kind: 'tool' }],
       created_at: expect.any(String),
     });
-    expect((await getTrace(jid, 'no-such-turn')).status).toBe(404);
+    expect((await getTrace(lane, 'no-such-turn')).status).toBe(404);
   });
 
   test('a proactive workspace follows its current visibility', async () => {
     asUser(OWNER_ID);
-    const { jid, folder } = workspace('trace-proactive', 'proactive', 'full');
-    seedTurn(jid, 'turn-p');
+    const { jid, folder, agentId, lane } = workspace(
+      'trace-proactive',
+      'proactive',
+      'full',
+    );
+    seedTurn(lane, 'turn-p');
 
-    expect((await (await getTrace(jid, 'turn-p')).json()).thinking).toBe(
+    expect((await (await getTrace(lane, 'turn-p')).json()).thinking).toBe(
       '想了想',
     );
-    expect((await getMessages(jid)).messages.some((m) => m.has_trace)).toBe(
-      true,
-    );
+    expect(
+      (await getMessages(jid, agentId)).messages.some((m) => m.has_trace),
+    ).toBe(true);
 
     db.setWorkspaceProcessVisibility(folder, 'activity');
-    const activity = await getTrace(jid, 'turn-p');
+    const activity = await getTrace(lane, 'turn-p');
     expect(activity.status).toBe(200);
     await expect(activity.json()).resolves.toMatchObject({
       thinking: '',
       thinking_duration_ms: 4_200,
       trace: [{ title: '工具 Bash' }],
     });
-    expect((await getMessages(jid)).messages.some((m) => m.has_trace)).toBe(
-      true,
-    );
+    expect(
+      (await getMessages(jid, agentId)).messages.some((m) => m.has_trace),
+    ).toBe(true);
 
     db.setWorkspaceProcessVisibility(folder, 'hidden');
-    expect((await getTrace(jid, 'turn-p')).status).toBe(404);
-    expect((await getMessages(jid)).messages.some((m) => m.has_trace)).toBe(
-      false,
-    );
+    expect((await getTrace(lane, 'turn-p')).status).toBe(404);
+    expect(
+      (await getMessages(jid, agentId)).messages.some((m) => m.has_trace),
+    ).toBe(false);
   });
 
   test('other users get a 404, like every other resource of the workspace', async () => {

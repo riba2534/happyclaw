@@ -75,14 +75,14 @@ export function resolveWorkspaceProjectRoot(
 }
 
 /**
- * The session a request's `?agentId=` names in workspace `jid`: null for the
- * main session (absent or `main`), undefined when it is no session there.
+ * The session a request's `?agentId=` names in workspace `jid`: null when
+ * none is named (the workspace root), undefined when it is no session there.
  */
 export function workspaceSessionFromQuery(
   raw: string | undefined,
   jid: string,
 ): string | null | undefined {
-  if (!raw || raw === 'main') return null;
+  if (!raw) return null;
   return getAgent(raw)?.chat_jid === jid ? raw : undefined;
 }
 

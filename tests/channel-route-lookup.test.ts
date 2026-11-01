@@ -127,8 +127,18 @@ describe('the runtime-control route lookup', () => {
     expect(h.globals.ensureNativeContextChannelMount).not.toHaveBeenCalled();
   });
 
-  test('an ordinary group resolves to its bound main Session as before', () => {
+  test('an ordinary group resolves to its bound Session; a workspace binding has none', () => {
     const h = lookupHarness({ native_context_type: undefined });
-    expect(h.lookup(FORUM)).toEqual({ effectiveJid: WORKSPACE, agentId: null });
+    expect(h.lookup(FORUM)).toBeNull();
+    const bound = lookupHarness({
+      native_context_type: undefined,
+      target_main_jid: undefined,
+      target_agent_id: 'bound',
+    });
+    bound.addTopicSession('unused', 'bound');
+    expect(bound.lookup(FORUM)).toEqual({
+      effectiveJid: `${WORKSPACE}#agent:bound`,
+      agentId: 'bound',
+    });
   });
 });

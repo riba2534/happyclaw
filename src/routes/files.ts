@@ -293,7 +293,7 @@ async function openDirectoryInFileManager(targetDir: string): Promise<void> {
 
 /**
  * The file root for the session named by `?agentId=` (a Runtime Session of
- * this workspace; absent or `main` is the main session), or a 404.
+ * this workspace; absent means the workspace root), or a 404.
  */
 function resolveRequestFileRoot(
   c: Context<{ Variables: Variables }>,

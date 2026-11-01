@@ -145,7 +145,7 @@ async function bind(
     : `/groups/${encodeURIComponent(workspaceJid)}/${endpoint === 'session' ? 'sessions' : 'agents'}/${sessionId}/im-binding`;
   const target =
     endpoint === 'settings-main'
-      ? { target_session_id: 'main', target_main_jid: workspaceJid }
+      ? { target_session_id: 'main' }
       : settings
         ? { target_session_id: sessionId }
         : { im_jid: imJid };
@@ -255,44 +255,37 @@ for (const endpoint of ['session', 'agent-alias', 'settings'] as const) {
   });
 }
 
-describe('settings explicit main-session target', () => {
-  test('ordinary group main binding applies policy without becoming a topic workspace', async () => {
-    const result = await bind('settings-main', {
-      activation_mode: 'owner_mentioned',
-      audience_mode: 'everyone',
-    });
-    expect(result.status, JSON.stringify(result.body)).toBe(200);
-    expectPolicy('when_mentioned', 'owner_only');
-    expect(db.getChannelMount(imJid)).toMatchObject({
-      session_id: null,
-      workspace_jid: workspaceJid,
-      routing_mode: 'single_session',
-    });
-  });
-
-  test('private main binding supports ordinary response policy', async () => {
-    liveChatInfo.mockResolvedValue({ chat_mode: 'p2p' });
-    const result = await bind('settings-main', {
-      activation_mode: 'always',
-      audience_mode: 'owner_only',
-    });
-    expect(result.status, JSON.stringify(result.body)).toBe(200);
-    expectPolicy('always', 'owner_only');
-  });
-
-  test('private main binding rejects mention activation', async () => {
-    liveChatInfo.mockResolvedValue({ chat_mode: 'p2p' });
-    const result = await bind('settings-main', {
-      activation_mode: 'when_mentioned',
-    });
-    expect(result.status).toBe(400);
-    expect(result.body.error).toMatch(/private chats.*mention activation/i);
-  });
-
-  test('native topics cannot select the explicit main session', async () => {
-    liveChatInfo.mockResolvedValue({ chat_mode: 'topic' });
+describe('settings has no main-session target', () => {
+  test('`main` names no session', async () => {
     const result = await bind('settings-main', { activation_mode: 'always' });
-    expect(result.status).toBe(400);
+    expect(result).toEqual({
+      status: 404,
+      body: { error: 'Session not found' },
+    });
+    expect(db.getChannelMount(imJid)).toBeUndefined();
+  });
+
+  test.each([
+    ['an ordinary group', { chat_mode: 'group', group_message_type: 'chat' }],
+    ['a private chat', { chat_mode: 'p2p' }],
+  ])('%s cannot bind to a workspace', async (_label, chatInfo) => {
+    liveChatInfo.mockResolvedValue(chatInfo);
+    const response = await app.request(
+      `/config/user-im/bindings/${encodeURIComponent(imJid)}`,
+      {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          target_main_jid: workspaceJid,
+          activation_mode: 'always',
+        }),
+      },
+    );
+    expect(response.status).toBe(400);
+    expect((await response.json()).error).toMatch(
+      /only accept native topic groups/,
+    );
     expect(db.getRegisteredGroup(imJid)?.target_main_jid).toBeUndefined();
+    expect(db.getChannelMount(imJid)).toBeUndefined();
   });
 });

@@ -6,7 +6,6 @@ const inbound = vi.hoisted(() => ({
     (ctx: any, next?: () => Promise<unknown>) => Promise<void>
   >(),
   storeMessageDirect: vi.fn(),
-  notifyNewImMessage: vi.fn(),
   stop: null as (() => void) | null,
 }));
 
@@ -44,9 +43,6 @@ vi.mock('../src/db.js', () => ({
   storeChatMetadata: vi.fn(),
   storeMessageDirect: inbound.storeMessageDirect,
   updateChatName: vi.fn(),
-}));
-vi.mock('../src/message-notifier.js', () => ({
-  notifyNewImMessage: inbound.notifyNewImMessage,
 }));
 vi.mock('../src/logger.js', () => ({
   logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
@@ -105,7 +101,6 @@ describe('Telegram group response audience', () => {
   beforeEach(() => {
     inbound.handlers.clear();
     inbound.storeMessageDirect.mockReset();
-    inbound.notifyNewImMessage.mockReset();
     groups = {};
     onCommand = vi.fn(async (_jid: string, command: string) =>
       command.startsWith('status') || command.startsWith('owner_mention')
@@ -429,7 +424,6 @@ describe('Telegram durable queue and runtime controls', () => {
   beforeEach(() => {
     inbound.handlers.clear();
     inbound.storeMessageDirect.mockReset();
-    inbound.notifyNewImMessage.mockReset();
   });
 
   afterEach(async () => {
@@ -488,7 +482,6 @@ describe('Telegram durable queue and runtime controls', () => {
     });
     expect(host.onFollowUpsChanged).toHaveBeenCalledWith('web:home#agent:a1');
     // Released by the host when the run ends: no wake-up, no agent start.
-    expect(inbound.notifyNewImMessage).not.toHaveBeenCalled();
     expect(opts.onAgentMessage).not.toHaveBeenCalled();
   });
 
@@ -496,7 +489,7 @@ describe('Telegram durable queue and runtime controls', () => {
     const host = followUpHost('started');
     const opts = await connect(host);
     await send({ text: 'hello', from: OUTSIDER, chat: DM });
-    expect(inbound.notifyNewImMessage).toHaveBeenCalledOnce();
+    expect(host.onFollowUpMessage).toHaveBeenCalledOnce();
     expect(host.onFollowUpsChanged).not.toHaveBeenCalled();
     expect(opts.onMessagePersisted.mock.calls[0][1]).not.toHaveProperty(
       'delivery_status',

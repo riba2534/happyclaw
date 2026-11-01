@@ -368,11 +368,15 @@ describe('GET /:jid/context-usage', () => {
       status: 200,
       body: { usedTokens: 3_000, model: 'kimi-k3' },
     });
+    expect(await get()).toEqual({
+      status: 400,
+      body: { error: 'Session required', code: 'session_required' },
+    });
   });
 
   test('hides another account’s workspace', async () => {
     harness.userId = 'ctx-other';
-    expect((await get()).status).toBe(404);
+    expect((await get(`?agentId=${AGENT}`)).status).toBe(404);
   });
 });
 

@@ -30,6 +30,7 @@ import {
 import { CONTAINER_IMAGE } from '../config.js';
 import { getSystemSettings, getProviders } from '../runtime-config.js';
 import { logger } from '../logger.js';
+import { stripVirtualJidSuffix } from '../utils.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -255,15 +256,18 @@ async function checkDockerImageExists(): Promise<boolean> {
   return Boolean(await getDockerImageId());
 }
 
+/** Whether a queue lane (a session's `<ws>#agent:<id>`) is the user's to see. */
+function canSeeLane(authUser: AuthUser, laneJid: string): boolean {
+  const group = getRegisteredGroup(stripVirtualJidSuffix(laneJid));
+  if (!group) return false;
+  if (isHostExecutionGroup(group)) return false;
+  return canAccessGroup({ id: authUser.id, role: authUser.role }, group);
+}
+
 /** Queue groups the user may see; admins see every group (monitor scope). */
 function visibleQueueGroups(authUser: AuthUser, groups: QueueGroupStatus[]) {
   if (hasHostExecutionPermission(authUser)) return groups;
-  return groups.filter((g) => {
-    const group = getRegisteredGroup(g.jid);
-    if (!group) return false;
-    if (isHostExecutionGroup(group)) return false;
-    return canAccessGroup({ id: authUser.id, role: authUser.role }, group);
-  });
+  return groups.filter((g) => canSeeLane(authUser, g.jid));
 }
 
 // GET /api/status/groups - 仅返回队列中的运行状态。
@@ -313,12 +317,9 @@ monitorRoutes.get('/status', authMiddleware, async (c) => {
   } else {
     activeContainers = filteredGroups.filter((g) => g.active).length;
     // Filter waiting groups by user ownership
-    queueLength = queueStatus.waitingGroupJids.filter((jid) => {
-      const group = getRegisteredGroup(jid);
-      if (!group) return false;
-      if (isHostExecutionGroup(group)) return false;
-      return canAccessGroup({ id: authUser.id, role: authUser.role }, group);
-    }).length;
+    queueLength = queueStatus.waitingGroupJids.filter((jid) =>
+      canSeeLane(authUser, jid),
+    ).length;
   }
 
   // Enrich groups with provider name and owner username (batch lookups)
@@ -329,9 +330,7 @@ monitorRoutes.get('/status', authMiddleware, async (c) => {
   // Collect unique creator IDs, then batch-resolve usernames
   const creatorIds = new Set<string>();
   for (const g of filteredGroups) {
-    const baseJid = g.jid.includes('#agent:')
-      ? g.jid.split('#agent:')[0]
-      : g.jid;
+    const baseJid = stripVirtualJidSuffix(g.jid);
     const reg = allRegistered[baseJid];
     if (reg?.created_by) creatorIds.add(reg.created_by);
   }
@@ -342,9 +341,7 @@ monitorRoutes.get('/status', authMiddleware, async (c) => {
   }
 
   const enrichedGroups = filteredGroups.map((g) => {
-    const baseJid = g.jid.includes('#agent:')
-      ? g.jid.split('#agent:')[0]
-      : g.jid;
+    const baseJid = stripVirtualJidSuffix(g.jid);
     const reg = allRegistered[baseJid];
     return {
       ...g,

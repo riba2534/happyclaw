@@ -24,7 +24,6 @@ import {
   sequenceInboundTimestampAfterChatTail,
   storeMessageDirect,
 } from './db.js';
-import { notifyNewImMessage } from './message-notifier.js';
 import { logger } from './logger.js';
 import {
   evaluateChannelAdmission,
@@ -1711,11 +1710,6 @@ export function createWeComConnection(
         );
         return;
       }
-      if (!progress.notified) {
-        notifyNewImMessage();
-        progress.notified = true;
-      }
-
       if (routeAgentId && !progress.agentNotified) {
         opts?.onAgentMessage?.(jid, routeAgentId);
         progress.agentNotified = true;

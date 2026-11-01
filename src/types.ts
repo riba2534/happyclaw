@@ -212,13 +212,12 @@ export interface RegisteredGroup {
   /** Channel account that owns this external chat. Null means legacy/default. */
   channel_account_id?: string;
   is_home?: boolean; // 用户主容器标记
-  /** Direct-chat binding target: a specific workspace conversation session. */
+  /** Direct chat or ordinary group binding: one workspace session. */
   target_agent_id?: string;
   /**
-   * Binding target stored as the canonical workspace JID.
-   * Group chats own the workspace main context. Direct chats must not use
-   * this slot — they bind through `target_agent_id` so they do not share
-   * the workspace main channel-owner key with a group.
+   * Topic container binding (`binding_mode = 'thread_map'`): the canonical
+   * workspace JID whose native topics each get their own session. Direct
+   * chats and ordinary groups never use this slot.
    */
   target_main_jid?: string;
   reply_policy?: 'source_only' | 'mirror'; // IM 绑定的回复策略

@@ -6,7 +6,6 @@ const inbound = vi.hoisted(() => ({
     (ctx: any, next?: () => Promise<unknown>) => Promise<void>
   >(),
   storeMessageDirect: vi.fn(),
-  notifyNewImMessage: vi.fn(),
   stop: null as (() => void) | null,
 }));
 
@@ -44,9 +43,6 @@ vi.mock('../src/db.js', () => ({
   storeChatMetadata: vi.fn(),
   storeMessageDirect: inbound.storeMessageDirect,
   updateChatName: vi.fn(),
-}));
-vi.mock('../src/message-notifier.js', () => ({
-  notifyNewImMessage: inbound.notifyNewImMessage,
 }));
 vi.mock('../src/logger.js', () => ({
   logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
@@ -116,7 +112,6 @@ describe('Telegram native media inbound listeners', () => {
   beforeEach(() => {
     inbound.handlers.clear();
     inbound.storeMessageDirect.mockReset();
-    inbound.notifyNewImMessage.mockReset();
     inbound.stop = null;
   });
 
@@ -180,7 +175,6 @@ describe('Telegram native media inbound listeners', () => {
     expect(onMessagePersisted.mock.calls[0][1].id).toBe(stored[0]);
     expect(onMessagePersisted.mock.calls[0][2]).toBe('agent-7');
     expect(onAgentMessage).toHaveBeenCalledWith('telegram:42', 'agent-7');
-    expect(inbound.notifyNewImMessage).toHaveBeenCalledOnce();
   });
 
   test('animation/document compatibility overlap persists exactly once', async () => {

@@ -44,7 +44,6 @@ const sdk = vi.hoisted(() => {
 const inbound = vi.hoisted(() => ({
   storeMessageDirect: vi.fn(),
   saveDownloadedFile: vi.fn(),
-  notifyNewImMessage: vi.fn(),
   logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
@@ -56,10 +55,6 @@ vi.mock('dingtalk-stream', () => ({
 vi.mock('../src/db.js', () => ({
   storeChatMetadata: vi.fn(),
   storeMessageDirect: inbound.storeMessageDirect,
-}));
-
-vi.mock('../src/message-notifier.js', () => ({
-  notifyNewImMessage: inbound.notifyNewImMessage,
 }));
 
 vi.mock('../src/im-downloader.js', () => ({
@@ -178,7 +173,6 @@ describe('DingTalk inbound picture/file/image download-null salvage', () => {
     sdk.MockDWClient.instances = [];
     inbound.storeMessageDirect.mockReset();
     inbound.saveDownloadedFile.mockReset();
-    inbound.notifyNewImMessage.mockReset();
     inbound.logger.debug.mockReset();
     inbound.logger.info.mockReset();
     inbound.logger.warn.mockReset();
@@ -262,7 +256,6 @@ describe('DingTalk inbound picture/file/image download-null salvage', () => {
     expect(inbound.storeMessageDirect.mock.calls[0][4]).toBe(
       '[图片消息（下载失败）]',
     );
-    expect(inbound.notifyNewImMessage).toHaveBeenCalled();
     expect(client.socketCallBackResponse).toHaveBeenCalledWith('stream-pic-1', {
       success: true,
     });
@@ -288,7 +281,6 @@ describe('DingTalk inbound picture/file/image download-null salvage', () => {
     expect(inbound.storeMessageDirect.mock.calls[0][4]).toBe(
       '[文件: notes.pdf（下载失败）]',
     );
-    expect(inbound.notifyNewImMessage).toHaveBeenCalled();
     expect(client.socketCallBackResponse).toHaveBeenCalledWith(
       'stream-file-1',
       { success: true },
@@ -311,7 +303,6 @@ describe('DingTalk inbound picture/file/image download-null salvage', () => {
     expect(inbound.storeMessageDirect.mock.calls[0][4]).toBe(
       '[图片消息（下载失败）]',
     );
-    expect(inbound.notifyNewImMessage).toHaveBeenCalled();
     expect(client.socketCallBackResponse).toHaveBeenCalledWith('stream-img-1', {
       success: true,
     });
@@ -375,7 +366,6 @@ describe('DingTalk inbound picture/file/image download-null salvage', () => {
           ),
       );
       expect(downloads).toEqual([]);
-      expect(inbound.notifyNewImMessage).toHaveBeenCalled();
       expect(client.socketCallBackResponse).toHaveBeenCalledWith(
         `stream-nocode-${msg.msgtype}`,
         { success: true },

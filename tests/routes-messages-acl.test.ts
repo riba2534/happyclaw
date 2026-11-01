@@ -187,6 +187,28 @@ function seedTestGroup(): void {
   }
 }
 
+const SESSION_ID = 'messages-acl-session';
+const SESSION_JID = `${GROUP_JID}#agent:${SESSION_ID}`;
+
+function seedSession(): void {
+  if (db.getAgent(SESSION_ID)) return;
+  db.createAgent({
+    id: SESSION_ID,
+    group_folder: GROUP_FOLDER,
+    chat_jid: GROUP_JID,
+    name: 'Session',
+    prompt: '',
+    status: 'idle',
+    kind: 'conversation',
+    created_by: OWNER_ID,
+    created_at: new Date().toISOString(),
+    completed_at: null,
+    result_summary: null,
+    last_im_jid: null,
+    spawned_from_jid: null,
+  });
+}
+
 function asUser(userId: string, role: 'admin' | 'member' = 'member'): void {
   process.env.HAPPYCLAW_TEST_USER_ID = userId;
   process.env.HAPPYCLAW_TEST_USER_ROLE = role;
@@ -266,12 +288,13 @@ describe('GET /api/groups/:jid/messages — stable sequence cursor', () => {
   test('paginates same-timestamp messages and polls late arrivals', async () => {
     seedTestGroup();
     asUser(OWNER_ID);
+    seedSession();
     const timestamp = '2026-08-31T00:00:00.000Z';
     for (let index = 0; index < 52; index++) {
-      db.ensureChatExists(GROUP_JID);
+      db.ensureChatExists(SESSION_JID);
       db.storeMessageDirect(
         `same-ts-${String(51 - index).padStart(2, '0')}`,
-        GROUP_JID,
+        SESSION_JID,
         OWNER_ID,
         'Alice',
         `message ${index}`,
@@ -281,7 +304,7 @@ describe('GET /api/groups/:jid/messages — stable sequence cursor', () => {
     }
 
     const firstResponse = await app.request(
-      `/api/groups/${encodeURIComponent(GROUP_JID)}/messages?limit=20`,
+      `/api/groups/${encodeURIComponent(GROUP_JID)}/messages?agentId=${SESSION_ID}&limit=20`,
     );
     expect(firstResponse.status).toBe(200);
     const first = (await firstResponse.json()) as {
@@ -293,7 +316,7 @@ describe('GET /api/groups/:jid/messages — stable sequence cursor', () => {
 
     const boundary = first.messages.at(-1)!.ingest_sequence;
     const secondResponse = await app.request(
-      `/api/groups/${encodeURIComponent(GROUP_JID)}/messages?limit=20&beforeSequence=${boundary}`,
+      `/api/groups/${encodeURIComponent(GROUP_JID)}/messages?agentId=${SESSION_ID}&limit=20&beforeSequence=${boundary}`,
     );
     const second = (await secondResponse.json()) as typeof first;
     expect(second.messages).toHaveLength(20);
@@ -306,7 +329,7 @@ describe('GET /api/groups/:jid/messages — stable sequence cursor', () => {
     const newestSequence = first.messages[0].ingest_sequence;
     db.storeMessageDirect(
       'late-old-provider-clock',
-      GROUP_JID,
+      SESSION_JID,
       OWNER_ID,
       'Alice',
       'late arrival',
@@ -314,12 +337,35 @@ describe('GET /api/groups/:jid/messages — stable sequence cursor', () => {
       false,
     );
     const pollResponse = await app.request(
-      `/api/groups/${encodeURIComponent(GROUP_JID)}/messages?limit=20&afterSequence=${newestSequence}`,
+      `/api/groups/${encodeURIComponent(GROUP_JID)}/messages?agentId=${SESSION_ID}&limit=20&afterSequence=${newestSequence}`,
     );
     const poll = (await pollResponse.json()) as typeof first;
     expect(poll.messages.map((message) => message.id)).toEqual([
       'late-old-provider-clock',
     ]);
+  });
+
+  test('a workspace has no history of its own: no session is 400 session_required', async () => {
+    seedTestGroup();
+    asUser(OWNER_ID);
+    db.ensureChatExists(GROUP_JID);
+    db.storeMessageDirect(
+      'workspace-level',
+      GROUP_JID,
+      OWNER_ID,
+      'Alice',
+      'pre-v88 workspace message',
+      '2026-08-31T00:00:00.000Z',
+      false,
+    );
+    const res = await app.request(
+      `/api/groups/${encodeURIComponent(GROUP_JID)}/messages`,
+    );
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: 'Session required',
+      code: 'session_required',
+    });
   });
 });
 
