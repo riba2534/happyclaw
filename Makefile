@@ -26,7 +26,7 @@ export CONTAINER_IMAGE
 # ─── Development ─────────────────────────────────────────────
 
 dev: ## 启动前后端（首次自动安装依赖并拉取容器镜像）
-	@if [ ! -d node_modules ] || [ package.json -nt node_modules ] || [ package-lock.json -nt node_modules ] || [ web/package.json -nt web/node_modules ] || [ web/package-lock.json -nt web/node_modules ] || [ container/agent-runner/package.json -nt container/agent-runner/node_modules ] || [ container/agent-runner/package-lock.json -nt container/agent-runner/node_modules ]; then echo "📦 依赖有更新，安装依赖..."; $(MAKE) install; fi
+	@if [ ! -d node_modules ] || [ package.json -nt node_modules ] || [ package-lock.json -nt node_modules ] || [ web/package.json -nt web/node_modules ] || [ web/package-lock.json -nt web/node_modules ] || [ container/agent-runner/package.json -nt container/agent-runner/node_modules ] || [ container/agent-runner/package-lock.json -nt container/agent-runner/node_modules ] || [ ! -f container/agent-runner/node_modules/@anthropic-ai/claude-agent-sdk/package.json ]; then echo "📦 依赖有更新或缺失，安装依赖..."; $(MAKE) install; fi
 	@$(MAKE) _ensure-builtin-skills
 	@$(MAKE) _ensure-docker-image
 	@$(PKG) --prefix container/agent-runner run build --silent 2>/dev/null || $(PKG) --prefix container/agent-runner run build
@@ -62,7 +62,7 @@ start: ## 一键启动生产环境（前台阻塞运行）
 	  lsof -ti:$(PORT) -sTCP:LISTEN | xargs ps -fp 2>/dev/null | tail -1; \
 	  exit 1; \
 	fi
-	@if [ ! -d node_modules ] || [ package.json -nt node_modules ] || [ package-lock.json -nt node_modules ] || [ web/package.json -nt web/node_modules ] || [ web/package-lock.json -nt web/node_modules ] || [ container/agent-runner/package.json -nt container/agent-runner/node_modules ] || [ container/agent-runner/package-lock.json -nt container/agent-runner/node_modules ]; then echo "📦 依赖有更新，安装依赖..."; $(MAKE) install; fi
+	@if [ ! -d node_modules ] || [ package.json -nt node_modules ] || [ package-lock.json -nt node_modules ] || [ web/package.json -nt web/node_modules ] || [ web/package-lock.json -nt web/node_modules ] || [ container/agent-runner/package.json -nt container/agent-runner/node_modules ] || [ container/agent-runner/package-lock.json -nt container/agent-runner/node_modules ] || [ ! -f container/agent-runner/node_modules/@anthropic-ai/claude-agent-sdk/package.json ]; then echo "📦 依赖有更新或缺失，安装依赖..."; $(MAKE) install; fi
 	@$(MAKE) _ensure-builtin-skills
 	@$(MAKE) _ensure-docker-image
 	@$(MAKE) _check-sync
