@@ -259,11 +259,11 @@ admin。admin 没有跨 owner bypass，不存在与无权限都返回 404。
 写操作统一要求目标工作区 Modify，同时校验 IM Chat 属于同一用户、同一渠道账号，
 并验证会话类型：
 
-| 绑定                  | 允许目标 | 路由                                              |
-| --------------------- | -------- | ------------------------------------------------- |
-| Workspace Mount       | 群聊     | `/api/groups/:jid/im-binding`                     |
-| Runtime Session Mount | 私聊     | `/api/groups/:jid/sessions/:sessionId/im-binding` |
-| `/agents` 兼容 Mount  | 私聊     | `/api/groups/:jid/agents/:agentId/im-binding`     |
+| 绑定                  | 允许目标     | 路由                                              |
+| --------------------- | ------------ | ------------------------------------------------- |
+| Workspace Mount       | 原生话题群   | `/api/groups/:jid/im-binding`                     |
+| Runtime Session Mount | 私聊、普通群 | `/api/groups/:jid/sessions/:sessionId/im-binding` |
+| `/agents` 兼容 Mount  | 私聊、普通群 | `/api/groups/:jid/agents/:agentId/im-binding`     |
 
 附加规则：
 
