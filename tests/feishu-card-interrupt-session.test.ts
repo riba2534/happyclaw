@@ -1,29 +1,34 @@
 import { describe, expect, test, vi } from 'vitest';
 
 import { channelConversationJid } from '../src/channel-address.js';
-import { resolveBoundChatTarget } from '../src/im-command-utils.js';
 import { getChannelType } from '../src/im-channel.js';
-import { stripVirtualJidSuffix } from '../src/utils.js';
+import { agentIdOfJid, stripVirtualJidSuffix } from '../src/utils.js';
 import { createRuntimeSourceHarness } from './helpers/runtime-source.js';
 
 /**
  * Runs index.ts's real `handleCardInterrupt`, Session resolution and queue
- * serialization key. A card is keyed by its reply route — a reply inside a
- * topic carries `#thread:`/`#root:` — and an IM chat keeps its owner's home
- * folder after it is bound to another workspace, so the stop button must
- * reach the bound Session's running query and nothing else.
+ * serialization key. A card is keyed by its reply route plus the Session it
+ * answers for (`…#agent:<id>`) — a reply inside a topic carries
+ * `#thread:`/`#root:` — and an IM chat keeps its owner's home folder after it
+ * is bound to another workspace, so the stop button must reach that Session's
+ * running query and nothing else.
  */
 const registeredGroups: Record<string, Record<string, unknown>> = {
   'web:home': { folder: 'home', name: 'Home' },
   'web:proj': { folder: 'proj', name: 'Proj' },
-  // Ordinary group bound to the Main Session of `proj`.
-  'feishu:oc_group': { folder: 'home', target_main_jid: 'web:proj' },
+  // Ordinary group bound to Session s1 of `proj`.
+  'feishu:oc_group': { folder: 'home', target_agent_id: 's1' },
   // Topic group bound to `proj`; each topic has its own Session.
-  'feishu:oc_topics': { folder: 'home', target_main_jid: 'web:proj' },
+  'feishu:oc_topics': {
+    folder: 'home',
+    binding_mode: 'thread_map',
+    target_main_jid: 'web:proj',
+  },
 };
 const agents: Record<string, { chat_jid: string; name: string }> = {
   a1: { chat_jid: 'web:proj', name: 'topic one' },
   a2: { chat_jid: 'web:proj', name: 'topic two' },
+  s1: { chat_jid: 'web:proj', name: 'group session' },
 };
 
 function harness(activeRunnerJid: string) {
@@ -33,9 +38,7 @@ function harness(activeRunnerJid: string) {
     registeredGroups,
     getRegisteredGroup: (jid: string) => registeredGroups[jid],
     getAgent: (id: string) => agents[id],
-    findGroupNameByFolder: (folder: string) => folder,
-    resolveWorkspaceJid: (jid: string) => jid,
-    resolveBoundChatTarget,
+    agentIdOfJid,
     channelConversationJid,
     stripVirtualJidSuffix,
     getChannelType,
@@ -52,6 +55,7 @@ function harness(activeRunnerJid: string) {
     (jid: string) => key(jid) === key(activeRunnerJid),
   );
   globals.queue = { interruptQuery };
+  runtime.install('runtimeJidOfSession');
   runtime.install('cardSessionJid');
   runtime.install('handleCardInterrupt');
   const handle = globals.handleCardInterrupt as (
@@ -78,16 +82,18 @@ describe('Feishu stop button', () => {
     );
   });
 
-  test('stops the bound Main Session answering inside a thread', () => {
-    const { handle } = harness('web:proj');
+  test('stops the bound Session answering in a group, inside a thread too', () => {
+    const { handle } = harness('web:proj#agent:s1');
     expect(
-      handle('feishu:oc_group#thread:omt_1#root:om_1', 'ou_owner'),
+      handle('feishu:oc_group#thread:omt_1#root:om_1#agent:s1', 'ou_owner'),
     ).toMatchObject({ ok: true });
-    expect(handle('feishu:oc_group', 'ou_owner')).toMatchObject({ ok: true });
+    expect(handle('feishu:oc_group#agent:s1', 'ou_owner')).toMatchObject({
+      ok: true,
+    });
   });
 
-  test("never stops the chat's home workspace instead", () => {
-    const { handle, abort } = harness('web:home');
+  test('a card without a Session names nothing to stop', () => {
+    const { handle, abort } = harness('web:proj#agent:s1');
     expect(
       handle('feishu:oc_group#thread:omt_1#root:om_1', 'ou_owner'),
     ).toEqual(ENDED);
@@ -104,7 +110,7 @@ describe('Feishu stop button', () => {
   });
 
   test('a card whose Session is gone stops nothing', () => {
-    const { handle } = harness('web:proj');
+    const { handle } = harness('web:proj#agent:a1');
     expect(
       handle('feishu:oc_topics#thread:omt_1#root:om_1#agent:gone', 'ou_owner'),
     ).toEqual(ENDED);

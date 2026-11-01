@@ -15,9 +15,9 @@ const source = fs.readFileSync(
   'utf8',
 );
 
-/** The body of a top-level `async function name(` up to the next top-level one. */
+/** The body of a top-level `function name(` up to the next top-level one. */
 function functionBody(name: string): string {
-  const start = source.indexOf(`async function ${name}(`);
+  const start = source.search(new RegExp(`\\n(async )?function ${name}\\(`));
   expect(start, `${name} exists`).toBeGreaterThanOrEqual(0);
   const next = source.indexOf('\nasync function ', start + 1);
   const nextSync = source.indexOf('\nfunction ', start + 1);
@@ -33,11 +33,11 @@ describe('Runner events reach the Web only through the projection', () => {
   });
 
   test('the narration relay sits beside each projection that feeds a live turn', () => {
-    // Main session and Runtime Session each hold text back until a tool call
-    // follows it; a projection without a relay would lose the narration, a
-    // relay without a projection would send what the projection withholds.
-    expect(source.match(/new ProactiveCommentaryRelay\(\)/g)).toHaveLength(2);
-    expect(source.match(/commentaryRelay\.take\(/g)).toHaveLength(2);
+    // A session holds text back until a tool call follows it; a projection
+    // without a relay would lose the narration, a relay without a projection
+    // would send what the projection withholds.
+    expect(source.match(/new ProactiveCommentaryRelay\(\)/g)).toHaveLength(1);
+    expect(source.match(/commentaryRelay\.take\(/g)).toHaveLength(1);
     // Its output is broadcast to the Web only, never handed to a channel.
     for (const call of source.match(
       /for \(const note of commentaryRelay\.take\([\s\S]*?\n\s*\}\n/g,
@@ -52,24 +52,22 @@ describe('Runner events reach the Web only through the projection', () => {
     // that stores a proactive turn's trace says so to the clients, through a
     // helper that cannot keep the turn from settling.
     const bodies = source.split('const persistProactiveTurnTrace = (').slice(1);
-    expect(bodies).toHaveLength(2);
+    expect(bodies).toHaveLength(1);
     for (const body of bodies) {
       expect(body.slice(0, 900)).toContain('announceTurnTrace(');
     }
-    const helper = source.slice(
-      source.indexOf('function announceTurnTrace('),
-      source.indexOf('async function processGroupMessages('),
-    );
+    const helper = functionBody('announceTurnTrace');
     expect(helper).toContain('broadcastMessageTrace(');
     expect(helper).toMatch(/try \{[\s\S]*broadcastMessageTrace[\s\S]*\} catch/);
   });
 
-  test('the terminal warmup run projects its events like any other turn', () => {
+  test('the terminal warmup run is no turn: nothing of it reaches the Web', () => {
     const warmup = functionBody('runTerminalWarmup');
-    expect(warmup).toContain('projectSdkStreamEventForWeb(');
-    // The workspace's mode and level are read where the event arrives: the
-    // level can change while the run is alive.
-    expect(warmup).toContain('getWorkspaceProcessVisibility(');
-    expect(warmup).toContain('getWorkspaceInteractionMode(');
+    expect(warmup).not.toContain('broadcastStreamEvent(');
+    expect(warmup).not.toContain('sendMessageWithOutcome(');
+    // It takes no session input; the next turn closes it.
+    expect(functionBody('ensureTerminalContainerStarted')).toContain(
+      'acceptsInput: false',
+    );
   });
 });

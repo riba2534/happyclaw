@@ -3245,7 +3245,6 @@ function bindChannelOutboxScope(
     chatId: string;
     rootId?: string | null;
     threadId?: string | null;
-    logicalBaseChatJid?: string;
   },
   inputTurnId: string | undefined = runtime.inputTurnId,
 ): ActiveChannelOutboxScope {
@@ -7671,29 +7670,6 @@ function resolveIpcOutputWorkspaceJid(chatJid: string): string | null {
   });
 }
 
-/**
- * Recover the logical workspace captured for the exact input turn. Binding
- * rows are mutable while a runner is working, so reading them only when IPC
- * output arrives can attribute workspace A's delayed output to a newly-bound
- * workspace B. The outbox scope already freezes the physical route; carry the
- * logical base beside it without changing provider delivery.
- */
-function resolveIpcOutputRuntimeChatJid(
-  sourceGroup: string,
-  ipcAgentId: string,
-  inputTurnId: unknown,
-  targetJid: string,
-): string | null {
-  if (typeof inputTurnId !== 'string' || !inputTurnId) return null;
-  return (
-    activeChannelOutboxScopes.resolveInput(
-      channelTurnScope(sourceGroup, ipcAgentId),
-      inputTurnId,
-      targetJid,
-    )?.logicalBaseChatJid ?? null
-  );
-}
-
 function startIpcWatcher(): void {
   if (ipcWatcherRunning) {
     logger.debug('IPC watcher already running, skipping duplicate start');
@@ -8009,12 +7985,6 @@ function startIpcWatcher(): void {
                   agentChatJid: ipcAgentId
                     ? getAgent(ipcAgentId)?.chat_jid
                     : undefined,
-                  runtimeChatJid: resolveIpcOutputRuntimeChatJid(
-                    sourceGroup,
-                    ipcAgentId,
-                    data.inputTurnId,
-                    data.chatJid,
-                  ),
                   resolveWorkspaceJid: resolveIpcOutputWorkspaceJid,
                 });
                 // Feishu card JSON: store extracted markdown for web, send raw JSON to IM
@@ -8509,12 +8479,6 @@ function startIpcWatcher(): void {
                     agentChatJid: ipcAgentId
                       ? getAgent(ipcAgentId)?.chat_jid
                       : undefined,
-                    runtimeChatJid: resolveIpcOutputRuntimeChatJid(
-                      sourceGroup,
-                      ipcAgentId,
-                      data.inputTurnId,
-                      data.chatJid,
-                    ),
                     resolveWorkspaceJid: resolveIpcOutputWorkspaceJid,
                   });
 
