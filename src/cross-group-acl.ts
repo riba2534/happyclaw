@@ -5,17 +5,14 @@ import type { RegisteredGroup } from './types.js';
  * - Admin home can send to any group.
  * - Non-home groups can only send to groups sharing the same folder.
  * - Member home groups can send to groups created by the same user.
- * - IM channels bound (target_main_jid) to the source workspace are reachable
- *   from that workspace — without this, after agent-runner started rewriting
- *   ctx.chatJid to the IM source, send_file/send_image/send_message from
- *   non-home sub-workspaces got rejected.
- * - IM channels bound to a Runtime Session (target_agent_id) resolve through
- *   that session's workspace folder. Workspace binds record target_main_jid,
- *   but direct-chat session binds only record target_agent_id and leave the
- *   channel row's own `folder` at the channel account's default workspace, so
- *   the folder and target_main_jid branches both miss and every reply from a
- *   session living outside that default workspace was rejected — the runner
- *   completed the turn while the channel stayed silent.
+ * - A topic group bound to the source workspace (binding_mode='thread_map',
+ *   target_main_jid) is reachable from that workspace's sessions — the
+ *   runner's ctx.chatJid is the IM source of the turn.
+ * - IM chats bound to a session (target_agent_id) resolve through that
+ *   session's workspace folder. Such a chat's row keeps its own `folder` at
+ *   the channel account's default workspace, so the folder branch misses and
+ *   a reply from a session outside that workspace would be rejected while the
+ *   runner completes the turn and the channel stays silent.
  */
 export function canSendCrossGroupMessage(
   isAdminHome: boolean,
@@ -39,7 +36,10 @@ export function canSendCrossGroupMessage(
     targetGroup.created_by === sourceGroupEntry.created_by
   )
     return true;
-  if (targetGroup?.target_main_jid) {
+  if (
+    targetGroup?.binding_mode === 'thread_map' &&
+    targetGroup.target_main_jid
+  ) {
     const bound = lookupGroup(targetGroup.target_main_jid);
     if (bound?.folder === sourceFolder) return true;
   }

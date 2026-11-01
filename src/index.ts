@@ -2397,7 +2397,7 @@ function usageLimitParkedMessageIds(
  */
 function parkInputForUsageLimitWait(input: {
   laneJid: string;
-  agentId: string | null;
+  agentId: string;
   inputId: string;
   messageIds: readonly string[];
   replySourceImJid: string | null;
@@ -2750,8 +2750,8 @@ function resolveHappyClawOwnerProfileForTurn(input: {
   group: RegisteredGroup;
   profile: AgentProfile | undefined;
   turnId?: string;
-  runtimeAgentId?: string | null;
-  runtimeAgentKind?: 'task' | 'conversation' | 'spawn' | null;
+  runtimeAgentId: string;
+  runtimeAgentKind: 'task' | 'conversation' | 'spawn';
 }): HappyClawOwnerProfileProjection | undefined {
   if (
     !isHappyClawBootstrapTurn({
@@ -2759,7 +2759,7 @@ function resolveHappyClawOwnerProfileForTurn(input: {
       isHome: input.group.is_home === true,
       isDefaultProfile: input.profile?.is_default === true,
     }) ||
-    (input.runtimeAgentId && input.runtimeAgentKind !== 'conversation')
+    input.runtimeAgentKind !== 'conversation'
   ) {
     return undefined;
   }
@@ -2797,14 +2797,11 @@ function resolveHappyClawOwnerProfileForTurn(input: {
 function isHappyClawOwnerProfileRuntimeEligible(input: {
   group: RegisteredGroup;
   profile: AgentProfile | undefined;
-  turnId?: string;
-  runtimeAgentId?: string | null;
-  runtimeAgentKind?: 'task' | 'conversation' | 'spawn' | null;
+  runtimeAgentKind: 'task' | 'conversation' | 'spawn';
 }): boolean {
   return isHappyClawOwnerProfileRuntimeStructurallyEligible({
     isHome: input.group.is_home === true,
     isDefaultProfile: input.profile?.is_default === true,
-    runtimeAgentId: input.runtimeAgentId,
     runtimeAgentKind: input.runtimeAgentKind,
   });
 }
@@ -2896,7 +2893,7 @@ function resetSessionForInteractionModeMismatch(
 
 function hasSessionAgentProfileMismatch(
   groupFolder: string,
-  agentId: string | null | undefined,
+  agentId: string,
   profile: AgentProfile | undefined,
 ): boolean {
   if (!profile) return false;
@@ -4756,7 +4753,7 @@ type PluginReplyOptions = {
   originalMessageId: string;
   groupFolder: string;
   imRouteJid?: string | null;
-  agentId?: string | null;
+  agentId: string;
 };
 
 /**
@@ -4848,7 +4845,7 @@ async function deliverPluginExpanderReply(
     threadId: address.threadId,
     externalMessageId: `${options.originalMessageId}:plugin-expander-reply`,
     correlationId: options.originalMessageId,
-    agentId: options.agentId ?? null,
+    agentId: options.agentId,
     sessionId: getSession(options.groupFolder, options.agentId) ?? null,
   });
   if (runtime.executionDisposition !== 'execute') {
@@ -4922,15 +4919,13 @@ async function deliverPluginExpanderReply(
   return { messageId: msgId, acknowledged };
 }
 
-function getSessionClaudeDir(folder: string, agentId?: string): string {
-  return agentId
-    ? path.join(DATA_DIR, 'sessions', folder, 'agents', agentId, '.claude')
-    : path.join(DATA_DIR, 'sessions', folder, '.claude');
+function getSessionClaudeDir(folder: string, agentId: string): string {
+  return path.join(DATA_DIR, 'sessions', folder, 'agents', agentId, '.claude');
 }
 
 async function clearSessionRuntimeFiles(
   folder: string,
-  agentId?: string,
+  agentId: string,
 ): Promise<void> {
   const claudeDir = getSessionClaudeDir(folder, agentId);
   if (!fs.existsSync(claudeDir)) return;
@@ -6983,8 +6978,8 @@ function getAvailableGroups(): AvailableGroup[] {
 function buildExpandContext(
   chatJid: string,
   group: RegisteredGroup,
-  ownerOverride?: string | null,
-  agentId?: string | null,
+  ownerOverride: string | null | undefined,
+  agentId: string,
 ): ExpandContext | null {
   const ownerId = ownerOverride ?? group.created_by;
   if (
@@ -7531,7 +7526,7 @@ async function sendMessageWithOutcome(
     webProjected = true;
     logger.info({ jid, length: text.length, sendToIM }, 'Message sent');
     // Skip agent_reply broadcast for scheduled tasks to avoid clearing
-    // streaming state of a concurrently running main agent.
+    // streaming state of a concurrently running session.
     // Safe because scheduled tasks never trigger typing indicators, so there's
     // no typing state to clear. The message is still delivered via new_message.
     if (!options.source) {
@@ -7883,9 +7878,7 @@ function startIpcWatcher(): void {
               const frozenIpcMode = resolveFrozenIpcInteractionMode(
                 data.interactionMode,
                 {
-                  spawnAgent:
-                    !!ipcAgentId &&
-                    getAgent(ipcAgentId)?.kind !== 'conversation',
+                  spawnAgent: getAgent(ipcAgentId)?.kind !== 'conversation',
                 },
               );
               if (!frozenIpcMode.valid) {
@@ -8012,8 +8005,8 @@ function startIpcWatcher(): void {
                   'Duplicate IPC send_message suppressed (retry replay window)',
                 );
               } else if (authorized) {
-                // Conversation agents route to virtual JIDs so output appears
-                // in their own tab/session, not the workspace main conversation.
+                // Sessions route to their runtime JIDs so output appears in
+                // that session.
                 const effectiveChatJid = resolveHostIpcLogicalChatJid({
                   sourceChatJid: data.chatJid,
                   agentId: ipcAgentId,
@@ -8515,8 +8508,7 @@ function startIpcWatcher(): void {
                     );
                   }
 
-                  // Conversation agents store in virtual JIDs (their session),
-                  // not the main conversation.
+                  // Sessions store in their runtime JIDs.
                   // Shares the text path's resolver so images are attributed to
                   // the bound workspace instead of the raw IM row.
                   const imgChatJid = resolveHostIpcLogicalChatJid({
@@ -9028,7 +9020,7 @@ function runSelfCapabilityMutation<T>(
   const workspaceJid = findWebJidForFolder(sourceGroup);
   if (!workspaceJid) return mutate();
   return queue.deferStopsToQueryEnd(
-    ipcAgentId ? `${workspaceJid}#agent:${ipcAgentId}` : workspaceJid,
+    `${workspaceJid}#agent:${ipcAgentId}`,
     (runnerJid) => {
       invalidateSessionAfterRunnerExit(sourceGroup, ipcAgentId);
       // After the exited runner's own teardown has finished.
@@ -9086,11 +9078,13 @@ async function cancelAutomationLaneInput(
     withdrawQueuedInput(laneJid, messageId);
     return;
   }
-  const folder = resolveEffectiveFolder(laneJid);
+  const agentId = agentIdOfJid(laneJid);
+  const folder = agentId ? getAgent(agentId)?.group_folder : undefined;
   const executing =
+    !!agentId &&
     !!folder &&
     activeAgentBuilderTurns
-      .activeBatch(agentBuilderTurnScope(folder, agentIdOfJid(laneJid)))
+      .activeBatch(agentBuilderTurnScope(folder, agentId))
       .some((turn) => turn.messageId === messageId);
   if (
     executing ||
@@ -9136,13 +9130,11 @@ function resolveIpcAutomationActor(
   inputTurnId: string | null | undefined,
 ): AutomationActor {
   const workspaceJid = findWebJidForFolder(sourceGroup) ?? '';
-  const agent = ipcAgentId ? getAgent(ipcAgentId) : undefined;
-  if (ipcAgentId && (agent?.kind !== 'conversation' || !agent.chat_jid)) {
+  const agent = getAgent(ipcAgentId);
+  if (agent?.kind !== 'conversation' || !agent.chat_jid) {
     return { kind: 'other_turn', workspaceJid, sessionJid: workspaceJid };
   }
-  const sessionJid = agent
-    ? `${agent.chat_jid}#agent:${agent.id}`
-    : workspaceJid;
+  const sessionJid = `${agent.chat_jid}#agent:${agent.id}`;
   const turnScope = agentBuilderTurnScope(sourceGroup, ipcAgentId);
   // Judged against the turns the runner holds up to the one it names: the
   // active batch, or a batch already piped to it (a cold start merges those,
@@ -9157,7 +9149,7 @@ function resolveIpcAutomationActor(
   }
   const ownerUserId = sourceGroupEntry?.created_by;
   return deriveAutomationActor({
-    workspaceJid: agent?.chat_jid ?? workspaceJid,
+    workspaceJid: agent.chat_jid,
     sessionJid,
     owner: ownerUserId ? getUserById(ownerUserId) : undefined,
     turns: deliveredTurns,
@@ -9270,9 +9262,8 @@ async function processTaskIpc(
       throw new Error('No active user owns this workspace');
     }
     const sourceProfile = getAgentProfileForWorkspace(sourceGroup, user.id);
-    const runtimeAgent = ipcAgentId ? getAgent(ipcAgentId) : undefined;
+    const runtimeAgent = getAgent(ipcAgentId);
     const runtimeRejection = getAgentBuilderRuntimeRejection({
-      runtimeAgentId: ipcAgentId,
       runtimeAgentKind: runtimeAgent?.kind ?? null,
       runtimeAgentFolder: runtimeAgent?.group_folder ?? null,
       sourceFolder: sourceGroup,
@@ -9302,7 +9293,7 @@ async function processTaskIpc(
   const requireOwnerProfileActor = () => {
     const ownerId = sourceGroupEntry?.created_by;
     const user = ownerId ? getUserById(ownerId) : undefined;
-    const runtimeAgent = ipcAgentId ? getAgent(ipcAgentId) : undefined;
+    const runtimeAgent = getAgent(ipcAgentId);
     const sourceProfile = ownerId
       ? getAgentProfileForWorkspace(sourceGroup, ownerId)
       : undefined;
@@ -9312,9 +9303,8 @@ async function processTaskIpc(
       !user ||
       user.status !== 'active' ||
       sourceProfile?.is_default !== true ||
-      (ipcAgentId &&
-        (runtimeAgent?.kind !== 'conversation' ||
-          runtimeAgent.group_folder !== sourceGroup))
+      runtimeAgent?.kind !== 'conversation' ||
+      runtimeAgent.group_folder !== sourceGroup
     ) {
       throw new OwnerProfileStoreError(
         'not_home_workspace',
@@ -9392,7 +9382,7 @@ async function processTaskIpc(
       actorId: user.id,
       sourceType: 'agent_runtime',
       sourceId: activeTurn.messageId,
-      sessionId: getSession(sourceGroup, ipcAgentId ?? undefined) ?? null,
+      sessionId: getSession(sourceGroup, ipcAgentId) ?? null,
       observedAt: new Date().toISOString(),
     };
     return { user, workspaceJid, activeTurn, context };
@@ -9676,7 +9666,7 @@ async function processTaskIpc(
         );
         const capabilityValid =
           mutationOperation &&
-          (!ipcAgentId || runtimeAgentKind === 'conversation') &&
+          runtimeAgentKind === 'conversation' &&
           (hostTurnKind === 'interactive' || hostTurnKind === 'automation') &&
           verifyAndConsumeWorkspaceMemoryMutation(
             { groupFolder: sourceGroup, agentId: ipcAgentId },
@@ -10765,9 +10755,10 @@ async function handleDiscordIpcRequest(
 }
 
 /**
- * Process messages for a user-created conversation agent.
- * Similar to processGroupMessages but uses agent-specific session/IPC and virtual JID.
- * The agent process stays alive for idleTimeout, cycling idle→running.
+ * Process the pending input of one session (a conversation or a spawned
+ * task), addressed `<workspaceJid>#agent:<agentId>`. Called by GroupQueue
+ * when it is this session's turn. The runner stays alive for idleTimeout,
+ * cycling idle→running as later input is piped in.
  */
 async function processAgentConversation(
   chatJid: string,
@@ -10950,8 +10941,8 @@ async function processAgentConversation(
         undefined,
         persistPluginExpansion,
       );
-      // Same crash-safe split as processGroupMessages (#18 P2-bug-2):
-      // hold the recovery cursor when toSend still has work pending.
+      // Crash-safe split (#18 P2-bug-2): hold the recovery cursor when toSend
+      // still has work pending.
       const advanceReplyCursor =
         toSend.length === 0
           ? completeOutOfBandMessage
@@ -11191,11 +11182,10 @@ async function processAgentConversation(
       new Date().toISOString(),
   });
 
-  // ── Feishu Streaming Card (conversation agent) ──
-  // Unlike processGroupMessages which falls back to chatJid, conversation agents
-  // only stream when the message originates from an IM channel (replySourceImJid).
-  // Web-only interactions don't need a Feishu streaming card.
-  // Use agent-scoped key to avoid colliding with the main session's streaming card (#242).
+  // ── Feishu Streaming Card ──
+  // A session streams only when the message originates from an IM channel
+  // (replySourceImJid); Web-only interactions need no Feishu streaming card.
+  // The key is session-scoped so sessions bound to one chat never collide (#242).
   const streamingSessionJid = replySourceImJid
     ? `${replySourceImJid}#agent:${agentId}`
     : undefined;
@@ -11640,9 +11630,9 @@ async function processAgentConversation(
     { session: NonNullable<typeof agentStreamingSession>; jid: string }
   >();
   let agentStreamingAccText = '';
-  // Same bookkeeping as the main session: process visibility is read live
-  // (PATCH /api/groups/:jid changes it without a restart) and every turn's
-  // thinking summary and trace is stored when the turn settles.
+  // Process visibility is read live (PATCH /api/groups/:jid changes it
+  // without a restart) and every turn's thinking summary and trace is stored
+  // when the turn settles.
   const resolveProcessVisibility = (): ProcessVisibility =>
     interactionMode === 'proactive'
       ? getWorkspaceProcessVisibility(effectiveGroup.folder)
@@ -11652,7 +11642,7 @@ async function processAgentConversation(
     getVisibility: resolveProcessVisibility,
   });
   // What earlier attempts of these inputs sent before they failed and were
-  // retried (see the main session).
+  // retried: this attempt's reply, or closing note, carries it too.
   const takeCarriedProgress = (): void =>
     turnTraces.seedProgress(
       lastProcessed.id,
@@ -11673,8 +11663,8 @@ async function processAgentConversation(
     }
     turnTraces.discard(inputId);
   };
-  // As in the main session: a proactive turn that sent progress but ends
-  // without a reply gets a closing note to hang its process on.
+  // A proactive turn that sent progress but ends without a reply gets a
+  // closing note to hang its process on.
   const keepProactiveProgress = (
     inputId: string,
     ending: ProactiveTurnEnding,
@@ -11755,14 +11745,13 @@ async function processAgentConversation(
   let agentStreamInterrupted = false;
   let agentStreamSteered = false;
   let agentInterruptFinalized = false;
-  // Mirrors the main session's `output.status === 'closed'` handling: set when
-  // the container drained mid-query so the finally block finalizes the card as
-  // "reconnecting" instead of leaving a zombie 生成中 card.
+  // Set when the container drained mid-query so the finally block finalizes
+  // the card as "reconnecting" instead of leaving a zombie 生成中 card.
   let agentClosed = false;
   let runnerClosedBySteer = false;
-  // ── 卡片挂起完成机制（与主路径 runContainerAgent 对齐）──
-  // Sub-Agent 路径首条回复后本就不再向 IM 发消息（isFirstReply 门控），挂起
-  // 机制在这里同时修复了"后台任务汇总只入库、飞书永远看不到"的消息丢失。
+  // ── 卡片挂起完成机制 ──
+  // 首条回复后本就不再向 IM 发消息（isFirstReply 门控），挂起机制同时修复了
+  // "后台任务汇总只入库、飞书永远看不到"的消息丢失。
   let heldAgentParts: string[] = [];
   // Keep the running Workflow projection across the held acknowledgement
   // turn. Otherwise sdk_final clears the browser's live task card while the
@@ -11778,7 +11767,7 @@ async function processAgentConversation(
     heldAgentParts.length > 0
       ? heldAgentParts.join(HELD_TURN_DIVIDER) + HELD_TURN_DIVIDER
       : '';
-  // 挂起序列异常收口：给合并行追加说明注记并广播（对齐主路径 finalizeHeldDbMessage）
+  // 挂起序列异常收口：给合并行追加说明注记并广播
   const finalizeHeldAgentDbMessage = (
     note: string | null,
     reason: 'interrupted' | 'truncated',
@@ -12410,9 +12399,8 @@ async function processAgentConversation(
     flushAcknowledgedIpcForJid(virtualChatJid);
     cursorCommittedInputTurns.add(inputTurnId);
   };
-  // Conversation twin of processGroupMessages' settleDeterministicFailure:
-  // the input fails its Turn durably and commits whether or not the channel
-  // notice lands. When a proactive utterance already reached the channel, the
+  // A deterministic failure (one a replay cannot fix): the input fails its
+  // Turn durably and commits whether or not the channel notice lands. When a proactive utterance already reached the channel, the
   // tail notice sent from the finally block owns the channel notification.
   const settleAgentDeterministicFailure = async (
     noticeKey: string,
@@ -12911,7 +12899,9 @@ async function processAgentConversation(
         lastProcessed.id,
       );
       const processVisibility = resolveProcessVisibility();
-      // Every Web frame names the input it answers (see the main Session).
+      // Every Web frame names the input it answers, the `turn_id` of the
+      // final row: a warm turn's presentation `turnId` is the Runner's own,
+      // so it alone cannot pair the live card with its final.
       const inputStreamEvent: StreamEvent = {
         ...output.streamEvent,
         inputTurnId: outputInputTurnId,
@@ -13198,8 +13188,8 @@ async function processAgentConversation(
           (output.proactiveFinalCandidate ?? output.result ?? '').trim(),
         );
       } else if (output.proactiveFinalCandidate?.trim()) {
-        // Conversation Agents obey the same strict delivery boundary as the
-        // main Agent: only send_message may create a user-visible utterance.
+        // Strict delivery boundary: only send_message may create a
+        // user-visible utterance.
         logSuppressedProactiveFinal(teamRole, {
           chatJid,
           agentId,
@@ -13422,7 +13412,7 @@ async function processAgentConversation(
         return;
       }
       if (text) {
-        // ── 挂起判定（消息级，与卡片存在性解耦，对齐主路径）──
+        // ── 挂起判定（消息级，与卡片存在性解耦）──
         const isPartialOutput =
           output.sourceKind === 'compact_partial' ||
           output.sourceKind === 'overflow_partial';
@@ -13905,9 +13895,8 @@ async function processAgentConversation(
         }
         resetIdleTimer();
 
-        // Per-turn snapshot cleanup — mirror of the main path (clearStreamingSnapshot
-        // after each substantive reply). Conversation agents stay warm for
-        // IDLE_TIMEOUT; without this, refreshing the page during the warm window
+        // Per-turn snapshot cleanup (clearStreamingSnapshot after each
+        // substantive reply). Sessions stay warm for IDLE_TIMEOUT; without this, refreshing the page during the warm window
         // restores a zombie「生成中」spinner from the stale agent snapshot. Skip
         // partials (intermediate compression outputs, not the final reply).
         if (
@@ -14042,8 +14031,6 @@ async function processAgentConversation(
       {
         group: effectiveGroup,
         profile: agentProfile,
-        turnId: lastProcessed.id,
-        runtimeAgentId: agentId,
         runtimeAgentKind: agent.kind,
       },
     );
@@ -14361,9 +14348,8 @@ async function processAgentConversation(
     }
     if (agentStreamingSession) {
       if (agentStreamingSession.isActive()) {
-        // Symmetric with the main session's five-way finalize (index.ts ~3804):
-        // every "card built but never completed" path must finalize so the card
-        // can't get stuck at 生成中 (zombie card).
+        // Every "card built but never completed" path must finalize so the
+        // card can't get stuck at 生成中 (zombie card).
         if (heldAgentParts.length > 0) {
           // 挂起收口：后台任务未等到 settle 进程就结束了。DB 合并行补注记 +
           // 卡片定稿「已中断」+ 原因，不留僵尸「后台任务运行中」卡。
@@ -14596,7 +14582,7 @@ async function processAgentConversation(
 
     // ── 保存中断内容 ──
     // Text already delivered as this input's reply stays in the accumulator;
-    // never save it again as a partial (the main path's !sentReply).
+    // never save it again as a partial.
     if (
       wasInterrupted &&
       agentReplySentByInput.get(activeAgentInputTurnId) !== true
@@ -16718,20 +16704,21 @@ function interruptActiveSessionRun(
 interface ChannelTurnIdentityScope {
   provider: string;
   accountId: string;
-  /** Session agent id; `null` is the Workspace main Session. */
-  agentId: string | null;
+  agentId: string;
 }
 
 /**
- * Channel identity of the Turn an input of `logicalJid` that arrived through
- * `sourceJid` owns — derived exactly like ChannelTurnRuntime.start: provider
- * and Bot account from the transport route, session from the logical JID.
+ * Channel identity of the Turn an input of `logicalJid` (a session's runtime
+ * JID) that arrived through `sourceJid` owns — derived exactly like
+ * ChannelTurnRuntime.start: provider and Bot account from the transport
+ * route, session from the logical JID.
  */
 function channelTurnScopeForInput(
   logicalJid: string,
   sourceJid: string | null | undefined,
 ): ChannelTurnIdentityScope | null {
-  if (!sourceJid) return null;
+  const agentId = agentIdOfJid(logicalJid);
+  if (!sourceJid || !agentId) return null;
   const address = parseChannelAddress(sourceJid);
   if (!address) return null;
   const conversationJid = channelConversationJid(sourceJid);
@@ -16740,15 +16727,7 @@ function channelTurnScopeForInput(
     (registeredGroups[conversationJid] ?? getRegisteredGroup(conversationJid))
       ?.channel_account_id;
   if (!accountId) return null;
-  const agentMarker = logicalJid.indexOf('#agent:');
-  return {
-    provider: address.provider,
-    accountId,
-    agentId:
-      agentMarker >= 0
-        ? logicalJid.slice(agentMarker + '#agent:'.length)
-        : null,
-  };
+  return { provider: address.provider, accountId, agentId };
 }
 
 /**

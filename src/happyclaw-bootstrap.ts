@@ -19,21 +19,20 @@ export function isHappyClawBootstrapTurn(
 export interface HappyClawOwnerProfileRuntime {
   isHome: boolean;
   isDefaultProfile: boolean;
-  runtimeAgentId?: string | null;
   runtimeAgentKind?: 'task' | 'conversation' | 'spawn' | null;
 }
 
 /**
- * Structural capability survives a turn-less terminal warmup so the same
- * runner can later serve an admitted owner turn. Per-turn data and mutations
- * remain host-authorized; task/spawn runtimes never receive it.
+ * Any conversation session of Home running the built-in HappyClaw has the
+ * capability. Per-turn data and mutations remain host-authorized; task and
+ * spawn runtimes never receive it.
  */
 export function isHappyClawOwnerProfileRuntimeStructurallyEligible(
   input: HappyClawOwnerProfileRuntime,
 ): boolean {
-  return Boolean(
+  return (
     input.isHome &&
     input.isDefaultProfile &&
-    (!input.runtimeAgentId || input.runtimeAgentKind === 'conversation'),
+    input.runtimeAgentKind === 'conversation'
   );
 }

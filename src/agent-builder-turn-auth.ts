@@ -15,30 +15,25 @@ export interface AgentBuilderTurnContext {
 }
 
 /**
- * Keep owner-turn authorization isolated per workspace runtime session.
- * The main session retains the historical folder key; conversation sessions
- * get their own namespace so concurrent chats cannot borrow confirmations.
+ * Keep owner-turn authorization isolated per session, so concurrent chats of
+ * one workspace cannot borrow each other's confirmations.
  */
 export function agentBuilderTurnScope(
   folder: string,
-  runtimeAgentId?: string | null,
+  runtimeAgentId: string,
 ): string {
-  return runtimeAgentId
-    ? `${folder}\u0000conversation:${runtimeAgentId}`
-    : folder;
+  return `${folder}\u0000conversation:${runtimeAgentId}`;
 }
 
 export function getAgentBuilderRuntimeRejection(input: {
-  runtimeAgentId?: string | null;
   runtimeAgentKind?: 'task' | 'conversation' | 'spawn' | null;
   runtimeAgentFolder?: string | null;
   sourceFolder: string;
   sourceProfileIsDefault: boolean;
 }): string | null {
   if (
-    input.runtimeAgentId &&
-    (input.runtimeAgentKind !== 'conversation' ||
-      input.runtimeAgentFolder !== input.sourceFolder)
+    input.runtimeAgentKind !== 'conversation' ||
+    input.runtimeAgentFolder !== input.sourceFolder
   ) {
     return 'Agent Builder is only available to ordinary main-Agent conversations';
   }
