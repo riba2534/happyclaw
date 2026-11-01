@@ -66,9 +66,6 @@ vi.mock('../src/db.js', () => ({
   storeMessageDirect: vi.fn(),
   updateChatName: vi.fn(),
 }));
-vi.mock('../src/message-notifier.js', () => ({
-  notifyNewImMessage: vi.fn(),
-}));
 vi.mock('../src/logger.js', () => ({
   logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
@@ -79,7 +76,6 @@ vi.mock('../src/im-downloader.js', async (importOriginal) => {
 });
 
 import { storeMessageDirect } from '../src/db.js';
-import { notifyNewImMessage } from '../src/message-notifier.js';
 import { MAX_FILE_SIZE, saveDownloadedFile } from '../src/im-downloader.js';
 import {
   createDiscordConnection,
@@ -245,7 +241,6 @@ describe('Discord empty-gate live persist', () => {
     );
     expect(storeMessageDirect).toHaveBeenCalled();
     expect(storeMessageDirect.mock.calls[0][4]).toBe('[表情包: wave]');
-    expect(notifyNewImMessage).toHaveBeenCalled();
   });
 
   test('forwarded snapshot with content persists', async () => {
@@ -261,7 +256,6 @@ describe('Discord empty-gate live persist', () => {
     );
     expect(storeMessageDirect).toHaveBeenCalled();
     expect(storeMessageDirect.mock.calls[0][4]).toBe('forwarded hello');
-    expect(notifyNewImMessage).toHaveBeenCalled();
   });
 
   test('unauthorized sticker-only does not persist', async () => {
@@ -274,7 +268,6 @@ describe('Discord empty-gate live persist', () => {
       }),
     );
     expect(storeMessageDirect).not.toHaveBeenCalled();
-    expect(notifyNewImMessage).not.toHaveBeenCalled();
   });
 
   test('empty message still does not persist', async () => {
@@ -300,7 +293,6 @@ describe('Discord empty-gate live persist', () => {
         attachments: expect.stringContaining('"type":"image"'),
       }),
     );
-    expect(notifyNewImMessage).toHaveBeenCalledTimes(1);
   });
 
   test('unauthorized snapshot-with-attachments-only does not persist', async () => {
@@ -310,7 +302,6 @@ describe('Discord empty-gate live persist', () => {
     await handlers[0]?.(snapshotImageOnlyMsg('snap-att-deny'));
     expect(fetchMock).not.toHaveBeenCalled();
     expect(storeMessageDirect).not.toHaveBeenCalled();
-    expect(notifyNewImMessage).not.toHaveBeenCalled();
   });
 
   test('snapshot attachments in the discord.js Message shape are downloaded', async () => {
@@ -342,7 +333,6 @@ describe('Discord empty-gate live persist', () => {
         attachments: expect.stringContaining('"type":"image"'),
       }),
     );
-    expect(notifyNewImMessage).toHaveBeenCalledTimes(1);
   });
 
   test('image-only download failure persists [图片下载失败] instead of hitting the empty gate', async () => {
@@ -361,7 +351,6 @@ describe('Discord empty-gate live persist', () => {
     expect(fetchMock).toHaveBeenCalledOnce();
     expect(storeMessageDirect).toHaveBeenCalledTimes(1);
     expect(storeMessageDirect.mock.calls[0][4]).toBe('[图片下载失败]');
-    expect(notifyNewImMessage).toHaveBeenCalledTimes(1);
   });
 
   test('text plus a failed image keeps the text and appends the failure marker', async () => {
@@ -403,7 +392,6 @@ describe('Discord empty-gate live persist', () => {
     expect(storeMessageDirect.mock.calls[0][4]).toBe(
       `[文件下载失败: ${EVIL_NAME_SANITIZED}]`,
     );
-    expect(notifyNewImMessage).toHaveBeenCalledTimes(1);
   });
 
   test('oversized attachments are marked without being downloaded', async () => {
@@ -487,7 +475,6 @@ describe('Discord empty-gate live persist', () => {
     expect(storeMessageDirect.mock.calls[0][4]).toBe(
       `[文件下载失败: ${EVIL_NAME_SANITIZED}]`,
     );
-    expect(notifyNewImMessage).toHaveBeenCalledTimes(1);
   });
 
   test('disconnect fences a held media callback and a new connection stores redelivery once', async () => {

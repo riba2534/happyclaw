@@ -41,15 +41,11 @@ vi.mock('../src/db.js', () => ({
   storeChatMetadata: vi.fn(),
   storeMessageDirect: vi.fn(),
 }));
-vi.mock('../src/message-notifier.js', () => ({
-  notifyNewImMessage: vi.fn(),
-}));
 vi.mock('../src/logger.js', () => ({
   logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
 import { storeChatMetadata, storeMessageDirect } from '../src/db.js';
-import { notifyNewImMessage } from '../src/message-notifier.js';
 import {
   createDingTalkConnection,
   dingTalkCommandMentions,
@@ -213,7 +209,6 @@ describe('DingTalk group response audience', () => {
       downstream({ senderId: 'USER', content: 'dm', group: false }),
     );
     expect(storeMessageDirect).toHaveBeenCalledOnce();
-    expect(notifyNewImMessage).toHaveBeenCalled();
     expect(host.isSenderAllowedInGroup).not.toHaveBeenCalled();
   });
 
@@ -411,14 +406,13 @@ describe('DingTalk durable queue and runtime controls', () => {
       delivery_mode: 'queue',
     });
     expect(host.onFollowUpsChanged).toHaveBeenCalledWith('dingtalk:c2c:U1');
-    expect(notifyNewImMessage).not.toHaveBeenCalled();
   });
 
   test('with no active run the input starts a turn as before', async () => {
     const host = followUpHost('started');
     const { deliver } = await connect(host);
     await deliver(downstream({ senderId: 'U1', content: 'now', group: false }));
-    expect(notifyNewImMessage).toHaveBeenCalledOnce();
+    expect(host.onFollowUpMessage).toHaveBeenCalledOnce();
     expect(host.onFollowUpsChanged).not.toHaveBeenCalled();
   });
 

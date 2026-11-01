@@ -15,12 +15,10 @@ const db = vi.hoisted(() => ({
   updateChatName: vi.fn(),
   isDatabaseInitialized: () => false,
 }));
-const notify = vi.hoisted(() => ({ notifyNewImMessage: vi.fn() }));
 
 vi.mock('../src/wechat-crypto.js', () => crypto);
 vi.mock('../src/im-downloader.js', () => downloader);
 vi.mock('../src/db.js', () => db);
-vi.mock('../src/message-notifier.js', () => notify);
 vi.mock('../src/logger.js', () => ({
   logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
@@ -128,7 +126,6 @@ describe('WeChat inbound video CDN persist', () => {
     expect(downloader.saveDownloadedFile).toHaveBeenCalled();
     expect(String(db.storeMessageDirect.mock.calls[0][4])).toMatch(/视频/);
     expect(String(db.storeMessageDirect.mock.calls[0][4])).toMatch(/ws\//);
-    expect(notify.notifyNewImMessage).toHaveBeenCalled();
   });
 
   test('type 2 image still downloads', async () => {
@@ -306,7 +303,6 @@ describe('WeChat inbound image CDN placeholders', () => {
       const { content, attachments } = await persistImageOnly();
       expect(content).toBe('[图片消息（下载失败）]');
       expect(attachments).toBeUndefined();
-      expect(notify.notifyNewImMessage).toHaveBeenCalled();
     },
   );
 
@@ -330,7 +326,6 @@ describe('WeChat inbound image CDN placeholders', () => {
       const { content, attachments } = await persistImageOnly();
       expect(content).toBe('[图片消息（图片过大）]');
       expect(attachments).toBeUndefined();
-      expect(notify.notifyNewImMessage).toHaveBeenCalled();
     },
   );
 

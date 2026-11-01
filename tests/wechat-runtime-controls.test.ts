@@ -7,10 +7,8 @@ const db = vi.hoisted(() => ({
   updateChatName: vi.fn(),
   isDatabaseInitialized: () => false,
 }));
-const notify = vi.hoisted(() => ({ notifyNewImMessage: vi.fn() }));
 
 vi.mock('../src/db.js', () => db);
-vi.mock('../src/message-notifier.js', () => notify);
 vi.mock('../src/logger.js', () => ({
   logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
@@ -119,13 +117,12 @@ describe('WeChat durable queue and runtime controls', () => {
       delivery_status: 'queued',
       delivery_mode: 'queue',
     });
-    expect(notify.notifyNewImMessage).not.toHaveBeenCalled();
   });
 
   test('with no active run the input starts a turn as before', async () => {
     const host = followUpHost('started');
     await run([textMsg('now')], host, () =>
-      expect(notify.notifyNewImMessage).toHaveBeenCalled(),
+      expect(host.onFollowUpMessage).toHaveBeenCalled(),
     );
     expect(host.onFollowUpsChanged).not.toHaveBeenCalled();
   });

@@ -6,7 +6,6 @@ const inbound = vi.hoisted(() => ({
   listener: null as null | ((downstream: { data: string }) => Promise<void>),
   storeMessageDirect: vi.fn(),
   saveDownloadedFile: vi.fn(),
-  notifyNewImMessage: vi.fn(),
   logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
@@ -28,10 +27,6 @@ vi.mock('dingtalk-stream', () => ({
 vi.mock('../src/db.js', () => ({
   storeChatMetadata: vi.fn(),
   storeMessageDirect: inbound.storeMessageDirect,
-}));
-
-vi.mock('../src/message-notifier.js', () => ({
-  notifyNewImMessage: inbound.notifyNewImMessage,
 }));
 
 vi.mock('../src/im-downloader.js', () => ({
@@ -129,7 +124,6 @@ describe('DingTalk C2C inbound audio/video', () => {
     inbound.saveDownloadedFile.mockImplementation(
       async (_folder, channel, fileName) => `files/${channel}/${fileName}`,
     );
-    inbound.notifyNewImMessage.mockReset();
     inbound.logger.debug.mockReset();
     inbound.logger.info.mockReset();
     inbound.logger.warn.mockReset();
@@ -214,7 +208,6 @@ describe('DingTalk C2C inbound audio/video', () => {
     expect(inbound.storeMessageDirect.mock.calls[0][4]).toMatch(
       /^你好\n\n\[语音: audio\.amr → files\/dingtalk\/audio_\d+\.amr\]$/,
     );
-    expect(inbound.notifyNewImMessage).toHaveBeenCalled();
   });
 
   test('paired C2C audio without recognition persists [语音消息]', async () => {
@@ -236,7 +229,6 @@ describe('DingTalk C2C inbound audio/video', () => {
     expect(inbound.storeMessageDirect.mock.calls[0][4]).toMatch(
       /^\[语音: audio\.amr → files\/dingtalk\/audio_\d+\.amr\]$/,
     );
-    expect(inbound.notifyNewImMessage).toHaveBeenCalled();
   });
 
   test('paired C2C video persists [视频消息] when CDN GET fails', async () => {
@@ -255,7 +247,6 @@ describe('DingTalk C2C inbound audio/video', () => {
       'video-1',
     );
     expect(inbound.storeMessageDirect.mock.calls[0][4]).toBe('[视频消息]');
-    expect(inbound.notifyNewImMessage).toHaveBeenCalled();
   });
 
   test('paired C2C picture still persists', async () => {
@@ -270,7 +261,6 @@ describe('DingTalk C2C inbound audio/video', () => {
       'pic-1',
     );
     expect(inbound.storeMessageDirect).toHaveBeenCalled();
-    expect(inbound.notifyNewImMessage).toHaveBeenCalled();
   });
 
   test('paired C2C file still persists', async () => {
@@ -285,7 +275,6 @@ describe('DingTalk C2C inbound audio/video', () => {
       'file-1',
     );
     expect(inbound.storeMessageDirect.mock.calls[0][4]).toMatch(/文件|notes/);
-    expect(inbound.notifyNewImMessage).toHaveBeenCalled();
   });
 
   test('unauthorized C2C audio does not persist', async () => {
@@ -309,6 +298,5 @@ describe('DingTalk C2C inbound audio/video', () => {
     expect(inbound.storeMessageDirect).not.toHaveBeenCalled();
     expect(httpsSpy).not.toHaveBeenCalled();
     expect(inbound.saveDownloadedFile).not.toHaveBeenCalled();
-    expect(inbound.notifyNewImMessage).not.toHaveBeenCalled();
   });
 });

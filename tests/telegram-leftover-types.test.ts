@@ -24,7 +24,6 @@ const inbound = vi.hoisted(() => ({
   >(),
   storeChatMetadata: vi.fn(),
   storeMessageDirect: vi.fn(),
-  notifyNewImMessage: vi.fn(),
   stop: null as (() => void) | null,
   getFile: vi.fn(async (fileId: string) => ({ file_path: 'files/' + fileId })),
 }));
@@ -75,9 +74,6 @@ vi.mock('../src/db.js', () => ({
   storeChatMetadata: inbound.storeChatMetadata,
   storeMessageDirect: inbound.storeMessageDirect,
   updateChatName: vi.fn(),
-}));
-vi.mock('../src/message-notifier.js', () => ({
-  notifyNewImMessage: inbound.notifyNewImMessage,
 }));
 vi.mock('../src/logger.js', () => ({
   logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
@@ -197,7 +193,6 @@ describe('Telegram leftover inbound listeners', () => {
     inbound.handlers.clear();
     inbound.storeChatMetadata.mockReset();
     inbound.storeMessageDirect.mockReset();
-    inbound.notifyNewImMessage.mockReset();
     inbound.getFile.mockClear();
     nativeMedia.downloadHttpsBuffer.mockClear();
     inbound.stop = null;
@@ -263,7 +258,6 @@ describe('Telegram leftover inbound listeners', () => {
       baseCtx(302, { video_note: { file_id: 'vn1', file_size: 9 } }),
     );
     expect(inbound.storeMessageDirect).toHaveBeenCalledTimes(2);
-    expect(inbound.notifyNewImMessage).toHaveBeenCalledTimes(2);
     const date = new Date().toISOString().slice(0, 10);
     const downloads = path.join(
       groupsDir,
@@ -330,7 +324,6 @@ describe('Telegram leftover inbound listeners', () => {
     await inbound.handlers.get('message:contact')!(contactCtx);
 
     expect(inbound.storeMessageDirect).toHaveBeenCalledTimes(2);
-    expect(inbound.notifyNewImMessage).toHaveBeenCalledTimes(2);
     expect(storedText(0)).toBe('[位置: 坐标: 31.2, 121.5]');
     expect(storedText(1)).toBe('[联系人: Ada Lovelace]\n电话: +1555');
     for (const call of inbound.storeMessageDirect.mock.calls) {
@@ -384,6 +377,5 @@ describe('Telegram leftover inbound listeners', () => {
       baseCtx(504, { contact: { first_name: 'Ada', phone_number: '+1' } }),
     );
     expect(inbound.storeMessageDirect).not.toHaveBeenCalled();
-    expect(inbound.notifyNewImMessage).not.toHaveBeenCalled();
   });
 });

@@ -24,7 +24,6 @@ vi.mock('../src/config.js', () => ({
 vi.mock('../src/logger.js', () => ({
   logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
-vi.mock('../src/message-notifier.js', () => ({ notifyNewImMessage: vi.fn() }));
 
 const db = await import('../src/db.js');
 const reliability = await import('../src/channel-reliability-store.js');

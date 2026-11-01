@@ -70,15 +70,11 @@ vi.mock('../src/db.js', () => ({
   storeMessageDirect: vi.fn(),
   updateChatName: vi.fn(),
 }));
-vi.mock('../src/message-notifier.js', () => ({
-  notifyNewImMessage: vi.fn(),
-}));
 vi.mock('../src/logger.js', () => ({
   logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
 import { storeMessageDirect } from '../src/db.js';
-import { notifyNewImMessage } from '../src/message-notifier.js';
 import {
   createDiscordConnection,
   discordAddressedText,
@@ -436,14 +432,13 @@ describe('Discord durable queue and runtime controls', () => {
       delivery_status: 'queued',
     });
     expect(host.onFollowUpsChanged).toHaveBeenCalledWith('discord:dm:5');
-    expect(notifyNewImMessage).not.toHaveBeenCalled();
   });
 
   test('with no active run the input starts a turn as before', async () => {
     const host = followUpHost('started');
     const { deliver } = await connect(host);
     await deliver(guildMsg({ author: '5', content: 'now', dm: true }));
-    expect(notifyNewImMessage).toHaveBeenCalledOnce();
+    expect(host.onFollowUpMessage).toHaveBeenCalledOnce();
   });
 
   test('/steer and /break in a DM', async () => {
