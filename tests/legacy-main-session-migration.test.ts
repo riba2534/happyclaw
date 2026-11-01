@@ -24,6 +24,7 @@ vi.mock('../src/logger.js', () => ({
 
 const db = await import('../src/db.js');
 const migration = await import('../src/legacy-main-session-migration.js');
+const verify = await import('../src/legacy-main-session-checks.js');
 
 afterEach(() => {
   if (db.isDatabaseInitialized()) db.closeDatabase();
@@ -174,7 +175,7 @@ function mappedSession(conn: Conn, workspaceJid: string): string | undefined {
   return (
     conn
       .prepare('SELECT value FROM router_state WHERE key = ?')
-      .get(`${migration.LEGACY_MAIN_SESSION_KEY_PREFIX}${workspaceJid}`) as
+      .get(`${verify.LEGACY_MAIN_SESSION_KEY_PREFIX}${workspaceJid}`) as
       | { value: string }
       | undefined
   )?.value;
@@ -199,6 +200,43 @@ function cursorOf(conn: Conn, kind: string, chatJid: string): unknown {
     )
     .get(kind, chatJid) as { cursor: string } | undefined;
   return row ? JSON.parse(row.cursor) : undefined;
+}
+
+const tsxCli = path.join(
+  repositoryRoot,
+  'node_modules',
+  'tsx',
+  'dist',
+  'cli.mjs',
+);
+const reportScript = path.join(
+  repositoryRoot,
+  'scripts',
+  'legacy-main-session-report.ts',
+);
+
+function runReport(
+  args: string[],
+  cwd: string,
+  env: Record<string, string> = {},
+) {
+  const childEnv: NodeJS.ProcessEnv = { ...process.env, ...env };
+  // A config import would persist a generated secret under cwd/data.
+  delete childEnv.WEB_SESSION_SECRET;
+  return spawnSync(process.execPath, [tsxCli, reportScript, ...args], {
+    cwd,
+    encoding: 'utf8',
+    env: childEnv,
+  });
+}
+
+/** Size and mtime of the database file and its WAL. */
+function fileState(file: string): Array<[number, number] | null> {
+  return ['', '-wal'].map((suffix) => {
+    if (!fs.existsSync(file + suffix)) return null;
+    const stat = fs.statSync(file + suffix);
+    return [stat.size, stat.mtimeMs];
+  });
 }
 
 const HOME = 'web:main';
@@ -672,7 +710,7 @@ describe('v88 legacy main session migration', () => {
     ).toBe('pending');
 
     const checks = inspect((conn) =>
-      migration.checkLegacyMainSessionInvariants(conn, {
+      verify.checkLegacyMainSessionInvariants(conn, {
         expectedSchemaVersion: db.CURRENT_SCHEMA_VERSION,
         messagesBefore: 15,
         report,
@@ -852,7 +890,7 @@ describe('v88 legacy main session migration', () => {
           target_main_jid: 'feishu:oc_stale',
         },
       ]);
-      const checks = migration.checkLegacyMainSessionInvariants(conn, {
+      const checks = verify.checkLegacyMainSessionInvariants(conn, {
         expectedSchemaVersion: db.CURRENT_SCHEMA_VERSION,
       });
       const bindingCheck = checks.find(
@@ -1012,7 +1050,7 @@ describe('v88 legacy main session migration', () => {
         WHERE id = 'dm-2';
       UPDATE router_state SET value = '87' WHERE key = 'schema_version';
     `);
-    const checks = migration.checkLegacyMainSessionInvariants(conn, {
+    const checks = verify.checkLegacyMainSessionInvariants(conn, {
       expectedSchemaVersion: db.CURRENT_SCHEMA_VERSION,
       messagesBefore: 15,
       report,
@@ -1022,18 +1060,6 @@ describe('v88 legacy main session migration', () => {
   });
 
   test('the report script migrates a copy and exits non-zero on a failed check', () => {
-    const tsxCli = path.join(
-      repositoryRoot,
-      'node_modules',
-      'tsx',
-      'dist',
-      'cli.mjs',
-    );
-    const scriptPath = path.join(
-      repositoryRoot,
-      'scripts',
-      'legacy-main-session-report.ts',
-    );
     const runOn = (seed: (conn: Conn) => void, name: string) => {
       buildV87(seed);
       const checkout = path.join(root, name);
@@ -1049,13 +1075,8 @@ describe('v88 legacy main session migration', () => {
       fs.mkdirSync(path.join(checkout, 'data', 'sessions', 'main', '.claude'), {
         recursive: true,
       });
-      const result = spawnSync(process.execPath, [tsxCli, scriptPath], {
-        cwd: checkout,
-        encoding: 'utf8',
-        env: {
-          ...process.env,
-          HAPPYCLAW_MIGRATION_BACKUP_DIR: path.join(root, 'nope'),
-        },
+      const result = runReport([], checkout, {
+        HAPPYCLAW_MIGRATION_BACKUP_DIR: path.join(root, 'nope'),
       });
       return { result, checkout };
     };
@@ -1102,5 +1123,67 @@ describe('v88 legacy main session migration', () => {
         .filter((c: { ok: boolean }) => !c.ok)
         .map((c: { id: string }) => c.id),
     ).toEqual(['I2_bindings_target_sessions']);
+  }, 60_000);
+  test('READ_ONLY_OPEN refuses writes', () => {
+    const file = path.join(root, 'readonly-probe.db');
+    new Database(file).exec('CREATE TABLE IF NOT EXISTS t (x)').close();
+    const conn = new Database(file, verify.READ_ONLY_OPEN);
+    try {
+      expect(conn.readonly).toBe(true);
+      expect(() => conn.prepare('INSERT INTO t VALUES (1)').run()).toThrow(
+        /readonly/,
+      );
+    } finally {
+      conn.close();
+    }
+  });
+
+  test('--check reads the live database without writing and fails on a broken invariant', () => {
+    buildV87(seedRich);
+    db.initDatabase();
+    // The server keeps its connection open; a pending WAL frame stays put.
+    db.setRouterState('server_write', 'held in the WAL');
+    const workId = inspect((conn) => mappedSession(conn, WORK)!);
+    const homeId = inspect((conn) => mappedSession(conn, HOME)!);
+    const cwd = path.join(root, 'check-cwd');
+    fs.mkdirSync(cwd, { recursive: true });
+    const before = fileState(databasePath);
+
+    const passed = runReport(['--check', '--db', databasePath], cwd);
+    expect(passed.status, passed.stderr).toBe(0);
+    const output = JSON.parse(passed.stdout);
+    expect(output).toMatchObject({
+      ok: true,
+      mode: 'check',
+      readOnly: true,
+      schemaVersion: String(db.CURRENT_SCHEMA_VERSION),
+      sessions: [
+        { workspaceJid: WORK, sessionId: workId, messages: 3 },
+        { workspaceJid: HOME, sessionId: homeId, messages: 7 },
+      ],
+    });
+    // No pre-migration count to compare against.
+    expect(output.checks.map((c: { id: string }) => c.id)).not.toContain(
+      'message_count_preserved',
+    );
+    expect(fileState(databasePath)).toEqual(before);
+    // Nothing that writes on import was loaded.
+    expect(fs.readdirSync(cwd)).toEqual([]);
+
+    const writer = new Database(databasePath);
+    writer
+      .prepare(
+        `INSERT INTO messages (id, chat_jid, content, timestamp, is_from_me)
+         VALUES ('late', ?, 'x', ?, 0)`,
+      )
+      .run(HOME, T(50));
+    writer.close();
+    const failed = runReport(['--check', '--db', databasePath], cwd);
+    expect(failed.status).toBe(1);
+    expect(
+      JSON.parse(failed.stdout)
+        .checks.filter((c: { ok: boolean }) => !c.ok)
+        .map((c: { id: string }) => c.id),
+    ).toEqual(['I1_no_workspace_jid_messages']);
   }, 60_000);
 });
