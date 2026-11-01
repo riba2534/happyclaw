@@ -88,11 +88,15 @@ describe('schema v87 team mode', () => {
   test('backs up the v86 database and creates the team-mode tables', () => {
     process.env.HAPPYCLAW_MIGRATION_BACKUP_DIR = backupDir;
     db.initDatabase();
-    expect(db.CURRENT_SCHEMA_VERSION).toBe(87);
-    expect(db.getRouterState('schema_version')).toBe('87');
+    expect(db.CURRENT_SCHEMA_VERSION).toBeGreaterThanOrEqual(87);
+    expect(db.getRouterState('schema_version')).toBe(
+      String(db.CURRENT_SCHEMA_VERSION),
+    );
     const backupName = fs
       .readdirSync(backupDir)
-      .find((name) => name.startsWith('messages-v86-to-v87-'));
+      .find((name) =>
+        name.startsWith(`messages-v86-to-v${db.CURRENT_SCHEMA_VERSION}-`),
+      );
     expect(backupName).toBeDefined();
     const conn = new Database(databasePath, { readonly: true });
     try {

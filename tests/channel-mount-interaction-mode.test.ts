@@ -39,6 +39,7 @@ vi.mock('../src/middleware/auth.ts', () => ({
   },
 }));
 const db = await import('../src/db.js');
+const { formerMainSession } = await import('./helpers/legacy-main-session.js');
 const { setWebDeps } = await import('../src/web-context.js');
 const routes = (await import('../src/routes/workspaces.js')).default;
 const stopGroup = vi.fn(async () => {});
@@ -329,12 +330,17 @@ describe('mount-specific interaction mode', () => {
     expect(db.getRouterState('schema_version')).toBe(
       String(db.CURRENT_SCHEMA_VERSION),
     );
-    expect(db.getChannelMount(target)?.workspace_jid).toBe(workspaceJid);
+    // v88 then moves the main session's binding and history onto a session.
+    const formerMain = formerMainSession(db, workspaceJid);
+    expect(db.getChannelMount(target)).toMatchObject({
+      workspace_jid: workspaceJid,
+      session_id: formerMain.id,
+    });
     expect(db.getChannelMountInteractionModeOverride(target)).toBe(null);
     expect(db.getWorkspaceInteractionMode(folder)).toBe('proactive');
     expect(
       db
-        .getMessagesPage(workspaceJid)
+        .getMessagesPage(formerMain.jid)
         .find((message) => message.id === 'history-before-override')?.content,
     ).toBe('Keep this conversation');
   });
