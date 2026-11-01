@@ -1,9 +1,9 @@
 /**
  * Deleting a Runtime Session that owns a worktree, against a real GroupQueue:
  * only that session's lane is held while its worktree is checked again, so
- * the workspace's main session and its other sessions keep running, before
- * and after; a refused delete releases the lane with its work intact, and a
- * completed one drops that lane's work through its own discard hook only.
+ * the workspace's other sessions keep running, before and after; a refused
+ * delete releases the lane with its work intact, and a completed one drops
+ * that lane's work through its own discard hook only.
  */
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -110,24 +110,30 @@ async function workspace() {
     if (agentSep >= 0) return `${id}#${groupJid.slice(agentSep + 7)}`;
     return groupJid === jid ? id : groupJid;
   });
+  /** Another session of the workspace that keeps taking work. */
+  const peer = `${jid}#agent:peer`;
   const runs: string[] = [];
   /** A lane whose next run stays up until the queue closes it. */
   const busy = new Map<string, { exited: ReturnType<typeof deferred> }>();
   const runHooks: Array<(groupJid: string) => void> = [];
-  queue.setProcessMessagesFn(async (groupJid: string) => {
-    runs.push(groupJid);
-    for (const hook of runHooks) hook(groupJid);
-    const hold = busy.get(groupJid);
-    if (hold) {
-      busy.delete(groupJid);
-      queue.registerProcess(groupJid, {} as never, {
-        containerName: null,
-        groupFolder: id,
-      });
-      await hold.exited.promise;
-    }
-    return true;
-  });
+  let taskSeq = 0;
+  /** Queue one turn on `lane`, as the host does for a session's input. */
+  const enqueue = (lane: string) =>
+    queue.enqueueTask(lane, `turn-${++taskSeq}`, async () => {
+      runs.push(lane);
+      for (const hook of runHooks) hook(lane);
+      const hold = busy.get(lane);
+      if (hold) {
+        busy.delete(lane);
+        queue.registerProcess(lane, {} as never, {
+          containerName: null,
+          groupFolder: id,
+          agentId: lane.split('#agent:')[1],
+        });
+        await hold.exited.promise;
+      }
+      return true;
+    });
   const closed: string[] = [];
   const onClose = new Map<string, () => void>();
   vi.spyOn(queue, 'closeStdin').mockImplementation((groupJid: string) => {
@@ -170,7 +176,7 @@ async function workspace() {
     const exited = deferred();
     busy.set(lane, { exited });
     void exit.then(exited.resolve);
-    queue.enqueueMessageCheck(lane);
+    enqueue(lane);
     await settle();
   };
   /** Start a run on `lane` that lasts until the queue closes it. */
@@ -181,12 +187,14 @@ async function workspace() {
       onStop();
       exited.resolve();
     });
-    queue.enqueueMessageCheck(lane);
+    enqueue(lane);
     await settle();
   };
   return {
     jid,
+    peer,
     queue,
+    enqueue,
     runs,
     closed,
     discarded,
@@ -210,7 +218,7 @@ afterAll(() => {
 });
 
 describe('deleting a worktree session holds only its own lane', () => {
-  test('the main session and the other sessions keep running, during and after', async () => {
+  test('the other sessions keep running, during and after', async () => {
     const ws = await workspace();
     const doomed = await ws.createSession();
     const other = await ws.createSession();
@@ -218,11 +226,11 @@ describe('deleting a worktree session holds only its own lane', () => {
     // While the doomed session's runner is being stopped, the rest of the
     // workspace takes new work.
     await ws.keepBusy(doomed.lane, () => {
-      for (const lane of [doomed.lane, ws.jid, other.lane]) {
+      for (const lane of [doomed.lane, ws.peer, other.lane]) {
         pausedDuringStop[lane] = ws.queue.isGroupMutationPaused(lane);
       }
-      ws.queue.enqueueMessageCheck(ws.jid);
-      ws.queue.enqueueMessageCheck(other.lane);
+      ws.enqueue(ws.peer);
+      ws.enqueue(other.lane);
     });
     ws.runs.length = 0;
 
@@ -231,21 +239,21 @@ describe('deleting a worktree session holds only its own lane', () => {
     await settle();
     expect(pausedDuringStop).toEqual({
       [doomed.lane]: true,
-      [ws.jid]: false,
+      [ws.peer]: false,
       [other.lane]: false,
     });
     // Work that arrived while the doomed session was being stopped ran.
-    expect(ws.runs.sort()).toEqual([ws.jid, other.lane].sort());
+    expect(ws.runs.sort()).toEqual([ws.peer, other.lane].sort());
     // Only the deleted session's lane went through its discard hook.
     expect(ws.discarded).toContain(doomed.lane);
-    expect(ws.discarded).not.toContain(ws.jid);
+    expect(ws.discarded).not.toContain(ws.peer);
     expect(ws.discarded).not.toContain(other.lane);
 
     ws.runs.length = 0;
-    ws.queue.enqueueMessageCheck(ws.jid);
-    ws.queue.enqueueMessageCheck(other.lane);
+    ws.enqueue(ws.peer);
+    ws.enqueue(other.lane);
     await settle();
-    expect(ws.runs.sort()).toEqual([ws.jid, other.lane].sort());
+    expect(ws.runs.sort()).toEqual([ws.peer, other.lane].sort());
   });
 
   test.each(['sessions', 'agents'] as const)(
@@ -273,10 +281,10 @@ describe('deleting a worktree session holds only its own lane', () => {
       expect(ws.discarded).toEqual([]);
 
       ws.runs.length = 0;
-      ws.queue.enqueueMessageCheck(session.lane);
-      ws.queue.enqueueMessageCheck(ws.jid);
+      ws.enqueue(session.lane);
+      ws.enqueue(ws.peer);
       await settle();
-      expect(ws.runs.sort()).toEqual([session.lane, ws.jid].sort());
+      expect(ws.runs.sort()).toEqual([session.lane, ws.peer].sort());
     },
   );
 
@@ -309,9 +317,9 @@ describe('deleting a worktree session holds only its own lane', () => {
     // The lane is not left held: it was dropped like a deleted session's.
     expect(ws.discarded).toContain(session.lane);
     expect(ws.queue.isGroupMutationPaused(session.lane)).toBe(false);
-    ws.queue.enqueueMessageCheck(ws.jid);
+    ws.enqueue(ws.peer);
     await settle();
-    expect(ws.runs).toContain(ws.jid);
+    expect(ws.runs).toContain(ws.peer);
 
     // Deleting again finishes the job.
     expect((await ws.deleteSession(session.id)).status).toBe(200);
@@ -332,29 +340,29 @@ describe('deleting a worktree session holds only its own lane', () => {
     expect(store.getSessionWorktree(session.id)?.status).toBe('active');
     expect(ws.queue.isGroupMutationPaused(session.lane)).toBe(false);
     expect(ws.discarded).toEqual([]);
-    ws.queue.enqueueMessageCheck(session.lane);
+    ws.enqueue(session.lane);
     await settle();
     expect(ws.runs).toEqual([session.lane]);
   });
 
-  test('the main session finishing its turn during the hold drains its queue at once', async () => {
+  test('another session finishing its turn during the hold drains its queue at once', async () => {
     const ws = await workspace();
     const session = await ws.createSession();
-    const mainExit = deferred();
+    const peerExit = deferred();
     const sessionExit = deferred();
-    await ws.keepBusyUntil(ws.jid, mainExit.promise);
+    await ws.keepBusyUntil(ws.peer, peerExit.promise);
     await ws.keepBusyUntil(session.lane, sessionExit.promise);
-    // Asked to close, the session's runner keeps going until main has run
-    // again: a follow-up for main queued behind its busy runner, whose turn
-    // then ended while the session's lane is held.
+    // Asked to close, the session's runner keeps going until the peer has run
+    // again: a follow-up for the peer queued behind its busy runner, whose
+    // turn then ended while the session's lane is held.
     ws.onClose(session.lane, () => {
-      ws.queue.enqueueMessageCheck(ws.jid);
-      mainExit.resolve();
+      ws.enqueue(ws.peer);
+      peerExit.resolve();
     });
-    let heldWhenMainRan: boolean | undefined;
+    let heldWhenPeerRan: boolean | undefined;
     ws.onRun((jid) => {
-      if (jid !== ws.jid) return;
-      heldWhenMainRan = ws.queue.isGroupMutationPaused(session.lane);
+      if (jid !== ws.peer) return;
+      heldWhenPeerRan = ws.queue.isGroupMutationPaused(session.lane);
       sessionExit.resolve();
     });
     const fallback = setTimeout(() => sessionExit.resolve(), 2000);
@@ -363,8 +371,8 @@ describe('deleting a worktree session holds only its own lane', () => {
     const deleted = await ws.deleteSession(session.id);
     clearTimeout(fallback);
     expect(deleted.status).toBe(200);
-    expect(heldWhenMainRan).toBe(true);
-    expect(ws.runs).toEqual([ws.jid]);
+    expect(heldWhenPeerRan).toBe(true);
+    expect(ws.runs).toEqual([ws.peer]);
   });
 });
 
@@ -437,10 +445,10 @@ describe('deleting a whole workspace', () => {
     expect(rebuilt.status).toBe(200);
     expect(ws.discarded).toEqual(expect.arrayContaining([ws.jid, imJid]));
     expect(runtimeState.getUsageLimitWait(imJid)).toBeNull();
-    // The workspace itself lives on and takes new work.
+    // The workspace itself lives on and its sessions take new work.
     ws.runs.length = 0;
-    ws.queue.enqueueMessageCheck(ws.jid);
+    ws.enqueue(ws.peer);
     await settle();
-    expect(ws.runs).toEqual([ws.jid]);
+    expect(ws.runs).toEqual([ws.peer]);
   });
 });

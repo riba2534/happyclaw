@@ -15,12 +15,13 @@ import { DATA_DIR } from '../src/config.js';
 // group-queue-descendants.test.ts) so the tests stay hermetic and don't need a
 // real spawned process.
 
+const AGENT_ID = 'conversation';
+
 interface SeedOpts {
   active?: boolean;
   groupFolder?: string;
   agentId?: string | null;
   queryInFlight?: boolean;
-  activeRunnerIsTask?: boolean;
   lastActivityAt?: number | null;
 }
 
@@ -28,22 +29,19 @@ function seedRunner(q: GroupQueue, jid: string, opts: SeedOpts = {}) {
   const anyQ = q as unknown as { groups: Map<string, Record<string, unknown>> };
   anyQ.groups.set(jid, {
     active: opts.active ?? true,
-    activeRunnerIsTask: opts.activeRunnerIsTask ?? false,
     lastActivityAt: opts.lastActivityAt ?? null,
     queryInFlight: opts.queryInFlight ?? false,
-    pendingMessages: false,
     pendingTasks: [],
     process: null,
     containerName: null,
     displayName: null,
     groupFolder: opts.groupFolder ?? 'main',
-    agentId: opts.agentId ?? null,
+    agentId: opts.agentId ?? AGENT_ID,
     retryCount: 0,
     retryTimer: null,
     restarting: false,
     selectedProviderId: null,
     drainSentinelWritten: false,
-    hasIpcInjectedMessages: false,
   });
 }
 
@@ -57,6 +55,7 @@ describe('PR #547: conversation agent stays warm after final reply', () => {
   // vitest-excluded) is not polluted across runs. Cleaned up in afterEach.
   const folder = `warm-test-${process.pid}-${Date.now()}`;
   const ipcDir = path.join(DATA_DIR, 'ipc', folder);
+  const jid = `web:${folder}#agent:${AGENT_ID}`;
 
   afterEach(() => {
     fs.rmSync(ipcDir, { recursive: true, force: true });
@@ -64,7 +63,6 @@ describe('PR #547: conversation agent stays warm after final reply', () => {
 
   test('runner remains acceptable for the next message after a final reply (markRunnerQueryIdle)', () => {
     const q = new GroupQueue();
-    const jid = `web:${folder}`;
     // Active conversation runner mid-turn.
     seedRunner(q, jid, { groupFolder: folder, queryInFlight: true });
 
@@ -75,12 +73,11 @@ describe('PR #547: conversation agent stays warm after final reply', () => {
 
     // The warm runner is still a valid target for the next user message —
     // sendMessage would route into it (no cold start).
-    expect(q.hasActiveMainRunnerForMessage(jid)).toBe(true);
+    expect(q.hasActiveRunnerForMessage(jid)).toBe(true);
   });
 
   test('a hung post-reply tool call does not strand the runner: next message reuses the warm process', () => {
     const q = new GroupQueue();
-    const jid = `web:${folder}`;
     seedRunner(q, jid, { groupFolder: folder, queryInFlight: true });
 
     // Final reply emitted -> host marks idle (runner kept warm, NOT closed).
@@ -93,14 +90,13 @@ describe('PR #547: conversation agent stays warm after final reply', () => {
     expect(getState(q, jid).queryInFlight).toBe(true);
 
     // The IPC file was written to the warm runner's input dir (reuse, not respawn).
-    const inputDir = path.join(ipcDir, 'input');
+    const inputDir = path.join(ipcDir, 'agents', AGENT_ID, 'input');
     const files = fs.readdirSync(inputDir).filter((f) => f.endsWith('.json'));
     expect(files.length).toBe(1);
   });
 
   test('a new query on a warm runner is announced exactly once before streaming begins', () => {
     const q = new GroupQueue();
-    const jid = `web:${folder}`;
     seedRunner(q, jid, { groupFolder: folder, queryInFlight: false });
     const starts: Array<{ jid: string; queryId: string; startedAt: number }> =
       [];
@@ -126,7 +122,6 @@ describe('PR #547: conversation agent stays warm after final reply', () => {
 
   test('markRunnerActivity refreshes lastActivityAt so IDLE_TIMEOUT reclaims the warm runner', () => {
     const q = new GroupQueue();
-    const jid = `web:${folder}`;
     seedRunner(q, jid, { groupFolder: folder, lastActivityAt: 1 });
 
     const before = Date.now();
@@ -150,7 +145,7 @@ describe('PR #547: conversation agent stays warm after final reply', () => {
       agentId: 'spawn1',
     });
 
-    expect(q.hasActiveMainRunnerForMessage(jid)).toBe(false);
+    expect(q.hasActiveRunnerForMessage(jid)).toBe(false);
     expect(q.sendMessage(jid, 'late message')).toBe('no_active');
   });
 });

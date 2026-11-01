@@ -79,7 +79,7 @@ describe('GroupQueue query identity', () => {
       ),
     ).toBe(false);
     expect(matching.queryInFlight).toBe(true);
-    expect(matching.pendingMessages).toBe(false);
+    expect(matching.pendingTasks).toEqual([]);
     expect(
       queue.drainProviderRunnersForCredentialRefresh('provider-refresh'),
     ).toBe(0);
@@ -176,13 +176,12 @@ describe('GroupQueue query identity', () => {
     );
   });
 
-  test('tracks conversation-agent coverage without creating a task retry snapshot', () => {
+  test('records the session lane retry snapshot alongside its query coverage', () => {
     const queue = new GroupQueue();
     const jid = 'web:home#agent:conversation-a';
     const state = (queue as any).getGroup(jid);
     state.active = true;
     state.groupFolder = 'home';
-    state.activeRunnerIsTask = true;
     state.queryInFlight = true;
     state.queryId = 'agent-root';
 
@@ -202,25 +201,11 @@ describe('GroupQueue query identity', () => {
     expect(queue.activeQueryExclusivelyCoversMessage(jid, 'om_root')).toBe(
       true,
     );
-    expect(state.messageRetrySnapshot).toBeNull();
+    expect(state.messageRetrySnapshot).toEqual(agentSnapshot);
 
-    // A task runner outside a conversation lane records no retry snapshot.
-    const taskJid = 'web:home-task';
-    const taskState = (queue as any).getGroup(taskJid);
-    taskState.active = true;
-    taskState.groupFolder = 'home';
-    taskState.activeRunnerIsTask = true;
-    taskState.queryInFlight = false;
+    // No runner, no attempt to own the batch.
     expect(
-      queue.setMessageRetrySnapshot(taskJid, {
-        coveredCursors: [
-          { timestamp: '2026-08-14T00:00:00.000Z', id: 'task-input' },
-        ],
-        cursor: {
-          timestamp: '2026-08-14T00:00:00.000Z',
-          id: 'task-input',
-        },
-      }),
+      queue.setMessageRetrySnapshot('web:home#agent:idle', agentSnapshot),
     ).toBe(false);
   });
 
