@@ -1,9 +1,6 @@
-import { LEGACY_MAIN_SESSION_KEY_PREFIX } from '../../src/legacy-main-session-migration.js';
+import { LEGACY_MAIN_SESSION_KEY_PREFIX } from '../../src/legacy-main-session-checks.js';
 
-/**
- * The session a workspace's main session became in v88, and its address.
- * Import after mocking config: the migration module reads it.
- */
+/** The session a workspace's main session became in v88, and its address. */
 export function formerMainSession(
   db: { getRouterState(key: string): string | undefined },
   workspaceJid: string,
