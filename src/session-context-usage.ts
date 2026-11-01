@@ -148,7 +148,7 @@ async function lastRequest(transcript: string): Promise<LastRequest | null> {
  */
 function contextWindowFor(
   groupFolder: string,
-  agentId: string | null,
+  agentId: string,
   model: string,
   launchModel: string | null,
 ): number {
@@ -168,14 +168,15 @@ function contextWindowFor(
 }
 
 /**
- * How full one conversation's context is now. Everything is null when the
- * conversation has no SDK session (nothing ran yet, or it was cleared) or
- * its context was just compacted.
+ * How full one session's context is now. Everything is null when there is no
+ * session (`agentId` null), it has no SDK session (nothing ran yet, or it was
+ * cleared) or its context was just compacted.
  */
 export async function readSessionContextUsage(
   groupFolder: string,
   agentId: string | null,
 ): Promise<SessionContextUsage> {
+  if (!agentId) return NO_CONTEXT_USAGE;
   const sessionId = getSession(groupFolder, agentId);
   if (!sessionId) return NO_CONTEXT_USAGE;
   const transcript = sessionTranscriptPath(groupFolder, agentId, sessionId);

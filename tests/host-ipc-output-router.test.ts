@@ -503,20 +503,14 @@ describe('host IPC primary output routing', () => {
     expect(sendImWithRetry).not.toHaveBeenCalled();
   });
 
-  test('wires both host execution paths to the live visible answer for interruption persistence', () => {
+  test('wires the session lane to the live visible answer for interruption persistence', () => {
     const main = fs.readFileSync(
       path.join(process.cwd(), 'src/index.ts'),
       'utf8',
     );
 
     expect(main).toMatch(
-      /streamingAccumulatedText\s*=\s*answerProjection\.visibleAnswerText;/,
-    );
-    expect(main).toMatch(
       /agentStreamingAccText\s*=\s*agentAnswerProjection\.visibleAnswerText;/,
-    );
-    expect(main).not.toContain(
-      'streamingAccumulatedText = answerProjection.answerText;',
     );
     expect(main).not.toContain(
       'agentStreamingAccText = agentAnswerProjection.answerText;',

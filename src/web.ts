@@ -3792,7 +3792,7 @@ export function broadcastRunStarted(
  */
 export async function broadcastContextUsage(
   groupFolder: string,
-  agentId: string | null,
+  agentId: string,
   usage?: SessionContextUsage,
 ): Promise<void> {
   try {
@@ -3804,7 +3804,7 @@ export async function broadcastContextUsage(
         {
           type: 'context_usage',
           chatJid: jid,
-          ...(agentId ? { agentId } : {}),
+          agentId,
           ...value,
         },
         isHostGroupJid(jid),

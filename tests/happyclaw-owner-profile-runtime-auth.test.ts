@@ -367,23 +367,14 @@ describe('HappyClaw Owner Profile home-anchored sender identity', () => {
 
 describe('HappyClaw Owner Profile runtime isolation', () => {
   const base = {
-    runtimeAgentId: null,
-    runtimeAgentKind: null,
-    runtimeAgentFolder: null,
+    runtimeAgentKind: 'conversation',
+    runtimeAgentFolder: 'home-folder',
     sourceFolder: 'home-folder',
     sourceProfileIsDefault: true,
   } as const;
 
-  test('allows the default HappyClaw main and same-workspace conversation sessions', () => {
+  test('allows every conversation session of the workspace, each with its own turns', () => {
     expect(getAgentBuilderRuntimeRejection(base)).toBeNull();
-    expect(
-      getAgentBuilderRuntimeRejection({
-        ...base,
-        runtimeAgentId: 'conversation-1',
-        runtimeAgentKind: 'conversation',
-        runtimeAgentFolder: 'home-folder',
-      }),
-    ).toBeNull();
     expect(agentBuilderTurnScope('home-folder', 'conversation-1')).not.toBe(
       agentBuilderTurnScope('home-folder', 'conversation-2'),
     );
@@ -398,12 +389,7 @@ describe('HappyClaw Owner Profile runtime isolation', () => {
     ).not.toBeNull();
     for (const runtimeAgentKind of ['spawn', 'task'] as const) {
       expect(
-        getAgentBuilderRuntimeRejection({
-          ...base,
-          runtimeAgentId: `${runtimeAgentKind}-1`,
-          runtimeAgentKind,
-          runtimeAgentFolder: 'home-folder',
-        }),
+        getAgentBuilderRuntimeRejection({ ...base, runtimeAgentKind }),
       ).not.toBeNull();
     }
   });

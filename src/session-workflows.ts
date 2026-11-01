@@ -211,14 +211,16 @@ export function normalizeWorkflowRun(
   };
 }
 
-function sessionProjectRoots(
-  groupFolder: string,
-  agentId: string | null,
-): string[] {
-  const claudeRoot = agentId
-    ? path.join(DATA_DIR, 'sessions', groupFolder, 'agents', agentId, '.claude')
-    : path.join(DATA_DIR, 'sessions', groupFolder, '.claude');
-  const projectsRoot = path.join(claudeRoot, 'projects');
+function sessionProjectRoots(groupFolder: string, agentId: string): string[] {
+  const projectsRoot = path.join(
+    DATA_DIR,
+    'sessions',
+    groupFolder,
+    'agents',
+    agentId,
+    '.claude',
+    'projects',
+  );
   try {
     return fs
       .readdirSync(projectsRoot, { withFileTypes: true })
@@ -232,7 +234,7 @@ function sessionProjectRoots(
 /** The SDK transcript of one session, or null when it is not on disk. */
 export function sessionTranscriptPath(
   groupFolder: string,
-  agentId: string | null,
+  agentId: string,
   sessionId: string,
 ): string | null {
   return (
@@ -288,7 +290,7 @@ function usageTotal(usage: SessionAssistantUsage): number {
  */
 function loadSessionAssistantUsage(input: {
   groupFolder: string;
-  agentId: string | null;
+  agentId: string;
   sessionId: string;
 }): Map<string, SessionAssistantUsage> {
   const transcript = sessionTranscriptPath(
@@ -296,7 +298,7 @@ function loadSessionAssistantUsage(input: {
     input.agentId,
     input.sessionId,
   );
-  const cacheKey = `${input.groupFolder}:${input.agentId ?? 'main'}:${input.sessionId}`;
+  const cacheKey = `${input.groupFolder}:${input.agentId}:${input.sessionId}`;
   if (!transcript) {
     assistantUsageCache.delete(cacheKey);
     return new Map();
@@ -531,7 +533,7 @@ function mergeRecoveredUsage(
 
 export function loadSessionWorkflowRuns(input: {
   groupFolder: string;
-  agentId: string | null;
+  agentId: string;
   sessionId: string;
 }): WorkflowRunSnapshot[] {
   const dirs = sessionProjectRoots(input.groupFolder, input.agentId)
@@ -549,7 +551,7 @@ export function loadSessionWorkflowRuns(input: {
       return `${file}:${stat.mtimeMs}:${stat.size}`;
     })
     .join('|');
-  const cacheKey = `${input.groupFolder}:${input.agentId ?? 'main'}:${input.sessionId}`;
+  const cacheKey = `${input.groupFolder}:${input.agentId}:${input.sessionId}`;
   if (files.length === 0) {
     cache.delete(cacheKey);
     return [];
@@ -582,12 +584,16 @@ export function loadSessionWorkflowRuns(input: {
   return runs;
 }
 
-/** Attach completed Workflow snapshots to the assistant message that delivered them. */
+/**
+ * Attach completed Workflow snapshots to the assistant message that delivered
+ * them. Messages read without a session (`agentId` null) have no transcript.
+ */
 export function attachSessionWorkflowRuns<T extends MessageLike>(
   messages: T[],
-  input: { groupFolder: string; agentId: string | null },
+  { groupFolder, agentId }: { groupFolder: string; agentId: string | null },
 ): T[] {
-  if (messages.length === 0) return messages;
+  if (messages.length === 0 || !agentId) return messages;
+  const input = { groupFolder, agentId };
   const bySession = new Map<string, T[]>();
   for (const message of messages) {
     if (!message.session_id || !message.is_from_me) continue;

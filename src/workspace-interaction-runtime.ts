@@ -1,7 +1,7 @@
 import type { InteractionMode, ProcessVisibility } from './types.js';
 import type { StreamEvent } from './stream-event.types.js';
 
-export type PublicAgentKind = 'main' | 'conversation' | 'spawn';
+export type PublicAgentKind = 'conversation' | 'spawn';
 
 /**
  * Workspace interaction mode applies only to public, user-facing Agent loops.
