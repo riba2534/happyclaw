@@ -220,6 +220,9 @@ describe('schema version head', () => {
     // v87: team mode (team_mounts, work_items, work_item_subscriptions,
     // work_item_events, work_decisions, work_item_replies), created by
     // work-item-store.ts (schema-v87-work-items.test.ts).
-    expect(db.CURRENT_SCHEMA_VERSION).toBe(87);
+    // v88: each workspace's main session becomes a legacy_main conversation
+    // session; its state moves to the session's address
+    // (legacy-main-session-migration.test.ts).
+    expect(db.CURRENT_SCHEMA_VERSION).toBe(88);
   });
 });

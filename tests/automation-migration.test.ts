@@ -24,6 +24,7 @@ vi.mock('../src/logger.js', () => ({
 }));
 
 const db = await import('../src/db.js');
+const { formerMainSession } = await import('./helpers/legacy-main-session.js');
 const { logger } = await import('../src/logger.js');
 const store = await import('../src/automation-store.js');
 
@@ -285,6 +286,9 @@ describe('v84 → v85', () => {
         .some((f) => f.includes(`v84-to-v${db.CURRENT_SCHEMA_VERSION}-`)),
     ).toBe(true);
 
+    // v88 then retargets the main-session automations onto the session the
+    // main session became.
+    const alphaSession = formerMainSession(db, 'web:alpha').jid;
     const byId = new Map(
       store
         .listAutomations({})
@@ -317,7 +321,7 @@ describe('v84 → v85', () => {
         40,
       ),
       sessionMode: 'bound',
-      targetSessionJid: 'web:alpha',
+      targetSessionJid: alphaSession,
       deliveryRouteJid: 'feishu:oc_alpha#thread:omt_1',
       schedule: { kind: 'cron', cronExpr: '0 9 * * *', timezone: null },
       execution: 'agent',
@@ -337,7 +341,7 @@ describe('v84 → v85', () => {
       prompt: '',
       name: 'backup.sh --all',
       sessionMode: 'bound',
-      targetSessionJid: 'web:alpha',
+      targetSessionJid: alphaSession,
     });
     // Local time in the scheduler zone (UTC+8).
     expect(byId.get('once-local')).toMatchObject({
@@ -370,7 +374,7 @@ describe('v84 → v85', () => {
     const raw = new Database(databasePath, { readonly: true });
     expect(
       raw.prepare('SELECT scope_key FROM usage_limit_waits').all(),
-    ).toEqual([{ scope_key: 'web:alpha' }]);
+    ).toEqual([{ scope_key: alphaSession }]);
     expect(
       raw
         .prepare("SELECT value FROM router_state WHERE key = 'schema_version'")

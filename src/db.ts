@@ -115,6 +115,11 @@ import {
   deleteWorkspaceWorkItems,
   initWorkItemStore,
 } from './work-item-store.js';
+import {
+  migrateLegacyMainSessions,
+  relocateLegacyMainSessionDirectories,
+  type LegacyMainSessionMigrationReport,
+} from './legacy-main-session-migration.js';
 import { keyPrefixRange } from './sql-key-prefix.js';
 import {
   clearAgentSessionHistoryReinjections,
@@ -609,8 +614,12 @@ const FK_CHECK_CLEAN_AT_KEY = 'foreign_key_check_clean_at';
 const FK_CHECK_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
 export function initDatabase(
-  options: { requireCurrentSchema?: boolean } = {},
-): void {
+  options: {
+    requireCurrentSchema?: boolean;
+    /** False leaves session directories alone (the v88 report runs on a copy). */
+    relocateLegacySessionDirectories?: boolean;
+  } = {},
+): { legacyMainSessions: LegacyMainSessionMigrationReport | null } {
   const dbPath = path.join(STORE_DIR, 'messages.db');
   assertDatabaseMaintenanceAccess(dbPath);
   fs.mkdirSync(path.dirname(dbPath), { recursive: true });
@@ -2764,9 +2773,29 @@ export function initDatabase(
     })();
   }
 
+  // v87 -> v88: each workspace's implicit main session becomes an ordinary
+  // conversation session (legacy-main-session-migration.ts). Last, so every
+  // table it moves state between exists and the binding projections above
+  // have been rebuilt.
+  const legacyMainSessions =
+    rawSchemaVersionBeforeInit === null ||
+    Number(rawSchemaVersionBeforeInit) < 88
+      ? migrateLegacyMainSessions(db)
+      : null;
+
   prepareCached(
     'INSERT OR REPLACE INTO router_state (key, value) VALUES (?, ?)',
   ).run('schema_version', String(CURRENT_SCHEMA_VERSION));
+
+  // Every startup, before any Runner: finishes a move a crash interrupted.
+  // Maintenance bootstraps leave the filesystem alone.
+  if (
+    !options.requireCurrentSchema &&
+    options.relocateLegacySessionDirectories !== false
+  ) {
+    relocateLegacyMainSessionDirectories(db);
+  }
+  return { legacyMainSessions };
 }
 
 const LEGACY_ROUTER_CURSOR_BLOBS: ReadonlyArray<

@@ -28,6 +28,7 @@ vi.mock('../src/logger.js', () => ({
 }));
 
 const db = await import('../src/db.js');
+const { formerMainSession } = await import('./helpers/legacy-main-session.js');
 // Loading the runtime module registers the main HappyClaw settings reader,
 // as the server does before it initializes the database.
 const runtime = await import('../src/agent-profile-runtime.js');
@@ -203,12 +204,14 @@ function expectSessionKept(entry: LegacyCase): void {
   expect(profile.version).toBe(entry.version);
   const effective = runtime.resolveEffectiveAgentProfile(profile)!;
   expect(effective.runtime_policy.context.source).toBe(entry.effectiveSource);
-  const session = db.getSessionAgentIdentity(entry.folder, null)!;
+  // v88 moved the main session's SDK row onto its own session.
+  const sessionId = formerMainSession(db, `web:${entry.folder}`).id;
+  const session = db.getSessionAgentIdentity(entry.folder, sessionId)!;
   expect(session.identity_hash).toBe(effective.identity_hash);
   expect(session.agent_profile_version).toBe(profile.version);
-  expect(db.getWorkspaceRuntimeSession(entry.folder)?.identity_hash).toBe(
-    effective.identity_hash,
-  );
+  expect(
+    db.getWorkspaceRuntimeSession(entry.folder, sessionId)?.identity_hash,
+  ).toBe(effective.identity_hash);
   // The persisted hash follows the pinned policy, so a later cosmetic edit
   // is not mistaken for an identity change.
   expect(profile.identity_hash).toBe(
