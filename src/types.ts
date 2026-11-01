@@ -784,6 +784,8 @@ export interface SubAgent {
     | 'team_router'
     /** Team mode: the session that does one work item. */
     | 'work_item'
+    /** The former implicit main session of a workspace, made a session by the v88 migration. */
+    | 'legacy_main'
     | null;
   /** automations.id when source_kind='automation'. */
   automation_id?: string | null;

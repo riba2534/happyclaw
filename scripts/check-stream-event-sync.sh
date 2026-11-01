@@ -52,6 +52,11 @@ for name in thinking-text stream-steps; do
     "$ROOT/web/src/lib/$name.ts"
 done
 
+# Session list order
+check_sync "$ROOT/shared/session-order.ts" \
+  "$ROOT/src/session-order.ts" \
+  "$ROOT/web/src/lib/session-order.ts"
+
 # Model connection presets, model lists and upstream errors
 check_sync "$ROOT/shared/model-providers.ts" \
   "$ROOT/src/model-providers.ts" \
