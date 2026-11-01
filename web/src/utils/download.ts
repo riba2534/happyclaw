@@ -105,3 +105,51 @@ export async function downloadFromDataUrl(
   const blob = await res.blob();
   triggerBlobDownload(blob, filename);
 }
+
+const IMAGE_EXTENSIONS: Record<string, string> = {
+  'image/jpeg': 'jpg',
+  'image/png': 'png',
+  'image/gif': 'gif',
+  'image/webp': 'webp',
+  'image/avif': 'avif',
+  'image/svg+xml': 'svg',
+  'image/bmp': 'bmp',
+};
+
+/**
+ * Save an image shown in the app. Where the system share sheet takes files
+ * (iOS and Android, including the installed PWA, which has no download
+ * shelf) it opens with the image so "Save Image" puts it in Photos;
+ * elsewhere the image downloads. Resolves `false` when the user dismisses
+ * the share sheet.
+ */
+export async function saveImage(
+  src: string,
+  baseName: string,
+): Promise<boolean> {
+  const fullUrl =
+    src.startsWith('data:') || src.startsWith('blob:') || src.startsWith('http')
+      ? src
+      : withBasePath(src);
+  const res = await fetch(fullUrl, { credentials: 'include' });
+  if (!res.ok) {
+    throw new DownloadError(res.status, await readDownloadErrorMessage(res));
+  }
+  const blob = await res.blob();
+  const type = blob.type || 'image/png';
+  const filename = `${baseName}.${IMAGE_EXTENSIONS[type] ?? 'png'}`;
+  const file = new File([blob], filename, { type });
+  const coarse = window.matchMedia?.('(pointer: coarse)').matches;
+  if (coarse && navigator.canShare?.({ files: [file] })) {
+    try {
+      await navigator.share({ files: [file] });
+      return true;
+    } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError')
+        return false;
+      throw err;
+    }
+  }
+  triggerBlobDownload(blob, filename);
+  return true;
+}

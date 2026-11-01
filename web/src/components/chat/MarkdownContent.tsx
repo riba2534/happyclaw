@@ -204,7 +204,7 @@ function MarkdownImage({
         role="button"
         tabIndex={0}
         aria-label={alt ? `放大图片：${alt}` : '放大图片'}
-        className="my-3 h-auto max-w-full cursor-zoom-in rounded-lg border border-surface-border transition-colors hover:border-foreground/25"
+        className="my-3 h-auto max-w-full touch-callout-default cursor-zoom-in rounded-lg border border-surface-border transition-colors hover:border-foreground/25"
         style={{ maxHeight: '400px', objectFit: 'contain' }}
         data-hc-md-image=""
         onClick={open}

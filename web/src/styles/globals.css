@@ -990,6 +990,12 @@ pre code.language-diff .hljs-deletion {
   }
 }
 
+/* Long-press on an image opens the system menu (Save Image, Copy, Share)
+   even in the installed PWA, whose body turns the callout off. */
+@utility touch-callout-default {
+  -webkit-touch-callout: default;
+}
+
 /* Bottom padding for content above floating nav — accounts for safe area */
 /* A utility (not a bare class) so responsive overrides such as lg:pb-0 win. */
 @utility pb-nav-safe {

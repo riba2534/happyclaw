@@ -654,7 +654,7 @@ export const MessageBubble = memo(
               <img
                 src={`data:${img.mimeType || 'image/png'};base64,${img.data}`}
                 alt={img.name || `图片 ${i + 1}`}
-                className="max-h-48 max-w-48 object-cover"
+                className="max-h-48 max-w-48 touch-callout-default object-cover"
               />
             </button>
           ))}
