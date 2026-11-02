@@ -223,10 +223,6 @@ export function CreateContainerDialog({
       selectedProfile?.effective_runtime_policy ??
         selectedProfile?.runtime_policy,
     ) === 'host_claude';
-  const hostSkillsMode =
-    selectedProfile?.runtime_policy.skills.host?.mode ??
-    (inheritsHostClaude ? 'inherit' : 'disabled');
-
   useEffect(() => {
     if (open) void loadProfiles();
   }, [open, loadProfiles]);
@@ -362,15 +358,13 @@ export function CreateContainerDialog({
 
   return (
     <Dialog open={open} onOpenChange={(v) => !v && handleClose()}>
-      <DialogContent className="flex max-h-[calc(100dvh-2rem)] flex-col sm:max-w-xl">
+      <DialogContent className="flex max-h-[calc(100dvh-2rem)] flex-col gap-3 p-4 sm:max-w-md">
         <DialogHeader className="shrink-0">
-          <DialogTitle>为智能体新建工作区</DialogTitle>
-          <DialogDescription>
-            选择智能体，并确认工作区的回复模式、运行位置和上下文。
-          </DialogDescription>
+          <DialogTitle>新建工作区</DialogTitle>
+          <DialogDescription>选择智能体并设置工作区名称。</DialogDescription>
         </DialogHeader>
 
-        <div className="-mx-4 min-h-0 flex-1 space-y-5 overflow-y-auto px-4 pb-1">
+        <div className="-mx-4 min-h-0 flex-1 space-y-3 overflow-y-auto px-4 pb-1">
           <div>
             <Label htmlFor="workspace-agent-profile" className="mb-1.5">
               智能体
@@ -430,7 +424,7 @@ export function CreateContainerDialog({
               </p>
             )}
             {profiles.length > 0 && (
-              <p className="mt-1.5 line-clamp-2 text-caption text-muted-foreground">
+              <p className="mt-1.5 line-clamp-1 text-caption text-muted-foreground">
                 {selectedProfile?.identity_prompt ||
                   '使用默认智能体行为，不追加额外身份提示词。'}
               </p>
@@ -441,6 +435,8 @@ export function CreateContainerDialog({
             value={interactionMode}
             onChange={setInteractionMode}
             name="create-workspace-interaction-mode"
+            compact
+            description="Assistant 回复一条最终消息；主动模式可在处理中多次发消息。"
             disabled={loading}
           />
 
@@ -465,7 +461,7 @@ export function CreateContainerDialog({
 
           {selectedProfile && (
             <div className="rounded-lg px-3 py-2.5 ring-1 ring-surface-border">
-              <dl className="grid gap-3 sm:grid-cols-3">
+              <dl className="grid grid-cols-3 gap-2">
                 <div className="min-w-0">
                   <dt className="text-micro text-muted-foreground">运行位置</dt>
                   <dd className="mt-1 flex items-center gap-1.5 text-label text-foreground">
@@ -496,13 +492,6 @@ export function CreateContainerDialog({
                   </dd>
                 </div>
               </dl>
-              <p className="mt-2.5 border-t border-surface-border pt-2 text-caption leading-5 text-muted-foreground">
-                {canHostExec
-                  ? inheritsHostClaude
-                    ? `运行位置只决定命令在哪里执行。该智能体会将完整 ~/.claude 作为用户配置层叠加，工作区仍是 cwd；宿主机 Skills：${hostSkillsMode === 'inherit' ? '全部使用' : hostSkillsMode === 'custom' ? `选择 ${selectedProfile?.runtime_policy.skills.host?.ids.length ?? 0} 项` : '不使用'}。`
-                    : '运行位置只决定命令在哪里执行。该智能体使用 HappyClaw 管理的上下文与附加能力。'
-                  : '工作区固定在 Docker 容器中运行，并使用 HappyClaw 管理的智能体上下文与附加能力。'}
-              </p>
             </div>
           )}
 
