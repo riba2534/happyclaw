@@ -113,7 +113,7 @@ export const GUEST_ROUTE_ALLOWLIST: ReadonlyArray<{
   {
     method: 'GET',
     pattern: new RegExp(
-      `^/api/groups/${SEG}/files/(download|preview|content)/${SEG}$`,
+      `^/api/groups/${SEG}/files/(download|preview|office-preview|content)/${SEG}$`,
     ),
     note: 'file read',
   },

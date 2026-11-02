@@ -81,7 +81,9 @@ describe('GET /:jid/files/preview/:path caching', () => {
   test('returns cache validators and serves 304 for a matching ETag', async () => {
     const first = await routes.request(URL);
     expect(first.status).toBe(200);
-    expect(first.headers.get('Cache-Control')).toBe('private, max-age=300');
+    // Revalidate on every open: a file the Agent just overwrote must show up
+    // at once, not after a freshness window.
+    expect(first.headers.get('Cache-Control')).toBe('private, no-cache');
     const etag = first.headers.get('ETag');
     expect(etag).toMatch(/^W\/"/);
     expect(first.headers.get('Last-Modified')).toBeTruthy();
@@ -94,6 +96,33 @@ describe('GET /:jid/files/preview/:path caching', () => {
     expect(await again.text()).toBe('');
     expect(again.headers.get('ETag')).toBe(etag);
   });
+
+  test.skipIf(process.platform !== 'linux')(
+    'HEAD does not leave the file open',
+    async () => {
+      // Larger than the stream buffers, so the stream cannot just run dry.
+      fs.writeFileSync(
+        path.join(workspaceDir, 'pic.png'),
+        Buffer.alloc(4 * 1024 * 1024, 1),
+      );
+      const res = await routes.request(URL, { method: 'HEAD' });
+      expect(res.status).toBe(200);
+      expect(await res.text()).toBe('');
+      const openUnderWorkspace = () =>
+        fs.readdirSync('/proc/self/fd').filter((fd) => {
+          try {
+            return fs
+              .readlinkSync(`/proc/self/fd/${fd}`)
+              .startsWith(workspaceDir);
+          } catch {
+            return false;
+          }
+        });
+      // The stream opens the file asynchronously: let it settle first.
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      expect(openUnderWorkspace()).toEqual([]);
+    },
+  );
 
   test('a changed file gets a new ETag and a full response', async () => {
     const etag = (await routes.request(URL)).headers.get('ETag')!;
