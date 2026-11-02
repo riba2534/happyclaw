@@ -53,13 +53,17 @@ const sessionOf = (jid, agentId) => agentId ?? primarySessions.get(jid);
 const sessionJidOf = (jid, agentId) =>
   `${jid}#agent:${sessionOf(jid, agentId)}`;
 
+// A session's run lifecycle and snapshots arrive under its own JID, the
+// rest under the workspace JID with its agentId.
 function scopedEvents(jid, agentId, after) {
   agentId = sessionOf(jid, agentId);
+  const laneJid = `${jid}#agent:${agentId}`;
   return events
     .slice(after)
     .filter(
       (event) =>
-        event.chatJid === jid && (event.agentId || undefined) === agentId,
+        event.chatJid === laneJid ||
+        (event.chatJid === jid && (event.agentId || undefined) === agentId),
     );
 }
 
@@ -363,7 +367,8 @@ async function run() {
   ws.on('message', (data) => {
     try {
       const event = JSON.parse(data.toString());
-      if (ownedWorkspaces.includes(event.chatJid)) events.push(event);
+      const workspaceJid = String(event.chatJid ?? '').split('#agent:')[0];
+      if (ownedWorkspaces.includes(workspaceJid)) events.push(event);
     } catch {
       /* ignore non-JSON heartbeats */
     }
