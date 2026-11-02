@@ -35,8 +35,10 @@ const {
   attachStdoutHandler,
   createStderrState,
   createStdoutParserState,
+  RUN_LOG_MAX_BYTES,
   handleNonZeroExit,
   handleSuccessClose,
+  handleTimeoutClose,
   writeRunLog,
 } = await import('../src/agent-output-parser.js');
 type ContainerOutput =
@@ -123,6 +125,38 @@ function closeContext(
     startTime: Date.now(),
     timeoutMs: 1_000,
   };
+}
+
+function readLog(file: string | null): string {
+  expect(file).not.toBeNull();
+  return fs.readFileSync(file!, 'utf8');
+}
+
+/** A stream section of a run log, split into its note and the shown tail. */
+function streamSection(log: string, name: 'Stderr' | 'Stdout') {
+  const title = log.match(
+    new RegExp(`\\n=== ${name}( \\(TRUNCATED\\))? ===\\n`),
+  )!;
+  const from = title.index! + title[0].length;
+  const to =
+    name === 'Stderr' ? log.indexOf('\n\n=== Stdout', from) : log.length;
+  const body = log.slice(from, to);
+  const note = body.match(/^\.\.\. \(truncated (\d+) chars\) \.\.\.\n/);
+  return {
+    truncated: title[1] !== undefined,
+    dropped: note ? Number(note[1]) : 0,
+    tail: note ? body.slice(note[0].length) : body,
+  };
+}
+
+/** The shown tail is the end of the stream, from a line start, and the note counts the rest. */
+function expectLineTail(
+  section: { dropped: number; tail: string },
+  full: string,
+): void {
+  expect(full.endsWith(section.tail)).toBe(true);
+  expect(full[full.length - section.tail.length - 1]).toBe('\n');
+  expect(section.dropped).toBe(full.length - section.tail.length);
 }
 
 /** The pre-change legacy parse: head-capped buffer, first START/first END. */
@@ -322,33 +356,376 @@ describe('close handlers read the tails', () => {
 
   test('run log reports truncation against the full stream size', async () => {
     const { state, stderrState, fullOut, fullErr } = await runWithLargeOutput();
-    const okLog = fs.readFileSync(
+    const okLog = readLog(
       writeRunLog(
         closeContext(state, stderrState, () => {}),
         0,
         5,
       ),
-      'utf8',
     );
-    expect(okLog).toContain(
-      `... (truncated ${fullErr.length - 4000} chars) ...\n${fullErr.slice(-4000)}`,
-    );
-    expect(okLog).toContain(
-      `... (truncated ${fullOut.length - 4000} chars) ...\n${fullOut.slice(-4000)}`,
-    );
-    expect(okLog).toContain('=== Stdout (TRUNCATED) ===');
+    // A successful run keeps a short tail of each stream.
+    for (const [name, full, end] of [
+      ['Stderr', fullErr, 'Error: real failure reason at the end'],
+      ['Stdout', fullOut, 'LAST STDOUT LINE'],
+    ] as const) {
+      const section = streamSection(okLog, name);
+      expect(section.truncated, name).toBe(true);
+      expect(section.tail.length, name).toBeLessThanOrEqual(4000);
+      expect(section.tail.length, name).toBeGreaterThan(3800);
+      expect(section.tail.endsWith(end), name).toBe(true);
+      expectLineTail(section, full);
+    }
 
-    const errLog = fs.readFileSync(
+    const errLog = readLog(
       writeRunLog(
         closeContext(state, stderrState, () => {}),
         1,
         5,
       ),
-      'utf8',
     );
-    expect(errLog).toContain(
-      `... (truncated ${fullErr.length - stderrState.stderr.length} chars) ...\n${stderrState.stderr}`,
+    // An error run keeps all it can of the retained tails.
+    const stderrSection = streamSection(errLog, 'Stderr');
+    expectLineTail(stderrSection, fullErr);
+    expect(stderrSection.tail.length).toBeGreaterThan(200_000);
+  });
+});
+
+describe('run log files', () => {
+  const tmpDirs: string[] = [];
+  afterAll(() => {
+    for (const dir of tmpDirs) fs.rmSync(dir, { recursive: true, force: true });
+  });
+  function tmpLogsDir(): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'run-logs-'));
+    tmpDirs.push(dir);
+    return dir;
+  }
+
+  function logContext(
+    overrides: Partial<CloseHandlerContext> & {
+      stderr?: string;
+      stdout?: string;
+    },
+  ): CloseHandlerContext {
+    const { stderr = '', stdout = '', ...rest } = overrides;
+    const stdoutState = Object.assign(createStdoutParserState(), {
+      stdout,
+      stdoutTotalChars: stdout.length,
+    });
+    const stderrState = {
+      stderr,
+      stderrTotalChars: stderr.length,
+      stderrTruncated: false,
+    };
+    return {
+      ...closeContext(stdoutState, stderrState, () => {}),
+      logsDir: tmpLogsDir(),
+      ...rest,
+    };
+  }
+
+  /** Writes the log of an error exit and checks it stays within the cap. */
+  function boundedErrorLog(ctx: CloseHandlerContext): string {
+    const log = readLog(writeRunLog(ctx, 1, 5));
+    expect(Buffer.byteLength(log)).toBeLessThanOrEqual(RUN_LOG_MAX_BYTES);
+    return log;
+  }
+
+  /** Whole lines of mixed one-, three- and four-byte chars. */
+  function multibyte(chars: number, tag: string): string {
+    const line = `${tag} 错误输出🙂${'汉字'.repeat(30)} ascii\n`;
+    return line.repeat(Math.ceil(chars / line.length));
+  }
+
+  const summaryLines = ['', '=== Mounts ===', '/workspace/group', '/home/node'];
+  const verboseLines = [
+    '=== Container Args ===',
+    'run -i --rm --name happyclaw-test',
+    '',
+    '=== Mounts (detailed) ===',
+    '/data/groups/g -> /workspace/group',
+  ];
+
+  test('an oversized log keeps the head whole and the end of each stream', () => {
+    const stderr = multibyte(500_000, 'err') + 'STDERR END';
+    const stdout = multibyte(500_000, 'out') + '\nLAST STDOUT LINE';
+    expect(Buffer.byteLength(stderr + stdout)).toBeGreaterThan(
+      2 * RUN_LOG_MAX_BYTES,
     );
+    const ctx = logContext({
+      stderr,
+      stdout,
+      input: { prompt: 'p'.repeat(321), sessionId: 'sdk-1', agentId: 's-1' },
+      extraSummaryLines: summaryLines,
+      extraVerboseLines: verboseLines,
+    });
+    const log = boundedErrorLog(ctx);
+
+    // The budget goes to the streams, not to slack.
+    expect(Buffer.byteLength(log)).toBeGreaterThan(RUN_LOG_MAX_BYTES - 1024);
+    expect(log).not.toContain('�');
+    expect(log.startsWith('=== Container Run Log ===\n')).toBe(true);
+    expect(log).toContain(
+      [
+        'Session: s-1',
+        'Duration: 5ms',
+        'Exit Code: 1',
+        'Stdout Truncated: false',
+        'Stderr Truncated: false',
+        '',
+        '=== Input Summary ===',
+        'Prompt length: 321 chars',
+        'Session ID: sdk-1',
+        ...summaryLines,
+        '',
+        ...verboseLines,
+        '',
+        '=== Stderr (TRUNCATED) ===',
+      ].join('\n'),
+    );
+
+    const err = streamSection(log, 'Stderr');
+    const out = streamSection(log, 'Stdout');
+    expectLineTail(err, stderr);
+    expectLineTail(out, stdout);
+    expect(err.tail.endsWith('STDERR END')).toBe(true);
+    // Neither stream crowds out the other.
+    expect(Buffer.byteLength(err.tail)).toBeGreaterThan(400_000);
+    expect(Buffer.byteLength(out.tail)).toBeGreaterThan(400_000);
+    // Bug reports read the last 50 lines of the newest log.
+    expect(log.split('\n').slice(-50).at(-1)).toBe('LAST STDOUT LINE');
+  });
+
+  test('a short stderr leaves its share of the budget to stdout', () => {
+    const stdout = multibyte(900_000, 'out') + '\nLAST STDOUT LINE';
+    const log = boundedErrorLog(
+      logContext({ stderr: 'Error: boom\n', stdout }),
+    );
+    expect(streamSection(log, 'Stderr')).toEqual({
+      truncated: false,
+      dropped: 0,
+      tail: 'Error: boom\n',
+    });
+    const out = streamSection(log, 'Stdout');
+    expectLineTail(out, stdout);
+    expect(Buffer.byteLength(out.tail)).toBeGreaterThan(
+      RUN_LOG_MAX_BYTES - 2048,
+    );
+  });
+
+  test('a stream without line breaks is cut on a char boundary', () => {
+    const stdout = '汉🙂'.repeat(400_000) + 'END';
+    const log = boundedErrorLog(logContext({ stdout }));
+    expect(log).not.toContain('�');
+    const out = streamSection(log, 'Stdout');
+    expect(out.tail.endsWith('END')).toBe(true);
+    expect(stdout.endsWith(out.tail)).toBe(true);
+    expect(out.dropped).toBe(stdout.length - out.tail.length);
+  });
+
+  test('drops counted before the retained tail are part of the note', () => {
+    const stdout = 'partial line\nkept 1\nkept 2';
+    const ctx = logContext({ stdout });
+    ctx.stdoutState.stdoutTotalChars = 10_000 + stdout.length;
+    ctx.stdoutState.stdoutTruncated = true;
+    const log = readLog(writeRunLog(ctx, 1, 5));
+    // The retained tail starts mid-line, so its first line is not shown.
+    expect(streamSection(log, 'Stdout')).toEqual({
+      truncated: true,
+      dropped: 10_000 + 'partial line\n'.length,
+      tail: 'kept 1\nkept 2',
+    });
+  });
+
+  test('fixed sections that alone overflow the cap keep the start and the end', () => {
+    const log = boundedErrorLog(
+      logContext({
+        stdout: 'LAST STDOUT LINE',
+        extraVerboseLines: ['=== Container Args ===', '汉🙂'.repeat(500_000)],
+      }),
+    );
+    expect(log.startsWith('=== Container Run Log ===\n')).toBe(true);
+    expect(log).not.toContain('�');
+    expect(log).toMatch(
+      /\n\.\.\. \(run log of \d+ bytes cut to 1048576\) \.\.\.\n/,
+    );
+    expect(log.endsWith('=== Stdout ===\nLAST STDOUT LINE')).toBe(true);
+  });
+
+  test('error logs carry no runner input, only its summary', () => {
+    const secretPrompt = 'PROMPT-TEXT-THAT-MUST-NOT-PERSIST';
+    const log = readLog(
+      writeRunLog(
+        logContext({
+          stdout: 'out',
+          input: { prompt: secretPrompt, agentId: 's-1' },
+        }),
+        1,
+        5,
+      ),
+    );
+    expect(log).not.toContain(secretPrompt);
+    expect(log).not.toContain('=== Input ===');
+    expect(log).not.toContain('Additional Diagnostics');
+    expect(log).not.toContain('omitted');
+    expect(log).toContain(`Prompt length: ${secretPrompt.length} chars`);
+    // Without verbose lines the summary runs straight into the streams.
+    expect(log).toContain('Session ID: new\n\n=== Stderr ===\n');
+  });
+
+  test('successful runs leave out the verbose diagnostics', () => {
+    const log = readLog(
+      writeRunLog(logContext({ extraVerboseLines: verboseLines }), 0, 5),
+    );
+    expect(log).not.toContain('=== Container Args ===');
+  });
+
+  function seedLogs(dir: string): { container: string[]; kept: string[] } {
+    // Older than any log written now; names sort by time.
+    const container = Array.from(
+      { length: 25 },
+      (_, i) =>
+        `container-2020-01-01T00-00-${String(i).padStart(2, '0')}-000Z.log`,
+    );
+    const kept = [
+      'host-2019-01-01T00-00-00-000Z.log',
+      'host-2019-01-01T00-00-01-000Z.log',
+      'container-notes.txt',
+      'other.log',
+      'containers-2019-01-01T00-00-00-000Z.log',
+    ];
+    for (const name of [...container, ...kept]) {
+      fs.writeFileSync(path.join(dir, name), name);
+    }
+    fs.mkdirSync(path.join(dir, 'container-2000-01-01T00-00-00-000Z.log'));
+    kept.push('container-2000-01-01T00-00-00-000Z.log');
+    return { container, kept };
+  }
+
+  function containerLogs(dir: string): string[] {
+    return fs
+      .readdirSync(dir)
+      .filter((name) => /^container-\d{4}-.*\.log$/.test(name))
+      .filter((name) => fs.statSync(path.join(dir, name)).isFile())
+      .sort();
+  }
+
+  test('keeps the newest logs of the same prefix and nothing else is touched', () => {
+    const ctx = logContext({ stdout: 'out' });
+    const { container, kept } = seedLogs(ctx.logsDir);
+
+    const file = writeRunLog(ctx, 0, 5)!;
+
+    // Twenty in all, the new one included.
+    expect(containerLogs(ctx.logsDir)).toEqual([
+      ...container.slice(-19),
+      path.basename(file),
+    ]);
+    for (const name of kept) {
+      expect(fs.existsSync(path.join(ctx.logsDir, name)), name).toBe(true);
+    }
+  });
+
+  test('a timeout log is pruned the same way', () => {
+    const resolved: ContainerOutput[] = [];
+    const ctx = logContext({ resolvePromise: (o) => resolved.push(o) });
+    const { container, kept } = seedLogs(ctx.logsDir);
+
+    expect(handleTimeoutClose(ctx, 137, 5, true)).toBe(true);
+
+    const logs = containerLogs(ctx.logsDir);
+    expect(logs.slice(0, -1)).toEqual(container.slice(-19));
+    expect(readLog(path.join(ctx.logsDir, logs.at(-1)!))).toContain(
+      '=== Container Run Log (TIMEOUT) ===',
+    );
+    for (const name of kept) {
+      expect(fs.existsSync(path.join(ctx.logsDir, name)), name).toBe(true);
+    }
+    expect(resolved).toEqual([
+      {
+        status: 'error',
+        result: null,
+        error: 'Container timed out after 1000ms',
+      },
+    ]);
+  });
+
+  test('one log that cannot be deleted does not stop the rest of the pruning', () => {
+    const ctx = logContext({ stdout: 'out' });
+    const { container } = seedLogs(ctx.logsDir);
+    const realUnlink = fs.unlinkSync;
+    const unlink = vi.spyOn(fs, 'unlinkSync').mockImplementation((target) => {
+      if (String(target).endsWith(container[0])) {
+        throw Object.assign(new Error('EACCES'), { code: 'EACCES' });
+      }
+      realUnlink(target);
+    });
+    try {
+      writeRunLog(ctx, 0, 5);
+    } finally {
+      unlink.mockRestore();
+    }
+    const logs = containerLogs(ctx.logsDir);
+    expect(logs).toContain(container[0]);
+    expect(logs.filter((name) => container.slice(1, 6).includes(name))).toEqual(
+      [],
+    );
+    expect(
+      logged.warn.filter(([, m]) => m === 'Failed to prune agent run log'),
+    ).toHaveLength(1);
+  });
+
+  function blockedLogsDir(): string {
+    const blocked = path.join(tmpLogsDir(), 'logs');
+    fs.writeFileSync(blocked, 'not a directory');
+    return blocked;
+  }
+
+  test('a log that cannot be written is reported and the runner still settles', async () => {
+    const logsDir = blockedLogsDir();
+    for (const [code, status] of [
+      [1, 'error'],
+      [0, 'success'],
+    ] as const) {
+      const outputs: ContainerOutput[] = [];
+      const ctx = logContext({
+        stderr: 'Error: boom',
+        logsDir,
+        onOutput: async () => {},
+        resolvePromise: (output) => outputs.push(output),
+      });
+      const logFile = writeRunLog(ctx, code, 5);
+      expect(logFile).toBeNull();
+      if (!handleNonZeroExit(ctx, code, null, 5, logFile)) {
+        handleSuccessClose(ctx, 5);
+      }
+      await vi.waitFor(() => expect(outputs).toHaveLength(1));
+      expect(outputs[0].status).toBe(status);
+    }
+    expect(
+      logged.warn.filter(([, m]) => m === 'Failed to write Container run log'),
+    ).toHaveLength(2);
+    const [fields] = logged.error.find(([, m]) =>
+      m.includes('exited with error'),
+    )!;
+    expect(fields.logFile).toBeNull();
+    expect(fs.readFileSync(logsDir, 'utf8')).toBe('not a directory');
+  });
+
+  test('a timeout whose log cannot be written still settles', () => {
+    const outputs: ContainerOutput[] = [];
+    const ctx = logContext({
+      logsDir: blockedLogsDir(),
+      resolvePromise: (output) => outputs.push(output),
+    });
+    expect(handleTimeoutClose(ctx, null, 5, true)).toBe(true);
+    expect(outputs).toEqual([
+      {
+        status: 'error',
+        result: null,
+        error: 'Container timed out after 1000ms',
+      },
+    ]);
   });
 });
 

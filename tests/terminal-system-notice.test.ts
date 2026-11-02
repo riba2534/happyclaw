@@ -19,6 +19,10 @@ import {
   buildInteractionTextOutboxPayload,
   shouldSendProactiveTailInterruptionNotice,
 } from '../src/workspace-interaction-runtime.js';
+import {
+  parseContainerMemoryLimit,
+  resolveOomLoopAction,
+} from '../src/container-memory-limit.js';
 import { createRuntimeSourceHarness } from './helpers/runtime-source.js';
 
 const paths = vi.hoisted(() => ({ root: '' }));
@@ -306,8 +310,18 @@ describe('processAgentConversation error exits (Assistant mode)', () => {
     expect(lane).toMatch(/\n {2}return !retryUnfinishedTurn;\n\}/);
   });
 
-  function errorLane(options: { retryCount?: number; stopped?: boolean } = {}) {
+  function errorLane(
+    options: {
+      retryCount?: number;
+      stopped?: boolean;
+      memoryLimit?: string;
+      executionMode?: 'host' | 'container';
+    } = {},
+  ) {
     const lane = agentLane({ imSend: async () => {} });
+    if (options.executionMode) {
+      lane.globals.effectiveGroup.executionMode = options.executionMode;
+    }
     const queue = {
       isRecentlyStopped: () => options.stopped === true,
       willRetryAfterFailure: () => (options.retryCount ?? 0) < 5,
@@ -328,6 +342,10 @@ describe('processAgentConversation error exits (Assistant mode)', () => {
       OOM_AUTO_RESET_THRESHOLD: 2,
       consecutiveOomExits: {},
       oomKey: 'folder#session',
+      CONTAINER_MEMORY_LIMIT: options.memoryLimit
+        ? parseContainerMemoryLimit(options.memoryLimit).limit
+        : null,
+      resolveOomLoopAction,
       setRouterState: db.setRouterState,
       deleteRouterState: db.deleteRouterState,
     });
@@ -426,6 +444,37 @@ describe('processAgentConversation error exits (Assistant mode)', () => {
     await stopped.exit('Container exited with code 137');
     await stopped.exit('Container exited with code 137');
     expect(stopped.globals.deleteSession).not.toHaveBeenCalled();
+  });
+
+  test('under a container memory cap, two OOM kills stop retrying but keep the context', async () => {
+    const lane = errorLane({ memoryLimit: '3g' });
+    await expect(lane.exit('Container exited with code 137')).resolves.toBe(
+      true,
+    );
+    await expect(lane.exit('Container exited with code 137')).resolves.toBe(
+      false,
+    );
+
+    expect(lane.globals.clearSessionRuntimeFiles).not.toHaveBeenCalled();
+    expect(lane.globals.deleteSession).not.toHaveBeenCalled();
+    expect(lane.advanceCursors).toHaveBeenCalledTimes(1);
+    const notices = webSystemMessages(lane.virtualChatJid);
+    expect(notices).toHaveLength(1);
+    expect(notices[0]).toMatch(/^system_error:.*容器内存上限（3 GiB）/);
+    expect(lane.globals.agentDeterministicTerminalError).toBe(
+      '容器超过内存上限（3 GiB）被终止（OOM）。',
+    );
+    // The counter starts over for the next input.
+    expect(lane.globals.consecutiveOomExits).toEqual({});
+
+    // Host runners are never capped: the session resets as before.
+    const host = errorLane({ memoryLimit: '3g', executionMode: 'host' });
+    await host.exit('Host agent exited with code 137');
+    await host.exit('Host agent exited with code 137');
+    expect(host.globals.deleteSession).toHaveBeenCalledTimes(1);
+    expect(webSystemMessages(host.virtualChatJid)[0]).toMatch(
+      /^context_reset:会话文件过大/,
+    );
   });
 });
 
