@@ -10,8 +10,11 @@ import { resolveChannelConversationKind } from './channel-conversation-kind.js';
 import { isThreadMapCapableChat } from './im-channel-capabilities.js';
 import {
   getAllRegisteredGroups,
+  getGroupsByTargetAgent,
   getJidsByFolder,
   getRegisteredGroup,
+  listAgentChannelMountsByWorkspace,
+  listChannelMountsBySession,
   runImmediateTransaction,
   setRegisteredGroup,
 } from './db.js';
@@ -267,6 +270,38 @@ export function resolveChannelMountTarget(
   return { status: 'thread_map', workspaceJid: mount.workspace_jid, workspace };
 }
 
+const UNBINDABLE_SESSION_SOURCES: ReadonlySet<
+  NonNullable<SubAgent['source_kind']>
+> = new Set([
+  'team_router',
+  'work_item',
+  'automation',
+  'native_thread',
+  'feishu_thread',
+]);
+
+/**
+ * Sessions a direct chat or ordinary group may be bound to: a conversation
+ * someone talks in, not a team lane, an automation run or a native topic's
+ * own session. Every bind path and the rebind of a deleted session use it.
+ */
+export function isBindableSession(
+  session: Pick<SubAgent, 'kind' | 'source_kind'> | undefined,
+): boolean {
+  return (
+    session?.kind === 'conversation' &&
+    !(
+      session.source_kind && UNBINDABLE_SESSION_SOURCES.has(session.source_kind)
+    )
+  );
+}
+
+/** The 400 body of a bind to a session that is not bindable. */
+export const SESSION_NOT_BINDABLE = {
+  error: 'This session cannot be bound to a chat',
+  code: 'session_not_bindable',
+} as const;
+
 export function buildSessionMountUpdate(
   group: RegisteredGroup,
   sessionId: string,
@@ -277,7 +312,7 @@ export function buildSessionMountUpdate(
     target_agent_id: sessionId,
     target_main_jid: undefined,
     binding_mode: 'single_context',
-    reply_policy: 'source_only',
+    reply_policy: options.replyPolicy ?? 'source_only',
     ...(options.activationMode !== undefined
       ? { activation_mode: options.activationMode }
       : {}),
@@ -403,15 +438,23 @@ export function commitChannelMountUpdates(
   }
 }
 
-/** Reload chats whose bindings changed in the database into the live cache. */
-export function refreshChannelMountCache(channelJids: readonly string[]): void {
-  if (!channelMountRuntimePort) return;
-  const groups = channelMountRuntimePort.getRegisteredGroups();
-  for (const channelJid of channelJids) {
-    const fresh = getRegisteredGroup(channelJid);
-    if (fresh && groups[channelJid]) groups[channelJid] = fresh;
-    channelMountRuntimePort.clearImFailCounts?.(channelJid);
-  }
+/**
+ * The chats a session is bound to: by their row or by a mount projection
+ * (the router reads the mount first), as JIDs.
+ */
+export function listSessionBoundChatJids(
+  workspaceJid: string,
+  sessionId: string,
+): string[] {
+  return [
+    ...new Set([
+      ...getGroupsByTargetAgent(sessionId).map(({ jid }) => jid),
+      ...listChannelMountsBySession(sessionId).map((m) => m.channel_jid),
+      ...listAgentChannelMountsByWorkspace(workspaceJid)
+        .filter((m) => m.session_id === sessionId)
+        .map((m) => m.channel_jid),
+    ]),
+  ];
 }
 
 export function hasSessionMountConflict(

@@ -199,6 +199,25 @@ function laneRows(laneJid: string): NewMessage[] {
   return db.getMessagesSince(laneJid, { timestamp: '', id: '' });
 }
 
+/** A conversation session of the team workspace. */
+function createSession(id: string, status: 'idle' | 'completed' = 'idle') {
+  db.createAgent({
+    id,
+    group_folder: FOLDER,
+    chat_jid: WORKSPACE,
+    name: id,
+    prompt: '',
+    status,
+    kind: 'conversation',
+    created_by: OWNER,
+    created_at: new Date().toISOString(),
+    completed_at: null,
+    result_summary: null,
+    last_im_jid: null,
+    spawned_from_jid: null,
+  });
+}
+
 beforeAll(() => {
   db.initDatabase();
   db.setRegisteredGroup(WORKSPACE, {
@@ -208,23 +227,7 @@ beforeAll(() => {
     executionMode: 'container',
     created_by: OWNER,
   });
-  for (const id of [BOUND_SESSION, OTHER_SESSION]) {
-    db.createAgent({
-      id,
-      group_folder: FOLDER,
-      chat_jid: WORKSPACE,
-      name: id,
-      prompt: '',
-      status: 'idle',
-      kind: 'conversation',
-      created_by: OWNER,
-      created_at: new Date().toISOString(),
-      completed_at: null,
-      result_summary: null,
-      last_im_jid: null,
-      spawned_from_jid: null,
-    });
-  }
+  for (const id of [BOUND_SESSION, OTHER_SESSION]) createSession(id);
   setGroup(CHAT);
   webContext.setWebDeps({
     broadcastAgentStatus: vi.fn(),
@@ -1446,6 +1449,60 @@ describe('after the review on the Mac mini', () => {
       await new Promise((resolve) => setImmediate(resolve));
       expect(service.resolveTeamGroup(CHAT)).not.toBeNull();
       expect(store.getWorkItem(item.id)?.status).toBe('open');
+    } finally {
+      db.setChannelMountChangeListener(null);
+      setGroup(CHAT);
+    }
+  });
+
+  test('deleting the session the group is bound to ends team mode there; a rebind keeps it', async () => {
+    const { deleteConversationSession } =
+      await import('../src/session-factory.js');
+    const mounts = await import('../src/channel-mount-service.js');
+    const remove = (id: string) =>
+      deleteConversationSession({
+        workspaceJid: WORKSPACE,
+        group: db.getRegisteredGroup(WORKSPACE)!,
+        session: db.getAgent(id)!,
+      });
+    db.setChannelMountChangeListener(service.reconcileTeamGroup);
+    try {
+      // Rebound first, as DELETE ?rebind_to does: the items keep running.
+      createSession('team-doomed-a', 'completed');
+      setGroup(CHAT, { target_agent_id: 'team-doomed-a' });
+      storeCandidate('om_del_rebind');
+      const kept = store.getWorkItem(
+        (await accept('om_del_rebind')).workItemId as string,
+      )!;
+      mounts.commitChannelMountUpdates([
+        [
+          CHAT,
+          mounts.buildSessionMountUpdate(
+            db.getRegisteredGroup(CHAT)!,
+            OTHER_SESSION,
+          ),
+        ],
+      ]);
+      remove('team-doomed-a');
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(service.resolveTeamGroup(CHAT)).not.toBeNull();
+      expect(store.getWorkItem(kept.id)?.status).toBe('open');
+
+      // Deleted without a rebind: the group is unbound and its items stop.
+      createSession('team-doomed-b', 'completed');
+      setGroup(CHAT, { target_agent_id: 'team-doomed-b' });
+      storeCandidate('om_del_unbind');
+      const stopped = store.getWorkItem(
+        (await accept('om_del_unbind')).workItemId as string,
+      )!;
+      remove('team-doomed-b');
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(db.getRegisteredGroup(CHAT)?.target_agent_id).toBeUndefined();
+      expect(db.getChannelMount(CHAT)).toBeUndefined();
+      expect(store.getWorkItem(stopped.id)).toMatchObject({
+        status: 'ended',
+        outcome: 'stopped',
+      });
     } finally {
       db.setChannelMountChangeListener(null);
       setGroup(CHAT);

@@ -1446,11 +1446,15 @@ async function acceptCandidate(
     // Another process won the insert: its session does the work.
     const orphan = getAgent(agentId);
     if (orphan) {
-      await deleteConversationSession({
-        workspaceJid: context.workspaceJid,
-        group: context.workspace,
-        session: orphan,
-      }).catch(() => undefined);
+      try {
+        deleteConversationSession({
+          workspaceJid: context.workspaceJid,
+          group: context.workspace,
+          session: orphan,
+        });
+      } catch {
+        /* the orphan stays; nothing routes to it */
+      }
     }
     return routed(candidate, 'accept', item.id);
   }

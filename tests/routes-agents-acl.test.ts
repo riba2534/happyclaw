@@ -108,12 +108,24 @@ beforeAll(() => {
   db.initDatabase();
 });
 
+let enqueueTask = vi.fn();
+let broadcastNewMessage = vi.fn();
+
 beforeEach(() => {
+  enqueueTask = vi.fn();
+  broadcastNewMessage = vi.fn();
   webContext.setWebDeps({
     getRegisteredGroups: () => ({}),
     broadcastAgentStatus: vi.fn(),
     broadcastAgentRemoved: vi.fn(),
-    queue: { stopGroup: vi.fn(async () => {}) },
+    broadcastNewMessage,
+    getLastAgentTimestamp: () => ({}),
+    processAgentConversation: vi.fn(async () => {}),
+    queue: {
+      stopGroup: vi.fn(async () => {}),
+      getActiveQueryId: () => null,
+      enqueueTask,
+    },
   } as unknown as Parameters<typeof webContext.setWebDeps>[0]);
   try {
     db.deleteRegisteredGroup(GROUP_JID);
@@ -406,7 +418,7 @@ describe('formal sessions API', () => {
     asUser(OWNER_ID);
     const doomed = await newSessionId('Doomed');
     const target = await newSessionId('Target');
-    const chats = ['telegram:rebind-a', 'telegram:rebind-b'];
+    const chats = ['telegram:7001', 'telegram:7002'];
     for (const jid of chats) {
       db.setRegisteredGroup(jid, {
         name: jid,
@@ -500,6 +512,279 @@ describe('formal sessions API', () => {
       for (const jid of chats) db.deleteRegisteredGroup(jid);
       for (const id of sessions) db.deleteAgent(id);
     }
+  });
+
+  describe('rebinding the chats of a deleted session', () => {
+    function makeSession(id: string, extra: Record<string, unknown> = {}) {
+      db.createAgent({
+        id,
+        group_folder: GROUP_FOLDER,
+        chat_jid: GROUP_JID,
+        name: id,
+        prompt: '',
+        status: 'completed',
+        kind: 'conversation',
+        created_by: OWNER_ID,
+        created_at: new Date().toISOString(),
+        completed_at: null,
+        result_summary: null,
+        last_im_jid: null,
+        spawned_from_jid: null,
+        ...extra,
+      } as any);
+    }
+    function chat(jid: string, extra: Record<string, unknown> = {}) {
+      db.setRegisteredGroup(jid, {
+        name: jid,
+        folder: 'owner-home',
+        added_at: new Date().toISOString(),
+        created_by: OWNER_ID,
+        ...extra,
+      } as any);
+    }
+    const rebind = (doomed: string, target: string) =>
+      deleteSessionRoute(doomed, `?confirm_bindings=true&rebind_to=${target}`);
+    const suffix = () => Math.random().toString(36).slice(2, 8);
+    let chatSeq = 8000;
+    /** A direct Telegram chat id: a known conversation kind. */
+    const nextChatId = () => ++chatSeq;
+
+    test('a chat bound only through its mount moves too, with its own settings', async () => {
+      seedTestGroup();
+      asUser(OWNER_ID);
+      const doomed = `doomed-${suffix()}`;
+      const target = `target-${suffix()}`;
+      makeSession(doomed);
+      makeSession(target);
+      const rowBound = `telegram:${nextChatId()}`;
+      const mountOnly = `telegram:${nextChatId()}`;
+      chat(rowBound, {
+        target_agent_id: doomed,
+        reply_policy: 'mirror',
+        activation_mode: 'always',
+        audience_mode: 'owner_only',
+        owner_im_id: 'owner-im',
+      });
+      chat(mountOnly);
+      db.upsertChannelMount({
+        channel_jid: mountOnly,
+        channel_account_id: null,
+        channel_type: 'telegram',
+        workspace_jid: GROUP_JID,
+        session_id: doomed,
+        routing_mode: 'single_session',
+        reply_policy: 'source_only',
+        activation_mode: 'auto',
+        audience_mode: 'everyone',
+        owner_im_id: null,
+      });
+      const listed = await deleteSessionRoute(doomed);
+      expect(listed.status).toBe(409);
+      expect(
+        listed.body.linked_im_groups.map((g: { jid: string }) => g.jid).sort(),
+      ).toEqual([mountOnly, rowBound].sort());
+
+      expect(await rebind(doomed, target)).toEqual({
+        status: 200,
+        body: { success: true },
+      });
+      for (const jid of [rowBound, mountOnly]) {
+        expect(db.getRegisteredGroup(jid)?.target_agent_id).toBe(target);
+        expect(db.getChannelMount(jid)?.session_id).toBe(target);
+      }
+      expect(db.getRegisteredGroup(rowBound)).toMatchObject({
+        reply_policy: 'mirror',
+        activation_mode: 'always',
+        audience_mode: 'owner_only',
+        owner_im_id: 'owner-im',
+      });
+      // Nothing was waiting, so the target has no turn to start.
+      expect(enqueueTask).not.toHaveBeenCalled();
+      for (const jid of [rowBound, mountOnly]) db.deleteRegisteredGroup(jid);
+    });
+
+    test('the target must be a session chats can bind to, and each chat must pass a bind', async () => {
+      seedTestGroup();
+      asUser(OWNER_ID);
+      const doomed = `doomed-${suffix()}`;
+      makeSession(doomed);
+      const bound = `telegram:${nextChatId()}`;
+      chat(bound, { target_agent_id: doomed });
+      for (const sourceKind of [
+        'team_router',
+        'work_item',
+        'automation',
+        'native_thread',
+        'feishu_thread',
+      ]) {
+        const target = `${sourceKind}-${suffix()}`;
+        makeSession(target, { source_kind: sourceKind });
+        const result = await rebind(doomed, target);
+        expect([sourceKind, result.status, result.body.code]).toEqual([
+          sourceKind,
+          400,
+          'invalid_rebind_target',
+        ]);
+        // The same rule refuses a direct bind.
+        const res = await agentRoutes.request(
+          `/${encodeURIComponent(GROUP_JID)}/sessions/${target}/im-binding`,
+          {
+            method: 'PUT',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ im_jid: bound }),
+          },
+        );
+        const direct = { status: res.status, body: await res.json() };
+        expect([sourceKind, direct.status, direct.body]).toEqual([
+          sourceKind,
+          400,
+          {
+            error: 'This session cannot be bound to a chat',
+            code: 'session_not_bindable',
+          },
+        ]);
+      }
+      // A chat another user owns cannot be moved by this one.
+      const target = `target-${suffix()}`;
+      makeSession(target);
+      const foreign = `telegram:${nextChatId()}`;
+      db.setRegisteredGroup(foreign, {
+        name: 'Foreign',
+        folder: 'other-home',
+        added_at: new Date().toISOString(),
+        created_by: OUTSIDER_ID,
+        target_agent_id: doomed,
+      } as any);
+      const refused = await rebind(doomed, target);
+      expect(refused.status).toBe(400);
+      expect(refused.body.code).toBe('invalid_rebind_target');
+      expect(db.getAgent(doomed)).toBeDefined();
+      expect(db.getRegisteredGroup(bound)?.target_agent_id).toBe(doomed);
+      for (const jid of [bound, foreign]) db.deleteRegisteredGroup(jid);
+    });
+
+    test('a target deleted while the delete waits is caught at the commit; nothing is deleted', async () => {
+      seedTestGroup();
+      asUser(OWNER_ID);
+      const doomed = `doomed-${suffix()}`;
+      const target = `target-${suffix()}`;
+      makeSession(doomed);
+      makeSession(target);
+      const bound = `telegram:${nextChatId()}`;
+      chat(bound, { target_agent_id: doomed });
+      // The impact lookup runs after the first check: delete the target there.
+      ledger.setAutomationRuntimeService({
+        listForSession: () => {
+          db.deleteAgent(target);
+          return [];
+        },
+        onSessionDeleted: vi.fn(),
+      } as never);
+      try {
+        const result = await rebind(doomed, target);
+        expect(result.status).toBe(400);
+        expect(result.body.code).toBe('invalid_rebind_target');
+        expect(db.getAgent(doomed)).toBeDefined();
+        expect(db.getRegisteredGroup(bound)?.target_agent_id).toBe(doomed);
+      } finally {
+        ledger.setAutomationRuntimeService(null);
+        db.deleteRegisteredGroup(bound);
+      }
+    });
+
+    test('a delete that fails rolls back before the runner or the files are touched', async () => {
+      seedTestGroup();
+      asUser(OWNER_ID);
+      const doomed = `doomed-${suffix()}`;
+      makeSession(doomed, { status: 'idle' });
+      const sessionDir = path.join(
+        tmpDataDir,
+        'sessions',
+        GROUP_FOLDER,
+        'agents',
+        doomed,
+      );
+      fs.mkdirSync(sessionDir, { recursive: true });
+      ledger.setAutomationRuntimeService({
+        listForSession: () => [],
+        onSessionDeleted: () => {
+          throw new Error('hook failed');
+        },
+      } as never);
+      try {
+        const result = await deleteSessionRoute(doomed);
+        expect(result.status).toBe(500);
+        expect(db.getAgent(doomed)?.status).toBe('idle');
+        expect(fs.existsSync(sessionDir)).toBe(true);
+        expect(webContext.getWebDeps()?.queue.stopGroup).not.toHaveBeenCalled();
+      } finally {
+        ledger.setAutomationRuntimeService(null);
+        db.deleteAgent(doomed);
+      }
+    });
+
+    test('inputs the session had not taken yet follow the chat to the target', async () => {
+      seedTestGroup();
+      asUser(OWNER_ID);
+      const doomed = `doomed-${suffix()}`;
+      const target = `target-${suffix()}`;
+      makeSession(doomed);
+      makeSession(target);
+      const bound = `telegram:${nextChatId()}`;
+      const other = `telegram:${nextChatId()}`;
+      chat(bound, { target_agent_id: doomed });
+      const doomedLane = `${GROUP_JID}#agent:${doomed}`;
+      const targetLane = `${GROUP_JID}#agent:${target}`;
+      db.ensureChatExists(doomedLane);
+      const store = (
+        id: string,
+        sourceJid: string,
+        meta: Record<string, unknown> = {},
+      ) =>
+        db.storeMessageDirect(
+          id,
+          doomedLane,
+          'tg:user',
+          'User',
+          `text ${id}`,
+          new Date().toISOString(),
+          false,
+          { sourceJid, meta },
+        );
+      store('carry-plain', bound);
+      store('carry-queued', bound, {
+        deliveryMode: 'queue',
+        deliveryStatus: 'queued',
+        deliveryRunId: 'run-old',
+      });
+      store('stay-other', other);
+      store('stay-automation', bound, {
+        sourceKind: 'automation_prompt',
+      });
+
+      expect((await rebind(doomed, target)).status).toBe(200);
+      const carried = db
+        .getMessagesSince(targetLane, { timestamp: '', id: '' })
+        .map((m) => m.id);
+      expect(carried).toEqual(['carry-plain', 'carry-queued']);
+      expect(db.getMessage(doomedLane, 'carry-plain')).toBeNull();
+      // Announced in the target session and its turn started, after the commit.
+      expect(
+        broadcastNewMessage.mock.calls.map(([lane, message]) => [
+          lane,
+          message.id,
+        ]),
+      ).toEqual([
+        [targetLane, 'carry-plain'],
+        [targetLane, 'carry-queued'],
+      ]);
+      expect(enqueueTask).toHaveBeenCalledWith(
+        targetLane,
+        expect.stringContaining(`agent-conv:${target}`),
+        expect.any(Function),
+      );
+      db.deleteRegisteredGroup(bound);
+    });
   });
 
   test('rebind_to must be another session of this workspace', async () => {

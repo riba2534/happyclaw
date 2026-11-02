@@ -249,7 +249,9 @@ import {
   hasRemainingThreadMapMount,
   hasSessionMountConflict,
   hasWorkspaceMountConflict,
+  isBindableSession,
   isNativeContextContainer,
+  SESSION_NOT_BINDABLE,
   unbindChannelMount,
 } from '../channel-mount-service.js';
 import { checkImChannelLimit, isBillingEnabled } from '../billing.js';
@@ -5733,11 +5735,8 @@ configRoutes.put('/user-im/bindings/:imJid', authMiddleware, async (c) => {
     if (!agent) {
       return c.json({ error: 'Session not found' }, 404);
     }
-    if (agent.kind !== 'conversation') {
-      return c.json(
-        { error: 'Only workspace sessions can bind IM groups' },
-        400,
-      );
+    if (!isBindableSession(agent)) {
+      return c.json(SESSION_NOT_BINDABLE, 400);
     }
     if (!agent.chat_jid.startsWith('web:')) {
       return c.json(
@@ -5783,6 +5782,9 @@ configRoutes.put('/user-im/bindings/:imJid', authMiddleware, async (c) => {
       !freshAgent.chat_jid.startsWith('web:')
     ) {
       return c.json({ error: 'Session not found' }, 404);
+    }
+    if (!isBindableSession(freshAgent)) {
+      return c.json(SESSION_NOT_BINDABLE, 400);
     }
     const freshOwnerGroup = getRegisteredGroup(freshAgent.chat_jid);
     if (
