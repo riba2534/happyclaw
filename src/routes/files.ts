@@ -35,6 +35,7 @@ import {
 import { checkStorageLimit, isBillingEnabled } from '../billing.js';
 import { GROUPS_DIR, MAX_FILE_SIZE_MB } from '../config.js';
 import { createUploadBodyLimit } from '../http-upload-policy.js';
+import { getOfficePreviewPdf, OfficePreviewError } from '../office-preview.js';
 import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -811,11 +812,24 @@ fileRoutes.get('/:jid/files/preview/:path', authMiddleware, (c) => {
       disposition = `attachment; filename="${encodeURIComponent(fileName)}"`;
     }
 
+    // 预览经公网链路往返很慢：用大小+修改时间做 ETag，浏览器 5 分钟内直接用缓存，
+    // 之后带 If-None-Match 重新验证，没变就回 304、不再传整个文件。
+    const etag = `W/"${fileSize.toString(16)}-${Math.floor(stats.mtimeMs).toString(16)}"`;
     const commonHeaders = {
       ...securityHeaders,
       'Content-Type': contentType,
       'Content-Disposition': disposition,
+      'Cache-Control': 'private, max-age=300',
+      ETag: etag,
+      'Last-Modified': stats.mtime.toUTCString(),
     };
+    const ifNoneMatch = c.req.header('if-none-match');
+    if (
+      ifNoneMatch &&
+      ifNoneMatch.split(',').some((tag) => tag.trim() === etag)
+    ) {
+      return new Response(null, { status: 304, headers: commonHeaders });
+    }
 
     // 流媒体类型：支持 Range 请求（浏览器 <video>/<audio> seek 依赖此机制）
     if (isStreamable) {
@@ -883,6 +897,64 @@ fileRoutes.get('/:jid/files/preview/:path', authMiddleware, (c) => {
     return c.json({ error: 'Failed to preview file' }, 500);
   }
 });
+
+// GET /api/groups/:jid/files/office-preview/:path - Office 文件转 PDF 预览
+fileRoutes.get(
+  '/:jid/files/office-preview/:path',
+  authMiddleware,
+  async (c) => {
+    const jid = c.req.param('jid');
+    const encodedPath = c.req.param('path');
+
+    const access = authorizeFileGroup(c, jid);
+    if (access instanceof Response) return access;
+    const { group } = access;
+
+    try {
+      const relativePath = Buffer.from(encodedPath, 'base64url').toString(
+        'utf-8',
+      );
+      const absolutePath = validateAndResolvePath(
+        group.folder,
+        relativePath,
+        getFileRootOverride(group),
+      );
+
+      if (!fs.existsSync(absolutePath)) {
+        return c.json({ error: 'File not found' }, 404);
+      }
+      const stats = fs.statSync(absolutePath);
+      if (stats.isDirectory()) {
+        return c.json({ error: 'Cannot preview directory' }, 400);
+      }
+
+      const { pdfPath, cacheHit } = await getOfficePreviewPdf(absolutePath);
+      const stream = Readable.toWeb(
+        fs.createReadStream(pdfPath),
+      ) as ReadableStream<Uint8Array>;
+      return new Response(stream, {
+        status: 200,
+        headers: {
+          'Content-Type': 'application/pdf',
+          'Content-Disposition': 'inline',
+          'Content-Length': String(fs.statSync(pdfPath).size),
+          'Content-Security-Policy': "default-src 'none'; sandbox",
+          'X-Content-Type-Options': 'nosniff',
+          'X-Office-Preview-Cache': cacheHit ? 'hit' : 'miss',
+        },
+      });
+    } catch (error) {
+      if (error instanceof OfficePreviewError) {
+        return c.json(
+          { error: error.message, code: error.code },
+          error.status as 400 | 413 | 501 | 502 | 504,
+        );
+      }
+      logger.error({ err: error }, `Failed to build office preview for ${jid}`);
+      return c.json({ error: 'Failed to build office preview' }, 500);
+    }
+  },
+);
 
 // GET /api/groups/:jid/files/content/:path - 读取文本文件内容
 fileRoutes.get('/:jid/files/content/:path', authMiddleware, (c) => {
