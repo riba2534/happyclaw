@@ -437,13 +437,23 @@ describe('GET /:jid/files/office-preview/:path', () => {
       }
     }
 
-    test('a symlink in the last component is not followed', async () => {
+    test('a symlink to a file inside the root previews like download does', async () => {
       fs.writeFileSync(path.join(workspaceDir, 'real.docx'), 'real');
       fs.symlinkSync(
         path.join(workspaceDir, 'real.docx'),
         path.join(workspaceDir, 'link.docx'),
       );
-      expect((await get('link.docx')).status).toBe(404);
+      const res = await get('link.docx');
+      expect(res.status).toBe(200);
+      expect(Buffer.from(await res.arrayBuffer())).toEqual(PDF_BYTES);
+      expect(requests).toHaveLength(1);
+    });
+
+    test('a symlink out of the root is refused', async () => {
+      const outside = path.join(tmpDir, 'outside.docx');
+      fs.writeFileSync(outside, 'host secret');
+      fs.symlinkSync(outside, path.join(workspaceDir, 'escape.docx'));
+      expect((await get('escape.docx')).status).not.toBe(200);
       expect(requests).toHaveLength(0);
     });
 

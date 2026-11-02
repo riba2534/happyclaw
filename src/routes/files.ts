@@ -456,21 +456,26 @@ function resolveReadableFile(
 }
 
 /**
- * Opens a file `resolveReadableFile` validated, without following a symlink
- * in its last component or blocking on a FIFO, and keeps the descriptor only
+ * Opens a file `resolveReadableFile` validated and keeps the descriptor only
  * if it is a regular file, is the very file that was validated (same dev and
- * inode) and the path still resolves inside the file root. Whatever is read
- * afterwards comes from this descriptor, not from the path, which may change.
+ * inode) and still resolves inside the file root. The path is resolved first
+ * (a symlink inside the root reads like it does for download and preview),
+ * then opened without following a symlink in its last component or blocking
+ * on a FIFO. Whatever is read afterwards comes from this descriptor, not from
+ * the path, which may change.
  */
 async function openValidatedFile(
   absolutePath: string,
   validated: fs.Stats,
   fileRoot: string,
 ): Promise<FileHandle | null> {
+  let realPath: string;
   let handle: FileHandle;
   try {
+    realPath = await fs.promises.realpath(absolutePath);
+    if (!isRealpathInside(realPath, fileRoot)) return null;
     handle = await fs.promises.open(
-      absolutePath,
+      realPath,
       fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK,
     );
   } catch {
@@ -482,7 +487,7 @@ async function openValidatedFile(
       opened.isFile() &&
       opened.dev === validated.dev &&
       opened.ino === validated.ino &&
-      isRealpathInside(absolutePath, fileRoot)
+      isRealpathInside(realPath, fileRoot)
     ) {
       return handle;
     }
