@@ -120,6 +120,7 @@ import {
   relocateLegacyMainSessionDirectories,
   type LegacyMainSessionMigrationReport,
 } from './legacy-main-session-migration.js';
+import { LEGACY_MAIN_SESSION_KEY_PREFIX } from './legacy-main-session-checks.js';
 import { keyPrefixRange } from './sql-key-prefix.js';
 import {
   clearAgentSessionHistoryReinjections,
@@ -11800,6 +11801,14 @@ export function deleteAgent(id: string): void {
     prepareCached('DELETE FROM user_pinned_sessions WHERE agent_id = ?').run(
       id,
     );
+    // The session's v88 mapping and OOM counter (`oom_exits:<folder>#<id>`).
+    prepareCached(
+      'DELETE FROM router_state WHERE key >= @from AND key < @to AND value = @id',
+    ).run({ ...keyPrefixRange(LEGACY_MAIN_SESSION_KEY_PREFIX), id });
+    prepareCached(
+      `DELETE FROM router_state WHERE key >= @from AND key < @to
+         AND substr(key, -length(@suffix)) = @suffix`,
+    ).run({ ...keyPrefixRange('oom_exits:'), suffix: `#${id}` });
     // A product Session can own an SDK runtime resume row and channel mounts;
     // clear all three projections together so direct DB callers cannot leave
     // routable ghosts behind.
@@ -11869,6 +11878,27 @@ function mapAgentRow(row: Record<string, unknown>): SubAgent {
     automation_id:
       typeof row.automation_id === 'string' ? row.automation_id : null,
   };
+}
+
+/** The conversation sessions of several workspaces at once, by workspace JID. */
+export function listConversationAgentsByJids(
+  chatJids: string[],
+): Map<string, SubAgent[]> {
+  const result = new Map<string, SubAgent[]>();
+  if (chatJids.length === 0) return result;
+  const rows = prepareCached(
+    `SELECT * FROM agents
+     WHERE kind = 'conversation'
+       AND chat_jid IN (SELECT value FROM json_each(?))
+     ORDER BY created_at DESC`,
+  ).all(JSON.stringify(chatJids)) as Array<Record<string, unknown>>;
+  for (const row of rows) {
+    const agent = mapAgentRow(row);
+    const list = result.get(agent.chat_jid);
+    if (list) list.push(agent);
+    else result.set(agent.chat_jid, [agent]);
+  }
+  return result;
 }
 
 export function deleteMessagesForChatJid(chatJid: string): void {

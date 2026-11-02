@@ -20,8 +20,6 @@ const agents = new Map<string, AgentLike>([
 
 const getRegisteredGroup = (jid: string) => registeredGroups.get(jid);
 const getAgent = (id: string) => agents.get(id);
-const findGroupNameByFolder = (folder: string) =>
-  folder === 'home-u1' ? 'Home' : folder;
 const resolveWorkspaceJid = (jid: string) =>
   jid === 'web:flow-legacy' ? 'web:legacy-real-jid' : jid;
 
@@ -33,14 +31,7 @@ const chat = (fields: Partial<RegisteredGroupLike>): RegisteredGroupLike => ({
 
 describe('resolveBoundChatTarget', () => {
   const resolve = (group: RegisteredGroupLike) =>
-    resolveBoundChatTarget(
-      'feishu:chat-1',
-      group,
-      getRegisteredGroup,
-      getAgent,
-      findGroupNameByFolder,
-      resolveWorkspaceJid,
-    );
+    resolveBoundChatTarget(group, getRegisteredGroup, getAgent);
 
   test('uses the session parent workspace jid for session bindings', () => {
     expect(resolve(chat({ target_agent_id: 'agent-1234' }))).toEqual({
@@ -71,14 +62,12 @@ describe('resolveBoundChatTarget', () => {
   test('returns null when a session parent workspace is missing', () => {
     expect(
       resolveBoundChatTarget(
-        'feishu:chat-1',
         chat({ target_agent_id: 'orphan-agent' }),
         getRegisteredGroup,
         (id) =>
           id === 'orphan-agent'
             ? { name: 'Orphan Agent', chat_jid: 'web:missing-workspace' }
             : undefined,
-        findGroupNameByFolder,
       ),
     ).toBeNull();
   });

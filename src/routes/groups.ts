@@ -71,6 +71,7 @@ import {
   getMessagesPage,
   getMessagesAfter,
   getLatestMessagePreviewPerChat,
+  listConversationAgentsByJids,
   getAgent,
   listAgentsByJid,
   getGroupsByTargetAgent,
@@ -450,30 +451,30 @@ function buildGroupsPayload(user: AuthUser): Record<string, GroupPayloadItem> {
 
   // A workspace is as recent as its most recent session: the latest message
   // over its sessions and their own activity. An IM row has its own chat.
-  const sessionsByWorkspace = new Map(
-    visibleEntries
-      .filter(([jid]) => jid.startsWith('web:'))
-      .map(([jid]) => [
-        jid,
-        listAgentsByJid(jid).filter((a) => a.kind === 'conversation'),
-      ]),
+  const sessionsByWorkspace = listConversationAgentsByJids(
+    visibleEntries.map(([jid]) => jid).filter((jid) => jid.startsWith('web:')),
   );
-  const previewJids = visibleEntries.flatMap(
-    ([jid]) =>
-      sessionsByWorkspace.get(jid)?.map((s) => `${jid}#agent:${s.id}`) ?? [jid],
+  const sessionsOf = (jid: string) => sessionsByWorkspace.get(jid) ?? [];
+  const previewJids = visibleEntries.flatMap(([jid]) =>
+    jid.startsWith('web:')
+      ? sessionsOf(jid).map((s) => `${jid}#agent:${s.id}`)
+      : [jid],
   );
   // 每个 jid 各取最新一条（分区窗口，不再被高频群吃光全局窗口）
   const previewByJid = getLatestMessagePreviewPerChat(previewJids);
   const later = (a: string | undefined, b: string | undefined) =>
     !b || (!!a && Date.parse(a) > Date.parse(b)) ? a : b;
-  const latestOf = (
-    jid: string,
-  ): { content?: string; timestamp?: string } | undefined => {
-    const sessions = sessionsByWorkspace.get(jid);
-    if (!sessions) return previewByJid.get(jid);
+  const latestOf = (jid: string): { content?: string; timestamp?: string } => {
+    if (!jid.startsWith('web:')) {
+      return (
+        previewByJid.get(jid) ?? {
+          timestamp: chats.get(jid)?.last_message_time,
+        }
+      );
+    }
     let message: { content: string; timestamp: string } | undefined;
     let activity: string | undefined;
-    for (const session of sessions) {
+    for (const session of sessionsOf(jid)) {
       const preview = previewByJid.get(`${jid}#agent:${session.id}`);
       if (
         preview &&
@@ -511,11 +512,9 @@ function buildGroupsPayload(user: AuthUser): Record<string, GroupPayloadItem> {
       kind: isHome ? 'home' : isWeb ? 'web' : 'feishu',
       editable: isWeb && !isGuest,
       deletable: isWeb && !isHome && !isGuest,
-      lastMessage: latest?.content,
-      lastMessageTime:
-        latest?.timestamp ||
-        chats.get(jid)?.last_message_time ||
-        group.added_at,
+      lastMessage: latest.content,
+      // A workspace without a session yet is as recent as its creation.
+      lastMessageTime: latest.timestamp || group.added_at,
       execution_mode: group.executionMode || 'container',
       interaction_mode: isWeb
         ? getWorkspaceInteractionMode(group.folder)
