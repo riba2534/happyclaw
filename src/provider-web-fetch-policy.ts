@@ -1,13 +1,14 @@
-import {
-  getProviderById,
-  type WebFetchPreflightPolicy,
-} from './runtime-config.js';
+import { getProviderById } from './runtime-config.js';
 
-/** Unset policies and launches without a saved connection enable the check. */
+/**
+ * The policy the Runner pins, read from the connection selected for this
+ * launch. Only `skip` is pinned; a connection left at the default and a
+ * launch on the workspace's own Provider env follow Claude Code's settings.
+ */
 export function resolveProviderWebFetchPreflightPolicy(
   providerId: string | null,
-): WebFetchPreflightPolicy {
+): 'skip' | undefined {
   return providerId
-    ? (getProviderById(providerId)?.webFetchPreflightPolicy ?? 'check')
-    : 'check';
+    ? getProviderById(providerId)?.webFetchPreflightPolicy
+    : undefined;
 }

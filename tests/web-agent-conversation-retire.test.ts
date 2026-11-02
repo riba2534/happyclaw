@@ -3,7 +3,13 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, expect, test, vi } from 'vitest';
 
-const root = fs.mkdtempSync(path.join(os.tmpdir(), 'web-provider-refresh-'));
+// A Web send to an idle session awaits its plugin expansion before piping.
+// Meanwhile another channel can start a turn on the same runner and the
+// runner can be retired (a team-mode work item approval calls
+// retireRunnerAfterQuery through drainLane; install_skill's self-mutation
+// uses closeAfterQuery). The Web send then gets no_active and must not end
+// that other turn.
+const root = fs.mkdtempSync(path.join(os.tmpdir(), 'web-conv-retire-'));
 const dataDir = path.join(root, 'data');
 const expansion = vi.hoisted(() => ({ run: vi.fn() }));
 vi.mock('../src/config.js', async (importOriginal) => ({
@@ -36,10 +42,12 @@ vi.mock('../src/middleware/auth.ts', async (importOriginal) => ({
 const db = await import('../src/db.js');
 const { GroupQueue } = await import('../src/group-queue.js');
 const { createAppForTest } = await import('../src/web.js');
-const workspaceJid = 'web:runtime-refresh';
+const { sessionIpcDir } = await import('../src/utils.js');
+const folder = 'conv-retire';
+const workspaceJid = `web:${folder}`;
 const agentId = '11111111-2222-4333-8444-555555555555';
 const laneJid = `${workspaceJid}#agent:${agentId}`;
-const folder = 'runtime-refresh';
+const closeFile = path.join(sessionIpcDir(folder, agentId), 'input', '_close');
 
 beforeAll(() => {
   fs.mkdirSync(path.join(dataDir, 'db'), { recursive: true });
@@ -70,30 +78,26 @@ afterAll(() => {
   fs.rmSync(root, { recursive: true, force: true });
 });
 
-test('a policy save during Web prompt expansion does not close another in-flight turn', async () => {
+test('a runner retired during Web plugin expansion finishes the other turn before the cold start', async () => {
   const queue = new GroupQueue();
   queue.setHostModeChecker(() => true);
   let finishRunner!: () => void;
   queue.enqueueTask(
     laneJid,
     'warm-runner',
-    () =>
-      new Promise<void>((resolve) => {
-        finishRunner = resolve;
-      }),
+    () => new Promise<void>((resolve) => (finishRunner = resolve)),
   );
   const kill = vi.fn();
   queue.registerProcess(laneJid, { kill } as never, {
     containerName: null,
     groupFolder: folder,
     agentId,
-    selectedProviderId: 'connection',
   });
   queue.markRunnerQueryIdle(laneJid);
-  const runNext = vi.fn(async () => true);
+  const coldStart = vi.fn(async () => true);
   const app = createAppForTest({
     queue,
-    processAgentConversation: runNext,
+    processAgentConversation: coldStart,
     getLastAgentTimestamp: () => ({}),
     setLastAgentTimestamp: () => {},
     getRegisteredGroups: () => ({}),
@@ -101,26 +105,15 @@ test('a policy save during Web prompt expansion does not close another in-flight
     advanceNextPullCursorOnly: () => {},
   } as unknown as Parameters<typeof createAppForTest>[0]);
   let finishExpansion!: () => void;
-  let expansionStarted!: () => void;
-  const started = new Promise<void>((resolve) => {
-    expansionStarted = resolve;
+  const started = new Promise<void>((expansionStarted) => {
+    expansion.run.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finishExpansion = () => resolve({ kind: 'miss' });
+          expansionStarted();
+        }),
+    );
   });
-  expansion.run.mockImplementation(
-    () =>
-      new Promise((resolve) => {
-        finishExpansion = () => resolve({ kind: 'miss' });
-        expansionStarted();
-      }),
-  );
-  const closeFile = path.join(
-    dataDir,
-    'ipc',
-    folder,
-    'agents',
-    agentId,
-    'input',
-    '_close',
-  );
   let request: Promise<Response> | undefined;
   try {
     request = app.request('/api/messages', {
@@ -133,26 +126,25 @@ test('a policy save during Web prompt expansion does not close another in-flight
       }),
     });
     await started;
-    // Another channel starts a real turn while the Web request expands.
     expect(queue.sendMessage(laneJid, 'another channel input')).toBe('sent');
-    const currentQueryId = queue.getActiveQueryId(laneJid);
-    queue.requestProviderRuntimeRefresh('connection');
+    const otherTurn = queue.getActiveQueryId(laneJid);
+    queue.retireRunnerAfterQuery(laneJid);
     finishExpansion();
-    const response = await request;
-    expect(response.status).toBe(200);
-    expect(queue.getActiveQueryId(laneJid)).toBe(currentQueryId);
+    expect((await request).status).toBe(200);
+
+    expect(queue.getActiveQueryId(laneJid)).toBe(otherTurn);
     expect(fs.existsSync(closeFile)).toBe(false);
     expect(kill).not.toHaveBeenCalled();
-    expect(runNext).not.toHaveBeenCalled();
+    expect(coldStart).not.toHaveBeenCalled();
 
     queue.markRunnerQueryIdle(laneJid);
     expect(fs.existsSync(closeFile)).toBe(true);
     finishRunner();
     await new Promise((resolve) => setImmediate(resolve));
-    expect(runNext).toHaveBeenCalledOnce();
+    expect(coldStart).toHaveBeenCalledOnce();
   } finally {
     finishExpansion?.();
-    finishRunner();
+    finishRunner?.();
     await request;
     await new Promise((resolve) => setImmediate(resolve));
   }

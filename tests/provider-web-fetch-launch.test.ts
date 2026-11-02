@@ -2,7 +2,6 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, test, vi } from 'vitest';
-import type { WebFetchPreflightPolicy } from '../src/runtime-config.js';
 
 // Run the real Launcher/config/DB against a child that records its bootstrap.
 // No Docker daemon, model endpoint, native home or Keychain is touched.
@@ -90,6 +89,7 @@ import fs from 'node:fs';
 const input = JSON.parse(fs.readFileSync(0, 'utf8'));
 fs.writeFileSync(${JSON.stringify(capture)}, JSON.stringify({
   policy: input.webFetchPreflightPolicy,
+  sent: 'webFetchPreflightPolicy' in input,
   endpoint: process.env.ANTHROPIC_BASE_URL,
 }));
 console.log('---HAPPYCLAW_OUTPUT_START---');
@@ -127,7 +127,7 @@ afterAll(() => {
 async function launch(
   mode: 'host' | 'container',
   agentConnection: string | null,
-  callerPolicy: WebFetchPreflightPolicy = 'check',
+  callerPolicy?: 'skip',
 ) {
   const existsSync = fs.existsSync.bind(fs);
   const exists = vi.spyOn(fs, 'existsSync').mockImplementation((target) => {
@@ -197,9 +197,9 @@ describe('selected connection WebFetch policy at launch', () => {
     '%s follows a changed connection selection',
     async (mode) => {
       db.setSessionModelSelection(folder, session, firstId, 'owner');
-      expect(await launch(mode, secondId)).toMatchObject({
+      expect(await launch(mode, secondId, 'skip')).toMatchObject({
         providerId: firstId,
-        policy: 'check',
+        sent: false,
       });
       db.setSessionModelSelection(folder, session, null);
       expect(await launch(mode, secondId)).toMatchObject({
@@ -214,9 +214,9 @@ describe('selected connection WebFetch policy at launch', () => {
     preparation.beforeCapabilities = () => {
       config.updateProvider(secondId, { webFetchPreflightPolicy: 'check' });
     };
-    expect(await launch('host', firstId)).toMatchObject({
+    expect(await launch('host', firstId, 'skip')).toMatchObject({
       providerId: secondId,
-      policy: 'check',
+      sent: false,
     });
     config.updateProvider(secondId, { webFetchPreflightPolicy: 'skip' });
   });
@@ -232,7 +232,7 @@ describe('selected connection WebFetch policy at launch', () => {
       try {
         expect(await launch(mode, null, 'skip')).toMatchObject({
           providerId: null,
-          policy: 'check',
+          sent: false,
         });
       } finally {
         config.saveContainerEnvConfig(folder, {});
@@ -240,26 +240,19 @@ describe('selected connection WebFetch policy at launch', () => {
     },
   );
 
-  test.each([
-    [undefined, { skipWebFetchPreflight: false }],
-    ['check', { skipWebFetchPreflight: false }],
-    ['skip', { skipWebFetchPreflight: true }],
-  ] as const)(
-    'pins %s above the opposite native setting without changing native configuration',
-    (policy, expected) => {
-      const native = { skipWebFetchPreflight: !expected.skipWebFetchPreflight };
-      const settings = webFetchPreflightSettings(policy);
-      expect(settings).toEqual(expected);
-      expect({ ...native, ...settings }).toEqual(expected);
-      expect(native.skipWebFetchPreflight).toBe(
-        !expected.skipWebFetchPreflight,
-      );
-    },
-  );
+  test('skip pins the setting above a native false', () => {
+    const settings = webFetchPreflightSettings('skip');
+    expect(settings).toEqual({ skipWebFetchPreflight: true });
+    expect({ skipWebFetchPreflight: false, ...settings }).toEqual(settings);
+  });
 
-  test('an old serialized inherit input cannot retain a native skip', () => {
-    expect(webFetchPreflightSettings('inherit' as never)).toEqual({
-      skipWebFetchPreflight: false,
+  // Flag settings outrank the admin's, project and local settings files; a
+  // pinned false would undo an admin's own skipWebFetchPreflight: true.
+  test('no policy leaves the setting to Claude Code', () => {
+    const settings = webFetchPreflightSettings(undefined);
+    expect(settings).toEqual({});
+    expect({ skipWebFetchPreflight: true, ...settings }).toEqual({
+      skipWebFetchPreflight: true,
     });
   });
 });

@@ -1254,8 +1254,11 @@ async function handleAgentConversationMessage(
         'Race: eager-expanded agent conv but runner exited before sendMessage; cold-start will re-expand',
       );
     }
-    // A save can retire the warm runner while plugin expansion awaits. It
-    // may now be serving another input: finish that turn before replacing it.
+    // A runner still on this lane takes no more input, and the cold start
+    // below runs only once it exits: ask it to exit after its current query
+    // (an idle one now) rather than wait for its idle timeout. Unlike
+    // closeStdin, this never interrupts a turn another channel started while
+    // plugin expansion awaited.
     deps.queue.retireRunnerAfterQuery(virtualChatJid);
     deps.queue.enqueueTask(
       virtualChatJid,
