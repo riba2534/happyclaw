@@ -1645,4 +1645,133 @@ describe('v88 legacy main session migration', () => {
       ).toBe(false);
     }
   });
+
+  test('--preflight previews a v87 database read-only', () => {
+    const TOPIC = 'feishu:oc_topic_single';
+    buildV87((conn) => {
+      seedRich(conn);
+      group(conn, TOPIC, {
+        folder: 'main',
+        targetMainJid: HOME,
+        chatMode: 'topic',
+      });
+      // Same id as a Home row, other content: kept under a new id.
+      message(conn, DM, 'home-2', T(9), { content: 'other', fromMe: true });
+      // A chat that never committed: a queued input before a processed one.
+      message(conn, EMPTY, 'e-queued', T(1), { deliveryStatus: 'queued' });
+      message(conn, EMPTY, 'e-done', T(2));
+      conn
+        .prepare(
+          `INSERT INTO messages (id, chat_jid, content, timestamp, is_from_me)
+           VALUES ('no-time', ?, 'x', NULL, 0)`,
+        )
+        .run(EMPTY);
+      conn.exec(`
+        INSERT INTO turn_runs (
+          id, idempotency_key, provider, account_id, source_jid, correlation_id,
+          status, available_at, created_at, updated_at
+        ) VALUES ('turn-live', 'k-live', 'feishu', 'acct', '${BOUND_GROUP}',
+          'group-1', 'running', '${T(0)}', '${T(0)}', '${T(0)}');
+      `);
+    });
+    fs.mkdirSync(path.join(root, 'sessions', 'main'), { recursive: true });
+    fs.symlinkSync(root, path.join(root, 'sessions', 'main', '.claude'));
+    fs.mkdirSync(path.join(root, 'sessions', 'flow-work', '.claude'), {
+      recursive: true,
+    });
+    // The live server holds the database open, so its WAL files exist.
+    const server = new Database(databasePath);
+    server.prepare('SELECT COUNT(*) FROM messages').get();
+    const before = fileState(databasePath);
+    const cwd = path.join(root, 'preflight-cwd');
+    fs.mkdirSync(cwd, { recursive: true });
+    const run = runReport(
+      ['--preflight', '--db', databasePath, '--data-dir', root],
+      cwd,
+    );
+    expect(run.status, run.stderr).toBe(0);
+    const output = JSON.parse(run.stdout);
+    expect(output).toMatchObject({
+      mode: 'preflight',
+      readOnly: true,
+      schemaVersion: '87',
+      clean: false,
+      attention: [
+        'pendingReplayed',
+        'pendingNotReplayed',
+        'nonTerminalTurnRuns',
+        'topicContainers',
+        'duplicateIdsDiffering',
+        'nullTimestampInbound',
+        'symlinkSessionDirectories',
+      ],
+      totals: {
+        workspaces: 3,
+        migrating: 3,
+        pendingReplayed: 1,
+        pendingNotReplayed: 1,
+        nonTerminalTurnRuns: 1,
+        topicContainers: 1,
+        duplicateIdsMatching: 1,
+        duplicateIdsDiffering: 1,
+        nullTimestampInbound: 1,
+        sessionDirectories: { dir: 1, symlink: 1, missing: 1, other: 0 },
+      },
+      topicContainers: [{ channelJid: TOPIC, workspaceJid: HOME }],
+    });
+    const workspace = (jid: string) =>
+      output.workspaces.find(
+        (w: { workspaceJid: string }) => w.workspaceJid === jid,
+      );
+    expect(workspace(HOME)).toMatchObject({
+      migrates: true,
+      sessionDirectory: 'symlink',
+      nonTerminalTurnRuns: ['turn-live'],
+      duplicateIds: [
+        { chatJid: DM, id: 'dup-1', contentMatches: true },
+        { chatJid: DM, id: 'home-2', contentMatches: false },
+      ],
+    });
+    expect(workspace(WORK)).toMatchObject({
+      sessionDirectory: 'dir',
+      pendingReplayed: ['work-2'],
+      pendingNotReplayed: [],
+    });
+    expect(workspace(EMPTY)).toMatchObject({
+      sessionDirectory: 'missing',
+      pendingReplayed: [],
+      pendingNotReplayed: ['e-queued'],
+      nullTimestampInbound: ['no-time'],
+    });
+    // Read-only: nothing migrated, nothing written, nothing loaded that writes.
+    expect(fileState(databasePath)).toEqual(before);
+    expect(fs.readdirSync(cwd)).toEqual([]);
+    expect(
+      inspect(
+        (conn) =>
+          conn
+            .prepare(
+              "SELECT value FROM router_state WHERE key = 'schema_version'",
+            )
+            .get() as { value: string },
+      ).value,
+    ).toBe('87');
+    server.close();
+
+    buildV87((conn) => {
+      group(conn, HOME, { folder: 'main', isHome: true });
+      const h = message(conn, HOME, 'h-1', T(1));
+      cursor(conn, 'committed', HOME, {
+        timestamp: T(1),
+        id: 'h-1',
+        sequence: h,
+      });
+    });
+    const clean = runReport(['--preflight', '--db', databasePath], cwd);
+    expect(clean.status, clean.stderr).toBe(0);
+    expect(JSON.parse(clean.stdout)).toMatchObject({
+      clean: true,
+      attention: [],
+    });
+  }, 60_000);
 });
