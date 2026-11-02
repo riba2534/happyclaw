@@ -17,7 +17,16 @@
  * legacy_main session with its message count. Loads nothing that writes on
  * import.
  *
- * Both print one JSON document and exit 1 when an invariant check fails.
+ * Preview, read-only like --check, on a v87 database before deploying:
+ *   npx tsx scripts/legacy-main-session-report.ts --preflight [--db <path>] [--data-dir <path>]
+ * Prints what the migration would do (pending inputs it replays or leaves,
+ * non-terminal main-lane turns, topic containers, duplicate message ids,
+ * inputs without a timestamp, and what sessions/<folder>/.claude is, by
+ * lstat only); `clean` is true when none of that applies. The data dir
+ * defaults to the directory holding db/. Always exits 0 once it ran.
+ *
+ * --check and the rehearsal print one JSON document and exit 1 when an
+ * invariant check fails.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -32,6 +41,7 @@ import {
   READ_ONLY_OPEN,
   routerState,
 } from '../src/legacy-main-session-checks.js';
+import { previewLegacyMainSessions } from '../src/legacy-main-session-plan.js';
 import { CURRENT_SCHEMA_VERSION } from '../src/schema-version.js';
 
 const DEFAULT_DB = path.join('data', 'db', 'messages.db');
@@ -142,21 +152,50 @@ async function rehearse(inspectFs: boolean): Promise<number> {
   });
 }
 
+function preflight(dbPath: string, dataDir: string): number {
+  const preview = withReadOnly(dbPath, (conn) =>
+    conn.transaction(() => ({
+      mode: 'preflight',
+      database: dbPath,
+      dataDir,
+      readOnly: conn.readonly,
+      schemaVersion: routerState(conn, 'schema_version') ?? null,
+      ...previewLegacyMainSessions(conn, { dataDir }),
+    }))(),
+  );
+  console.log(JSON.stringify(preview, null, 2));
+  return 0;
+}
+
 async function main(): Promise<number> {
   const { values } = parseArgs({
     options: {
       check: { type: 'boolean', default: false },
+      preflight: { type: 'boolean', default: false },
       db: { type: 'string' },
+      'data-dir': { type: 'string' },
       'no-fs': { type: 'boolean', default: false },
     },
     strict: true,
   });
-  if (values.db !== undefined && !values.check) {
-    throw new Error('--db is only for --check');
+  if (values.check && values.preflight) {
+    throw new Error('--check and --preflight are separate runs');
   }
-  return values.check
-    ? check(path.resolve(values.db ?? DEFAULT_DB))
-    : rehearse(!values['no-fs']);
+  const readOnly = values.check || values.preflight;
+  if (values.db !== undefined && !readOnly) {
+    throw new Error('--db is only for --check and --preflight');
+  }
+  if (values['data-dir'] !== undefined && !values.preflight) {
+    throw new Error('--data-dir is only for --preflight');
+  }
+  const dbPath = path.resolve(values.db ?? DEFAULT_DB);
+  if (values.preflight) {
+    return preflight(
+      dbPath,
+      path.resolve(values['data-dir'] ?? path.dirname(path.dirname(dbPath))),
+    );
+  }
+  return values.check ? check(dbPath) : rehearse(!values['no-fs']);
 }
 
 main().then(
