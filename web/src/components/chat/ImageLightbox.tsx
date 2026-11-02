@@ -1,7 +1,9 @@
 import { useState, useCallback, useEffect } from 'react';
 import { Dialog as DialogPrimitive } from 'radix-ui';
-import { ChevronLeft, ChevronRight, X } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Download, X } from 'lucide-react';
+import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
+import { saveImage } from '../../utils/download';
 import { ZoomPanSurface } from './ZoomPanSurface';
 
 interface ImageLightboxProps {
@@ -22,6 +24,8 @@ const PULL_FADE_DISTANCE = 400;
  * buttons switch images. On touch (ZoomPanSurface) two fingers zoom about
  * their midpoint and pan, one finger pans the zoomed image, a double tap
  * zooms in or out, and at 1× a swipe switches images and a pull down closes.
+ * Long-press opens the system image menu; the save button shares the file
+ * (Save Image on phones) or downloads it.
  */
 export function ImageLightbox({
   images,
@@ -59,6 +63,19 @@ export function ImageLightbox({
     [images.length],
   );
 
+  const [saving, setSaving] = useState(false);
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      await saveImage(images[currentIndex], `image-${Date.now()}`);
+    } catch (err) {
+      console.error('Save image failed:', err);
+      toast.error('图片保存失败');
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const visible = isOpen && !isClosing;
   const chromeStyle = {
     opacity: visible ? 1 : 0,
@@ -93,18 +110,31 @@ export function ImageLightbox({
             图片预览 {currentIndex + 1} / {images.length}
           </DialogPrimitive.Title>
 
-          <DialogPrimitive.Close
-            onClick={(e) => e.stopPropagation()}
+          <div
             // Clear of the notch and the status bar, and 44px to the finger.
-            className={cn(
-              viewerButtonClass,
-              'absolute top-[calc(1rem+env(safe-area-inset-top))] right-[calc(1rem+env(safe-area-inset-right))] z-30 pointer-coarse:size-11',
-            )}
-            aria-label="关闭"
+            className="absolute top-[calc(1rem+env(safe-area-inset-top))] right-[calc(1rem+env(safe-area-inset-right))] z-30 flex gap-2"
             style={chromeStyle}
           >
-            <X className="size-6" />
-          </DialogPrimitive.Close>
+            <button
+              type="button"
+              aria-label="保存图片"
+              disabled={saving}
+              onClick={(e) => {
+                e.stopPropagation();
+                void handleSave();
+              }}
+              className={cn(viewerButtonClass, 'pointer-coarse:size-11')}
+            >
+              <Download className="size-5" />
+            </button>
+            <DialogPrimitive.Close
+              onClick={(e) => e.stopPropagation()}
+              className={cn(viewerButtonClass, 'pointer-coarse:size-11')}
+              aria-label="关闭"
+            >
+              <X className="size-6" />
+            </DialogPrimitive.Close>
+          </div>
 
           {multiple && (
             <>
@@ -155,7 +185,7 @@ export function ImageLightbox({
             <img
               src={images[currentIndex]}
               alt={`${currentIndex + 1} / ${images.length}`}
-              className="max-h-[calc(var(--vvh,100dvh)-2rem)] max-w-[calc(100vw-2rem)] object-contain select-none sm:max-w-[calc(100vw-8rem)]"
+              className="max-h-[calc(var(--vvh,100dvh)-2rem)] max-w-[calc(100vw-2rem)] touch-callout-default object-contain select-none sm:max-w-[calc(100vw-8rem)]"
               draggable={false}
               onClick={(e) => e.stopPropagation()}
             />
