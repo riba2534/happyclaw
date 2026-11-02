@@ -1256,7 +1256,7 @@ const TRANSCRIPT_UUID_RE =
  * 消息重放给 for-await 消费者，且消息上没有 isReplay 标记（实测 string-prompt
  * 模式下干净会话 resume 会重放上一轮 assistant + result；streaming 模式下
  * 带孤儿后台任务的会话 resume 会合成 init/result 对）。收集旧 transcript
- *（主会话 + subagents，含嵌套子目录）里已有消息的 uuid，for-await 中命中即
+ *（主 Agent 与 subagents 的 transcript，含嵌套子目录）里已有消息的 uuid，for-await 中命中即
  * 跳过——否则重放的旧 assistant 文本会混进 assistantTextTracker 造成回复
  * 重复历史内容。
  * 注意：result 不写入 transcript（CLI 重放时现场合成、uuid 全新），无法用
