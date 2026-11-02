@@ -16,8 +16,8 @@ import {
 } from '../lib/session-delete';
 import { automationsBySession } from '../lib/automation-presentation';
 import {
+  bindableSessions,
   isNativeManagedSession,
-  listedSessions,
   sessionDisplayName,
 } from '../lib/session-presentation';
 import { sessionJidOf } from '../lib/session-jid';
@@ -123,7 +123,7 @@ export function useSessionActions() {
         : undefined;
       const rebindOptions = [
         { value: NO_REBIND, label: '不改绑' },
-        ...listedSessions(sessions)
+        ...bindableSessions(sessions)
           .filter((item) => item.id !== id)
           .map((item) => ({ value: item.id, label: sessionDisplayName(item) })),
       ];

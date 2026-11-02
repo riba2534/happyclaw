@@ -2,9 +2,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../../../api/client';
 import { useChatStore } from '../../../stores/chat';
 import type { AvailableImGroup, AgentInfo } from '../../../types';
-import { buildImBindingRequest } from '../../../utils/im-binding-policy';
+import {
+  buildImBindingRequest,
+  notBindableMessage,
+} from '../../../utils/im-binding-policy';
 import { getAgentProfileDisplayName } from '../../../utils/agent-product';
-import { listedSessions } from '../../../lib/session-presentation';
+import { bindableSessions } from '../../../lib/session-presentation';
 
 export interface BindingTarget {
   type: 'workspace' | 'session';
@@ -96,7 +99,7 @@ export function useImBindings() {
           const data = await api.get<{ sessions: AgentInfo[] }>(
             `/api/groups/${encodeURIComponent(jid)}/sessions`,
           );
-          return listedSessions(data.sessions).map((a) => ({
+          return bindableSessions(data.sessions).map((a) => ({
             type: 'session' as const,
             groupJid: jid,
             groupName: group.name,
@@ -188,7 +191,9 @@ export function useImBindings() {
         await loadBindings();
         return null;
       } catch (err) {
-        const msg = err instanceof Error ? err.message : '操作失败，请重试';
+        const msg =
+          notBindableMessage(err) ??
+          (err instanceof Error ? err.message : '操作失败，请重试');
         setError(msg);
         return msg;
       }
@@ -213,7 +218,9 @@ export function useImBindings() {
         await loadBindings();
         return null;
       } catch (err) {
-        const message = err instanceof Error ? err.message : '绑定失败';
+        const message =
+          notBindableMessage(err) ??
+          (err instanceof Error ? err.message : '绑定失败');
         setError(message);
         return message;
       }

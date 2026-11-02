@@ -167,6 +167,21 @@ describe('deleting a session', () => {
           kind: 'conversation',
           created_at: '2026-01-03T00:00:00.000Z',
         },
+        // Sessions the host uses itself take no chats.
+        {
+          id: 'router',
+          name: '团队路由',
+          kind: 'conversation',
+          source_kind: 'team_router',
+          created_at: '2026-01-04T00:00:00.000Z',
+        },
+        {
+          id: 'run',
+          name: '自动化运行',
+          kind: 'conversation',
+          source_kind: 'automation',
+          created_at: '2026-01-05T00:00:00.000Z',
+        },
       ],
     };
     automations.automations = [

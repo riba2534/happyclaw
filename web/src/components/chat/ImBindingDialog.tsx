@@ -53,6 +53,7 @@ import {
 import {
   buildImBindingRequest,
   isBoundToImDestination,
+  notBindableMessage,
   resolveBindingTargetType,
   resolveBindingActivationMode,
   resolveBindingAudienceMode,
@@ -432,8 +433,8 @@ export function ImBindingDialog({
     setActionLoading(imJid);
     try {
       await bindCurrentTarget(group);
-    } catch {
-      showToast('绑定失败');
+    } catch (err) {
+      showToast('绑定失败', notBindableMessage(err) ?? undefined);
     } finally {
       setActionLoading(null);
     }
@@ -537,8 +538,8 @@ export function ImBindingDialog({
     setActionLoading(imJid);
     try {
       await bindCurrentTarget(rebindGroup, true);
-    } catch {
-      showToast('换绑失败');
+    } catch (err) {
+      showToast('换绑失败', notBindableMessage(err) ?? undefined);
     }
     setActionLoading(null);
   };

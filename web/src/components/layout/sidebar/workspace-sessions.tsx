@@ -7,6 +7,7 @@ import { useAutomationsStore } from '../../../stores/automations';
 import { useSessionActions } from '../../../hooks/useSessionActions';
 import {
   buildConversationSessions,
+  isBindableSession,
   isNativeManagedSession,
 } from '../../../lib/session-presentation';
 import { sessionJidOf } from '../../../lib/session-jid';
@@ -168,7 +169,10 @@ export function useSessionRowActions(
             : undefined,
         onTogglePin: () =>
           void pinSession(group.jid, session.id, !session.pinned_at),
-        onBind: canModify ? () => onBind(session) : undefined,
+        onBind:
+          canModify && isBindableSession(session)
+            ? () => onBind(session)
+            : undefined,
         onCreateAutomation: canModify
           ? () =>
               openCreateAutomation({
