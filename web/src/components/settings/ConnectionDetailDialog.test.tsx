@@ -4,7 +4,7 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
-import type { UnifiedProviderPublic } from './types';
+import type { UnifiedProviderPublic, WebFetchPreflightPolicy } from './types';
 import { button, click, flush, makeProvider, text, type } from './test-helpers';
 
 const mocks = vi.hoisted(() => ({
@@ -36,6 +36,7 @@ const PROVIDERS = '/api/config/claude/providers';
 let root: Root;
 let container: HTMLDivElement;
 const onChanged = vi.fn();
+const onClose = vi.fn();
 const setNotice = vi.fn();
 const setError = vi.fn();
 
@@ -68,13 +69,13 @@ afterEach(async () => {
 
 let current: UnifiedProviderPublic;
 
-async function render(provider: UnifiedProviderPublic) {
-  current = provider;
+async function render(provider: UnifiedProviderPublic | null) {
+  if (provider) current = provider;
   await act(async () => {
     root.render(
       <ConnectionDetailDialog
         provider={provider}
-        onClose={() => {}}
+        onClose={onClose}
         onChanged={onChanged}
         setNotice={setNotice}
         setError={setError}
@@ -690,5 +691,377 @@ describe('后台与子代理', () => {
   test('official connections have no roles', async () => {
     await render(officialProvider);
     expect(text()).not.toContain('后台与子代理');
+  });
+});
+
+describe('connection WebFetch policy', () => {
+  const field = '#connection-web-fetch-preflight';
+
+  function answerPolicyGets(provider: UnifiedProviderPublic | undefined) {
+    mocks.get.mockImplementation(async (path: string) => {
+      if (path === PROVIDERS) {
+        return {
+          providers: [
+            makeProvider({ id: 'unrelated', webFetchPreflightPolicy: 'check' }),
+            ...(provider ? [provider] : []),
+          ],
+        };
+      }
+      if (path.endsWith('/impact'))
+        return { activeRunners: 1, stoppedRunners: 2 };
+      throw new Error('offline');
+    });
+  }
+
+  test.each([
+    ['Claude subscription', officialProvider],
+    [
+      'Anthropic API',
+      makeProvider({
+        type: 'official',
+        claudeAuthKind: 'api_key',
+        hasAnthropicApiKey: true,
+      }),
+    ],
+    ['ChatGPT subscription', codexProvider],
+    ['preset', makeProvider({ presetId: 'deepseek' })],
+    ['custom', legacyProvider],
+  ])('shows the policy and saves it for %s', async (_kind, provider) => {
+    const persisted = { ...provider, webFetchPreflightPolicy: 'skip' as const };
+    answerPolicyGets(persisted);
+    await render(provider);
+    expect(select(field).value).toBe('check');
+    expect([...select(field).options].map((option) => option.text)).toEqual([
+      '开启检查（默认）',
+      '跳过检查',
+    ]);
+    expect(button('保存连接设置').disabled).toBe(true);
+    await choose(field, 'skip');
+    await click(button('保存连接设置'));
+    await flush();
+    expect(mocks.patch).toHaveBeenCalledWith(
+      `${PROVIDERS}/${provider.id}`,
+      { webFetchPreflightPolicy: 'skip' },
+      120_000,
+    );
+    expect(mocks.confirm).not.toHaveBeenCalled();
+    expect(mocks.get).not.toHaveBeenCalledWith(
+      `${PROVIDERS}/${provider.id}/impact`,
+    );
+    expect(mocks.get).toHaveBeenCalledWith(PROVIDERS);
+    expect(onChanged).toHaveBeenCalledWith(persisted);
+    expect(setNotice).toHaveBeenCalledWith(
+      '网页抓取设置已保存，新消息将使用新设置',
+    );
+  });
+
+  test.each([undefined, 'inherit'] as const)(
+    'shows check for a legacy %s policy without writing',
+    async (policy) => {
+      await render({
+        ...legacyProvider,
+        webFetchPreflightPolicy: policy,
+      } as unknown as UnifiedProviderPublic);
+      expect(select(field).value).toBe('check');
+      expect([...select(field).options].map((option) => option.value)).toEqual([
+        'check',
+        'skip',
+      ]);
+      expect(text()).not.toContain('遵循原生配置');
+      expect(button('保存连接设置').disabled).toBe(true);
+      expect(mocks.patch).not.toHaveBeenCalled();
+    },
+  );
+
+  test.each([
+    ['check', 'skip'],
+    ['skip', 'check'],
+  ] as const)(
+    'persists %s → %s and shows the saved value after reopening',
+    async (from, to) => {
+      const provider = { ...legacyProvider, webFetchPreflightPolicy: from };
+      const persisted = { ...provider, webFetchPreflightPolicy: to };
+      answerPolicyGets(persisted);
+      await render(provider);
+      expect(select(field).value).toBe(from);
+      await choose(field, to);
+      await click(button('保存连接设置'));
+      await flush();
+      expect(onChanged).toHaveBeenCalledWith(persisted);
+      await render(null);
+      await render(persisted);
+      expect(select(field).value).toBe(to);
+      expect(button('保存连接设置').disabled).toBe(true);
+    },
+  );
+
+  test('does not write a cancelled draft or carry it to another connection', async () => {
+    await render(legacyProvider);
+    await choose(field, 'skip');
+    await render(null);
+    await render({ ...officialProvider, webFetchPreflightPolicy: 'check' });
+    expect(select(field).value).toBe('check');
+    expect(button('保存连接设置').disabled).toBe(true);
+    await render(legacyProvider);
+    expect(select(field).value).toBe('check');
+    expect(mocks.patch).not.toHaveBeenCalled();
+    expect(mocks.get).not.toHaveBeenCalledWith(PROVIDERS);
+  });
+
+  test('follows a reloaded value until a local draft is made', async () => {
+    await render(legacyProvider);
+    await render({ ...legacyProvider, webFetchPreflightPolicy: 'skip' });
+    expect(select(field).value).toBe('skip');
+    await choose(field, 'check');
+    await render({ ...legacyProvider, webFetchPreflightPolicy: 'skip' });
+    expect(select(field).value).toBe('check');
+    expect(button('保存连接设置').disabled).toBe(false);
+  });
+
+  test.each([
+    'patch',
+    'readback',
+    'missing connection',
+    'missing field',
+    'mismatch',
+  ])('keeps the draft retryable after %s failure', async (failure) => {
+    const persisted = {
+      ...legacyProvider,
+      webFetchPreflightPolicy: 'skip' as const,
+    };
+    if (failure === 'patch') {
+      mocks.patch.mockRejectedValueOnce(new Error('write failed'));
+    } else if (failure === 'readback') {
+      mocks.get.mockRejectedValue(new Error('read failed'));
+    } else {
+      answerPolicyGets(
+        failure === 'missing connection'
+          ? undefined
+          : failure === 'missing field'
+            ? legacyProvider
+            : { ...persisted, webFetchPreflightPolicy: 'check' },
+      );
+    }
+    await render(legacyProvider);
+    await choose(field, 'skip');
+    await click(button('保存连接设置'));
+    await flush();
+    expect(select(field).value).toBe('skip');
+    expect(button('保存连接设置').disabled).toBe(false);
+    expect(onChanged).not.toHaveBeenCalled();
+    expect(setNotice).not.toHaveBeenCalled();
+    expect(setError).toHaveBeenCalled();
+
+    answerPolicyGets(persisted);
+    await click(button('保存连接设置'));
+    await flush();
+    expect(onChanged).toHaveBeenCalledWith(persisted);
+  });
+
+  test.each([undefined, 'inherit'] as const)(
+    'does not accept a legacy %s readback as a confirmed check save',
+    async (policy) => {
+      await render({ ...legacyProvider, webFetchPreflightPolicy: 'skip' });
+      answerPolicyGets({
+        ...legacyProvider,
+        webFetchPreflightPolicy: policy,
+      } as unknown as UnifiedProviderPublic);
+      await choose(field, 'check');
+      await click(button('保存连接设置'));
+      await flush();
+      expect(setError).toHaveBeenCalledWith('未确认网页抓取设置已保存，请重试');
+      expect(onChanged).not.toHaveBeenCalled();
+      expect(select(field).value).toBe('check');
+      expect(button('保存连接设置').disabled).toBe(false);
+    },
+  );
+
+  test.each(['readback', 'persisted 503'])(
+    'can restore the previous policy after an unconfirmed %s save',
+    async (failure) => {
+      const provider = {
+        ...legacyProvider,
+        webFetchPreflightPolicy: 'check' as const,
+      };
+      await render(provider);
+      if (failure === 'readback') {
+        mocks.get.mockRejectedValue(new Error('read failed'));
+      } else {
+        mocks.patch.mockRejectedValueOnce({
+          status: 503,
+          message: '设置已保存，运行时刷新失败',
+          body: { persisted: true },
+        });
+      }
+      await choose(field, 'skip');
+      await click(button('保存连接设置'));
+      await flush();
+
+      // The failed response did not update the cached check value. The
+      // server may already hold skip, so choosing check is still a write.
+      await choose(field, 'check');
+      expect(button('保存连接设置').disabled).toBe(false);
+      expect(text()).toContain('上次网页抓取设置保存尚未确认');
+      answerPolicyGets(provider);
+      await click(button('保存连接设置'));
+      await flush();
+      expect(mocks.patch).toHaveBeenLastCalledWith(
+        `${PROVIDERS}/glm`,
+        { webFetchPreflightPolicy: 'check' },
+        120_000,
+      );
+      expect(onChanged).toHaveBeenCalledWith(provider);
+      await render(provider);
+      expect(button('保存连接设置').disabled).toBe(true);
+      expect(text()).not.toContain('上次网页抓取设置保存尚未确认');
+    },
+  );
+
+  test('a background reload cannot confirm a policy whose save did not finish', async () => {
+    await render(legacyProvider);
+    mocks.patch.mockRejectedValueOnce({
+      status: 503,
+      message: '设置已保存，运行时刷新失败',
+      body: { persisted: true },
+    });
+    await choose(field, 'skip');
+    await click(button('保存连接设置'));
+    await flush();
+
+    const persisted = {
+      ...legacyProvider,
+      webFetchPreflightPolicy: 'skip' as const,
+    };
+    // A connection test may reload the persisted fields even though the
+    // previous update never confirmed that the runner refresh succeeded.
+    await render(persisted);
+    expect(select(field).value).toBe('skip');
+    expect(button('保存连接设置').disabled).toBe(false);
+    expect(text()).toContain('上次网页抓取设置保存尚未确认');
+    answerPolicyGets(persisted);
+    await click(button('保存连接设置'));
+    await flush();
+    expect(mocks.patch).toHaveBeenLastCalledWith(
+      `${PROVIDERS}/glm`,
+      { webFetchPreflightPolicy: 'skip' },
+      120_000,
+    );
+    expect(onChanged).toHaveBeenCalledWith(persisted);
+    expect(button('保存连接设置').disabled).toBe(true);
+    expect(text()).not.toContain('上次网页抓取设置保存尚未确认');
+  });
+
+  test('can restore the policy when its save succeeded but official credentials failed', async () => {
+    const provider = makeProvider({
+      id: 'official-api',
+      type: 'official',
+      claudeAuthKind: 'api_key',
+      hasAnthropicApiKey: true,
+      webFetchPreflightPolicy: 'check',
+    });
+    answerPolicyGets({ ...provider, webFetchPreflightPolicy: 'skip' });
+    mocks.put.mockRejectedValueOnce(new Error('credential write failed'));
+    await render(provider);
+    await choose(field, 'skip');
+    await type('#connection-secret', 'new-api-key');
+    await click(button('保存连接设置'));
+    await flush();
+    expect(mocks.get).toHaveBeenCalledWith(PROVIDERS);
+    expect(mocks.put).toHaveBeenCalledWith(
+      `${PROVIDERS}/official-api/secrets`,
+      { anthropicApiKey: 'new-api-key' },
+      120_000,
+    );
+    expect(onChanged).not.toHaveBeenCalled();
+    expect(setNotice).not.toHaveBeenCalled();
+
+    // Discarding both edits still needs to undo the already-persisted policy.
+    await type('#connection-secret', '');
+    await choose(field, 'check');
+    expect(button('保存连接设置').disabled).toBe(false);
+    expect(text()).toContain('上次网页抓取设置保存尚未确认');
+    answerPolicyGets(provider);
+    await click(button('保存连接设置'));
+    await flush();
+    expect(mocks.patch).toHaveBeenLastCalledWith(
+      `${PROVIDERS}/official-api`,
+      { webFetchPreflightPolicy: 'check' },
+      120_000,
+    );
+    expect(mocks.put).toHaveBeenCalledTimes(1);
+    expect(onChanged).toHaveBeenCalledWith(provider);
+    expect(button('保存连接设置').disabled).toBe(true);
+    expect(text()).not.toContain('上次网页抓取设置保存尚未确认');
+  });
+
+  test('keeps the confirmed policy when a post-credential list refresh fails', async () => {
+    const { ClaudeProviderSection } = await import('./ClaudeProviderSection');
+    const provider = makeProvider({
+      id: 'official-api',
+      name: '官方 API',
+      type: 'official',
+      claudeAuthKind: 'api_key',
+      hasAnthropicApiKey: true,
+      webFetchPreflightPolicy: 'check',
+    });
+    const persisted = { ...provider, webFetchPreflightPolicy: 'skip' as const };
+    current = provider;
+    let lists = 0;
+    mocks.get.mockImplementation(async (path: string) => {
+      if (path === PROVIDERS) {
+        lists += 1;
+        if (lists === 1) return { providers: [provider] };
+        if (lists === 2) return { providers: [persisted] };
+        throw new Error('list refresh failed');
+      }
+      if (path.endsWith('/impact'))
+        return { activeRunners: 1, stoppedRunners: 2 };
+      throw new Error('offline');
+    });
+    await act(async () => {
+      root.render(
+        <ClaudeProviderSection setNotice={setNotice} setError={setError} />,
+      );
+    });
+    await flush();
+    await click(
+      document.querySelector('[role="button"][aria-label="编辑「官方 API」"]'),
+    );
+    await choose(field, 'skip');
+    await type('#connection-secret', 'new-api-key');
+    await click(button('保存连接设置'));
+    await flush();
+
+    expect(mocks.put).toHaveBeenCalledWith(
+      `${PROVIDERS}/official-api/secrets`,
+      { anthropicApiKey: 'new-api-key' },
+      120_000,
+    );
+    expect(lists).toBe(3);
+    expect(setError).toHaveBeenCalledWith('list refresh failed');
+    expect(select(field).value).toBe('skip');
+    expect(button('保存连接设置').disabled).toBe(true);
+    expect(text()).not.toContain('上次网页抓取设置保存尚未确认');
+  });
+
+  test('keeps the protocol confirmation when a new key is saved with the policy', async () => {
+    const persisted = {
+      ...legacyProvider,
+      webFetchPreflightPolicy: 'skip' as WebFetchPreflightPolicy,
+      anthropicAuthTokenMasked: 'new-***',
+    };
+    answerPolicyGets(persisted);
+    await render(legacyProvider);
+    await choose(field, 'skip');
+    await type('#connection-secret', 'new-key');
+    await click(button('保存连接设置'));
+    await flush();
+    expect(mocks.confirm).toHaveBeenCalledTimes(1);
+    expect(mocks.patch).toHaveBeenCalledWith(
+      `${PROVIDERS}/glm`,
+      { webFetchPreflightPolicy: 'skip', anthropicAuthToken: 'new-key' },
+      120_000,
+    );
+    expect(onChanged).toHaveBeenCalledWith(persisted);
   });
 });

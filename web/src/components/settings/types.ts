@@ -6,6 +6,8 @@ import type {
 
 // ─── 统一供应商类型 (V4) ─────────────────────────────────────
 
+export type WebFetchPreflightPolicy = 'check' | 'skip';
+
 export interface UnifiedProviderPublic {
   id: string;
   name: string;
@@ -14,6 +16,8 @@ export interface UnifiedProviderPublic {
   anthropicModel: string;
   /** null for third-party providers saved before the explicit choice. */
   anthropicAuthMode: 'bearer' | 'x-api-key' | null;
+  /** The connection's WebFetch domain check; omission enables the check. */
+  webFetchPreflightPolicy?: WebFetchPreflightPolicy;
   hasAnthropicAuthToken: boolean;
   anthropicAuthTokenMasked: string | null;
   hasAnthropicApiKey: boolean;

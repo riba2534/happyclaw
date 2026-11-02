@@ -228,6 +228,8 @@ export interface ContainerInput {
   chatJid: string;
   /** Workspace-scoped interaction contract for this public Agent turn. */
   interactionMode?: 'assistant' | 'proactive';
+  /** Selected connection's Claude Code WebFetch domain preflight policy. */
+  webFetchPreflightPolicy?: 'check' | 'skip';
   /**
    * Team mode (团队模式): this session is a group's router or a work item's
    * worker. It picks the work tools, the team prompt section and the

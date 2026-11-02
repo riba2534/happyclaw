@@ -1254,9 +1254,9 @@ async function handleAgentConversationMessage(
         'Race: eager-expanded agent conv but runner exited before sendMessage; cold-start will re-expand',
       );
     }
-    // No running process — force close any stale state and start fresh
-    // (#240). Only reached on 'no_active'; a warm runner is never closed.
-    deps.queue.closeStdin(virtualChatJid);
+    // A save can retire the warm runner while plugin expansion awaits. It
+    // may now be serving another input: finish that turn before replacing it.
+    deps.queue.retireRunnerAfterQuery(virtualChatJid);
     deps.queue.enqueueTask(
       virtualChatJid,
       `agent-conv:${agentId}:${Date.now()}`,
