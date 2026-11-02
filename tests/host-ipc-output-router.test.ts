@@ -22,7 +22,7 @@ describe('host IPC primary output routing', () => {
     ).toBe('web:main#agent:conversation-agent');
   });
 
-  test('attributes a bound IM chat output to its workspace, not the IM row', () => {
+  test("falls back to the bound workspace when the session's own row is gone", () => {
     // The runner reports channelContext.sourceJid, so without the fold this
     // reply would be stored under the IM row whose folder/created_by still
     // belong to the channel account owner.
@@ -32,10 +32,11 @@ describe('host IPC primary output routing', () => {
     expect(
       resolveHostIpcLogicalChatJid({
         sourceChatJid: 'qq:c2c:CHAT_A',
+        agentId: 'agent-1',
         resolveWorkspaceJid,
       }),
-    ).toBe('web:ws-b');
-    // An explicit agent JID still wins over the folded source.
+    ).toBe('web:ws-b#agent:agent-1');
+    // The session's workspace wins over the folded source.
     expect(
       resolveHostIpcLogicalChatJid({
         sourceChatJid: 'qq:c2c:CHAT_A',
@@ -44,21 +45,6 @@ describe('host IPC primary output routing', () => {
         resolveWorkspaceJid,
       }),
     ).toBe('web:ws-c#agent:agent-1');
-  });
-
-  test('keeps the raw source JID when the chat has no workspace binding', () => {
-    expect(
-      resolveHostIpcLogicalChatJid({
-        sourceChatJid: 'qq:c2c:CHAT_UNBOUND',
-        resolveWorkspaceJid: () => null,
-      }),
-    ).toBe('qq:c2c:CHAT_UNBOUND');
-    // No resolver injected at all (legacy call sites) must not change.
-    expect(
-      resolveHostIpcLogicalChatJid({
-        sourceChatJid: 'qq:c2c:CHAT_UNBOUND',
-      }),
-    ).toBe('qq:c2c:CHAT_UNBOUND');
   });
 
   test('stages a custom-agent final in its exact scope without a separate provider send', async () => {

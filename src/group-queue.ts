@@ -3,12 +3,12 @@ import fs from 'fs';
 import path from 'path';
 import { randomUUID } from 'node:crypto';
 
-import { DATA_DIR } from './config.js';
 import { killProcessTree } from './container-runner.js';
 import { getSystemSettings } from './runtime-config.js';
 import { logger } from './logger.js';
 import { resolveFeishuCliBoundAccountId } from './feishu-cli-runtime.js';
 import { isIpcInputPayloadFilename } from './ipc-delivery-recovery.js';
+import { sessionIpcDir } from './utils.js';
 import type {
   RunnerRuntime,
   StuckRecoveryCandidate,
@@ -259,8 +259,11 @@ interface GroupState {
 
 /** A session's IPC input directory: data/ipc/{folder}/agents/{id}/input/ */
 function sessionIpcInputDir(groupFolder: string, agentId: string): string {
-  return path.join(DATA_DIR, 'ipc', groupFolder, 'agents', agentId, 'input');
+  return path.join(sessionIpcDir(groupFolder, agentId), 'input');
 }
+
+/** Why the queue asks the host to start a lane's processing task. */
+export type LaneStartReason = 'restart' | 'unconsumed_ipc';
 
 /** A lane whose runner has registered: it always serves one session. */
 type ActiveGroupState = GroupState & { groupFolder: string; agentId: string };
@@ -315,7 +318,9 @@ export class GroupQueue {
   private recentlyStoppedLanes = new Map<string, number>();
   private static RECENTLY_STOPPED_WINDOW_MS = 30_000;
   /** Host hook that enqueues a lane's processing task from durable state. */
-  private laneStarterFn: ((groupJid: string) => void) | null = null;
+  private laneStarterFn:
+    | ((groupJid: string, reason: LaneStartReason) => void)
+    | null = null;
   private shuttingDown = false;
   private hostModeChecker: ((groupJid: string) => boolean) | null = null;
   private serializationKeyResolver: ((groupJid: string) => string) | null =
@@ -347,9 +352,6 @@ export class GroupQueue {
     | null = null;
   private userConcurrentLimitFn:
     | ((groupJid: string) => { allowed: boolean; userId?: string | null })
-    | null = null;
-  private onUnconsumedAgentIpcFn:
-    | ((groupJid: string, agentId: string) => void)
     | null = null;
   private onUnacknowledgedIpcDeliveriesFn:
     | ((groupJid: string, receipts: IpcDeliveryReceipt[]) => void)
@@ -817,14 +819,16 @@ export class GroupQueue {
 
   /**
    * Enqueue the processing task of a lane whose runner the queue tore down
-   * itself (restartGroup, unconsumed IPC left by a runner without a session
-   * callback). The host reads the lane's work from durable state.
+   * itself (restartGroup) or that exited leaving unread IPC input behind
+   * (issue #240). The host reads the lane's work from durable state.
    */
-  setLaneStarter(fn: (groupJid: string) => void): void {
+  setLaneStarter(
+    fn: (groupJid: string, reason: LaneStartReason) => void,
+  ): void {
     this.laneStarterFn = fn;
   }
 
-  private startLane(groupJid: string, reason: string): void {
+  private startLane(groupJid: string, reason: LaneStartReason): void {
     if (!this.laneStarterFn) {
       logger.warn(
         { groupJid, reason },
@@ -833,7 +837,7 @@ export class GroupQueue {
       return;
     }
     try {
-      this.laneStarterFn(groupJid);
+      this.laneStarterFn(groupJid, reason);
     } catch (err) {
       logger.error({ groupJid, reason, err }, 'Lane starter failed');
     }
@@ -1012,17 +1016,6 @@ export class GroupQueue {
    */
   setOnLaneDiscarded(fn: (groupJid: string) => void): void {
     this.onLaneDiscardedFn = fn;
-  }
-
-  /**
-   * Called when an agent runner exits with unconsumed IPC message files.
-   * The callback should re-enqueue processAgentConversation for the agent.
-   * See GitHub issue #240.
-   */
-  setOnUnconsumedAgentIpc(
-    fn: (groupJid: string, agentId: string) => void,
-  ): void {
-    this.onUnconsumedAgentIpcFn = fn;
   }
 
   setOnUnacknowledgedIpcDeliveries(
@@ -1400,6 +1393,13 @@ export class GroupQueue {
     state.drainSentinelWritten = true;
     logger.info({ groupJid }, reason);
     return true;
+  }
+
+  /** The lanes whose runner is active, without building a status snapshot. */
+  *activeLaneJids(): IterableIterator<string> {
+    for (const [jid, state] of this.groups) {
+      if (state.active) yield jid;
+    }
   }
 
   /** 检查指定 JID 是否有自己直接启动的活跃 runner（非通过 folder 共享匹配） */
@@ -2308,19 +2308,11 @@ export class GroupQueue {
       if (!this.hasRemainingIpcMessages(state.groupFolder, state.agentId))
         return;
 
-      if (this.onUnconsumedAgentIpcFn) {
-        logger.warn(
-          { groupJid, agentId: state.agentId },
-          'Unconsumed IPC messages found after runner exit, re-enqueuing',
-        );
-        this.onUnconsumedAgentIpcFn(groupJid, state.agentId);
-      } else {
-        logger.warn(
-          { groupJid },
-          'Unconsumed IPC messages found after runner exit, starting the lane',
-        );
-        this.startLane(groupJid, 'unconsumed_ipc');
-      }
+      logger.warn(
+        { groupJid, agentId: state.agentId },
+        'Unconsumed IPC messages found after runner exit, starting the lane',
+      );
+      this.startLane(groupJid, 'unconsumed_ipc');
     } catch (err) {
       logger.warn({ groupJid, err }, 'Failed to check remaining IPC messages');
     }

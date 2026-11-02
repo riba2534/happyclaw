@@ -4,6 +4,7 @@ import {
   channelConversationJid,
   parseChannelAddress,
 } from './channel-address.js';
+import { channelTurnScope } from './channel-turn-registry.js';
 
 export interface AgentBuilderTurnContext {
   chatJid: string;
@@ -22,7 +23,7 @@ export function agentBuilderTurnScope(
   folder: string,
   runtimeAgentId: string,
 ): string {
-  return `${folder}\u0000conversation:${runtimeAgentId}`;
+  return channelTurnScope(folder, runtimeAgentId);
 }
 
 export function getAgentBuilderRuntimeRejection(input: {

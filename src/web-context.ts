@@ -124,7 +124,7 @@ export interface WebDeps {
   ) => WhatsAppConnectionState;
   /** Hard logout: clears WhatsApp auth state on disk so next enable starts fresh. */
   logoutUserWhatsApp?: (userId: string, accountId?: string) => Promise<void>;
-  processAgentConversation?: (
+  processAgentConversation: (
     chatJid: string,
     agentId: string,
   ) => Promise<void | boolean>;

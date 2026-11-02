@@ -168,6 +168,7 @@ import type {
 } from './types.js';
 import type { TeamRole } from './work-items.js';
 import { validateSkillId, validateSkillPath } from './skill-utils.js';
+import { sessionClaudeDir, sessionIpcDir } from './utils.js';
 import type { ClaudeContextAudit } from './stream-event.types.js';
 import type { ContainerOutput } from './agent-runtime-contracts.js';
 export type { ContainerOutput } from './agent-runtime-contracts.js';
@@ -1960,23 +1961,12 @@ export function applyFallbackModelToEnvLines(
  * A session's Claude directory: ~/.claude in a container, CLAUDE_CONFIG_DIR
  * on the host.
  */
-function sessionClaudeDir(groupFolder: string, agentId: string): string {
-  return path.join(
-    DATA_DIR,
-    'sessions',
-    groupFolder,
-    'agents',
-    agentId,
-    '.claude',
-  );
-}
-
 /**
  * Create a session's owner-only IPC root (the runner's /workspace/ipc) and
  * the directories the host and runner exchange files through.
  */
 function ensureSessionIpcDir(groupFolder: string, agentId: string): string {
-  const ipcDir = path.join(DATA_DIR, 'ipc', groupFolder, 'agents', agentId);
+  const ipcDir = sessionIpcDir(groupFolder, agentId);
   mkdirForContainer(ipcDir);
   for (const sub of ['messages', 'tasks', 'input']) {
     mkdirForContainer(path.join(ipcDir, sub));
@@ -3518,13 +3508,7 @@ export function writeGroupsSnapshot(
   isAdminHome: boolean,
   groups: AvailableGroup[],
 ): void {
-  const groupIpcDir = path.join(
-    DATA_DIR,
-    'ipc',
-    groupFolder,
-    'agents',
-    agentId,
-  );
+  const groupIpcDir = sessionIpcDir(groupFolder, agentId);
   fs.mkdirSync(groupIpcDir, { recursive: true });
 
   // Admin home sees all groups; others see nothing (they can't activate groups)

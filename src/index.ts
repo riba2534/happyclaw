@@ -583,6 +583,7 @@ import {
   isRealpathInside,
   isSystemMaintenanceNoise,
   stripAgentInternalTags,
+  sessionClaudeDir,
   stripVirtualJidSuffix,
 } from './utils.js';
 import { normalizeImageAttachment } from './message-attachments.js';
@@ -1622,7 +1623,6 @@ async function prepareFollowUp(
   const expandContext = buildExpandContext(
     item.chat_jid,
     runtime.effectiveGroup,
-    runtime.effectiveGroup.created_by,
     runtime.agentId,
   );
   if (!expandContext) return { messages: items, replies: [] };
@@ -2962,8 +2962,8 @@ function writeUsageRecords(opts: {
   userId: string;
   groupFolder: string;
   messageId?: string;
-  agentId?: string;
-  source?: string;
+  agentId: string;
+  source: string;
   usage: {
     eventId?: string;
     inputTokens: number;
@@ -2994,7 +2994,7 @@ function writeUsageRecords(opts: {
     agentId,
     messageId,
     eventId: usage.eventId,
-    source: source || (agentId ? 'custom-agent' : 'main-agent'),
+    source,
     usage,
   });
 }
@@ -4700,7 +4700,7 @@ function sendBillingDeniedMessage(jid: string, content: string): string {
 function billingDeniedNoticeOf(
   ownerId: string | null | undefined,
 ): string | null {
-  if (!ownerId) return null;
+  if (!ownerId || !isBillingEnabled()) return null;
   const owner = getUserById(ownerId);
   if (!owner || owner.role === 'admin') return null;
   const access = checkBillingAccessFresh(ownerId, owner.role);
@@ -4930,15 +4930,11 @@ async function deliverPluginExpanderReply(
   return { messageId: msgId, acknowledged };
 }
 
-function getSessionClaudeDir(folder: string, agentId: string): string {
-  return path.join(DATA_DIR, 'sessions', folder, 'agents', agentId, '.claude');
-}
-
 async function clearSessionRuntimeFiles(
   folder: string,
   agentId: string,
 ): Promise<void> {
-  const claudeDir = getSessionClaudeDir(folder, agentId);
+  const claudeDir = sessionClaudeDir(folder, agentId);
   if (!fs.existsSync(claudeDir)) return;
 
   let cleared = false;
@@ -6960,10 +6956,9 @@ function getAvailableGroups(): AvailableGroup[] {
 function buildExpandContext(
   chatJid: string,
   group: RegisteredGroup,
-  ownerOverride: string | null | undefined,
   agentId: string,
 ): ExpandContext | null {
-  const ownerId = ownerOverride ?? group.created_by;
+  const ownerId = group.created_by;
   if (
     (group.executionMode || 'container') === 'host' &&
     !canExecuteOnHost(ownerId ? getUserById(ownerId) : undefined)
@@ -7370,8 +7365,12 @@ async function runTerminalWarmup(sessionJid: string): Promise<void> {
 
 function ensureTerminalContainerStarted(sessionJid: string): boolean {
   if (!resolveTerminalSession(sessionJid)) return false;
-  const lane = queue.getStatus().groups.find((g) => g.jid === sessionJid);
-  if (lane?.active || terminalWarmupInFlight.has(sessionJid)) return true;
+  if (
+    queue.hasDirectActiveRunner(sessionJid) ||
+    terminalWarmupInFlight.has(sessionJid)
+  ) {
+    return true;
+  }
 
   terminalWarmupInFlight.add(sessionJid);
   const queued = queue.enqueueTask(
@@ -7967,9 +7966,7 @@ function startIpcWatcher(): void {
                 const effectiveChatJid = resolveHostIpcLogicalChatJid({
                   sourceChatJid: data.chatJid,
                   agentId: ipcAgentId,
-                  agentChatJid: ipcAgentId
-                    ? getAgent(ipcAgentId)?.chat_jid
-                    : undefined,
+                  agentChatJid: getAgent(ipcAgentId)?.chat_jid,
                   resolveWorkspaceJid: resolveIpcOutputWorkspaceJid,
                 });
                 // Feishu card JSON: store extracted markdown for web, send raw JSON to IM
@@ -8461,9 +8458,7 @@ function startIpcWatcher(): void {
                   const imgChatJid = resolveHostIpcLogicalChatJid({
                     sourceChatJid: data.chatJid,
                     agentId: ipcAgentId,
-                    agentChatJid: ipcAgentId
-                      ? getAgent(ipcAgentId)?.chat_jid
-                      : undefined,
+                    agentChatJid: getAgent(ipcAgentId)?.chat_jid,
                     resolveWorkspaceJid: resolveIpcOutputWorkspaceJid,
                   });
 
@@ -8966,12 +8961,7 @@ function runSelfCapabilityMutation<T>(
       invalidateSessionAfterRunnerExit(sourceGroup, ipcAgentId);
       // After the exited runner's own teardown has finished.
       queueMicrotask(() => {
-        const jids = ipcAgentId
-          ? [runnerJid]
-          : [...new Set([runnerJid, ...getJidsByFolder(sourceGroup)])];
-        for (const jid of jids) {
-          releaseQueuedFollowUpsToColdReader(jid);
-        }
+        releaseQueuedFollowUpsToColdReader(runnerJid);
       });
     },
     mutate,
@@ -9566,9 +9556,7 @@ async function processTaskIpc(
           data.inputTurnId,
           getAgentBuilderInputMessage,
         );
-        const runtimeAgentKind = ipcAgentId
-          ? (getAgent(ipcAgentId)?.kind ?? null)
-          : null;
+        const runtimeAgentKind = getAgent(ipcAgentId)?.kind ?? null;
         // Automation turns keep the historical source type (no CHECK rebuild).
         const sourceType =
           hostTurnKind === 'automation'
@@ -10773,12 +10761,10 @@ async function processAgentConversation(
     pendingWindow.messages,
   );
 
-  // Owner gate (single chokepoint for all 5 call sites: normal dispatch,
-  // IM-restart recovery, unconsumed-IPC recovery, /spawn). The main message
-  // loop's owner gate is bypassed for target_agent_id groups (they `continue`
-  // before it), so conversation-agent traffic only reaches this gate. When the
-  // owner is disabled/deleted, advance the cursor past the pending messages so
-  // they aren't replayed, then drop. See `src/owner-gate.ts` for rationale.
+  // Owner gate for every cold start of a session (warm input passes the same
+  // gate in admitWarmSessionInputs). When the owner is disabled/deleted,
+  // advance the cursor past the pending messages so they aren't replayed,
+  // then drop. See `src/owner-gate.ts` for rationale.
   if (effectiveGroup.created_by) {
     const ownerGate = checkOwnerActive(getUserById(effectiveGroup.created_by));
     if (!ownerGate.allowed) {
@@ -10872,7 +10858,6 @@ async function processAgentConversation(
     const fallbackExpandCtx = buildExpandContext(
       virtualChatJid,
       effectiveGroup,
-      effectiveGroup.created_by,
       agentId,
     );
     if (fallbackExpandCtx) {
@@ -15825,7 +15810,7 @@ function resolveTeamPlan(
  * The lane a team-mode group message goes to: the plan's decision, carried
  * on the routed meta. A lookup that comes without one (another path) is
  * decided now. In a team-mode group a message no lane takes is rejected: it
- * never falls back to the workspace's main session. Null outside team mode.
+ * never falls back to another session. Null outside team mode.
  */
 function resolveTeamRoute(
   chatJid: string,
@@ -15968,8 +15953,8 @@ function buildLookupEffectiveChatJid() {
 
 /**
  * The session an IM route delivers to right now: a native topic's own
- * Runtime Session, otherwise the chat's bound session (`web:<ws>` for a Main
- * Session). Null when the route reaches no session.
+ * session, otherwise the chat's bound session. Null when the route reaches no
+ * session.
  */
 function resolveRouteSession(routeJid: string): string | null {
   const conversationJid = channelConversationJid(routeJid);
@@ -16102,10 +16087,7 @@ function admitWarmSessionInputs(input: {
       : resolveBatchChannelReplySource(messages),
   })
     .then((answered) => {
-      if (answered) return;
-      queue.enqueueTask(laneJid, `agent-channel-next:${agentId}`, () =>
-        processAgentConversation(workspaceJid, agentId),
-      );
+      if (!answered) enqueueSessionLane(laneJid, 'agent-channel-next');
     })
     .catch((err) =>
       logger.warn({ err, laneJid }, 'Failed to answer warm input with quota'),
@@ -16131,9 +16113,8 @@ function checkOwnerConcurrentLimit(groupJid: string): {
   const limit = getUserConcurrentContainerLimit(owner.id, owner.role);
   if (limit == null) return { allowed: true, userId: owner.id };
   let userActive = 0;
-  for (const lane of queue.getStatus().groups) {
-    if (!lane.active) continue;
-    const laneBaseJid = stripVirtualJidSuffix(lane.jid);
+  for (const laneJid of queue.activeLaneJids()) {
+    const laneBaseJid = stripVirtualJidSuffix(laneJid);
     const laneGroup =
       registeredGroups[laneBaseJid] ?? getRegisteredGroup(laneBaseJid);
     if (laneGroup?.created_by === owner.id) userActive++;
@@ -16155,9 +16136,7 @@ function buildOnAgentMessage(): (baseChatJid: string, agentId: string) => void {
       return;
     }
 
-    // Use the agent's actual chat_jid (the workspace's registered JID) as the
-    // base.  Previously we used web:${folder} which doesn't match any registered
-    // group for non-main workspaces (their JID is web:{uuid}, not web:{folder}).
+    // The session's lane hangs off its workspace's registered JID.
     const agent = getAgent(agentId);
     const homeChatJid = agent?.chat_jid || `web:${group.folder}`;
     const virtualChatJid = `${homeChatJid}#agent:${agentId}`;
@@ -16192,9 +16171,31 @@ function buildOnAgentMessage(): (baseChatJid: string, agentId: string) => void {
           })
         : null;
 
+    const logTriggered = () =>
+      logger.info(
+        {
+          baseChatJid,
+          homeChatJid,
+          agentId,
+          messageCount: missedMessages.length,
+        },
+        'IM message triggered agent conversation processing',
+      );
+    // No runner takes input now (sendMessage would answer no_active): the
+    // cold start reads and formats the batch itself.
     if (
-      missedMessages.length > 0 &&
-      queue.hasActiveRunnerForMessage(virtualChatJid) &&
+      missedMessages.length === 0 ||
+      !queue.hasActiveRunnerForMessage(virtualChatJid)
+    ) {
+      queue.enqueueTask(
+        virtualChatJid,
+        `agent-conv:${agentId}:${Date.now()}`,
+        () => processAgentConversation(homeChatJid, agentId),
+      );
+      logTriggered();
+      return;
+    }
+    if (
       !admitWarmSessionInputs({
         workspaceJid: homeChatJid,
         agentId,
@@ -16302,20 +16303,15 @@ function buildOnAgentMessage(): (baseChatJid: string, agentId: string) => void {
       }
     }
     if (sendResult === 'no_active') {
-      const taskId = `agent-conv:${agentId}:${Date.now()}`;
-      queue.enqueueTask(virtualChatJid, taskId, async () => {
-        return processAgentConversation(homeChatJid, agentId);
-      });
+      // The runner was started for another Bot identity or interaction
+      // mode: the cold start runs once it exits.
+      queue.enqueueTask(
+        virtualChatJid,
+        `agent-conv:${agentId}:${Date.now()}`,
+        () => processAgentConversation(homeChatJid, agentId),
+      );
     }
-    logger.info(
-      {
-        baseChatJid,
-        homeChatJid,
-        agentId,
-        messageCount: missedMessages.length,
-      },
-      'IM message triggered agent conversation processing',
-    );
+    logTriggered();
   };
 }
 
@@ -18704,9 +18700,13 @@ async function main(): Promise<void> {
 
   await ensureDockerRunning();
 
-  // A lane whose stuck runner was restarted reads its pending input again.
-  queue.setLaneStarter((laneJid) =>
-    enqueueSessionLane(laneJid, 'agent-restart'),
+  // A lane the queue tore down (stuck-runner restart) or whose runner left
+  // unread IPC input behind (issue #240) reads its pending input again.
+  queue.setLaneStarter((laneJid, reason) =>
+    enqueueSessionLane(
+      laneJid,
+      reason === 'restart' ? 'agent-restart' : 'agent-ipc-recovery',
+    ),
   );
   queue.setOnRunnerQueryTeardown((chatJid) => {
     // A child that exits before acknowledging `_interrupt` can leave the
@@ -18731,8 +18731,8 @@ async function main(): Promise<void> {
   // background agent keeps its container slot.
   queue.setIdleRunnerReclaimBlocker(
     (jid) =>
-      listQueuedFollowUps(jid).length > 0 ||
-      (runningSubagentTasksByLane.get(jid)?.size ?? 0) > 0,
+      (runningSubagentTasksByLane.get(jid)?.size ?? 0) > 0 ||
+      listQueuedFollowUps(jid).length > 0,
   );
   // IM attachments must land where the Agent's cwd resolves the relative
   // path it is given: a worktree session's worktree, a Host workspace's
@@ -18820,11 +18820,6 @@ async function main(): Promise<void> {
   );
   // Billing: user-level concurrent container limit
   queue.setUserConcurrentLimitChecker(checkOwnerConcurrentLimit);
-  // Recovery: when agent process exits with unconsumed IPC messages,
-  // re-enqueue processAgentConversation to pick them up. See issue #240.
-  queue.setOnUnconsumedAgentIpc((groupJid: string) => {
-    enqueueSessionLane(groupJid, 'agent-ipc-recovery');
-  });
   queue.setOnUnacknowledgedIpcDeliveries(
     (runnerJid: string, receipts: IpcDeliveryReceipt[]) => {
       const chatJids = new Set(receipts.map((receipt) => receipt.chatJid));
@@ -19202,7 +19197,7 @@ async function main(): Promise<void> {
   imManager.resumeDeferredInbound();
   streamingBuffer.recover();
   // The watcher must exist before any recovery or automation path can spawn
-  // a main/conversation Runner. Otherwise the first nested Memory or Profile
+  // a session Runner. Otherwise the first nested Memory or Profile
   // request is invisible until fallback polling and can lose the race with
   // the Runner-side deadline.
   startIpcWatcher();

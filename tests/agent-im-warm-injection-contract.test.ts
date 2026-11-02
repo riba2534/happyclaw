@@ -9,10 +9,7 @@ const indexSource = fs.readFileSync(
 
 function onAgentMessageSource(): string {
   const start = indexSource.indexOf('function buildOnAgentMessage()');
-  const end = indexSource.indexOf(
-    "'IM message triggered agent conversation processing'",
-    start,
-  );
+  const end = indexSource.indexOf('function shouldProcessGroupMessage(', start);
   expect(start).toBeGreaterThan(-1);
   expect(end).toBeGreaterThan(start);
   return indexSource.slice(start, end);

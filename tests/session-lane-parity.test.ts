@@ -279,9 +279,13 @@ describe('a warm session admits input the way a cold one does', () => {
       resolveBatchChannelReplySource: () => 'feishu:oc_parity',
       queue: { enqueueTask: vi.fn() },
       processAgentConversation: vi.fn(),
+      agentIdOfJid,
+      getAgent: (id: string) => (id === LEGACY ? legacyRow() : undefined),
       ...overrides,
     };
-    createRuntimeSourceHarness(globals).install('admitWarmSessionInputs');
+    const harness = createRuntimeSourceHarness(globals);
+    harness.install('admitWarmSessionInputs');
+    harness.install('enqueueSessionLane');
     const messages = [{ id: 'warm-1' }] as NewMessage[];
     const admit = () =>
       globals.admitWarmSessionInputs({
@@ -352,15 +356,10 @@ describe("billing's per-user runner limit", () => {
       isBillingEnabled: () => true,
       getUserById: (id: string) => ({ id, role: 'member' }),
       getUserConcurrentContainerLimit: () => perUser,
+      // web:b#agent:s3 is idle: not counted.
       queue: {
-        getStatus: () => ({
-          groups: [
-            { jid: 'web:a#agent:s1', active: true },
-            { jid: 'web:a#agent:s2', active: true },
-            { jid: 'web:b#agent:s3', active: false },
-            { jid: 'web:c#agent:s4', active: true },
-          ],
-        }),
+        activeLaneJids: () =>
+          ['web:a#agent:s1', 'web:a#agent:s2', 'web:c#agent:s4'].values(),
       },
     };
     createRuntimeSourceHarness(globals).install('checkOwnerConcurrentLimit');

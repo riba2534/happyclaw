@@ -9,18 +9,11 @@
  */
 import fs from 'fs';
 import path from 'path';
-import { DATA_DIR } from './config.js';
 import { logger } from './logger.js';
+import { sessionClaudeDir } from './utils.js';
 
 export function clearSessionFiles(folder: string, agentId: string): void {
-  const claudeDir = path.join(
-    DATA_DIR,
-    'sessions',
-    folder,
-    'agents',
-    agentId,
-    '.claude',
-  );
+  const claudeDir = sessionClaudeDir(folder, agentId);
   if (!fs.existsSync(claudeDir)) return;
 
   const keep = new Set(['settings.json']);

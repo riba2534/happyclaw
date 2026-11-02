@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { DATA_DIR } from './config.js';
+import { sessionClaudeDir } from './utils.js';
 import type {
   WorkflowAgentSnapshot,
   WorkflowPhaseSnapshot,
@@ -213,12 +213,7 @@ export function normalizeWorkflowRun(
 
 function sessionProjectRoots(groupFolder: string, agentId: string): string[] {
   const projectsRoot = path.join(
-    DATA_DIR,
-    'sessions',
-    groupFolder,
-    'agents',
-    agentId,
-    '.claude',
+    sessionClaudeDir(groupFolder, agentId),
     'projects',
   );
   try {

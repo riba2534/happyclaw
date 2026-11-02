@@ -22,7 +22,7 @@ describe('strict physical acknowledgement contract', () => {
   test('plugin-expander reply owns an auxiliary durable Turn and awaits its exact Outbox ACK', () => {
     const helper = sliceBetween(
       'async function sendPluginExpanderReply(',
-      '\nfunction getSessionClaudeDir(',
+      '\nasync function clearSessionRuntimeFiles(',
     );
 
     expect(helper).toContain(

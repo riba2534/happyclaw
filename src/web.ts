@@ -525,10 +525,8 @@ function requeueStoredWebInput(
     (message) => message.id === messageId,
   );
   if (!pending || deps.queue.getActiveQueryId(laneJid)) return;
-  const processAgentConversation = deps.processAgentConversation;
-  if (!processAgentConversation) return;
   deps.queue.enqueueTask(laneJid, `agent-conv:${agentId}:${Date.now()}`, () =>
-    processAgentConversation(chatJid, agentId),
+    deps!.processAgentConversation(chatJid, agentId),
   );
 }
 
@@ -769,7 +767,7 @@ app.get('/api/follow-ups', authMiddleware, async (c) => {
   if (!deps) return c.json({ error: 'Server not initialized' }, 500);
   const chatJid = c.req.query('chatJid')?.trim();
   if (!chatJid) return c.json({ error: 'chatJid is required' }, 400);
-  const baseJid = stripRuntimeJidSuffix(chatJid);
+  const baseJid = stripVirtualJidSuffix(chatJid);
   const group = getRegisteredGroup(baseJid);
   if (!group) return c.json({ error: 'Group not found' }, 404);
   const authUser = c.get('user') as AuthUser;
@@ -803,7 +801,7 @@ app.post('/api/follow-ups/:messageId/action', authMiddleware, async (c) => {
   if (!chatJid || !body.action) {
     return c.json({ error: 'chatJid and action are required' }, 400);
   }
-  const baseJid = stripRuntimeJidSuffix(chatJid);
+  const baseJid = stripVirtualJidSuffix(chatJid);
   const group = getRegisteredGroup(baseJid);
   if (!group) return c.json({ error: 'Group not found' }, 404);
   const authUser = c.get('user') as AuthUser;
@@ -1259,12 +1257,11 @@ async function handleAgentConversationMessage(
     // No running process — force close any stale state and start fresh
     // (#240). Only reached on 'no_active'; a warm runner is never closed.
     deps.queue.closeStdin(virtualChatJid);
-    if (deps.processAgentConversation) {
-      const taskId = `agent-conv:${agentId}:${Date.now()}`;
-      deps.queue.enqueueTask(virtualChatJid, taskId, async () => {
-        return deps!.processAgentConversation!(chatJid, agentId);
-      });
-    }
+    deps.queue.enqueueTask(
+      virtualChatJid,
+      `agent-conv:${agentId}:${Date.now()}`,
+      () => deps!.processAgentConversation(chatJid, agentId),
+    );
   }
   // 'sent' needs no further action
   const startedRunId = deps.queue.getActiveQueryId(virtualChatJid);
@@ -1596,7 +1593,7 @@ function setupWebSocket(server: any): WebSocketServer {
       for (const g of queueStatus.groups) {
         // Idle groups emit nothing below; skip them before the ACL lookup.
         if (!(g.queryInFlight && g.queryId) && !g.pendingMessages) continue;
-        const baseJid = stripRuntimeJidSuffix(g.jid);
+        const baseJid = stripVirtualJidSuffix(g.jid);
         const jid = normalizeRuntimeJid(g.jid);
         const allowed = getGroupAllowedUserIds(baseJid);
         if (allowed === null || !allowed.has(userId)) continue;
@@ -1661,7 +1658,7 @@ function setupWebSocket(server: any): WebSocketServer {
         const restorable = buildStreamSnapshot(jid);
         if (!restorable) continue;
         // Strip #agent: suffix for ACL lookup (virtual JIDs not in registered_groups)
-        const baseJid = stripRuntimeJidSuffix(jid);
+        const baseJid = stripVirtualJidSuffix(jid);
         const allowed = getGroupAllowedUserIds(baseJid);
         if (allowed === null || !allowed.has(userId)) continue;
         try {
@@ -2039,7 +2036,7 @@ function setupWebSocket(server: any): WebSocketServer {
             }
             // A terminal attaches to one session's container: chatJid is the
             // session's runtime JID `<workspaceJid>#agent:<sessionId>`.
-            const workspaceJid = stripRuntimeJidSuffix(chatJid);
+            const workspaceJid = stripVirtualJidSuffix(chatJid);
             const sessionId = agentIdOfJid(chatJid);
             const terminalSession = sessionId ? getAgent(sessionId) : undefined;
             if (
@@ -2473,11 +2470,6 @@ function normalizeHomeJid(chatJid: string): string {
     }
   }
   return chatJid;
-}
-
-function stripRuntimeJidSuffix(chatJid: string): string {
-  const markerIndex = chatJid.indexOf('#agent:');
-  return markerIndex >= 0 ? chatJid.slice(0, markerIndex) : chatJid;
 }
 
 /** Normalize the workspace part of a virtual conversation JID without losing
@@ -3723,7 +3715,7 @@ export function broadcastRunnerState(
   chatJid: string,
   state: 'idle' | 'running',
 ): void {
-  const baseJid = stripRuntimeJidSuffix(chatJid);
+  const baseJid = stripVirtualJidSuffix(chatJid);
   const jid = normalizeRuntimeJid(chatJid);
   const allowedUserIds = getGroupAllowedUserIds(baseJid);
   const msg: WsMessageOut = {
@@ -3765,7 +3757,7 @@ export function broadcastRunStarted(
   runId: string,
   startedAt: number,
 ): void {
-  const baseJid = stripRuntimeJidSuffix(chatJid);
+  const baseJid = stripVirtualJidSuffix(chatJid);
   const jid = normalizeRuntimeJid(chatJid);
   const allowedUserIds = getGroupAllowedUserIds(baseJid);
   activeLogicalRuns.set(jid, { runId, startedAt });
@@ -3831,7 +3823,7 @@ export function broadcastRunFinished(
   reason: RunFinishReason,
   finishedAt: number,
 ): void {
-  const baseJid = stripRuntimeJidSuffix(chatJid);
+  const baseJid = stripVirtualJidSuffix(chatJid);
   const jid = normalizeRuntimeJid(chatJid);
   const allowedUserIds = getGroupAllowedUserIds(baseJid);
   const current = activeLogicalRuns.get(jid);
