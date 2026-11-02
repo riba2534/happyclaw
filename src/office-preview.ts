@@ -177,23 +177,32 @@ export function resolveConverter(
 }
 
 /**
- * The sha256 of at most `maxBytes` of a file, streamed so hashing never
- * blocks the event loop or holds the file in memory; with `copyTo`, the bytes
- * hashed are also written there.
+ * The sha256 of at most `maxBytes` of the source, read from position 0 in
+ * chunks, so hashing never blocks the event loop or holds the file in
+ * memory; with `copyTo`, the bytes hashed are also written there. Positional
+ * reads, not a stream: destroying a stream on the shared descriptor would
+ * close it.
  */
 async function hashSource(
-  file: string,
+  source: FileHandle,
   maxBytes: number,
   copyTo?: string,
 ): Promise<string> {
   const hash = crypto.createHash('sha256');
   const copy = copyTo ? await fs.promises.open(copyTo, 'w') : null;
+  const buffer = Buffer.allocUnsafe(1024 * 1024);
   try {
-    let total = 0;
-    // `end` is inclusive: one byte past the limit is enough to detect it.
-    for await (const chunk of fs.createReadStream(file, { end: maxBytes })) {
-      total += chunk.length;
-      if (total > maxBytes) throw sourceTooLarge(maxBytes);
+    for (let position = 0; ; ) {
+      const { bytesRead } = await source.read(
+        buffer,
+        0,
+        buffer.length,
+        position,
+      );
+      if (bytesRead === 0) break;
+      position += bytesRead;
+      if (position > maxBytes) throw sourceTooLarge(maxBytes);
+      const chunk = buffer.subarray(0, bytesRead);
       hash.update(chunk);
       await copy?.write(chunk);
     }
@@ -488,14 +497,14 @@ async function storeInCache(
 }
 
 /**
- * Converts the file as it is now and caches the PDF under the hash of the
+ * Converts the source as it is now and caches the PDF under the hash of the
  * bytes actually converted, which is returned: the file may have changed
  * since the caller hashed it, and a content-addressed cache shared by every
  * user must never file one content's PDF under another's hash.
  */
 function convertIntoCache(
   converter: Converter,
-  absolutePath: string,
+  source: FileHandle,
   ext: string,
 ): Promise<string> {
   const lim = limits();
@@ -505,7 +514,7 @@ function convertIntoCache(
     );
     try {
       const input = path.join(work, `input.${ext}`);
-      const hash = await hashSource(absolutePath, lim.maxBytes, input);
+      const hash = await hashSource(source, lim.maxBytes, input);
       if (fs.existsSync(cachePathFor(hash))) return hash;
       const output =
         converter.kind === 'stirling'
@@ -520,9 +529,38 @@ function convertIntoCache(
   });
 }
 
+/**
+ * Conversions in progress, by the hash their requester computed. A request
+ * for the same hash waits for it, but uses the result only when it is that
+ * hash's PDF, and never takes on its error: the requester's file may have
+ * changed (or failed to convert) after it was hashed, and the waiting
+ * request's own bytes are still the ones it must be served.
+ */
 const inflight = new Map<string, Promise<string>>();
 
-/** Opens a cached PDF and marks it recently used, or null when it is gone. */
+async function convertShared(
+  converter: Converter,
+  source: FileHandle,
+  ext: string,
+  hash: string,
+): Promise<string> {
+  const convert = () => convertIntoCache(converter, source, ext);
+  const joined = inflight.get(hash);
+  if (joined) {
+    const result = await joined.catch(() => null);
+    if (result === hash) return hash;
+    // Someone else's bytes or someone else's failure: convert our own, once.
+    return convert();
+  }
+  const pending = convert().finally(() => inflight.delete(hash));
+  inflight.set(hash, pending);
+  return pending;
+}
+
+/**
+ * Opens a cached PDF and marks it recently used, or null when it is gone or
+ * cannot be read (the caller then converts it again).
+ */
 async function openCached(
   hash: string,
 ): Promise<{ handle: FileHandle; size: number } | null> {
@@ -532,10 +570,15 @@ async function openCached(
   } catch {
     return null;
   }
-  const now = new Date();
-  // touch 失败只影响 LRU 精度
-  await handle.utimes(now, now).catch(() => undefined);
-  return { handle, size: (await handle.stat()).size };
+  try {
+    const now = new Date();
+    // touch 失败只影响 LRU 精度
+    await handle.utimes(now, now).catch(() => undefined);
+    return { handle, size: (await handle.stat()).size };
+  } catch {
+    await handle.close();
+    return null;
+  }
 }
 
 function assertSupported(absolutePath: string): string {
@@ -550,21 +593,34 @@ function assertSupported(absolutePath: string): string {
 }
 
 /**
+ * The file's extension if it could be previewed at all: a supported
+ * extension and a configured converter; otherwise throws. Checked before the
+ * file is opened, so the default deployment (no converter) answers 501
+ * without reading anything; a cached PDF is not served once its converter is
+ * gone.
+ */
+export function assertOfficePreviewAvailable(absolutePath: string): string {
+  const ext = assertSupported(absolutePath);
+  if (!resolveConverter()) throw notConfigured();
+  return ext;
+}
+
+/**
  * The sha256 of an Office file's content: its cache key and the preview's
- * ETag. Hashing streams the file (bounded by the size limit) every time
- * rather than memoising by (dev, ino, size, mtime): an mtime that is coarse
- * or restored would hand back a stale hash, and in a cache shared across
- * users that serves someone else's PDF.
+ * ETag. `source` is the descriptor the route opened after validating the
+ * path; nothing here reads the path again, which may be swapped for a
+ * symlink to a host file while the request waits for a conversion slot.
+ * Hashing reads the file (bounded by the size limit) every time rather than
+ * memoising by (dev, ino, size, mtime): an mtime that is coarse or restored
+ * would hand back a stale hash, and in a cache shared across users that
+ * serves someone else's PDF.
  */
 export async function hashOfficePreviewSource(
-  absolutePath: string,
+  source: FileHandle,
 ): Promise<string> {
-  assertSupported(absolutePath);
   const { maxBytes } = limits();
-  if (fs.statSync(absolutePath).size > maxBytes) {
-    throw sourceTooLarge(maxBytes);
-  }
-  return hashSource(absolutePath, maxBytes);
+  if ((await source.stat()).size > maxBytes) throw sourceTooLarge(maxBytes);
+  return hashSource(source, maxBytes);
 }
 
 export interface OfficePreviewPdf {
@@ -577,32 +633,23 @@ export interface OfficePreviewPdf {
 }
 
 /**
- * The cached PDF for an Office file whose content hashed to `hash`,
- * converting it on a miss. The caller is responsible for authorisation and
- * path validation. Opening (not just stat-ing) the cached file is what counts
- * as a hit, so an entry another request's prune removes in between is
- * converted again instead of failing.
+ * The cached PDF for a source (with extension `ext`) whose content hashed to
+ * `hash`, converting it on a miss. The caller is responsible for
+ * authorisation, path validation and closing `source`. Opening (not just
+ * stat-ing) the cached file is what counts as a hit, so an entry another
+ * request's prune removes in between is converted again instead of failing.
  */
 export async function openOfficePreviewPdf(
-  absolutePath: string,
+  source: FileHandle,
+  ext: string,
   hash: string,
 ): Promise<OfficePreviewPdf> {
-  const ext = assertSupported(absolutePath);
   const cached = await openCached(hash);
   if (cached) return { hash, ...cached, cacheHit: true };
 
-  // 缓存未命中才需要转换器；缓存命中时即使转换器被移除也能预览。
   const converter = resolveConverter();
   if (!converter) throw notConfigured();
-
-  let pending = inflight.get(hash);
-  if (!pending) {
-    pending = convertIntoCache(converter, absolutePath, ext).finally(() =>
-      inflight.delete(hash),
-    );
-    inflight.set(hash, pending);
-  }
-  const converted = await pending;
+  const converted = await convertShared(converter, source, ext, hash);
   const opened = await openCached(converted);
   if (!opened) throw convertFailed();
   return { hash: converted, ...opened, cacheHit: false };

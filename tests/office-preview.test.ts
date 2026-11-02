@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
@@ -29,6 +30,7 @@ const mocks = vi.hoisted(() => ({
   currentUserId: 'owner',
   currentRole: 'member' as 'member' | 'guest',
   guestGrant: false,
+  debugLog: vi.fn(),
 }));
 
 vi.mock('../src/config.js', async (importOriginal) => {
@@ -42,7 +44,12 @@ vi.mock('../src/config.js', async (importOriginal) => {
 });
 
 vi.mock('../src/logger.js', () => ({
-  logger: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
+  logger: {
+    debug: mocks.debugLog,
+    info: () => {},
+    warn: () => {},
+    error: () => {},
+  },
 }));
 
 vi.mock('../src/middleware/auth.ts', () => ({
@@ -114,6 +121,13 @@ const openFilesUnder = (dir: string) =>
       return [];
     }
   });
+/** Every handle under these directories gets closed (handles close async). */
+const expectNoOpenFilesUnder = (...dirs: string[]) =>
+  vi.waitFor(() =>
+    expect(dirs.flatMap((dir) => openFilesUnder(dir))).toEqual([]),
+  );
+/** Long enough for a request to pass its checks and start waiting. */
+const settle = () => new Promise((resolve) => setTimeout(resolve, 200));
 const sha256 = (data: string) =>
   crypto.createHash('sha256').update(data).digest('hex');
 const get = (
@@ -128,7 +142,7 @@ const get = (
 type Upstream = 'pdf' | 'error' | 'not-pdf' | 'big-declared' | 'big-chunked';
 
 let server: http.Server;
-let requests: { key: string | undefined; bytes: number }[] = [];
+let requests: { key: string | undefined; body: Buffer }[] = [];
 let upstream: Upstream = 'pdf';
 let upstreamDelayMs = 0;
 let holdResponses = false;
@@ -172,7 +186,7 @@ beforeAll(async () => {
     req.on('end', () => {
       requests.push({
         key: req.headers['x-api-key'] as string | undefined,
-        bytes: Buffer.concat(chunks).length,
+        body: Buffer.concat(chunks),
       });
       const send = () => setTimeout(() => respond(res), upstreamDelayMs);
       if (holdResponses) held.push(send);
@@ -207,6 +221,7 @@ beforeEach(() => {
   mocks.currentUserId = 'owner';
   mocks.currentRole = 'member';
   mocks.guestGrant = false;
+  mocks.debugLog.mockReset();
   vi.stubEnv(
     'OFFICE_PREVIEW_STIRLING_URL',
     `http://127.0.0.1:${(server.address() as AddressInfo).port}/api/v1/convert/file/pdf`,
@@ -293,8 +308,7 @@ describe('GET /:jid/files/office-preview/:path', () => {
     expect(await head.text()).toBe('');
     if (process.platform === 'linux') {
       // The cached PDF opened for the dropped body is closed again.
-      await new Promise((resolve) => setTimeout(resolve, 200));
-      expect(openFilesUnder(getOfficePreviewCacheDir())).toEqual([]);
+      await expectNoOpenFilesUnder(getOfficePreviewCacheDir());
     }
 
     const body = await get('a.docx');
@@ -302,16 +316,165 @@ describe('GET /:jid/files/office-preview/:path', () => {
     expect(requests).toHaveLength(1);
   });
 
-  test('a cache hit survives the converter being removed', async () => {
-    fs.writeFileSync(path.join(workspaceDir, 'a.xlsx'), 'xlsx-bytes');
-    expect((await get('a.xlsx')).status).toBe(200);
-
+  test('without a converter: 501 before the file is opened, even past the size cap', async () => {
     vi.stubEnv('OFFICE_PREVIEW_STIRLING_URL', undefined);
-    vi.stubEnv('OFFICE_PREVIEW_SOFFICE_BIN', '/nonexistent/soffice');
-    const again = await get('a.xlsx');
-    expect(again.status).toBe(200);
-    expect(Buffer.from(await again.arrayBuffer())).toEqual(PDF_BYTES);
-    expect(requests).toHaveLength(1);
+    vi.stubEnv('OFFICE_PREVIEW_MAX_MB', '1');
+    fs.writeFileSync(
+      path.join(workspaceDir, 'big.docx'),
+      Buffer.alloc(1024 * 1024 + 1),
+    );
+    const open = vi.spyOn(fs.promises, 'open');
+    try {
+      const res = await get('big.docx');
+      expect(res.status).toBe(501);
+      expect((await res.json()).code).toBe('NOT_CONFIGURED');
+      expect(open).not.toHaveBeenCalled();
+    } finally {
+      open.mockRestore();
+    }
+  });
+
+  test('a file swapped for a symlink while it waits for a slot is read as checked', async () => {
+    const secret = path.join(tmpDir, 'host-secret.txt');
+    fs.writeFileSync(secret, 'HOST-SECRET-OUTSIDE-ROOT');
+    holdResponses = true;
+    const blockers = [0, 1].map((i) => {
+      fs.writeFileSync(path.join(workspaceDir, `busy-${i}.docx`), `busy ${i}`);
+      return get(`busy-${i}.docx`).then((res) => res.arrayBuffer());
+    });
+    await vi.waitFor(() =>
+      expect(held).toHaveLength(OFFICE_PREVIEW_MAX_ACTIVE),
+    );
+    const file = path.join(workspaceDir, 'a.docx');
+    fs.writeFileSync(file, 'ORIGINAL-BYTES');
+    const pending = get('a.docx');
+    await settle();
+    fs.rmSync(file);
+    fs.symlinkSync(secret, file);
+    holdResponses = false;
+    for (const send of held.splice(0)) send();
+
+    const res = await pending;
+    expect(res.status).toBe(200);
+    await res.arrayBuffer();
+    await Promise.all(blockers);
+    const uploaded = Buffer.concat(requests.map((r) => r.body)).toString(
+      'latin1',
+    );
+    expect(uploaded).toContain('ORIGINAL-BYTES');
+    expect(uploaded).not.toContain('HOST-SECRET-OUTSIDE-ROOT');
+  });
+
+  test.skipIf(process.platform === 'win32')(
+    'a FIFO named like an Office file is refused instead of blocking',
+    async () => {
+      execFileSync('mkfifo', [path.join(workspaceDir, 'pipe.docx')]);
+      const res = await get('pipe.docx');
+      expect(res.status).toBe(404);
+      expect(requests).toHaveLength(0);
+    },
+  );
+
+  test.skipIf(process.platform !== 'linux')(
+    'a cached PDF whose handle fails is treated as a miss and that handle closed',
+    async () => {
+      fs.writeFileSync(path.join(workspaceDir, 'a.docx'), 'docx');
+      await (await get('a.docx')).arrayBuffer();
+      const cacheDir = getOfficePreviewCacheDir();
+
+      // The first handle opened on the cache fails its stat().
+      const realOpen = fs.promises.open;
+      let failed = false;
+      const open = vi
+        .spyOn(fs.promises, 'open')
+        .mockImplementation(async (...args: any[]) => {
+          const handle = await (realOpen as any)(...args);
+          if (!failed && String(args[0]).startsWith(cacheDir)) {
+            failed = true;
+            handle.stat = () => Promise.reject(new Error('EIO'));
+          }
+          return handle;
+        });
+      try {
+        const res = await get('a.docx');
+        expect(res.status).toBe(200);
+        expect(Buffer.from(await res.arrayBuffer())).toEqual(PDF_BYTES);
+      } finally {
+        open.mockRestore();
+      }
+      expect(failed).toBe(true);
+      await expectNoOpenFilesUnder(cacheDir);
+    },
+  );
+
+  test.skipIf(process.platform !== 'linux')(
+    'a failure after the PDF is opened still closes it and the source',
+    async () => {
+      fs.writeFileSync(path.join(workspaceDir, 'a.docx'), 'docx');
+      mocks.debugLog.mockImplementationOnce(() => {
+        throw new Error('log sink down');
+      });
+      expect((await get('a.docx')).status).toBe(500);
+      await expectNoOpenFilesUnder(getOfficePreviewCacheDir(), workspaceDir);
+    },
+  );
+
+  describe('the file is opened as it was checked', () => {
+    /** Runs `swap` just before the route opens `rel`. */
+    async function getSwappingBeforeOpen(rel: string, swap: () => void) {
+      const target = path.join(workspaceDir, rel);
+      const realOpen = fs.promises.open;
+      const open = vi
+        .spyOn(fs.promises, 'open')
+        .mockImplementation(async (...args: any[]) => {
+          if (args[0] === target) swap();
+          return (realOpen as any)(...args);
+        });
+      try {
+        return await get(rel);
+      } finally {
+        open.mockRestore();
+      }
+    }
+
+    test('a symlink in the last component is not followed', async () => {
+      fs.writeFileSync(path.join(workspaceDir, 'real.docx'), 'real');
+      fs.symlinkSync(
+        path.join(workspaceDir, 'real.docx'),
+        path.join(workspaceDir, 'link.docx'),
+      );
+      expect((await get('link.docx')).status).toBe(404);
+      expect(requests).toHaveLength(0);
+    });
+
+    test('a file replaced between the checks and the open is refused', async () => {
+      const file = path.join(workspaceDir, 'a.docx');
+      fs.writeFileSync(file, 'checked');
+      fs.writeFileSync(path.join(workspaceDir, 'other.docx'), 'swapped in');
+      const res = await getSwappingBeforeOpen('a.docx', () =>
+        fs.renameSync(path.join(workspaceDir, 'other.docx'), file),
+      );
+      expect(res.status).toBe(404);
+      expect(requests).toHaveLength(0);
+    });
+
+    test('a directory swapped for a link out of the root is refused', async () => {
+      // Same inode outside the root (a hard link), reached through a
+      // directory that became a symlink after the checks.
+      const sub = path.join(workspaceDir, 'sub');
+      const outside = path.join(tmpDir, 'outside-dir');
+      fs.rmSync(outside, { recursive: true, force: true });
+      fs.mkdirSync(sub);
+      fs.mkdirSync(outside);
+      fs.writeFileSync(path.join(sub, 'a.docx'), 'inside');
+      fs.linkSync(path.join(sub, 'a.docx'), path.join(outside, 'a.docx'));
+      const res = await getSwappingBeforeOpen('sub/a.docx', () => {
+        fs.renameSync(sub, path.join(workspaceDir, 'sub-old'));
+        fs.symlinkSync(outside, sub);
+      });
+      expect(res.status).toBe(404);
+      expect(requests).toHaveLength(0);
+    });
   });
 
   test('concurrent requests for identical content convert once', async () => {

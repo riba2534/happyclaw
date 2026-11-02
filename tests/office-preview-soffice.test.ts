@@ -32,6 +32,7 @@ vi.mock('../src/logger.js', () => ({
 }));
 
 const {
+  assertOfficePreviewAvailable,
   getOfficePreviewCacheDir,
   hashOfficePreviewSource,
   openOfficePreviewPdf,
@@ -39,12 +40,14 @@ const {
 } = await import('../src/office-preview.js');
 
 // The script cannot rely on its environment (that is what is under test),
-// so the state directory is baked in.
+// so the state directory is baked in. Its PDF ends with the input's bytes;
+// an input containing HANG waits for `release`, one containing FAIL fails.
 fs.mkdirSync(binDir, { recursive: true });
 fs.writeFileSync(
   fakeSoffice,
   `#!/bin/sh
 state='${stateDir}'
+echo run >> "$state/runs"
 printf '%s\\n' "$@" > "$state/args"
 env > "$state/env"
 if [ -e "$state/hang" ]; then
@@ -61,21 +64,76 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
+if grep -q HANG "$input"; then
+  while [ ! -e "$state/release" ]; do sleep 0.05; done
+fi
+if grep -q FAIL "$input"; then exit 3; fi
 name=$(basename "$input")
 out="$outdir/\${name%.*}.pdf"
 if [ -e "$state/big" ]; then
   head -c "$(cat "$state/big")" /dev/zero > "$out"
   exit 0
 fi
-printf '%%PDF-1.7\\nfake soffice output\\n' > "$out"
+{ printf '%%PDF-1.7\\nfake soffice output\\n'; cat "$input"; } > "$out"
 `,
   { mode: 0o755 },
 );
 
+/**
+ * Previews a file through the module's API in the route's order: availability,
+ * then a descriptor opened up front that all reads go through.
+ */
 async function preview(rel: string) {
   const file = path.join(docsDir, rel);
-  return openOfficePreviewPdf(file, await hashOfficePreviewSource(file));
+  const ext = assertOfficePreviewAvailable(file);
+  const source = await fs.promises.open(file, 'r');
+  try {
+    const hash = await hashOfficePreviewSource(source);
+    return await openOfficePreviewPdf(source, ext, hash);
+  } finally {
+    await source.close();
+  }
 }
+
+type Pdf = Awaited<ReturnType<typeof preview>>;
+
+async function pdfText(pdf: Pdf): Promise<string> {
+  try {
+    return (await pdf.handle.readFile()).toString('latin1');
+  } finally {
+    await pdf.handle.close();
+  }
+}
+
+function fulfilled(result: PromiseSettledResult<Pdf>): Pdf {
+  expect(result.status).toBe('fulfilled');
+  return (result as PromiseFulfilledResult<Pdf>).value;
+}
+
+function sofficeRuns(): number {
+  try {
+    return fs
+      .readFileSync(path.join(stateDir, 'runs'), 'utf-8')
+      .trim()
+      .split('\n').length;
+  } catch {
+    return 0;
+  }
+}
+
+/** Fills both conversion slots with runs that wait for `release`. */
+async function occupySlots(): Promise<Promise<unknown>[]> {
+  const blockers = [1, 2].map((i) => {
+    fs.writeFileSync(path.join(docsDir, `blocker-${i}.docx`), `HANG ${i}`);
+    return preview(`blocker-${i}.docx`).then(pdfText);
+  });
+  await vi.waitFor(() => expect(sofficeRuns()).toBe(2));
+  return blockers;
+}
+
+const release = () => fs.writeFileSync(path.join(stateDir, 'release'), '');
+/** Long enough for a request to hash its file and start waiting. */
+const settle = () => new Promise((resolve) => setTimeout(resolve, 200));
 
 /** The scratch directory soffice was pointed at (its --outdir). */
 function workDirOfLastRun(): string {
@@ -114,6 +172,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllEnvs();
+  release();
   // Should the group kill regress, do not leave the sleeper behind.
   try {
     const pid = Number(
@@ -155,10 +214,8 @@ describe('soffice converter', () => {
     fs.writeFileSync(path.join(docsDir, 'report.docx'), 'docx-bytes');
 
     const pdf = await preview('report.docx');
-    const body = await pdf.handle.readFile();
-    await pdf.handle.close();
-    expect(body.toString('latin1')).toContain('fake soffice output');
     expect(pdf.cacheHit).toBe(false);
+    expect(await pdfText(pdf)).toContain('fake soffice output');
 
     const work = workDirOfLastRun();
     const childEnv = Object.fromEntries(
@@ -218,5 +275,42 @@ describe('soffice converter', () => {
       status: 413,
     });
     expect(fs.existsSync(getOfficePreviewCacheDir())).toBe(false);
+  });
+});
+
+describe('requests for the same content', () => {
+  // A hashes its file as X and queues; its file then changes in place (the
+  // descriptor A holds sees the new bytes); B hashes X too and waits on A's
+  // conversion. Whatever A's conversion yields, B must get a PDF of X.
+  async function aChangesWhileQueued(changedTo: string) {
+    const blockers = await occupySlots();
+    fs.writeFileSync(path.join(docsDir, 'a.docx'), 'CONTENT-X');
+    fs.writeFileSync(path.join(docsDir, 'b.docx'), 'CONTENT-X');
+    const a = preview('a.docx');
+    await settle();
+    fs.writeFileSync(path.join(docsDir, 'a.docx'), changedTo);
+    const b = preview('b.docx');
+    await settle();
+    release();
+    const [resultA, resultB] = await Promise.allSettled([a, b]);
+    await Promise.all(blockers);
+    return { resultA, resultB };
+  }
+
+  test('one that waited on a conversion of other bytes converts its own', async () => {
+    const { resultA, resultB } = await aChangesWhileQueued('CONTENT-Y');
+    expect(await pdfText(fulfilled(resultA))).toContain('CONTENT-Y');
+    const textB = await pdfText(fulfilled(resultB));
+    expect(textB).toContain('CONTENT-X');
+    expect(textB).not.toContain('CONTENT-Y');
+  });
+
+  test("another request's failed conversion is not passed on", async () => {
+    const { resultA, resultB } = await aChangesWhileQueued('FAIL');
+    expect(resultA).toMatchObject({
+      status: 'rejected',
+      reason: { code: 'CONVERT_FAILED' },
+    });
+    expect(await pdfText(fulfilled(resultB))).toContain('CONTENT-X');
   });
 });
