@@ -297,6 +297,9 @@ export async function probeProviderModel(
       method: 'POST',
       headers: {
         'content-type': 'application/json',
+        ...(input.baseUrl.includes('opencode.ai')
+          ? { 'x-opencode-session': 'happyclaw-conn-test' }
+          : {}),
         ...upstreamHeaders(input.token, input.authMode, input.customHeaders),
       },
       body: JSON.stringify({
