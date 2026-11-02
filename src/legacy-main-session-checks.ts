@@ -55,7 +55,7 @@ export function routerState(db: Db, key: string): string | undefined {
   return row?.value;
 }
 
-export function routerStateByPrefix(
+function routerStateByPrefix(
   db: Db,
   prefix: string,
 ): Array<{ key: string; value: string }> {

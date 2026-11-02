@@ -9,14 +9,10 @@
  * For each registered workspace with any of that state this creates an
  * `agents` row (`source_kind = 'legacy_main'`) and moves the state onto it,
  * so `<workspace>#agent:<id>` is the session's only address afterwards.
- * A Home's main view also showed the legacy messages stored under the IM
- * chats of the same folder and owner; those move with it.
+ * legacy-main-session-plan.ts decides what moves where; this module writes.
  *
- * initDatabase runs this after creating every table it touches. The v87
- * lookups it needs are copied here rather than imported: the runtime ones
- * are being rewritten without the main session.
- *
- * The SDK state directory moves separately (relocateLegacyMainSessionDirectories)
+ * initDatabase runs this after creating every table it touches. The SDK
+ * state directory moves separately (relocateLegacyMainSessionDirectories)
  * because a database transaction cannot cover a rename.
  */
 import crypto from 'node:crypto';
@@ -27,7 +23,6 @@ import type Database from 'better-sqlite3';
 
 import { DATA_DIR } from './config.js';
 import {
-  exists,
   FOLDER_AGENT_ROWS,
   forgetStatements,
   LEGACY_MAIN_SESSION_KEY_PREFIX,
@@ -36,6 +31,19 @@ import {
   prep,
   routerState,
 } from './legacy-main-session-checks.js';
+import {
+  folderOwnerJid,
+  listWorkspaces,
+  lstatOrNull,
+  planMainTargets,
+  planWorkspace,
+  type BindingEntry,
+  type LegacyMainSessionSourcePlan,
+  type WorkspaceMessagePlan,
+  type WorkspaceRow,
+} from './legacy-main-session-plan.js';
+
+type MainTargetPlan = ReturnType<typeof planMainTargets>;
 import { logger } from './logger.js';
 import { generateAutoTitle } from './session-title.js';
 import { isValidWorkspaceFolderName } from './workspace-folder.js';
@@ -44,33 +52,18 @@ type Db = Database.Database;
 
 const HISTORY_ISOLATION_PREFIX = 'conversation_history_isolation:';
 /** Inputs not typed by a person; never a session title. */
-const SYNTHETIC_INPUT_KINDS = [
+const SYNTHETIC_INPUT_KINDS = new Set([
   'user_command',
   'scheduled_task_prompt',
   'automation_prompt',
   'work_item_input',
-];
+]);
+
 export interface LegacyMainSessionCursor {
   timestamp: string;
   id: string;
   sequence: number;
 }
-
-export interface LegacyMainSessionSource {
-  chatJid: string;
-  kind: 'workspace' | 'home_im';
-  /** Rows found under this address. */
-  messages: number;
-  moved: number;
-  /** Rows dropped because another source already held the same message id. */
-  duplicates: number;
-  lastInboundSequence: number | null;
-  /** Inbound rows after this ingest sequence count as unprocessed. */
-  processedThrough: number;
-  processedThroughFrom: 'committed' | 'next_pull_only' | 'global';
-}
-
-type BindingEntry = { channelJid: string; previousTarget: string };
 
 export interface LegacyMainSessionWorkspaceReport {
   workspaceJid: string;
@@ -83,13 +76,17 @@ export interface LegacyMainSessionWorkspaceReport {
   reused: boolean;
   /** Owns the folder's `agent_id = ''` rows and `.claude` directory. */
   ownsFolderState: boolean;
-  sources: LegacyMainSessionSource[];
+  sources: LegacyMainSessionSourcePlan[];
   messagesMoved: number;
   duplicatesRemoved: number;
+  renamedDuplicates: WorkspaceMessagePlan['renamed'];
   cursor: {
-    state: 'none' | 'caught_up' | 'pending';
+    state: 'none' | 'caught_up' | 'pending' | 'pending_not_replayed';
     value: LegacyMainSessionCursor | null;
+    /** Replayed by the session. */
     pendingMessageIds: string[];
+    /** Left behind the cursor so no processed input replays. */
+    pendingNotReplayed: string[];
   };
   bindings: BindingEntry[];
   channelMountsUpdated: number;
@@ -103,6 +100,8 @@ export interface LegacyMainSessionWorkspaceReport {
   usageRecords: number;
   usageEvents: number;
   turnRuns: number;
+  /** Of those, the runs whose ids and keys named the main lane. */
+  turnRunsRekeyed: number;
   turnTraces: { moved: number; duplicates: number };
   subagentCheckpoints: { moved: number; duplicates: number };
   usageLimitWaits: { moved: number; duplicates: number };
@@ -118,6 +117,8 @@ export interface LegacyMainSessionMigrationReport {
   skippedWorkspaces: string[];
   /** Mapped workspaces whose session row is gone; left untouched. */
   missingMappedSessions: Array<{ workspaceJid: string; sessionId: string }>;
+  /** Topic containers kept on their workspace, now recorded as thread_map. */
+  topicContainersKept: BindingEntry[];
   /** Non-topic `target_main_jid` that resolved to no workspace (never routed). */
   staleBindingsCleared: BindingEntry[];
   /** `target_main_jid` left beside a `target_agent_id`, which always won. */
@@ -126,194 +127,7 @@ export interface LegacyMainSessionMigrationReport {
   unresolvedBindings: BindingEntry[];
   duplicatesRemoved: number;
   pendingMessageIds: string[];
-}
-
-interface WorkspaceRow {
-  jid: string;
-  name: string;
-  folder: string;
-  added_at: string;
-  created_by: string | null;
-  is_home: number | null;
-}
-
-interface ChatBindingRow {
-  jid: string;
-  created_by: string | null;
-  target_agent_id: string | null;
-  target_main_jid: string | null;
-}
-
-function isWorkspaceJid(jid: string): boolean {
-  return jid.startsWith('web:');
-}
-
-/** The workspace that owns a folder's folder-keyed rows (as getWorkspaceJidForFolder). */
-function folderOwnerJid(db: Db, folder: string): string | null {
-  const row = prep(
-    db,
-    "SELECT jid FROM registered_groups WHERE folder = ? AND jid LIKE 'web:%' ORDER BY is_home DESC, added_at ASC LIMIT 1",
-  ).get(folder) as { jid: string } | undefined;
-  return row?.jid ?? null;
-}
-
-function isRegistered(db: Db, jid: string): boolean {
-  return exists(db, 'SELECT 1 FROM registered_groups WHERE jid = ?', jid);
-}
-
-/** v87 resolveWorkspaceJidForMount: the workspace a `target_main_jid` routed to. */
-function resolveMainTarget(db: Db, target: string): string | null {
-  if (isRegistered(db, target)) return target;
-  if (!isWorkspaceJid(target)) return null;
-  return folderOwnerJid(db, target.slice(4));
-}
-
-/**
- * v87 resolveBoundWorkspaceJid (null when unbound or stale) and whether the
- * chat declares any binding, as the Home history merge used them.
- */
-function boundWorkspaceOf(
-  db: Db,
-  chat: ChatBindingRow,
-): { workspaceJid: string | null; hasReference: boolean } {
-  const agentChatJid = (id: string) =>
-    (
-      prep(db, 'SELECT chat_jid FROM agents WHERE id = ?').get(id) as
-        | { chat_jid: string }
-        | undefined
-    )?.chat_jid ?? null;
-  const mount = prep(
-    db,
-    'SELECT workspace_jid, session_id FROM channel_mounts WHERE channel_jid = ?',
-  ).get(chat.jid) as
-    | { workspace_jid: string; session_id: string | null }
-    | undefined;
-  if (mount) {
-    const jid = mount.session_id
-      ? agentChatJid(mount.session_id)
-      : mount.workspace_jid;
-    return {
-      workspaceJid: jid && isRegistered(db, jid) ? jid : null,
-      hasReference: true,
-    };
-  }
-  if (chat.target_agent_id) {
-    return {
-      workspaceJid: agentChatJid(chat.target_agent_id),
-      hasReference: true,
-    };
-  }
-  if (!chat.target_main_jid) return { workspaceJid: null, hasReference: false };
-  // foldLegacyWorkspaceJid: first web: JID of the folder in row order.
-  let workspaceJid: string | null = null;
-  if (isRegistered(db, chat.target_main_jid)) {
-    workspaceJid = chat.target_main_jid;
-  } else if (isWorkspaceJid(chat.target_main_jid)) {
-    const sameFolder = prep(
-      db,
-      'SELECT jid FROM registered_groups WHERE folder = ?',
-    ).all(chat.target_main_jid.slice(4)) as Array<{ jid: string }>;
-    workspaceJid =
-      sameFolder.find((row) => isWorkspaceJid(row.jid))?.jid ?? null;
-  }
-  return { workspaceJid, hasReference: true };
-}
-
-/** IM chats whose messages a Home's main view merged (v87 resolveMessageQueryJids). */
-function homeMergedChatJids(db: Db, workspace: WorkspaceRow): string[] {
-  if (!workspace.is_home || !workspace.created_by) return [];
-  const siblings = prep(
-    db,
-    `SELECT jid, created_by, target_agent_id, target_main_jid
-     FROM registered_groups WHERE folder = ? AND jid <> ? ORDER BY jid`,
-  ).all(workspace.folder, workspace.jid) as ChatBindingRow[];
-  return siblings
-    .filter((sibling) => {
-      if (isWorkspaceJid(sibling.jid)) return false;
-      if (sibling.created_by !== workspace.created_by) return false;
-      const bound = boundWorkspaceOf(db, sibling);
-      if (bound.workspaceJid) return bound.workspaceJid === workspace.jid;
-      return !bound.hasReference;
-    })
-    .map((sibling) => sibling.jid);
-}
-
-/** v87 normalizeCursor + resolveMessageCursorSequence: a lost anchor is zero. */
-function parseCursorSequence(db: Db, chatJid: string, raw: string): number {
-  let value: unknown;
-  try {
-    value = JSON.parse(raw);
-  } catch {
-    return 0;
-  }
-  if (!value || typeof value !== 'object') return 0;
-  const { sequence, id } = value as { sequence?: unknown; id?: unknown };
-  if (
-    typeof sequence === 'number' &&
-    Number.isSafeInteger(sequence) &&
-    sequence >= 0
-  ) {
-    return sequence;
-  }
-  if (typeof id !== 'string' || !id) return 0;
-  const row = prep(
-    db,
-    'SELECT sequence FROM message_ingest_sequences WHERE chat_jid = ? AND message_id = ?',
-  ).get(chatJid, id) as { sequence: number } | undefined;
-  return row?.sequence ?? 0;
-}
-
-function cursorRow(
-  db: Db,
-  kind: 'committed' | 'next_pull',
-  chatJid: string,
-): string | undefined {
-  const row = prep(
-    db,
-    'SELECT cursor FROM router_cursors WHERE kind = ? AND chat_jid = ?',
-  ).get(kind, chatJid) as { cursor: string } | undefined;
-  return row?.cursor;
-}
-
-/** The poller's global position, which bounds chats that never committed. */
-function globalIngestSequence(db: Db): number {
-  const persisted = Number(routerState(db, 'last_ingest_sequence'));
-  if (Number.isSafeInteger(persisted) && persisted >= 0) return persisted;
-  const id = routerState(db, 'last_timestamp_id');
-  const timestamp = routerState(db, 'last_timestamp');
-  if (!id || !timestamp) return 0;
-  const row = prep(
-    db,
-    `SELECT seq.sequence FROM message_ingest_sequences seq
-     JOIN messages m ON m.chat_jid = seq.chat_jid AND m.id = seq.message_id
-     WHERE m.id = ? AND m.timestamp = ?
-     ORDER BY seq.sequence DESC LIMIT 1`,
-  ).get(id, timestamp) as { sequence: number } | undefined;
-  return row?.sequence ?? 0;
-}
-
-/**
- * Where a source's inputs stop counting as processed: its committed cursor;
- * without one, a lone next-pull cursor means an accepted but uncommitted
- * delivery (v87 startup recovery replayed the whole chat); with neither, only
- * what the poller has not yet seen is pending.
- */
-function processedThrough(
-  db: Db,
-  chatJid: string,
-  globalSequence: number,
-): Pick<LegacyMainSessionSource, 'processedThrough' | 'processedThroughFrom'> {
-  const committed = cursorRow(db, 'committed', chatJid);
-  if (committed !== undefined) {
-    return {
-      processedThrough: parseCursorSequence(db, chatJid, committed),
-      processedThroughFrom: 'committed',
-    };
-  }
-  if (cursorRow(db, 'next_pull', chatJid) !== undefined) {
-    return { processedThrough: 0, processedThroughFrom: 'next_pull_only' };
-  }
-  return { processedThrough: globalSequence, processedThroughFrom: 'global' };
+  pendingNotReplayed: string[];
 }
 
 function moveKeyedRows(
@@ -346,61 +160,21 @@ function renameRouterStateKey(db: Db, from: string, to: string): boolean {
   );
 }
 
-interface MainTargetPlan {
-  byWorkspace: Map<string, BindingEntry[]>;
-  stale: BindingEntry[];
-  redundant: BindingEntry[];
-  unresolved: BindingEntry[];
-}
-
-function planMainTargets(db: Db): MainTargetPlan {
-  const plan: MainTargetPlan = {
-    byWorkspace: new Map(),
-    stale: [],
-    redundant: [],
-    unresolved: [],
-  };
-  const rows = prep(
+function firstTitle(db: Db, plan: WorkspaceMessagePlan): string | null {
+  const read = prep(
     db,
-    `SELECT jid, created_by, target_agent_id, target_main_jid
-     FROM registered_groups
-     WHERE jid NOT LIKE 'web:%'
-       AND target_main_jid IS NOT NULL AND target_main_jid <> ''
-       AND COALESCE(binding_mode, '') <> 'thread_map'
-     ORDER BY jid`,
-  ).all() as ChatBindingRow[];
-  for (const row of rows) {
-    const entry = { channelJid: row.jid, previousTarget: row.target_main_jid! };
-    if (row.target_agent_id) {
-      plan.redundant.push(entry);
-      continue;
-    }
-    const workspaceJid = resolveMainTarget(db, row.target_main_jid!);
-    if (!workspaceJid) {
-      plan.stale.push(entry);
-    } else if (!isWorkspaceJid(workspaceJid)) {
-      plan.unresolved.push(entry);
-    } else {
-      const list = plan.byWorkspace.get(workspaceJid) ?? [];
-      list.push(entry);
-      plan.byWorkspace.set(workspaceJid, list);
-    }
-  }
-  return plan;
-}
-
-function firstTitle(db: Db): string | null {
-  const rows = prep(
-    db,
-    `SELECT m.content FROM legacy_main_moves t
-     JOIN messages m ON m.chat_jid = t.src AND m.id = t.id
-     WHERE COALESCE(m.is_from_me, 0) = 0
-       AND COALESCE(m.source_kind, '') NOT IN (SELECT value FROM json_each(?))
-       AND COALESCE(m.delivery_status, '') <> 'cancelled'
-     ORDER BY t.ts, t.old_seq IS NULL, t.old_seq, t.id
-     LIMIT 50`,
-  ).all(JSON.stringify(SYNTHETIC_INPUT_KINDS)) as Array<{ content: unknown }>;
-  for (const row of rows) {
+    `SELECT content, source_kind AS sourceKind FROM messages
+     WHERE chat_jid = ? AND id = ?`,
+  );
+  let tried = 0;
+  for (const message of plan.order) {
+    if (!message.inbound) continue;
+    if (++tried > 50) break;
+    const row = read.get(message.chatJid, message.sourceId) as {
+      content: unknown;
+      sourceKind: string | null;
+    };
+    if (SYNTHETIC_INPUT_KINDS.has(row.sourceKind ?? '')) continue;
     if (typeof row.content !== 'string') continue;
     const title = generateAutoTitle(row.content);
     if (title) return title;
@@ -408,59 +182,202 @@ function firstTitle(db: Db): string | null {
   return null;
 }
 
-function hasMainState(
+/** channel-turn-runtime.ts: run and card ids are digests of the run key. */
+function turnDigest(value: string): string {
+  return crypto.createHash('sha256').update(value).digest('hex').slice(0, 32);
+}
+
+/**
+ * Point the session's channel turns at it. A turn's key ends in its lane
+ * (`main` for the main session) and its id, card id and outbox keys derive
+ * from the key, so a replayed input must find the same run under the new
+ * lane: those are rewritten together.
+ */
+function rekeyTurnRuns(
   db: Db,
-  workspace: WorkspaceRow,
-  sourceJids: readonly string[],
-  ownsFolderState: boolean,
-  bindings: readonly BindingEntry[],
-): boolean {
-  const keyed = (table: string, column: string) =>
-    exists(
-      db,
-      `SELECT 1 FROM ${table} WHERE ${column} = ? LIMIT 1`,
-      workspace.jid,
+  sessionId: string,
+  sessionJid: string,
+): { moved: number; rekeyed: number } {
+  const runs = prep(
+    db,
+    `SELECT id, idempotency_key AS key, inbox_id AS inboxId FROM turn_runs
+     WHERE (agent_id IS NULL OR agent_id = '')
+       AND correlation_id IN (SELECT id FROM messages WHERE chat_jid = ?)`,
+  ).all(sessionJid) as Array<{
+    id: string;
+    key: string;
+    inboxId: string | null;
+  }>;
+  const columns = (
+    db.prepare('PRAGMA table_info(turn_runs)').all() as Array<{ name: string }>
+  )
+    .map((c) => c.name)
+    .filter(
+      (name) =>
+        !['id', 'idempotency_key', 'agent_id', 'inbox_id'].includes(name),
     );
-  return (
-    bindings.length > 0 ||
-    exists(
-      db,
-      'SELECT 1 FROM messages WHERE chat_jid IN (SELECT value FROM json_each(?)) LIMIT 1',
-      JSON.stringify(sourceJids),
-    ) ||
-    (ownsFolderState &&
-      (FOLDER_AGENT_ROWS.some(([, table, column]) =>
-        exists(
-          db,
-          `SELECT 1 FROM ${table} WHERE group_folder = ? AND ${column} = '' LIMIT 1`,
-          workspace.folder,
-        ),
-      ) ||
-        routerState(db, `${OWNER_KEY_PREFIX}${workspace.folder}:main`) !==
-          undefined)) ||
-    keyed('automations', 'target_session_jid') ||
-    keyed('usage_limit_waits', 'scope_key') ||
-    keyed('subagent_checkpoints', 'chat_jid') ||
-    keyed('router_cursors', 'chat_jid')
+  const copy = prep(
+    db,
+    `INSERT INTO turn_runs (id, idempotency_key, agent_id, inbox_id, ${columns.join(', ')})
+     SELECT ?, ?, ?, NULL, ${columns.join(', ')} FROM turn_runs WHERE id = ?`,
   );
+  let rekeyed = 0;
+  for (const run of runs) {
+    if (!run.key.endsWith(':main')) {
+      prep(db, 'UPDATE turn_runs SET agent_id = ? WHERE id = ?').run(
+        sessionId,
+        run.id,
+      );
+      continue;
+    }
+    const key = `${run.key.slice(0, -'main'.length)}${sessionId}`;
+    const id = `turn_${turnDigest(key)}`;
+    const oldCard = `stream_${turnDigest(`${run.id}:primary`)}`;
+    const card = `stream_${turnDigest(`${id}:primary`)}`;
+    copy.run(id, key, sessionId, run.id);
+    prep(
+      db,
+      `UPDATE streaming_cards SET turn_run_id = ?,
+         id = CASE WHEN id = ? THEN ? ELSE id END
+       WHERE turn_run_id = ?`,
+    ).run(id, oldCard, card, run.id);
+    // Outbox keys start with the run id (turn deliveries) or the card id.
+    prep(
+      db,
+      `UPDATE channel_outbox SET turn_run_id = ?,
+         idempotency_key = CASE
+           WHEN substr(idempotency_key, 1, length(?)) = ? THEN ? || substr(idempotency_key, length(?) + 1)
+           WHEN substr(idempotency_key, 1, length(?)) = ? THEN ? || substr(idempotency_key, length(?) + 1)
+           ELSE idempotency_key END
+       WHERE turn_run_id = ?`,
+    ).run(
+      id,
+      run.id,
+      run.id,
+      id,
+      run.id,
+      oldCard,
+      oldCard,
+      card,
+      oldCard,
+      run.id,
+    );
+    prep(db, 'DELETE FROM turn_runs WHERE id = ?').run(run.id);
+    prep(db, 'UPDATE turn_runs SET inbox_id = ? WHERE id = ?').run(
+      run.inboxId,
+      id,
+    );
+    rekeyed += 1;
+  }
+  return { moved: runs.length, rekeyed };
+}
+
+/** Both cursors of the session, at the place the plan chose. */
+function writeCursors(
+  db: Db,
+  sessionJid: string,
+  sourceJids: readonly string[],
+  plan: WorkspaceMessagePlan,
+): LegacyMainSessionWorkspaceReport['cursor'] {
+  for (const jid of sourceJids) {
+    prep(db, 'DELETE FROM router_cursors WHERE chat_jid = ?').run(jid);
+  }
+  const report = {
+    pendingMessageIds: plan.pendingReplayed,
+    pendingNotReplayed: plan.pendingNotReplayed,
+  };
+  if (plan.cursorAfter === null) {
+    return { state: 'none', value: null, ...report };
+  }
+  const anchor = plan.order[plan.cursorAfter];
+  const value: LegacyMainSessionCursor = anchor
+    ? {
+        timestamp: anchor.timestamp ?? '',
+        id: anchor.id,
+        sequence: (
+          prep(
+            db,
+            'SELECT sequence FROM message_ingest_sequences WHERE chat_jid = ? AND message_id = ?',
+          ).get(sessionJid, anchor.id) as { sequence: number }
+        ).sequence,
+      }
+    : { timestamp: '', id: '', sequence: 0 };
+  for (const kind of ['committed', 'next_pull']) {
+    prep(
+      db,
+      'INSERT OR REPLACE INTO router_cursors (kind, chat_jid, cursor) VALUES (?, ?, ?)',
+    ).run(kind, sessionJid, JSON.stringify(value));
+  }
+  return {
+    state:
+      plan.pendingNotReplayed.length > 0
+        ? 'pending_not_replayed'
+        : plan.pendingReplayed.length > 0
+          ? 'pending'
+          : 'caught_up',
+    value,
+    ...report,
+  };
+}
+
+/** Move the planned rows under the session, in the planned order. */
+function moveMessages(
+  db: Db,
+  sessionJid: string,
+  plan: WorkspaceMessagePlan,
+): void {
+  const sequence = prep(
+    db,
+    'INSERT INTO message_ingest_sequences (chat_jid, message_id) VALUES (?, ?)',
+  );
+  for (const message of plan.order) sequence.run(sessionJid, message.id);
+  for (const source of plan.sources) {
+    if (source.kind === 'home_im') {
+      // Only the workspace's own rows were ever replayed into the model.
+      prep(
+        db,
+        `UPDATE messages SET source_jid = COALESCE(source_jid, chat_jid),
+           history_recovery_allowed = 0
+         WHERE chat_jid = ?`,
+      ).run(source.chatJid);
+    }
+  }
+  const move = prep(
+    db,
+    'UPDATE messages SET chat_jid = ?, id = ? WHERE chat_jid = ? AND id = ?',
+  );
+  for (const message of plan.order) {
+    move.run(sessionJid, message.id, message.chatJid, message.sourceId);
+  }
+  for (const source of plan.sources) {
+    const dropped = prep(db, 'DELETE FROM messages WHERE chat_jid = ?').run(
+      source.chatJid,
+    ).changes;
+    if (dropped !== source.duplicates) {
+      throw new Error(
+        `Legacy main session migration left ${dropped - source.duplicates} unplanned rows in ${source.chatJid}`,
+      );
+    }
+    prep(db, 'DELETE FROM message_ingest_sequences WHERE chat_jid = ?').run(
+      source.chatJid,
+    );
+  }
 }
 
 function migrateWorkspace(
   db: Db,
   workspace: WorkspaceRow,
-  bindings: BindingEntry[],
-  globalSequence: number,
+  targets: MainTargetPlan,
   report: LegacyMainSessionMigrationReport,
 ): void {
-  const ownsFolderState =
-    folderOwnerJid(db, workspace.folder) === workspace.jid;
-  const sourceJids = [
-    workspace.jid,
-    ...homeMergedChatJids(db, workspace).filter((jid) =>
-      exists(db, 'SELECT 1 FROM messages WHERE chat_jid = ? LIMIT 1', jid),
-    ),
-  ];
-  if (!hasMainState(db, workspace, sourceJids, ownsFolderState, bindings)) {
+  const {
+    ownsFolderState,
+    sourceJids,
+    bindings,
+    migrates,
+    messages: plan,
+  } = planWorkspace(db, workspace, targets);
+  if (!migrates) {
     report.skippedWorkspaces.push(workspace.jid);
     return;
   }
@@ -488,60 +405,10 @@ function migrateWorkspace(
   const sessionId = mappedId ?? crypto.randomUUID();
   const sessionJid = `${workspace.jid}#agent:${sessionId}`;
 
-  // One row per message id: the workspace address wins, then IM chats by JID.
-  db.exec(`
-    CREATE TEMP TABLE IF NOT EXISTS legacy_main_moves (
-      id TEXT PRIMARY KEY,
-      src TEXT NOT NULL,
-      ts TEXT,
-      old_seq INTEGER,
-      pending INTEGER NOT NULL
-    );
-    CREATE INDEX IF NOT EXISTS temp.legacy_main_moves_src
-      ON legacy_main_moves(src);
-    DELETE FROM legacy_main_moves;
-  `);
-  const sources: LegacyMainSessionSource[] = [];
-  for (const chatJid of sourceJids) {
-    const through = processedThrough(db, chatJid, globalSequence);
-    prep(
-      db,
-      `INSERT OR IGNORE INTO legacy_main_moves (id, src, ts, old_seq, pending)
-       SELECT m.id, m.chat_jid, m.timestamp, seq.sequence,
-         CASE WHEN COALESCE(m.is_from_me, 0) = 0 AND (
-           COALESCE(m.delivery_status, '') IN ('queued', 'promoting', 'awaiting_companion')
-           OR (COALESCE(m.delivery_status, '') NOT IN ('cancelled', 'subsumed')
-               AND seq.sequence > ?)
-         ) THEN 1 ELSE 0 END
-       FROM messages m
-       LEFT JOIN message_ingest_sequences seq
-         ON seq.chat_jid = m.chat_jid AND seq.message_id = m.id
-       WHERE m.chat_jid = ?`,
-    ).run(through.processedThrough, chatJid);
-    const lastInbound = prep(
-      db,
-      `SELECT MAX(seq.sequence) AS s FROM messages m
-       JOIN message_ingest_sequences seq
-         ON seq.chat_jid = m.chat_jid AND seq.message_id = m.id
-       WHERE m.chat_jid = ? AND COALESCE(m.is_from_me, 0) = 0
-         AND COALESCE(m.delivery_status, '') NOT IN ('cancelled', 'subsumed')`,
-    ).get(chatJid) as { s: number | null };
-    sources.push({
-      chatJid,
-      kind: chatJid === workspace.jid ? 'workspace' : 'home_im',
-      messages: 0,
-      moved: 0,
-      duplicates: 0,
-      lastInboundSequence: lastInbound.s,
-      ...through,
-    });
-  }
-
-  const span = prep(
-    db,
-    'SELECT MIN(ts) AS first, MAX(ts) AS last FROM legacy_main_moves',
-  ).get() as { first: string | null; last: string | null };
-  const sessionName = mappedName ?? firstTitle(db) ?? workspace.name;
+  // The order puts missing times first and the latest time last.
+  const first = plan.order.find((m) => m.timestamp !== null)?.timestamp ?? null;
+  const last = plan.order.at(-1)?.timestamp ?? null;
+  const sessionName = mappedName ?? firstTitle(db, plan) ?? workspace.name;
   if (!mappedId) {
     prep(
       db,
@@ -555,8 +422,8 @@ function migrateWorkspace(
       workspace.jid,
       sessionName,
       workspace.created_by,
-      span.first ?? workspace.added_at,
-      span.last,
+      first ?? workspace.added_at,
+      last,
     );
   }
   prep(
@@ -565,40 +432,10 @@ function migrateWorkspace(
      ON CONFLICT(jid) DO UPDATE SET
        name = excluded.name,
        last_message_time = MAX(COALESCE(last_message_time, ''), excluded.last_message_time)`,
-  ).run(sessionJid, sessionName, span.last ?? workspace.added_at);
+  ).run(sessionJid, sessionName, last ?? workspace.added_at);
 
-  // Arrival order of the merged history: provider time, then old position.
-  prep(
-    db,
-    `INSERT OR IGNORE INTO message_ingest_sequences (chat_jid, message_id)
-     SELECT ?, id FROM legacy_main_moves
-     ORDER BY ts, old_seq IS NULL, old_seq, id`,
-  ).run(sessionJid);
-  for (const source of sources) {
-    if (source.kind === 'home_im') {
-      // Only the workspace's own rows were ever replayed into the model.
-      prep(
-        db,
-        `UPDATE messages SET source_jid = COALESCE(source_jid, chat_jid),
-           history_recovery_allowed = 0
-         WHERE chat_jid = ?`,
-      ).run(source.chatJid);
-    }
-    source.moved = prep(
-      db,
-      `UPDATE messages SET chat_jid = ? WHERE chat_jid = ?
-       AND id IN (SELECT id FROM legacy_main_moves WHERE src = ?)`,
-    ).run(sessionJid, source.chatJid, source.chatJid).changes;
-    source.duplicates = prep(db, 'DELETE FROM messages WHERE chat_jid = ?').run(
-      source.chatJid,
-    ).changes;
-    source.messages = source.moved + source.duplicates;
-    prep(db, 'DELETE FROM message_ingest_sequences WHERE chat_jid = ?').run(
-      source.chatJid,
-    );
-  }
-
-  const cursor = settleCursors(db, sessionJid, sourceJids);
+  moveMessages(db, sessionJid, plan);
+  const cursor = writeCursors(db, sessionJid, sourceJids, plan);
 
   const turnTraces = moveKeyedRows(
     db,
@@ -688,13 +525,7 @@ function migrateWorkspace(
       : 0;
   const usageRecords = moveUsage('usage_records');
   const usageEvents = moveUsage('usage_events');
-  // A channel turn names its input message, which now lives in the session.
-  const turnRuns = prep(
-    db,
-    `UPDATE turn_runs SET agent_id = ?
-     WHERE (agent_id IS NULL OR agent_id = '')
-       AND correlation_id IN (SELECT id FROM messages WHERE chat_jid = ?)`,
-  ).run(sessionId, sessionJid).changes;
+  const turnRuns = rekeyTurnRuns(db, sessionId, sessionJid);
 
   const channelSessionOwner =
     ownsFolderState &&
@@ -722,9 +553,10 @@ function migrateWorkspace(
     sessionName,
     reused: !!mappedId,
     ownsFolderState,
-    sources,
-    messagesMoved: sources.reduce((n, s) => n + s.moved, 0),
-    duplicatesRemoved: sources.reduce((n, s) => n + s.duplicates, 0),
+    sources: plan.sources,
+    messagesMoved: plan.order.length,
+    duplicatesRemoved: plan.duplicates.length,
+    renamedDuplicates: plan.renamed,
     cursor,
     bindings,
     channelMountsUpdated,
@@ -734,7 +566,8 @@ function migrateWorkspace(
     ...folderRows,
     usageRecords,
     usageEvents,
-    turnRuns,
+    turnRuns: turnRuns.moved,
+    turnRunsRekeyed: turnRuns.rekeyed,
     turnTraces,
     subagentCheckpoints,
     usageLimitWaits,
@@ -743,61 +576,6 @@ function migrateWorkspace(
     channelSessionOwner,
     historyIsolationMarker,
   });
-}
-
-/**
- * Both cursors of the session: after its last message when every source had
- * processed all of its inputs, otherwise just before the earliest pending
- * input. The sources' own cursors go.
- */
-function settleCursors(
-  db: Db,
-  sessionJid: string,
-  sourceJids: readonly string[],
-): LegacyMainSessionWorkspaceReport['cursor'] {
-  const ordered = `FROM message_ingest_sequences seq
-    JOIN messages m ON m.chat_jid = seq.chat_jid AND m.id = seq.message_id
-    WHERE seq.chat_jid = ?`;
-  const pending = prep(
-    db,
-    `SELECT m.id AS id, seq.sequence AS sequence ${ordered}
-     AND m.id IN (SELECT id FROM legacy_main_moves WHERE pending = 1)
-     ORDER BY seq.sequence`,
-  ).all(sessionJid) as Array<{ id: string; sequence: number }>;
-  const pendingMessageIds = pending.map((row) => row.id);
-  const lastBefore = prep(
-    db,
-    `SELECT m.timestamp AS timestamp, m.id AS id, seq.sequence AS sequence
-     ${ordered} AND seq.sequence < ? ORDER BY seq.sequence DESC LIMIT 1`,
-  );
-  const value =
-    pending.length > 0
-      ? ((lastBefore.get(sessionJid, pending[0].sequence) as
-          | LegacyMainSessionCursor
-          | undefined) ?? { timestamp: '', id: '', sequence: 0 })
-      : ((lastBefore.get(sessionJid, Number.MAX_SAFE_INTEGER) as
-          | LegacyMainSessionCursor
-          | undefined) ?? null);
-  for (const jid of sourceJids) {
-    prep(db, 'DELETE FROM router_cursors WHERE chat_jid = ?').run(jid);
-  }
-  if (!value) return { state: 'none', value: null, pendingMessageIds };
-  const serialized = JSON.stringify({
-    timestamp: value.timestamp ?? '',
-    id: value.id,
-    sequence: value.sequence,
-  });
-  for (const kind of ['committed', 'next_pull']) {
-    prep(
-      db,
-      'INSERT OR REPLACE INTO router_cursors (kind, chat_jid, cursor) VALUES (?, ?, ?)',
-    ).run(kind, sessionJid, serialized);
-  }
-  return {
-    state: pending.length > 0 ? 'pending' : 'caught_up',
-    value,
-    pendingMessageIds,
-  };
 }
 
 /**
@@ -812,67 +590,81 @@ export function migrateLegacyMainSessions(
     workspaces: [],
     skippedWorkspaces: [],
     missingMappedSessions: [],
+    topicContainersKept: [],
     staleBindingsCleared: [],
     redundantMainTargetsCleared: [],
     unresolvedBindings: [],
     duplicatesRemoved: 0,
     pendingMessageIds: [],
+    pendingNotReplayed: [],
   };
   db.transaction(() => {
-    const plan = planMainTargets(db);
-    const globalSequence = globalIngestSequence(db);
-    const workspaces = prep(
-      db,
-      `SELECT jid, name, folder, added_at, created_by, is_home
-       FROM registered_groups WHERE jid LIKE 'web:%'
-       ORDER BY is_home DESC, added_at ASC, jid ASC`,
-    ).all() as WorkspaceRow[];
-    for (const workspace of workspaces) {
-      migrateWorkspace(
-        db,
-        workspace,
-        plan.byWorkspace.get(workspace.jid) ?? [],
-        globalSequence,
-        report,
-      );
+    const targets = planMainTargets(db);
+    for (const workspace of listWorkspaces(db)) {
+      migrateWorkspace(db, workspace, targets, report);
     }
-    for (const entry of [...plan.stale, ...plan.redundant]) {
+    // What the router does on a topic container's first thread message.
+    for (const entry of targets.topicContainers) {
+      prep(
+        db,
+        "UPDATE registered_groups SET binding_mode = 'thread_map', target_main_jid = ? WHERE jid = ?",
+      ).run(entry.workspaceJid, entry.channelJid);
+      for (const table of ['channel_mounts', 'agent_channel_mounts']) {
+        prep(
+          db,
+          `UPDATE ${table} SET routing_mode = 'thread_map'
+           WHERE channel_jid = ? AND session_id IS NULL`,
+        ).run(entry.channelJid);
+      }
+    }
+    for (const entry of [...targets.stale, ...targets.redundant]) {
       prep(
         db,
         'UPDATE registered_groups SET target_main_jid = NULL WHERE jid = ?',
       ).run(entry.channelJid);
     }
-    report.staleBindingsCleared = plan.stale;
-    report.redundantMainTargetsCleared = plan.redundant;
-    report.unresolvedBindings = plan.unresolved;
-    db.exec('DROP TABLE IF EXISTS temp.legacy_main_moves');
+    report.topicContainersKept = targets.topicContainers;
+    report.staleBindingsCleared = targets.stale;
+    report.redundantMainTargetsCleared = targets.redundant;
+    report.unresolvedBindings = targets.unresolved;
   }).immediate();
-  // The temp table's statements are invalid now.
   forgetStatements(db);
 
   for (const workspace of report.workspaces) {
     report.duplicatesRemoved += workspace.duplicatesRemoved;
     report.pendingMessageIds.push(...workspace.cursor.pendingMessageIds);
+    report.pendingNotReplayed.push(...workspace.cursor.pendingNotReplayed);
     logger.info(
       {
         workspaceJid: workspace.workspaceJid,
         sessionId: workspace.sessionId,
         messagesMoved: workspace.messagesMoved,
         duplicatesRemoved: workspace.duplicatesRemoved,
+        renamedDuplicates: workspace.renamedDuplicates.length,
         bindings: workspace.bindings.length,
         automations: workspace.automations.length,
         sdkSession: workspace.sdkSession,
       },
       'Legacy main session became a conversation session',
     );
-    if (workspace.cursor.pendingMessageIds.length > 0) {
+    for (const [pending, message] of [
+      [
+        workspace.cursor.pendingMessageIds,
+        'Legacy main session had unprocessed inputs; the session picks them up',
+      ],
+      [
+        workspace.cursor.pendingNotReplayed,
+        'Legacy main session had unprocessed inputs before processed ones; they are not replayed',
+      ],
+    ] as const) {
+      if (pending.length === 0) continue;
       logger.warn(
         {
           workspaceJid: workspace.workspaceJid,
           sessionId: workspace.sessionId,
-          pendingMessageIds: workspace.cursor.pendingMessageIds,
+          pending,
         },
-        'Legacy main session had unprocessed inputs; the session picks them up',
+        message,
       );
     }
   }
@@ -893,6 +685,10 @@ export interface LegacySessionDirectoryMove {
   status:
     | 'moved'
     | 'would_move'
+    | 'relinked'
+    | 'would_relink'
+    | 'merged'
+    | 'would_merge'
     | 'already_moved'
     | 'nothing_to_move'
     | 'conflict'
@@ -900,11 +696,20 @@ export interface LegacySessionDirectoryMove {
     | 'not_inspected';
 }
 
+const DONE = { relink: 'relinked', merge: 'merged', move: 'moved' } as const;
+
+/** An SDK state directory with a transcript, not a runner's fresh skeleton. */
+function hasTranscript(dir: string): boolean {
+  return fs.existsSync(path.join(dir, 'projects'));
+}
+
 /**
  * Move each migrated main session's SDK state directory under its session:
  * `sessions/<folder>/.claude` -> `sessions/<folder>/agents/<id>/.claude`.
- * Runs at every startup so a crash between the database commit and the
- * rename is finished next time; both present is left alone and reported.
+ * Runs at every startup so an interrupted or failed move is finished next
+ * time. A symlink is re-created at the new path with the same absolute
+ * target. When the session's first run already created a skeleton there,
+ * the old transcript moves into it; two transcripts are left alone.
  * `dryRun` only plans; `inspect: false` plans without reading the disk.
  */
 export function relocateLegacyMainSessionDirectories(
@@ -918,8 +723,10 @@ export function relocateLegacyMainSessionDirectories(
   for (const { workspaceJid, sessionId } of mappings) {
     const workspace = prep(
       db,
-      'SELECT folder FROM registered_groups WHERE jid = ?',
-    ).get(workspaceJid) as { folder: string } | undefined;
+      `SELECT rg.folder FROM registered_groups rg
+       JOIN agents a ON a.id = ? AND a.chat_jid = rg.jid
+       WHERE rg.jid = ?`,
+    ).get(sessionId, workspaceJid) as { folder: string } | undefined;
     if (
       !workspace ||
       !isValidWorkspaceFolderName(workspace.folder) ||
@@ -937,43 +744,65 @@ export function relocateLegacyMainSessionDirectories(
       '.claude',
     );
     const move = { workspaceJid, sessionId, from, to };
+    const done = (status: LegacySessionDirectoryMove['status']) =>
+      moves.push({ ...move, status });
     if (options.inspect === false) {
-      moves.push({ ...move, status: 'not_inspected' });
+      done('not_inspected');
       continue;
     }
-    const fromExists = fs.existsSync(from);
-    const toExists = fs.existsSync(to);
-    if (!fromExists) {
-      moves.push({
-        ...move,
-        status: toExists ? 'already_moved' : 'nothing_to_move',
-      });
+    const source = lstatOrNull(from);
+    const target = lstatOrNull(to);
+    if (!source) {
+      done(target ? 'already_moved' : 'nothing_to_move');
       continue;
     }
-    if (toExists) {
-      logger.warn(
-        move,
-        'Legacy main session directory and its new location both exist; left as is',
-      );
-      moves.push({ ...move, status: 'conflict' });
+    const linked = source.isSymbolicLink();
+    const sourceTranscript = linked || hasTranscript(from);
+    if (target && (hasTranscript(to) || !sourceTranscript)) {
+      const message =
+        'Legacy main session directory and its new location both exist; left as is';
+      if (sourceTranscript) logger.error(move, message);
+      else logger.warn(move, message);
+      done('conflict');
       continue;
     }
+    const action = linked ? 'relink' : target ? 'merge' : 'move';
     if (options.dryRun) {
-      moves.push({ ...move, status: 'would_move' });
+      done(`would_${action}`);
       continue;
     }
     try {
       fs.mkdirSync(path.dirname(to), { recursive: true });
-      fs.renameSync(from, to);
-      logger.info(move, 'Moved legacy main session directory to its session');
-      moves.push({ ...move, status: 'moved' });
+      if (action === 'relink') {
+        // The runner's skeleton holds nothing the next run does not recreate.
+        if (target) fs.rmSync(to, { recursive: true, force: true });
+        fs.symlinkSync(
+          path.resolve(path.dirname(from), fs.readlinkSync(from)),
+          to,
+        );
+        fs.unlinkSync(from);
+      } else if (action === 'merge') {
+        for (const entry of fs.readdirSync(from)) {
+          fs.rmSync(path.join(to, entry), { recursive: true, force: true });
+          fs.renameSync(path.join(from, entry), path.join(to, entry));
+        }
+        fs.rmdirSync(from);
+      } else {
+        fs.renameSync(from, to);
+      }
+      const status = DONE[action];
+      logger.info(
+        { ...move, status },
+        'Moved legacy main session directory to its session',
+      );
+      done(status);
     } catch (err) {
       // The session still runs, from a fresh SDK session; never block startup.
       logger.error(
         { err, ...move },
         'Failed to move legacy main session directory',
       );
-      moves.push({ ...move, status: 'failed' });
+      done('failed');
     }
   }
   return moves;

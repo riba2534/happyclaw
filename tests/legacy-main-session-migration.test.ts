@@ -83,14 +83,17 @@ function group(
     targetMainJid?: string | null;
     targetAgentId?: string | null;
     bindingMode?: string | null;
+    chatMode?: string;
+    nativeContextType?: string;
   },
 ): void {
   conn
     .prepare(
       `INSERT INTO registered_groups (
         jid, name, folder, added_at, created_by, is_home,
-        target_main_jid, target_agent_id, binding_mode
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        target_main_jid, target_agent_id, binding_mode,
+        feishu_chat_mode, native_context_type
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       jid,
@@ -102,6 +105,8 @@ function group(
       fields.targetMainJid ?? null,
       fields.targetAgentId ?? null,
       fields.bindingMode ?? null,
+      fields.chatMode ?? null,
+      fields.nativeContextType ?? null,
     );
 }
 
@@ -903,49 +908,140 @@ describe('v88 legacy main session migration', () => {
     });
   });
 
-  test('cursor fallback without a committed cursor: next-pull only replays, neither uses the poller position', () => {
+  test('a pending input before a processed one is not replayed, and nothing processed ever is', () => {
     buildV87((conn) => {
       group(conn, HOME, { folder: 'main', isHome: true });
-      group(conn, WORK, { folder: 'flow-work', addedAt: T(1) });
+      group(conn, DM, { folder: 'main' });
+      const w1 = message(conn, HOME, 'w1', T(1));
+      message(conn, HOME, 'w1r', T(2), { fromMe: true });
+      message(conn, DM, 'f1', T(3), { sourceJid: DM });
+      // In flight at shutdown, older than an input the DM lane processed.
+      message(conn, HOME, 'w2', T(5));
+      const f2 = message(conn, DM, 'f2', T(7), { sourceJid: DM });
+      message(conn, DM, 'f2r', T(8), { fromMe: true, sourceJid: DM });
+      cursor(conn, 'committed', HOME, {
+        timestamp: T(1),
+        id: 'w1',
+        sequence: w1,
+      });
+      cursor(conn, 'committed', DM, {
+        timestamp: T(7),
+        id: 'f2',
+        sequence: f2,
+      });
+    });
+    const report = db.initDatabase().legacyMainSessions!;
+    const home = report.workspaces[0];
+    expect(home.cursor).toMatchObject({
+      state: 'pending_not_replayed',
+      pendingMessageIds: [],
+      pendingNotReplayed: ['w2'],
+      value: { id: 'f2r' },
+    });
+    expect(report.pendingNotReplayed).toEqual(['w2']);
+    expect(
+      db.getMessagesSince(home.sessionJid, home.cursor.value!).map((m) => m.id),
+    ).toEqual([]);
+  });
+
+  test('out-of-order times in one chat and a missing timestamp keep the cursor at the end', () => {
+    buildV87((conn) => {
+      group(conn, WORK, { folder: 'flow-work' });
+      message(conn, WORK, 'a', T(1));
+      const b = message(conn, WORK, 'b', T(5));
+      // Arrived after the committed `b` but carries an older provider time.
+      message(conn, WORK, 'c', T(3));
+      cursor(conn, 'committed', WORK, {
+        timestamp: T(5),
+        id: 'b',
+        sequence: b,
+      });
+      group(conn, EMPTY, { folder: 'flow-empty' });
+      const x = message(conn, EMPTY, 'x', T(1));
+      cursor(conn, 'committed', EMPTY, {
+        timestamp: T(1),
+        id: 'x',
+        sequence: x,
+      });
+      conn
+        .prepare(
+          `INSERT INTO messages (id, chat_jid, content, timestamp, is_from_me)
+           VALUES ('no-time', ?, 'late', NULL, 0)`,
+        )
+        .run(EMPTY);
+    });
+    const report = db.initDatabase().legacyMainSessions!;
+    const work = report.workspaces.find((w) => w.workspaceJid === WORK)!;
+    expect(work.cursor).toMatchObject({
+      state: 'pending_not_replayed',
+      pendingNotReplayed: ['c'],
+      value: { id: 'b' },
+    });
+    const empty = report.workspaces.find((w) => w.workspaceJid === EMPTY)!;
+    // The NULL timestamp sorts first; the cursor never drops to zero for it.
+    expect(empty.cursor).toMatchObject({
+      state: 'pending_not_replayed',
+      pendingNotReplayed: ['no-time'],
+      value: { id: 'x' },
+    });
+  });
+
+  test('a chat that never committed has only its queued inputs pending', () => {
+    buildV87((conn) => {
+      group(conn, HOME, { folder: 'main', isHome: true });
       message(conn, HOME, 'h-1', T(1));
       message(conn, HOME, 'h-2', T(2));
       cursor(conn, 'next_pull', HOME, { timestamp: T(2), id: 'h-2' });
+      group(conn, WORK, { folder: 'flow-work', addedAt: T(1) });
       message(conn, WORK, 'w-1', T(3));
-      const seen = message(conn, WORK, 'w-2', T(4));
-      message(conn, WORK, 'w-3', T(5));
-      message(conn, WORK, 'w-4', T(6), { fromMe: true });
-      // Queued inputs are pending whatever the cursor says.
-      message(conn, WORK, 'w-5', T(7), { deliveryStatus: 'queued' });
-      routerState(conn, 'last_ingest_sequence', String(seen));
+      message(conn, WORK, 'w-2', T(4), { fromMe: true });
+      message(conn, WORK, 'w-3', T(5), { deliveryStatus: 'queued' });
     });
     const report = db.initDatabase().legacyMainSessions!;
     const home = report.workspaces.find((w) => w.workspaceJid === HOME)!;
-    expect(home.sources[0]).toMatchObject({
-      processedThroughFrom: 'next_pull_only',
-      processedThrough: 0,
-    });
-    expect(home.cursor).toEqual({
-      state: 'pending',
-      value: { timestamp: '', id: '', sequence: 0 },
-      pendingMessageIds: ['h-1', 'h-2'],
+    expect(home.sources[0].committedSequence).toBeNull();
+    expect(home.cursor).toMatchObject({
+      state: 'caught_up',
+      pendingMessageIds: [],
+      value: { id: 'h-2' },
     });
     const work = report.workspaces.find((w) => w.workspaceJid === WORK)!;
-    expect(work.sources[0].processedThroughFrom).toBe('global');
-    expect(work.cursor.pendingMessageIds).toEqual(['w-3', 'w-5']);
+    expect(work.cursor).toMatchObject({
+      state: 'pending',
+      pendingMessageIds: ['w-3'],
+      value: { id: 'w-2' },
+    });
+  });
+
+  test('a message id held by two chats with other content is kept twice', () => {
+    buildV87((conn) => {
+      group(conn, HOME, { folder: 'main', isHome: true });
+      group(conn, DM, { folder: 'main' });
+      // Same id, sender and time; only the text tells them apart.
+      message(conn, HOME, 'same', T(1), { content: 'from the web' });
+      message(conn, DM, 'same', T(1), { content: 'from the dm' });
+    });
+    const report = db.initDatabase().legacyMainSessions!;
+    const home = report.workspaces[0];
+    expect(home.duplicatesRemoved).toBe(0);
+    expect(home.renamedDuplicates).toEqual([
+      { chatJid: DM, from: 'same', to: `same@${DM}` },
+    ]);
+    expect(home.sources.map((s) => [s.chatJid, s.moved, s.renamed])).toEqual([
+      [HOME, 1, 0],
+      [DM, 1, 1],
+    ]);
     inspect((conn) => {
-      const workJid = `${WORK}#agent:${work.sessionId}`;
-      expect(cursorOf(conn, 'committed', workJid)).toEqual({
-        timestamp: T(4),
-        id: 'w-2',
-        sequence: sequenceOf(conn, workJid, 'w-2'),
-      });
       expect(
-        cursorOf(conn, 'committed', `${HOME}#agent:${home.sessionId}`),
-      ).toEqual({
-        timestamp: '',
-        id: '',
-        sequence: 0,
-      });
+        conn
+          .prepare(
+            'SELECT id, content FROM messages WHERE chat_jid = ? ORDER BY id',
+          )
+          .all(home.sessionJid),
+      ).toEqual([
+        { id: 'same', content: 'from the web' },
+        { id: `same@${DM}`, content: 'from the dm' },
+      ]);
     });
   });
 
@@ -1186,4 +1282,367 @@ describe('v88 legacy main session migration', () => {
         .map((c: { id: string }) => c.id),
     ).toEqual(['I1_no_workspace_jid_messages']);
   }, 60_000);
+  test('an in-flight main-lane turn keeps one run, card and outbox under the session', async () => {
+    const { ChannelTurnRuntime } =
+      await import('../src/channel-turn-runtime.js');
+    const crypto = await import('node:crypto');
+    const digest = (value: string) =>
+      crypto.createHash('sha256').update(value).digest('hex').slice(0, 32);
+    const oldKey = 'channel-turn-v1:feishu:acct:group-1:main';
+    const oldId = `turn_${digest(oldKey)}`;
+    const oldCard = `stream_${digest(`${oldId}:primary`)}`;
+    buildV87((conn) => {
+      group(conn, HOME, { folder: 'main', isHome: true });
+      group(conn, BOUND_GROUP, {
+        folder: 'main',
+        targetMainJid: HOME,
+        bindingMode: 'single_context',
+      });
+      message(conn, HOME, 'group-1', T(1), { sourceJid: BOUND_GROUP });
+      conn.exec(`
+        INSERT INTO channel_inbox (
+          id, provider, account_id, external_message_id, source_jid, status,
+          available_at, created_at, updated_at
+        ) VALUES ('inbox-1', 'feishu', 'acct', 'group-1', '${BOUND_GROUP}',
+          'processing', '${T(1)}', '${T(1)}', '${T(1)}');
+        INSERT INTO turn_runs (
+          id, inbox_id, idempotency_key, provider, account_id, source_jid,
+          chat_id, correlation_id, status, available_at, created_at, updated_at
+        ) VALUES ('${oldId}', 'inbox-1', '${oldKey}', 'feishu', 'acct',
+          '${BOUND_GROUP}', 'oc_bound_group', 'group-1', 'running',
+          '${T(1)}', '${T(1)}', '${T(1)}');
+        INSERT INTO streaming_cards (
+          id, turn_run_id, provider, account_id, source_jid, status,
+          created_at, updated_at
+        ) VALUES ('${oldCard}', '${oldId}', 'feishu', 'acct', '${BOUND_GROUP}',
+          'streaming', '${T(1)}', '${T(1)}');
+        INSERT INTO channel_outbox (
+          id, turn_run_id, ordinal, kind, idempotency_key, provider, account_id,
+          source_jid, payload_hash, status, available_at, created_at, updated_at
+        ) VALUES
+          ('o1', '${oldId}', 0, 'text', '${oldId}:reply', 'feishu', 'acct',
+           '${BOUND_GROUP}', 'h', 'pending', '${T(1)}', '${T(1)}', '${T(1)}'),
+          ('o2', '${oldId}', 1, 'card', '${oldCard}:page', 'feishu', 'acct',
+           '${BOUND_GROUP}', 'h', 'pending', '${T(1)}', '${T(1)}', '${T(1)}');
+      `);
+    });
+    const report = db.initDatabase().legacyMainSessions!;
+    const home = report.workspaces[0];
+    expect(home).toMatchObject({ turnRuns: 1, turnRunsRekeyed: 1 });
+    const newKey = `channel-turn-v1:feishu:acct:group-1:${home.sessionId}`;
+    const newId = `turn_${digest(newKey)}`;
+    const newCard = `stream_${digest(`${newId}:primary`)}`;
+    inspect((conn) => {
+      expect(
+        conn
+          .prepare(
+            'SELECT id, idempotency_key, agent_id, inbox_id, status FROM turn_runs',
+          )
+          .all(),
+      ).toEqual([
+        {
+          id: newId,
+          idempotency_key: newKey,
+          agent_id: home.sessionId,
+          inbox_id: 'inbox-1',
+          status: 'running',
+        },
+      ]);
+      expect(
+        conn.prepare('SELECT id, turn_run_id FROM streaming_cards').all(),
+      ).toEqual([{ id: newCard, turn_run_id: newId }]);
+      expect(
+        conn
+          .prepare(
+            'SELECT id, turn_run_id, idempotency_key FROM channel_outbox ORDER BY id',
+          )
+          .all(),
+      ).toEqual([
+        { id: 'o1', turn_run_id: newId, idempotency_key: `${newId}:reply` },
+        { id: 'o2', turn_run_id: newId, idempotency_key: `${newCard}:page` },
+      ]);
+    });
+    // The replayed input, now routed to the session, finds the same run.
+    const runtime = ChannelTurnRuntime.start({
+      provider: 'feishu',
+      accountId: 'acct',
+      sourceJid: BOUND_GROUP,
+      chatId: 'oc_bound_group',
+      externalMessageId: 'group-1',
+      agentId: home.sessionId,
+    });
+    try {
+      expect(runtime.runId).toBe(newId);
+    } finally {
+      runtime.dispose();
+    }
+    expect(
+      inspect((conn) =>
+        conn.prepare('SELECT COUNT(*) AS n FROM turn_runs').get(),
+      ),
+    ).toEqual({ n: 1 });
+  });
+
+  test("a topic container keeps its workspace binding, as the router's predicate says", async () => {
+    const { isNativeContextContainer } =
+      await import('../src/channel-mount-service.js');
+    const plan = await import('../src/legacy-main-session-plan.js');
+    const TOPIC = 'feishu:oc_topic_single';
+    const TELEGRAM_FORUM = 'telegram:-100forum';
+    buildV87((conn) => {
+      group(conn, HOME, { folder: 'main', isHome: true });
+      group(conn, TOPIC, {
+        folder: 'main',
+        targetMainJid: HOME,
+        bindingMode: 'single_context',
+        chatMode: 'topic',
+      });
+      group(conn, TELEGRAM_FORUM, {
+        folder: 'main',
+        targetMainJid: HOME,
+        nativeContextType: 'thread',
+      });
+      group(conn, BOUND_GROUP, {
+        folder: 'main',
+        targetMainJid: HOME,
+        chatMode: 'group',
+      });
+      group(conn, 'telegram:-100plain', {
+        folder: 'main',
+        targetMainJid: HOME,
+      });
+    });
+    const report = db.initDatabase().legacyMainSessions!;
+    const homeId = report.workspaces[0].sessionId;
+    expect(report.topicContainersKept.map((t) => t.channelJid)).toEqual([
+      TOPIC,
+      TELEGRAM_FORUM,
+    ]);
+    for (const jid of [TOPIC, TELEGRAM_FORUM]) {
+      expect(db.getRegisteredGroup(jid)).toMatchObject({
+        target_main_jid: HOME,
+        binding_mode: 'thread_map',
+      });
+      expect(db.getRegisteredGroup(jid)?.target_agent_id).toBeUndefined();
+      expect(db.getChannelMount(jid)).toMatchObject({
+        workspace_jid: HOME,
+        session_id: null,
+        routing_mode: 'thread_map',
+      });
+    }
+    for (const jid of [BOUND_GROUP, 'telegram:-100plain']) {
+      expect(db.getRegisteredGroup(jid)?.target_agent_id).toBe(homeId);
+    }
+    // The copied predicate agrees with the router's on every stored row.
+    const rows = inspect(
+      (conn) =>
+        conn
+          .prepare(
+            `SELECT jid, feishu_chat_mode, feishu_group_message_type, native_context_type
+             FROM registered_groups WHERE jid NOT LIKE 'web:%'`,
+          )
+          .all() as Array<{
+          jid: string;
+          feishu_chat_mode: string | null;
+          feishu_group_message_type: string | null;
+          native_context_type: string | null;
+        }>,
+    );
+    for (const row of rows) {
+      expect(plan.isTopicContainerRow(row)).toBe(
+        isNativeContextContainer(row.jid, db.getRegisteredGroup(row.jid)!),
+      );
+    }
+  });
+
+  test("the topic-container predicate matches the router's on every metadata combination", async () => {
+    const { isNativeContextContainer } =
+      await import('../src/channel-mount-service.js');
+    const plan = await import('../src/legacy-main-session-plan.js');
+    const jids = [
+      'feishu:oc_x',
+      'telegram:-100x',
+      'qq:group:x',
+      'dingtalk:group:x',
+      'discord:x',
+      'whatsapp:x@g.us',
+      'wecom:group:x',
+      'wechat:x',
+      'unknown:x',
+    ];
+    const chatModes = [null, 'p2p', 'group', 'topic'];
+    const messageTypes = [null, 'chat', 'thread'];
+    const contextTypes = [null, 'none', 'thread'];
+    for (const jid of jids) {
+      for (const feishu_chat_mode of chatModes) {
+        for (const feishu_group_message_type of messageTypes) {
+          for (const native_context_type of contextTypes) {
+            const row = {
+              jid,
+              feishu_chat_mode,
+              feishu_group_message_type,
+              native_context_type,
+            };
+            // As parseGroupRow hands the stored row to the router.
+            const stored = {
+              feishu_chat_mode: feishu_chat_mode ?? undefined,
+              feishu_group_message_type: feishu_group_message_type ?? undefined,
+              native_context_type:
+                native_context_type === 'thread' ? 'thread' : 'none',
+            } as unknown as Parameters<typeof isNativeContextContainer>[1];
+            expect(plan.isTopicContainerRow(row), JSON.stringify(row)).toBe(
+              isNativeContextContainer(jid, stored),
+            );
+          }
+        }
+      }
+    }
+  });
+
+  test('deleting a legacy_main session forgets its mapping and OOM counter', () => {
+    buildV87((conn) => {
+      group(conn, HOME, { folder: 'main', isHome: true });
+      message(conn, HOME, 'h-1', T(1));
+      group(conn, WORK, { folder: 'flow-work' });
+      message(conn, WORK, 'w-1', T(1));
+      conn
+        .prepare(
+          `INSERT INTO agents (id, group_folder, chat_jid, name, prompt, status, kind, created_at)
+           VALUES ('other-session', 'flow-work', ?, 'Other', '', 'idle', 'conversation', ?)`,
+        )
+        .run(WORK, T(0));
+    });
+    const report = db.initDatabase().legacyMainSessions!;
+    const home = report.workspaces.find((w) => w.workspaceJid === HOME)!;
+    const work = report.workspaces.find((w) => w.workspaceJid === WORK)!;
+    db.setRouterState(`oom_exits:main#${home.sessionId}`, '2');
+    db.setRouterState(`oom_exits:flow-work#${work.sessionId}`, '1');
+    db.deleteAgent(home.sessionId);
+    expect(db.getRouterState(`legacy_main_session:${HOME}`)).toBeUndefined();
+    expect(
+      db.getRouterState(`oom_exits:main#${home.sessionId}`),
+    ).toBeUndefined();
+    expect(db.getRouterState(`legacy_main_session:${WORK}`)).toBe(
+      work.sessionId,
+    );
+    expect(db.getRouterState(`oom_exits:flow-work#${work.sessionId}`)).toBe(
+      '1',
+    );
+    db.closeDatabase();
+
+    // A mapping whose session is gone some other way is not relocated.
+    const legacyDir = path.join(root, 'sessions', 'flow-work', '.claude');
+    fs.mkdirSync(legacyDir, { recursive: true });
+    const conn = new Database(databasePath);
+    conn.prepare('DELETE FROM agents WHERE id = ?').run(work.sessionId);
+    conn.close();
+    expect(
+      inspect((c) => migration.relocateLegacyMainSessionDirectories(c)),
+    ).toEqual([]);
+    expect(fs.existsSync(legacyDir)).toBe(true);
+  });
+
+  test('a failed move is finished into the skeleton the first run created; two transcripts conflict', async () => {
+    const { logger } = await import('../src/logger.js');
+    buildV87((conn) => {
+      group(conn, HOME, { folder: 'main', isHome: true });
+      message(conn, HOME, 'h-1', T(1));
+    });
+    const legacyDir = path.join(root, 'sessions', 'main', '.claude');
+    fs.mkdirSync(path.join(legacyDir, 'projects'), { recursive: true });
+    fs.writeFileSync(path.join(legacyDir, 'projects', 't.jsonl'), 'transcript');
+    fs.writeFileSync(path.join(legacyDir, 'settings.json'), 'old');
+    const report = db.initDatabase({
+      relocateLegacySessionDirectories: false,
+    }).legacyMainSessions!;
+    db.closeDatabase();
+    const target = path.join(
+      root,
+      'sessions',
+      'main',
+      'agents',
+      report.workspaces[0].sessionId,
+      '.claude',
+    );
+    // What the session's first run leaves when the rename had failed.
+    fs.mkdirSync(target, { recursive: true });
+    fs.writeFileSync(path.join(target, 'settings.json'), 'skeleton');
+    const relocate = (options = {}) =>
+      inspect((conn) =>
+        migration.relocateLegacyMainSessionDirectories(conn, options),
+      ).map((m) => m.status);
+    expect(relocate({ dryRun: true })).toEqual(['would_merge']);
+    expect(relocate()).toEqual(['merged']);
+    expect(
+      fs.readFileSync(path.join(target, 'projects', 't.jsonl'), 'utf8'),
+    ).toBe('transcript');
+    expect(fs.readFileSync(path.join(target, 'settings.json'), 'utf8')).toBe(
+      'old',
+    );
+    expect(fs.existsSync(legacyDir)).toBe(false);
+
+    fs.mkdirSync(path.join(legacyDir, 'projects'), { recursive: true });
+    fs.writeFileSync(path.join(legacyDir, 'projects', 'other.jsonl'), 'x');
+    vi.mocked(logger.error).mockClear();
+    expect(relocate()).toEqual(['conflict']);
+    expect(logger.error).toHaveBeenCalledWith(
+      expect.objectContaining({ from: legacyDir, to: target }),
+      expect.stringContaining('both exist'),
+    );
+    expect(fs.existsSync(path.join(legacyDir, 'projects', 'other.jsonl'))).toBe(
+      true,
+    );
+  });
+
+  test('a symlinked .claude is re-created as a link to the same absolute target', () => {
+    buildV87((conn) => {
+      group(conn, HOME, { folder: 'main', isHome: true });
+      message(conn, HOME, 'h-1', T(1));
+      group(conn, WORK, { folder: 'flow-work' });
+      message(conn, WORK, 'w-1', T(1));
+    });
+    const shared = path.join(root, 'shared-claude');
+    fs.mkdirSync(path.join(shared, 'projects'), { recursive: true });
+    fs.writeFileSync(path.join(shared, 'projects', 't.jsonl'), 'x');
+    for (const folder of ['main', 'flow-work']) {
+      fs.mkdirSync(path.join(root, 'sessions', folder), { recursive: true });
+      fs.symlinkSync(
+        '../../shared-claude',
+        path.join(root, 'sessions', folder, '.claude'),
+      );
+    }
+    const report = db.initDatabase({
+      relocateLegacySessionDirectories: false,
+    }).legacyMainSessions!;
+    db.closeDatabase();
+    const targetOf = (jid: string, folder: string) =>
+      path.join(
+        root,
+        'sessions',
+        folder,
+        'agents',
+        report.workspaces.find((w) => w.workspaceJid === jid)!.sessionId,
+        '.claude',
+      );
+    // One session's first run already left a skeleton there.
+    fs.mkdirSync(targetOf(WORK, 'flow-work'), { recursive: true });
+    expect(
+      inspect((conn) =>
+        migration.relocateLegacyMainSessionDirectories(conn),
+      ).map((m) => m.status),
+    ).toEqual(['relinked', 'relinked']);
+    for (const [jid, folder] of [
+      [HOME, 'main'],
+      [WORK, 'flow-work'],
+    ] as const) {
+      const to = targetOf(jid, folder);
+      expect(fs.readlinkSync(to)).toBe(shared);
+      expect(
+        fs.readFileSync(path.join(to, 'projects', 't.jsonl'), 'utf8'),
+      ).toBe('x');
+      expect(
+        fs.existsSync(path.join(root, 'sessions', folder, '.claude')),
+      ).toBe(false);
+    }
+  });
 });
