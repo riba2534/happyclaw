@@ -618,6 +618,8 @@ describe('exact Web run state sequences', () => {
           phase: 'running',
         },
       },
+      // Its history is loaded: announced messages join it.
+      agentMessages: { [sid]: [] },
       agentWaiting: { [sid]: true },
       agentStreaming: {
         [sid]: {
@@ -773,6 +775,7 @@ describe('held Workflow acknowledgements', () => {
   it('keeps a conversation Agent Workflow card live after the held sdk_final', () => {
     const jid = 'web:main';
     const agentId = 'agent-1';
+    useChatStore.setState({ agentMessages: { [agentId]: [] } });
 
     useChatStore.getState().handleWsNewMessage(
       jid,
@@ -1253,6 +1256,10 @@ describe('canonical usage ownership', () => {
     workspace = jid,
     overrides = {},
   ): void {
+    // The session's history is loaded: announced messages join it.
+    useChatStore.setState((s) => ({
+      agentMessages: { [owner]: [], ...s.agentMessages },
+    }));
     useChatStore
       .getState()
       .handleWsNewMessage(

@@ -706,6 +706,22 @@ const RETAINED_CONVERSATIONS = 20;
 /** Viewed sessions by runtime key, least recently viewed first. */
 const viewedConversations = new Map<string, { jid: string; agentId: string }>();
 
+/**
+ * A session's history is loaded once `agentMessages` holds its list; a
+ * message announced for one that is not loaded adds none (opening it loads
+ * the history). A first-page load in flight collects the session's announced
+ * messages here and merges them into its page, which can predate them.
+ */
+const announcedDuringLoad = new Map<
+  string,
+  { loads: number; messages: Message[] }
+>();
+
+/** Keep an announced message for the session's history load in flight. */
+function noteAnnounced(agentId: string, message: Message): void {
+  announcedDuringLoad.get(agentId)?.messages.push(message);
+}
+
 function noteConversationViewed(jid: string, agentId: string) {
   const key = sessionJidOf(jid, agentId);
   viewedConversations.delete(key);
@@ -3539,12 +3555,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const agentId = sessionIdOf(messageChatJid);
     if (!agentId) return;
     const workspaceJid = workspaceJidOf(messageChatJid);
+    const kept = (message: Message) =>
+      message.id !== messageId || message.chat_jid !== messageChatJid;
+    const announced = announcedDuringLoad.get(agentId);
+    if (announced) announced.messages = announced.messages.filter(kept);
 
     set((s) => {
-      const loaded = s.agentMessages[agentId]?.filter(
-        (message) =>
-          message.id !== messageId || message.chat_jid !== messageChatJid,
-      );
+      const loaded = s.agentMessages[agentId]?.filter(kept);
       const agentMessages = loaded
         ? { ...s.agentMessages, [agentId]: loaded }
         : s.agentMessages;
@@ -4404,20 +4421,26 @@ export const useChatStore = create<ChatState>((set, get) => ({
     let snapshotHasMore = false;
     let didReceiveProactiveUtterance = false;
     let didFinishReply = false;
+    noteAnnounced(agentId, msg);
     set((s) => {
-      const existing = s.agentMessages[agentId] || [];
-      const isNewMessage = !existing.some((item) => item.id === msg.id);
-      const mergedUsage = mergePendingMessageUsage(
-        mergeMessagesChronologically(existing, [msg]),
-        resetsContext
-          ? clearPendingMessageUsage(s.pendingMessageUsage, chatJid, agentId)
-          : s.pendingMessageUsage,
-        chatJid,
-        agentId,
-      );
-      const updated = mergedUsage.messages;
-      snapshotMessages = updated;
-      snapshotHasMore = !!s.agentHasMore[agentId];
+      const existing = s.agentMessages[agentId];
+      const isNewMessage = !existing?.some((item) => item.id === msg.id);
+      const usagePending = resetsContext
+        ? clearPendingMessageUsage(s.pendingMessageUsage, chatJid, agentId)
+        : s.pendingMessageUsage;
+      // Only a loaded history takes it (see announcedDuringLoad).
+      const mergedUsage = existing
+        ? mergePendingMessageUsage(
+            mergeMessagesChronologically(existing, [msg]),
+            usagePending,
+            chatJid,
+            agentId,
+          )
+        : null;
+      if (mergedUsage) {
+        snapshotMessages = mergedUsage.messages;
+        snapshotHasMore = !!s.agentHasMore[agentId];
+      }
       const exactRunActive = !!s.activeRuns[runtimeJid];
       // The reply takes its card's place in this same update, carrying its
       // thinking and execution details over (`settlementOf`).
@@ -4497,8 +4520,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
         ...(replyLanded
           ? { traceAwaited: withAwaitedTrace(s, runtimeJid, msg) }
           : {}),
-        agentMessages: { ...s.agentMessages, [agentId]: updated },
-        pendingMessageUsage: mergedUsage.pending,
+        agentMessages: mergedUsage
+          ? { ...s.agentMessages, [agentId]: mergedUsage.messages }
+          : s.agentMessages,
+        pendingMessageUsage: mergedUsage?.pending ?? usagePending,
         agentWaiting: nextAgentWaiting,
         agentStreaming: nextAgentStreaming,
         unreadReplies: nextUnread,
@@ -4771,6 +4796,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   loadAgentMessages: async (jid, agentId, loadMore = false) => {
     const existing = get().agentMessages[agentId] || [];
+    const announced = loadMore
+      ? null
+      : (announcedDuringLoad.get(agentId) ?? { loads: 0, messages: [] });
+    if (announced) {
+      announced.loads += 1;
+      announcedDuringLoad.set(agentId, announced);
+    }
     const beforeSequence = loadMore
       ? messageSequenceBoundary(existing, 'min')
       : undefined;
@@ -4798,9 +4830,17 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const sorted = [...data.messages].reverse();
       let snapshotMessages = sorted;
       set((s) => {
-        const loadedMessages = loadMore
-          ? mergeMessagesChronologically(s.agentMessages[agentId] || [], sorted)
-          : sorted;
+        const current = s.agentMessages[agentId];
+        // A list let go meanwhile (evicted, deleted) gets no older page.
+        if (loadMore && !current) return s;
+        // Announced rows as the live list has them now (released, marked).
+        const live = new Map(current?.map((m) => [m.id, m]));
+        const loadedMessages = mergeMessagesChronologically(
+          announced
+            ? announced.messages.map((m) => live.get(m.id) ?? m)
+            : current!,
+          sorted,
+        );
         const mergedUsage = mergePendingMessageUsage(
           loadedMessages,
           s.pendingMessageUsage,
@@ -4827,6 +4867,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
       }
     } catch (err) {
       set({ error: extractErrorMessage(err) });
+    } finally {
+      if (announced && --announced.loads === 0) {
+        announcedDuringLoad.delete(agentId);
+      }
     }
   },
 
@@ -4942,11 +4986,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
         delivery_updated_at:
           data.disposition === 'started' ? null : data.timestamp,
       };
+      noteAnnounced(agentId, sent);
       set((s) => {
-        const existing = s.agentMessages[agentId] || [];
+        const existing = s.agentMessages[agentId];
         return {
           agentWaiting: { ...s.agentWaiting, [agentId]: true },
-          ...(existing.some((m) => m.id === sent.id)
+          ...(!existing || existing.some((m) => m.id === sent.id)
             ? {}
             : {
                 agentMessages: {
@@ -4978,7 +5023,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   refreshAgentMessages: async (jid, agentId) => {
-    const existing = get().agentMessages[agentId] || [];
+    const existing = get().agentMessages[agentId];
+    // Newer messages extend a loaded history; without one, load it (unless
+    // a load is under way).
+    if (!existing) {
+      if (!announcedDuringLoad.has(agentId)) {
+        await get().loadAgentMessages(jid, agentId);
+      }
+      return;
+    }
     const lastSequence = messageSequenceBoundary(existing, 'max');
     const lastTs =
       lastSequence === undefined && existing.length > 0
@@ -5002,18 +5055,19 @@ export const useChatStore = create<ChatState>((set, get) => ({
         let snapshotMessages: Message[] | null = null;
         let snapshotHasMore = false;
         set((s) => {
+          // A list let go meanwhile is not rebuilt from the newer rows alone.
+          const current = s.agentMessages[agentId];
           const mergedUsage = mergePendingMessageUsage(
-            mergeMessagesChronologically(
-              s.agentMessages[agentId] || [],
-              data.messages,
-            ),
+            mergeMessagesChronologically(current || [], data.messages),
             s.pendingMessageUsage,
             jid,
             agentId,
           );
           const merged = mergedUsage.messages;
-          snapshotMessages = merged;
-          snapshotHasMore = !!s.agentHasMore[agentId];
+          if (current) {
+            snapshotMessages = merged;
+            snapshotHasMore = !!s.agentHasMore[agentId];
+          }
           const lastAiMsg = [...data.messages]
             .reverse()
             .find(
@@ -5062,8 +5116,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
             ...(replyLanded && utterance
               ? { traceAwaited: withAwaitedTrace(s, runtimeJid, utterance) }
               : {}),
-            agentMessages: { ...s.agentMessages, [agentId]: merged },
-            pendingMessageUsage: mergedUsage.pending,
+            ...(current
+              ? {
+                  agentMessages: { ...s.agentMessages, [agentId]: merged },
+                  pendingMessageUsage: mergedUsage.pending,
+                }
+              : {}),
             agentWaiting:
               finalizes && !exactRunActive
                 ? { ...s.agentWaiting, [agentId]: false }
