@@ -223,6 +223,10 @@ export function CreateContainerDialog({
       selectedProfile?.effective_runtime_policy ??
         selectedProfile?.runtime_policy,
     ) === 'host_claude';
+  const hostSkillsMode =
+    selectedProfile?.runtime_policy.skills.host?.mode ??
+    (inheritsHostClaude ? 'inherit' : 'disabled');
+
   useEffect(() => {
     if (open) void loadProfiles();
   }, [open, loadProfiles]);
@@ -358,9 +362,9 @@ export function CreateContainerDialog({
 
   return (
     <Dialog open={open} onOpenChange={(v) => !v && handleClose()}>
-      <DialogContent className="flex max-h-[calc(100dvh-2rem)] flex-col gap-3 p-4 sm:max-w-md">
+      <DialogContent className="flex max-h-[calc(100dvh-2rem)] flex-col gap-3 sm:max-w-md">
         <DialogHeader className="shrink-0">
-          <DialogTitle>新建工作区</DialogTitle>
+          <DialogTitle>为智能体新建工作区</DialogTitle>
           <DialogDescription>选择智能体并设置工作区名称。</DialogDescription>
         </DialogHeader>
 
@@ -492,6 +496,16 @@ export function CreateContainerDialog({
                   </dd>
                 </div>
               </dl>
+              {canHostExec && inheritsHostClaude && (
+                <p className="mt-2 text-micro text-muted-foreground">
+                  宿主机 Skills：
+                  {hostSkillsMode === 'inherit'
+                    ? '全部使用'
+                    : hostSkillsMode === 'custom'
+                      ? `选择 ${selectedProfile.runtime_policy.skills.host?.ids.length ?? 0} 项`
+                      : '不使用'}
+                </p>
+              )}
             </div>
           )}
 

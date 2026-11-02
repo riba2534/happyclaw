@@ -71,10 +71,10 @@ export function InteractionModeSelector({
           return (
             <label
               key={option.value}
-              title={compact ? option.description : undefined}
               className={cn(
                 'relative flex min-w-0 cursor-pointer items-start gap-2.5 rounded-lg px-3 py-2.5 ring-1 transition-colors duration-100',
-                compact && 'px-2 py-1.5',
+                // One line per choice; still a 44px target on a phone.
+                compact && 'items-center px-2 py-1.5 phone:min-h-11',
                 'has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-ring/50',
                 selected
                   ? 'bg-surface-selected ring-foreground/25'
@@ -94,9 +94,7 @@ export function InteractionModeSelector({
               <Icon
                 aria-hidden="true"
                 className={cn(
-                  compact
-                    ? 'mt-0.5 size-3.5 shrink-0'
-                    : 'mt-0.5 size-4 shrink-0',
+                  compact ? 'size-3.5 shrink-0' : 'mt-0.5 size-4 shrink-0',
                   selected ? 'text-foreground' : 'text-muted-foreground',
                 )}
               />
@@ -118,7 +116,12 @@ export function InteractionModeSelector({
               {selected && (
                 <CircleCheck
                   aria-hidden="true"
-                  className="pointer-events-none absolute top-2.5 right-2.5 size-4 text-primary-text"
+                  className={cn(
+                    'pointer-events-none absolute text-primary-text',
+                    compact
+                      ? 'top-1/2 right-2 size-3.5 -translate-y-1/2'
+                      : 'top-2.5 right-2.5 size-4',
+                  )}
                 />
               )}
             </label>
