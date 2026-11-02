@@ -86,6 +86,21 @@ describe('reclaiming idle warm container runners', () => {
     expect(queue.getStatus().activeContainerCount).toBe(1);
   });
 
+  test('a runner stays reclaimable after its idle follow-up check finds nothing', async () => {
+    const { queue, started, closed, enqueue, idle } = harness();
+    await idle('web:a#agent:s');
+    // What every turn's end does when no follow-up is queued.
+    const reservation = queue.reserveNextQuery('web:a#agent:s')!;
+    expect(queue.releaseQueryReservation('web:a#agent:s', reservation)).toBe(
+      true,
+    );
+
+    enqueue('web:b#agent:s');
+    expect(closed).toHaveBeenCalledWith('web:a#agent:s');
+    await tick();
+    expect(started).toEqual(['web:a#agent:s', 'web:b#agent:s']);
+  });
+
   test('a runner going idle while work waits is reclaimed at once', async () => {
     const { queue, started, closed, enqueue } = harness();
     enqueue('web:a#agent:s');

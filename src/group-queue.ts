@@ -1724,6 +1724,10 @@ export class GroupQueue {
     state.announcedQueryId = null;
     state.pendingInterruptQueryId = null;
     state.currentQueryCoveredMessageIds = new Set();
+    // reserveNextQuery cleared it; the runner is idle again. Every turn ends
+    // in a reserve-and-release when no follow-up is queued, so without this
+    // a warm container never counts as idle and is never reclaimed.
+    state.idleSince = Date.now();
     // Retired while the reservation was held (retireRunnerAfterQuery or
     // closeAfterQuery skip the close while a query is in flight). No result
     // will arrive to close it now, so close it here.
