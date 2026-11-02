@@ -112,7 +112,10 @@ Host Workspace 在 Access 之外还要求 admin。
 GET 与 HEAD）使用 View：Host 工作区另需 admin 或访客授权（`canViewHostGroup`），文件根随
 `?agentId=` 解析，访客的隐藏规则见第 11 节。上传、保存、删除和建目录仍要求 Access，
 Host 工作区要求 admin。Office 预览（`files/office-preview/:path`）与其他读取的授权完全
-相同；它的 PDF 缓存按源文件内容寻址、跨用户共享，所以响应不带命中与否的标记。配置了
+相同，校验后立即以 `O_NOFOLLOW|O_NONBLOCK` 打开文件，核对仍是校验过的那个普通文件，之后
+只从这个描述符读取，排队期间把路径换成符号链接也读不到文件根以外的内容。它的 PDF 缓存
+按源文件内容寻址、跨用户共享：能拿到相同内容的人可以从响应耗时推测出别人预览过这份
+内容，这是接受的取舍（响应里没有直接标明命中与否的头）。配置了
 `OFFICE_PREVIEW_SOFFICE_BIN` 时，任何能预览的人都能让宿主机上的 LibreOffice 以服务身份
 解析工作区里的文档（Container 工作区也一样），因此该转换器只在运维显式设置时启用，见
 `DEPLOYMENT.md`。

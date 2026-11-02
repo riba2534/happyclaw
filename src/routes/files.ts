@@ -36,12 +36,15 @@ import { checkStorageLimit, isBillingEnabled } from '../billing.js';
 import { GROUPS_DIR, MAX_FILE_SIZE_MB } from '../config.js';
 import { createUploadBodyLimit } from '../http-upload-policy.js';
 import {
+  assertOfficePreviewAvailable,
   hashOfficePreviewSource,
   OfficePreviewError,
   openOfficePreviewPdf,
 } from '../office-preview.js';
+import { isRealpathInside } from '../utils.js';
 import { execFile } from 'node:child_process';
 import fs from 'node:fs';
+import type { FileHandle } from 'node:fs/promises';
 import path from 'node:path';
 import { Readable } from 'node:stream';
 import { promisify } from 'node:util';
@@ -428,7 +431,7 @@ function resolveReadableFile(
   jid: string,
   encodedPath: string,
   directoryError: string,
-): { absolutePath: string; stats: fs.Stats } | Response {
+): { absolutePath: string; stats: fs.Stats; fileRoot: string } | Response {
   const access = authorizeFileGroup(c, jid, 'read');
   if (access instanceof Response) return access;
   const { group, rootOverride, isHidden } = access;
@@ -445,7 +448,49 @@ function resolveReadableFile(
   if (stats.isDirectory()) {
     return c.json({ error: directoryError }, 400);
   }
-  return { absolutePath, stats };
+  return {
+    absolutePath,
+    stats,
+    fileRoot: getFileRoot(group.folder, rootOverride),
+  };
+}
+
+/**
+ * Opens a file `resolveReadableFile` validated, without following a symlink
+ * in its last component or blocking on a FIFO, and keeps the descriptor only
+ * if it is a regular file, is the very file that was validated (same dev and
+ * inode) and the path still resolves inside the file root. Whatever is read
+ * afterwards comes from this descriptor, not from the path, which may change.
+ */
+async function openValidatedFile(
+  absolutePath: string,
+  validated: fs.Stats,
+  fileRoot: string,
+): Promise<FileHandle | null> {
+  let handle: FileHandle;
+  try {
+    handle = await fs.promises.open(
+      absolutePath,
+      fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK,
+    );
+  } catch {
+    return null;
+  }
+  try {
+    const opened = await handle.stat();
+    if (
+      opened.isFile() &&
+      opened.dev === validated.dev &&
+      opened.ino === validated.ino &&
+      isRealpathInside(absolutePath, fileRoot)
+    ) {
+      return handle;
+    }
+  } catch {
+    // Treated as not found below.
+  }
+  await handle.close();
+  return null;
 }
 
 const fileRoutes = new Hono<{ Variables: Variables }>();
@@ -921,6 +966,7 @@ fileRoutes.get(
   authMiddleware,
   async (c) => {
     const jid = c.req.param('jid');
+    let source: FileHandle | null = null;
 
     try {
       const file = resolveReadableFile(
@@ -930,14 +976,18 @@ fileRoutes.get(
         'Cannot preview directory',
       );
       if (file instanceof Response) return file;
-      const { absolutePath } = file;
+      const { absolutePath, stats, fileRoot } = file;
+      const ext = assertOfficePreviewAvailable(absolutePath);
+      source = await openValidatedFile(absolutePath, stats, fileRoot);
+      if (!source) return c.json({ error: 'File not found' }, 404);
 
       // The ETag is the source content's hash, so an unchanged file
       // revalidates to 304 without converting, even after cache eviction.
-      // No hit/miss header: the cache is shared across users, and such a
-      // header would tell anyone holding the same content that someone
-      // previewed it.
-      const hash = await hashOfficePreviewSource(absolutePath);
+      // The PDF cache is shared across users by content: someone who can
+      // obtain the same file can tell from the response time whether it was
+      // already converted, i.e. that someone previewed it. That is accepted;
+      // there is just no header that says so outright.
+      const hash = await hashOfficePreviewSource(source);
       const headers: Record<string, string> = {
         'Content-Type': 'application/pdf',
         'Content-Disposition': 'inline',
@@ -950,25 +1000,33 @@ fileRoutes.get(
         return new Response(null, { status: 304, headers });
       }
 
-      const pdf = await openOfficePreviewPdf(absolutePath, hash);
-      logger.debug(
-        { jid, cacheHit: pdf.cacheHit },
-        'Office preview: serving PDF',
-      );
-      // The file may have changed while it was converted: describe what is
-      // actually served.
-      headers.ETag = `"${pdf.hash}"`;
-      headers['Content-Length'] = String(pdf.size);
-      const stream = Readable.toWeb(
-        pdf.handle.createReadStream(),
-      ) as ReadableStream<Uint8Array>;
-      return new Response(stream, { status: 200, headers });
+      const pdf = await openOfficePreviewPdf(source, ext, hash);
+      try {
+        logger.debug(
+          { jid, cacheHit: pdf.cacheHit },
+          'Office preview: serving PDF',
+        );
+        // The file may have changed while it was converted: describe what is
+        // actually served.
+        headers.ETag = `"${pdf.hash}"`;
+        headers['Content-Length'] = String(pdf.size);
+        // The stream owns the PDF handle from here and closes it.
+        const stream = Readable.toWeb(
+          pdf.handle.createReadStream(),
+        ) as ReadableStream<Uint8Array>;
+        return new Response(stream, { status: 200, headers });
+      } catch (error) {
+        await pdf.handle.close();
+        throw error;
+      }
     } catch (error) {
       if (error instanceof OfficePreviewError) {
         return c.json({ error: error.message, code: error.code }, error.status);
       }
       logger.error({ err: error }, `Failed to build office preview for ${jid}`);
       return c.json({ error: 'Failed to build office preview' }, 500);
+    } finally {
+      await source?.close();
     }
   },
 );
