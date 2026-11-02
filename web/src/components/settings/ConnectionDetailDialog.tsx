@@ -402,11 +402,15 @@ function ConnectionSettings({
   const baseUrlProblem =
     kind === 'custom' ? describeBaseUrlProblem(baseUrl) : null;
 
+  // A ChatGPT connection shows only the WebFetch switch here: CodexDefaults
+  // saves its env, which leaves the env draft above a stale snapshot.
+  const editsProtocol = kind !== 'chatgpt';
   const built = buildProviderCustomEnv(env);
-  const envChanged = !sameEnv(built.customEnv, provider.customEnv ?? {});
+  const envChanged =
+    editsProtocol && !sameEnv(built.customEnv, provider.customEnv ?? {});
   const urlChanged =
     kind === 'custom' && baseUrl.trim() !== provider.anthropicBaseUrl;
-  const authModeChanged = authMode !== savedAuthMode;
+  const authModeChanged = editsProtocol && authMode !== savedAuthMode;
   const protocolChanged =
     urlChanged || !!secret.trim() || envChanged || authModeChanged;
   const webFetchPolicyChanged = webFetchPolicy !== savedWebFetchPolicy;

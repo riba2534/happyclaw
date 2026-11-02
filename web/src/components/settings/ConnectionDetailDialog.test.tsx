@@ -790,6 +790,26 @@ describe('connection WebFetch policy', () => {
     expect(button('保存连接设置').disabled).toBe(false);
   });
 
+  test('a ChatGPT connection saves only the switch, whatever its env became meanwhile', async () => {
+    const chatgpt = {
+      ...codexProvider,
+      customEnv: { CODEX_REASONING_EFFORT: 'high' },
+    };
+    await render(chatgpt);
+    // CodexDefaults saved a new effort; the dialog stays mounted.
+    await render({ ...chatgpt, customEnv: { CODEX_REASONING_EFFORT: 'low' } });
+    expect(button('保存连接设置').disabled).toBe(true);
+    await choose(field, 'skip');
+    await click(button('保存连接设置'));
+    await flush();
+    expect(mocks.patch).toHaveBeenCalledExactlyOnceWith(
+      `${PROVIDERS}/chatgpt`,
+      { webFetchPreflightPolicy: 'skip' },
+      120_000,
+    );
+    expect(mocks.confirm).not.toHaveBeenCalled();
+  });
+
   test('keeps the draft retryable after a failed save', async () => {
     mocks.patch.mockRejectedValueOnce(new Error('write failed'));
     await render(legacyProvider);
