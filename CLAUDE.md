@@ -190,6 +190,12 @@ Web UI 约定：
 
 共同约束：
 
+- 每个会话一条执行通道，序列化键为 `folder#<会话id>`；工作区本身没有执行通道，Web 发送、
+  `/clear`、`/fresh`、`/sw` 和终端不带会话时被拒（`session_required`），什么也不存。会话一律
+  受计费闸门约束，用户级容器并发上限按每个活跃会话的 Runner 计。没有回复的运行错误按退避
+  重试，最后一次失败发 `agent_error`；同一会话连续两次 OOM（137）后自动重置它的上下文。
+  重启后会话续用 SDK 会话并收到「服务已重启」提示。终端按会话打开（`terminal_*` 的
+  `chatJid` 是会话地址）。
 - 同一序列化键内的消息保持顺序。
 - 不同飞书话题、不同 Runtime Session 使用不同序列化键，可以并发。
 - Agent loop 运行期间到达的普通消息（Web 与全部 IM 渠道）逐条进入可见、可编辑和可排序的 durable 队列；
@@ -540,9 +546,7 @@ data/
 ├── config/
 ├── groups/{folder}/
 ├── worktrees/{folder}/{sessionId}/
-├── sessions/{folder}/.claude/
 ├── sessions/{folder}/agents/{sessionId}/.claude/
-├── ipc/{folder}/
 ├── ipc/{folder}/agents/{sessionId}/
 ├── memory/
 ├── skills/{userId}/
@@ -555,7 +559,10 @@ data/
 ```
 
 主要数据库当前 Schema 版本以 `src/db.ts` 的 `CURRENT_SCHEMA_VERSION` 为准。
-不要在文档中复制版本号；迁移必须同时具备备份、前向升级和拒绝降级保护。只新增索引
+不要在文档中复制版本号；迁移必须同时具备备份、前向升级和拒绝降级保护。
+v88 把每个工作区的旧主会话迁成普通会话，映射记在 router_state
+`legacy_main_session:<工作区JID>`（只用于迁移自身的幂等与审计）；
+`npx tsx scripts/legacy-main-session-report.ts --check` 以只读方式核对线上库的不变量。只新增索引
 不需要升级版本：在每次启动都会执行的建表函数里用 `CREATE INDEX IF NOT EXISTS`。
 
 核心表族：
@@ -564,7 +571,7 @@ data/
   `guest_workspace_grants`
 - 工作区与会话：`registered_groups`、`sessions`、`workspaces`、
   `workspace_runtime_sessions`、`session_model_selections`、`session_worktrees`、
-  `session_history_reinjections`
+  `session_history_reinjections`、`user_pinned_sessions`
 - Agent：`agent_profiles`、`agent_builder_drafts`、`workspace_agent_profiles`、
   `agents`
 - 渠道：`channel_accounts`、`channel_mounts`、`agent_channel_mounts`、
