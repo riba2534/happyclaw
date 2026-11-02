@@ -102,11 +102,3 @@ export class DeferredOutOfBandCursorLedger {
     return committed;
   }
 }
-
-export function shouldRecoverPendingHistory(
-  hasCommittedCursor: boolean,
-  pullWasAhead: boolean,
-  foundTypedDeliveryFile: boolean,
-): boolean {
-  return hasCommittedCursor || pullWasAhead || foundTypedDeliveryFile;
-}

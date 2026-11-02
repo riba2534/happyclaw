@@ -142,7 +142,10 @@ describe('expandPluginSlashCommandIfNeeded — miss paths', () => {
   });
 
   test('slash but no plugin commands enabled → miss', async () => {
-    const r = await expandPluginSlashCommandIfNeeded(ctxHost(), '/codex status');
+    const r = await expandPluginSlashCommandIfNeeded(
+      ctxHost(),
+      '/codex status',
+    );
     expect(r.kind).toBe('miss');
   });
 
@@ -297,7 +300,9 @@ describe('expandPluginSlashCommandIfNeeded — body path (no inline)', () => {
     expect(r.kind).toBe('expanded');
     if (r.kind !== 'expanded') return;
     expect(r.prompt).toContain('Plugin path: ');
-    expect(r.prompt).toMatch(/Plugin path: .*plugins.runtime.alice.snapshots.sha.mp.codex/);
+    expect(r.prompt).toMatch(
+      /Plugin path: .*plugins.runtime.alice.snapshots.sha.mp.codex/,
+    );
     expect(r.prompt).toContain('Arguments: --base main feature');
     expect(r.prompt).toContain('First positional: --base, second: main');
     // Frontmatter summary appears before body.
@@ -330,7 +335,9 @@ describe('expandPluginSlashCommandIfNeeded — body path (no inline)', () => {
     const r = await expandPluginSlashCommandIfNeeded(ctxDocker(), '/review');
     expect(r.kind).toBe('expanded');
     if (r.kind !== 'expanded') return;
-    expect(r.prompt).toContain('Path: /workspace/plugins/snapshots/sha/mp/codex');
+    expect(r.prompt).toContain(
+      'Path: /workspace/plugins/snapshots/sha/mp/codex',
+    );
     expect(r.prompt).not.toContain('alice');
   });
 
@@ -362,7 +369,10 @@ describe('expandPluginSlashCommandIfNeeded — body path (no inline)', () => {
       plugin: 'codex',
       snapshot: 'sha',
     });
-    const r = await expandPluginSlashCommandIfNeeded(ctxHost(), '/review hello');
+    const r = await expandPluginSlashCommandIfNeeded(
+      ctxHost(),
+      '/review hello',
+    );
     expect(r.kind).toBe('expanded');
     if (r.kind !== 'expanded') return;
     // Outside fence: ${CLAUDE_PLUGIN_ROOT} → plugin root path
@@ -413,11 +423,10 @@ describe('expandPluginSlashCommandIfNeeded — inline path', () => {
       timedOut: false,
     }));
     const execDocker = vi.fn();
-    const r = await expandPluginSlashCommandIfNeeded(
-      ctxHost(),
-      '/inspect',
-      { execHost: execHost as any, execDocker: execDocker as any },
-    );
+    const r = await expandPluginSlashCommandIfNeeded(ctxHost(), '/inspect', {
+      execHost: execHost as any,
+      execDocker: execDocker as any,
+    });
     expect(r.kind).toBe('expanded');
     if (r.kind !== 'expanded') return;
     expect(execHost).toHaveBeenCalledTimes(1);
@@ -694,9 +703,7 @@ describe('inline output is opaque — placeholders inside captured stdout pass t
 
     // Free-text placeholders DID substitute (free text uses applyPlaceholders).
     expect(r.prompt).toContain('Free text: alpha -> [posarg-substituted-here]');
-    expect(r.prompt).toContain(
-      'After: alpha beta -> [args-substituted-here]',
-    );
+    expect(r.prompt).toContain('After: alpha beta -> [args-substituted-here]');
 
     // Captured stdout MUST contain the literal placeholder tokens — never
     // rewritten. Before #19 P2-3 these would have been mangled to the values

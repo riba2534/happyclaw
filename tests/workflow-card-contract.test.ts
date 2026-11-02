@@ -84,13 +84,8 @@ describe('dynamic Workflow product contract', () => {
     const backend = fs.readFileSync('src/index.ts', 'utf8');
     const store = fs.readFileSync('web/src/stores/chat.ts', 'utf8');
 
-    expect(backend).toContain('activeWorkflowRuns');
     expect(backend).toContain('activeAgentWorkflowRuns');
-    expect(backend).toContain('workflowRuns: holdReason');
     expect(backend).toContain('workflow_runs: holdReason');
-    expect(backend).toContain(
-      'if (!holdReason) {\n                clearStreamingSnapshot(chatJid)',
-    );
     expect(store).toContain('streamingStateFromWorkflowRuns');
     expect(store).toContain('holdsRunningWorkflow');
   });

@@ -222,18 +222,25 @@ export function isSecureRequest(c: any): boolean {
   return false;
 }
 
+/** A session's IPC root, the runner's /workspace/ipc. */
+export function sessionIpcDir(folder: string, agentId: string): string {
+  return path.join(DATA_DIR, 'ipc', folder, 'agents', agentId);
+}
+
+/** A session's Claude directory. */
+export function sessionClaudeDir(folder: string, agentId: string): string {
+  return path.join(DATA_DIR, 'sessions', folder, 'agents', agentId, '.claude');
+}
+
 /** Create IPC + session directories for an agent. */
 export function ensureAgentDirectories(
   folder: string,
   agentId: string,
 ): string {
-  const agentIpcDir = path.join(DATA_DIR, 'ipc', folder, 'agents', agentId);
+  const agentIpcDir = sessionIpcDir(folder, agentId);
   fs.mkdirSync(path.join(agentIpcDir, 'input'), { recursive: true });
   fs.mkdirSync(path.join(agentIpcDir, 'messages'), { recursive: true });
   fs.mkdirSync(path.join(agentIpcDir, 'tasks'), { recursive: true });
-  fs.mkdirSync(
-    path.join(DATA_DIR, 'sessions', folder, 'agents', agentId, '.claude'),
-    { recursive: true },
-  );
+  fs.mkdirSync(sessionClaudeDir(folder, agentId), { recursive: true });
   return agentIpcDir;
 }

@@ -95,7 +95,7 @@ describe('conversation reasoning effort on a grant', () => {
     const picked = issue({
       kind: 'container',
       groupFolder: 'folder',
-      sessionAgentId: 'agent',
+      agentId: 'agent',
       sessionEffort: 'ultra',
     });
     const none = issue({ kind: 'container', groupFolder: 'folder' });
@@ -110,7 +110,6 @@ describe('conversation reasoning effort on a grant', () => {
       kind: 'container',
       groupFolder: 'folder',
       agentId: null,
-      sessionAgentId: null,
       sessionEffort: 'low',
     });
     const mainHost = issue({ kind: 'host', groupFolder: 'folder' });
@@ -118,7 +117,6 @@ describe('conversation reasoning effort on a grant', () => {
       kind: 'container',
       groupFolder: 'folder',
       agentId: 'agent-1',
-      sessionAgentId: 'agent-1',
       sessionEffort: 'low',
     });
     const otherWorkspace = issue({

@@ -248,8 +248,28 @@ async function waitUntil(pred, timeoutMs, label) {
   throw new Error(`timed out waiting for ${label}`);
 }
 
+/** Open a session in a workspace; every Web input names one. */
+async function openSession(cookie, jid, name) {
+  const r = await http_('POST', `/api/groups/${enc(jid)}/sessions`, {
+    cookie,
+    body: { name },
+  });
+  if (r.status >= 300 || !r.json?.session?.id)
+    throw new Error(`session: HTTP ${r.status} ${JSON.stringify(r.json)}`);
+  return { jid, sessionId: r.json.session.id };
+}
+
+/** A session's events: run lifecycle under its JID, stream events by agentId. */
+const ofSession =
+  ({ jid, sessionId }) =>
+  (e) =>
+    e.chatJid === `${jid}#agent:${sessionId}` ||
+    (e.chatJid === jid && e.agentId === sessionId);
+
 /** Send one Web message and wait for its run to finish. */
-async function sendTurn(cookie, jid, turn, content) {
+async function sendTurn(cookie, session, turn, content) {
+  const { jid, sessionId } = session;
+  const mine = ofSession(session);
   stub.state.turn = turn;
   const events = [];
   const ws = new WebSocket(`${base.replace(/^http/, 'ws')}/ws`, {
@@ -267,14 +287,21 @@ async function sendTurn(cookie, jid, turn, content) {
     ws.once('open', resolve);
     ws.once('error', reject);
   });
-  ws.send(JSON.stringify({ type: 'send_message', chatJid: jid, content }));
+  ws.send(
+    JSON.stringify({
+      type: 'send_message',
+      chatJid: jid,
+      agentId: sessionId,
+      content,
+    }),
+  );
   await waitUntil(
-    () => events.some((e) => e.chatJid === jid && e.type === 'run_finished'),
+    () => events.some((e) => mine(e) && e.type === 'run_finished'),
     120_000,
     `run_finished for turn ${turn}`,
   );
   ws.close();
-  return events.filter((e) => e.chatJid === jid);
+  return events.filter(mine);
 }
 
 // ── reading what the session carries ──────────────────────────────────────
@@ -310,7 +337,7 @@ function perTurn(turnRequests) {
   });
 }
 
-async function runTurns(label, cookie, jid, beforeTurn) {
+async function runTurns(label, cookie, session, beforeTurn) {
   const turnRequests = [];
   const turnEvents = [];
   for (let turn = 1; turn <= TURNS; turn++) {
@@ -318,7 +345,7 @@ async function runTurns(label, cookie, jid, beforeTurn) {
     const start = stub.state.requests.length;
     const events = await sendTurn(
       cookie,
-      jid,
+      session,
       turn,
       `turn ${turn} of ${label}: what do we know about the release?`,
     );
@@ -414,40 +441,46 @@ async function main() {
   }
   const edited = memories[0];
   const forgotten = memories[2];
-  const custom = await runTurns('custom', cookie, jid, async (turn) => {
-    // The Runner closes the CLI 5 s after a result. Turns 3 and 5 start a
-    // new query that resumes the session; turns 2 and 4 join the open one.
-    if (turn === 3 || turn === 5) await sleep(QUERY_CLOSE_WAIT_MS);
-    if (turn === 5) {
-      // Forgotten while the session holds it: turn 5 withdraws it.
+  const customSession = await openSession(cookie, jid, 'notes');
+  const custom = await runTurns(
+    'custom',
+    cookie,
+    customSession,
+    async (turn) => {
+      // The Runner closes the CLI 5 s after a result. Turns 3 and 5 start a
+      // new query that resumes the session; turns 2 and 4 join the open one.
+      if (turn === 3 || turn === 5) await sleep(QUERY_CLOSE_WAIT_MS);
+      if (turn === 5) {
+        // Forgotten while the session holds it: turn 5 withdraws it.
+        const r = await http_(
+          'DELETE',
+          `/api/memory/workspaces/${enc(jid)}/items/${enc(forgotten.id)}`,
+          { cookie, body: { expectedRevision: forgotten.revision } },
+        );
+        if (r.status >= 300)
+          throw new Error(
+            `memory forget: HTTP ${r.status} ${JSON.stringify(r.json)}`,
+          );
+        return;
+      }
+      if (turn !== 4) return;
       const r = await http_(
-        'DELETE',
-        `/api/memory/workspaces/${enc(jid)}/items/${enc(forgotten.id)}`,
-        { cookie, body: { expectedRevision: forgotten.revision } },
+        'PATCH',
+        `/api/memory/workspaces/${enc(jid)}/items/${enc(edited.id)}`,
+        {
+          cookie,
+          body: {
+            expectedRevision: edited.revision,
+            content: 'The release moved to Monday.',
+          },
+        },
       );
       if (r.status >= 300)
         throw new Error(
-          `memory forget: HTTP ${r.status} ${JSON.stringify(r.json)}`,
+          `memory edit: HTTP ${r.status} ${JSON.stringify(r.json)}`,
         );
-      return;
-    }
-    if (turn !== 4) return;
-    const r = await http_(
-      'PATCH',
-      `/api/memory/workspaces/${enc(jid)}/items/${enc(edited.id)}`,
-      {
-        cookie,
-        body: {
-          expectedRevision: edited.revision,
-          content: 'The release moved to Monday.',
-        },
-      },
-    );
-    if (r.status >= 300)
-      throw new Error(
-        `memory edit: HTTP ${r.status} ${JSON.stringify(r.json)}`,
-      );
-  });
+    },
+  );
   for (const memory of memories.slice(1)) {
     const n = count(custom.finalTexts, memoryTag(memory.id));
     check('custom', `memory ${memory.id} is in the context once`, n === 1, n);
@@ -557,7 +590,7 @@ async function main() {
   const compacted = await runTurns(
     'compaction',
     cookie,
-    compactJid,
+    await openSession(cookie, compactJid, 'notes'),
     async (turn) => {
       // Turn 3 reports a nearly full window; turn 4 starts with a compaction.
       stub.state.extraTokens = turn === 3 ? 95_000 : 0;
@@ -608,7 +641,11 @@ async function main() {
     ([, g]) => g.is_home,
   )?.[0];
   if (!homeJid) throw new Error('no Home Workspace');
-  const homeRun = await runTurns('home', cookie, homeJid);
+  const homeRun = await runTurns(
+    'home',
+    cookie,
+    await openSession(cookie, homeJid, 'home'),
+  );
   const owner = count(homeRun.finalTexts, '<workspace_owner_profile');
   check(
     'home',

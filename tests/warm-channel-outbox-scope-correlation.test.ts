@@ -168,23 +168,8 @@ describe('warm channel outbox scope wiring contract', () => {
     expect(body).not.toMatch(/inputTurnId:\s*runtime\.inputTurnId/);
   });
 
-  test('both warm admissions bind the scope with the IPC deliveryId', () => {
+  test('a warm admission binds the scope with the IPC deliveryId', () => {
     const host = read('src/index.ts');
-
-    const mainAdmission = section(
-      host,
-      'activeRouteAdmissions.set(\n    mainAdmissionKey,',
-      'admittedWarmMainInputs.set(inputTurnId, {',
-    );
-    expect(mainAdmission).toMatch(
-      /bindChannelOutboxScope\(\s*mainAdmissionKey,[\s\S]*?\n\s*inputTurnId,\n\s*\);/,
-    );
-    expect(mainAdmission).toMatch(/logicalBaseChatJid:\s*chatJid/);
-    // The runtime itself stays on the native message id (durable idempotency).
-    expect(mainAdmission).toMatch(
-      /externalMessageId:\s*inputCursor\?\.id \?\? inputTurnId/,
-    );
-
     const agentAdmission = section(
       host,
       'activeRouteAdmissions.set(\n    agentAdmissionKey,',
@@ -193,6 +178,7 @@ describe('warm channel outbox scope wiring contract', () => {
     expect(agentAdmission).toMatch(
       /bindChannelOutboxScope\(\s*agentAdmissionKey,[\s\S]*?\n\s*inputTurnId,\n\s*\);/,
     );
+    // The runtime itself stays on the native message id (durable idempotency).
     expect(agentAdmission).toMatch(
       /externalMessageId:\s*inputCursor\?\.id \?\? inputTurnId/,
     );
@@ -203,12 +189,9 @@ describe('warm channel outbox scope wiring contract', () => {
     // On the cold path the runtime is started from lastProcessed.id, which is
     // also the ContainerInput.turnId the runner reports, so the default is
     // already correct and must not be overridden with an unrelated id.
-    for (const scopeSetter of [
-      'channelOutboxScopesByInput.set(lastProcessed.id, channelOutboxScope);',
+    expect(host).toContain(
       'agentChannelOutboxScopesByInput.set(\n        lastProcessed.id,',
-    ]) {
-      expect(host).toContain(scopeSetter);
-    }
+    );
     expect(host).toContain('externalMessageId: lastProcessed.id,');
   });
 
@@ -236,16 +219,6 @@ describe('warm channel outbox scope wiring contract', () => {
     // `missing:<inputTurnId>` is the token shape that makes a correlation-key
     // mismatch distinguishable from a genuinely expired scope.
     expect(host).toMatch(/scopeToken:\s*scope\?\.token \?\? `missing:\$\{/);
-  });
-
-  test('text and image IPC projection both recover the frozen logical base', () => {
-    const host = read('src/index.ts');
-    expect(
-      host.match(/runtimeChatJid:\s*resolveIpcOutputRuntimeChatJid\(/g),
-    ).toHaveLength(2);
-    expect(host).toMatch(
-      /logicalBaseChatJid:\s*chatJid[\s\S]*?function resolveIpcOutputRuntimeChatJid/,
-    );
   });
 
   test('WeChat physical chunks use separate outbox rows and the actual item id', () => {

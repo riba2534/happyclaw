@@ -3,7 +3,6 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, test } from 'vitest';
 
-import { shouldRecoverPendingHistory } from '../src/delivery-cursor.js';
 import { discardStartupTypedIpcDeliveries } from '../src/ipc-delivery-recovery.js';
 
 const roots: string[] = [];
@@ -80,12 +79,6 @@ describe('startup typed IPC delivery recovery', () => {
     expect(fs.existsSync(agentFile)).toBe(false);
     expect(fs.existsSync(invalidFile)).toBe(true);
     expect(rewindPersistedBeforeDelete).toBe(true);
-
-    // The crash happened after rename/claim but before next-pull advanced:
-    // R == C. The typed file itself is sufficient evidence to inspect DB and
-    // enqueue replay; recovery must not be gated only on R > C.
-    expect(shouldRecoverPendingHistory(true, false, true)).toBe(true);
-    expect(shouldRecoverPendingHistory(false, false, true)).toBe(true);
   });
 
   test('does not delete crash evidence when durable rewind fails', () => {

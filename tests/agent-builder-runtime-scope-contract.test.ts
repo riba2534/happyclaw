@@ -37,19 +37,17 @@ describe('Agent Builder runtime scope contract', () => {
     expect(toolRegistration).not.toMatch(/if \(ctx\.isHome\)/);
   });
 
-  test('derives capability from the effective profile for main and runtime sessions', () => {
+  test('derives capability from the effective profile of every conversation session', () => {
     const host = read('src/index.ts');
     const web = read('src/web.ts');
+    const runner = read('container/agent-runner/src/index.ts');
 
-    expect(host.match(/agentBuilderEnabled:/g)?.length).toBeGreaterThanOrEqual(
-      3,
-    );
-    expect(host).toMatch(
-      /agentBuilderEnabled:\s*resolvedAgentProfile\?\.is_default === true/,
-    );
     expect(host).toMatch(
       /agentBuilderEnabled:\s*agent\.kind === 'conversation' &&\s*agentProfile\?\.is_default === true/,
     );
+    // The runner never infers it from a missing session id.
+    expect(runner).toMatch(/input\.agentBuilderEnabled === true/);
+    expect(runner).not.toMatch(/!input\.agentId/);
 
     const actorGate = section(
       host,
@@ -63,7 +61,7 @@ describe('Agent Builder runtime scope contract', () => {
     expect(actorGate).not.toMatch(/!isHome/);
 
     expect(web).toMatch(
-      /updateRoute\?\.\([\s\S]*?agent\.group_folder[\s\S]*?agentId,[\s\S]*?\);/,
+      /updateRoute\(agent\.group_folder, agentId, null, receipt\)/,
     );
   });
 });

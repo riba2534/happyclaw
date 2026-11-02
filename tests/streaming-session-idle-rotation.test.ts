@@ -152,39 +152,12 @@ describe('appendStreamingSessionAnswer', () => {
   });
 });
 
-describe('main-runner rotation guards use the settled predicate', () => {
+describe('session text projection', () => {
   const main = fs.readFileSync('src/index.ts', 'utf8');
 
-  test('stream-event rotation never discards an idle lazily-created session', () => {
-    expect(main).toMatch(
-      /streamingSession &&\s*isStreamingSessionSettled\(streamingSession\) &&\s*!sessionErrored &&\s*!runEnded/,
-    );
-    expect(main).not.toMatch(
-      /streamingSession &&\s*!streamingSession\.isActive\(\) &&\s*!sessionErrored &&\s*!runEnded/,
-    );
-  });
-
-  test('new-message rotation keeps the idle session for the next turn', () => {
-    expect(main).not.toMatch(
-      /if \(streamingSession && !streamingSession\.isActive\(\)\) \{\s*streamingSession\.dispose\(\);/,
-    );
-    expect(main).toMatch(
-      /if \(streamingSession && isStreamingSessionSettled\(streamingSession\)\) \{\s*streamingSession\.dispose\(\);/,
-    );
-  });
-
-  test('main text projection uses the idle-aware append helper', () => {
-    expect(main).toMatch(
-      /if \(answerProjection\?\.visibleAnswerChanged\) \{\s*appendStreamingSessionAnswer\(\s*streamingSession,/,
-    );
-    expect(main).not.toMatch(
-      /answerProjection\?\.visibleAnswerChanged &&\s*streamingSession\.isActive\(\)/,
-    );
-  });
-
   test('runtime-session text projection uses the idle-aware append helper', () => {
-    // A Runtime Session card starts idle like the main one; an isActive()
-    // guard here drops a text-only turn's deltas until the final reply.
+    // A session card starts idle; an isActive() guard here drops a
+    // text-only turn's deltas until the final reply.
     expect(main).toMatch(
       /if \(agentAnswerProjection\?\.visibleAnswerChanged\) \{\s*appendStreamingSessionAnswer\(\s*agentStreamingSession,/,
     );

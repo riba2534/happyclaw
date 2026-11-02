@@ -70,14 +70,13 @@ afterAll(() => {
 });
 
 /**
- * Runs the production processGroupMessages / processAgentConversation from
- * the group lookup through input selection against a real database. A run
+ * Runs the production processAgentConversation from the group lookup
+ * through input selection against a real database. A run
  * stops when its batch is published for IPC admission; a successful turn is
  * then settled with that function's own commitCursor for the batch.
  */
-function createLane(kind: 'main' | 'agent') {
+function createLane() {
   const loop = createConversationLoop({
-    kind,
     chatJid,
     agentId,
     folder: 'backlog-main',
@@ -97,17 +96,14 @@ function createLane(kind: 'main' | 'agent') {
   });
   const { globals, harness, queue, owner } = loop;
   harness.install('advanceCursors');
-  if (kind === 'agent') harness.install('isCursorCommitted', owner);
+  harness.install('isCursorCommitted', owner);
   harness.install('commitCursor', owner);
 
   const followUpCount = () =>
-    kind === 'main'
-      ? queue.enqueueMessageCheck.mock.calls.filter(([jid]) => jid === chatJid)
-          .length
-      : queue.enqueueTask.mock.calls.filter(
-          ([jid, taskId]) =>
-            jid === agentJid && taskId === `agent-channel-next:${agentId}`,
-        ).length;
+    queue.enqueueTask.mock.calls.filter(
+      ([jid, taskId]) =>
+        jid === agentJid && taskId === `agent-channel-next:${agentId}`,
+    ).length;
 
   /** One scheduler round: the batch the turn would take, or null. */
   async function round(): Promise<NewMessage[] | null> {
@@ -116,7 +112,6 @@ function createLane(kind: 'main' | 'agent') {
       // The turn succeeded for this batch (lastProcessed is its last input).
       const lastProcessed = batch[batch.length - 1];
       globals.lastProcessed = lastProcessed;
-      globals.ipcReplyTurnTracker = { inputTurnId: lastProcessed.id };
       globals.activeAgentInputTurnId = lastProcessed.id;
       globals.cursorCommittedInputTurns = new Set<string>();
       globals.commitCursor();
@@ -128,46 +123,38 @@ function createLane(kind: 'main' | 'agent') {
     round,
     followUpCount,
     globals,
-    jid: kind === 'main' ? chatJid : agentJid,
+    jid: agentJid,
   };
 }
 
 describe('cold-start backlog beyond one turn', () => {
-  test.each(['main', 'agent'] as const)(
-    '%s: consumed in bounded turns with no skipped or repeated input',
-    async (kind) => {
-      const lane = createLane(kind);
-      const seen: string[] = [];
-      const sizes: number[] = [];
-      for (let turn = 0; turn < 10; turn += 1) {
-        const before = lane.followUpCount();
-        const batch = await lane.round();
-        if (!batch) break;
-        sizes.push(batch.length);
-        seen.push(...batch.map((message) => message.id));
-        // A follow-up turn is requested exactly while input remains.
-        expect(lane.followUpCount() - before).toBe(
-          seen.length < BACKLOG ? 1 : 0,
-        );
-      }
+  test('consumed in bounded turns with no skipped or repeated input', async () => {
+    const lane = createLane();
+    const seen: string[] = [];
+    const sizes: number[] = [];
+    for (let turn = 0; turn < 10; turn += 1) {
+      const before = lane.followUpCount();
+      const batch = await lane.round();
+      if (!batch) break;
+      sizes.push(batch.length);
+      seen.push(...batch.map((message) => message.id));
+      // A follow-up turn is requested exactly while input remains.
+      expect(lane.followUpCount() - before).toBe(seen.length < BACKLOG ? 1 : 0);
+    }
 
-      expect(sizes).toEqual([
-        db.MAX_TURN_INPUT_MESSAGES,
-        db.MAX_TURN_INPUT_MESSAGES,
-        BACKLOG - 2 * db.MAX_TURN_INPUT_MESSAGES,
-      ]);
-      expect(new Set(seen).size).toBe(seen.length);
-      expect(seen).toEqual(
-        Array.from(
-          { length: BACKLOG },
-          (_, index) => `${lane.jid}/in-${index}`,
-        ),
-      );
-      expect(lane.globals.lastCommittedCursor[lane.jid]).toMatchObject({
-        id: `${lane.jid}/in-${BACKLOG - 1}`,
-      });
-      // Once drained, a further check takes nothing.
-      expect(await lane.round()).toBeNull();
-    },
-  );
+    expect(sizes).toEqual([
+      db.MAX_TURN_INPUT_MESSAGES,
+      db.MAX_TURN_INPUT_MESSAGES,
+      BACKLOG - 2 * db.MAX_TURN_INPUT_MESSAGES,
+    ]);
+    expect(new Set(seen).size).toBe(seen.length);
+    expect(seen).toEqual(
+      Array.from({ length: BACKLOG }, (_, index) => `${lane.jid}/in-${index}`),
+    );
+    expect(lane.globals.lastCommittedCursor[lane.jid]).toMatchObject({
+      id: `${lane.jid}/in-${BACKLOG - 1}`,
+    });
+    // Once drained, a further check takes nothing.
+    expect(await lane.round()).toBeNull();
+  });
 });

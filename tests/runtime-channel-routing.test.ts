@@ -15,7 +15,7 @@ import { hasUnfinishedProactiveOutput } from '../src/turn-outcome.js';
 import { getChannelType } from '../src/im-channel.js';
 import { channelTurnScope } from '../src/channel-turn-registry.js';
 import { createRuntimeSourceHarness } from './helpers/runtime-source.js';
-import type { NewMessage, MessageCursor } from '../src/types.js';
+import type { NewMessage } from '../src/types.js';
 
 const paths = vi.hoisted(() => ({ root: '' }));
 vi.mock('../src/config.js', async (importOriginal) => {
@@ -37,9 +37,7 @@ vi.mock('../src/logger.js', () => ({
 }));
 
 const db = await import('../src/db.js');
-const { GroupQueue } = await import('../src/group-queue.js');
 const { stripAgentInternalTags } = await import('../src/utils.js');
-const EMPTY_CURSOR: MessageCursor = { timestamp: '', id: '' };
 const OLD_IM = 'feishu:previous';
 
 beforeAll(() => db.initDatabase());
@@ -48,9 +46,9 @@ afterAll(() => {
   fs.rmSync(paths.root, { recursive: true, force: true });
 });
 
-function makeOutputRuntime(lane: 'main' | 'session') {
+function makeOutputRuntime() {
   const chatJid = `web:routing-${crypto.randomUUID()}`;
-  const virtualChatJid = lane === 'main' ? chatJid : `${chatJid}#agent:session`;
+  const virtualChatJid = `${chatJid}#agent:session`;
   const inputId = 'warm-web-input';
   const scopeByInput = new Map();
   const admissions = new Map([[inputId, { imJid: null }]]);
@@ -196,23 +194,19 @@ function makeOutputRuntime(lane: 'main' | 'session') {
   harness.install('sendMessageWithOutcome');
   harness.install('sendSystemMessage');
   harness.install('deliverProactiveTailInterruptionNotice');
-  harness.install('notifyProactiveTailInterruption', 'processGroupMessages');
   harness.install(
     'notifyProactiveAgentTailInterruption',
     'processAgentConversation',
   );
-  harness.install('channelScopeForOutput', 'processGroupMessages');
   harness.install('agentScopeForOutput', 'processAgentConversation');
-  harness.install('activateMainProjectionForInput', 'processGroupMessages');
   harness.install(
     'activateAgentProjectionForInput',
     'processAgentConversation',
   );
   harness.install('handleAgentOutput', 'processAgentConversation');
-  harness.installMainOutput();
-  const emit = globals[
-    lane === 'main' ? 'handleMainOutput' : 'handleAgentOutput'
-  ] as (output: Record<string, unknown>) => Promise<void>;
+  const emit = globals.handleAgentOutput as (
+    output: Record<string, unknown>,
+  ) => Promise<void>;
   return {
     globals,
     harness,
@@ -241,281 +235,132 @@ function finalOutput(
 }
 
 describe('actual runtime callbacks preserve per-input reply destinations', () => {
-  test.each(['main', 'session'] as const)(
-    '%s persists a warm Web final after an IM input, without sending it to IM',
-    async (lane) => {
-      const fixture = makeOutputRuntime(lane);
-      await fixture.emit(finalOutput(fixture.inputId));
-      const rows = db.getMessagesForTurn(
-        fixture.virtualChatJid,
-        fixture.inputId,
-      );
-      expect(rows).toHaveLength(1);
-      expect(rows[0]).toMatchObject({
-        content: 'Answer to the Web follow-up.',
-        source_kind: 'sdk_final',
-        finalization_reason: 'completed',
-        is_from_me: true,
-      });
-      expect(
-        db.getMessagesForTurn(fixture.virtualChatJid, 'initial-im-input'),
-      ).toEqual([]);
-      expect(fixture.sendImWithRetry).not.toHaveBeenCalled();
-      expect(fixture.broadcastNewMessage).toHaveBeenCalledWith(
-        fixture.virtualChatJid,
-        expect.objectContaining({
-          content: rows[0].content,
-          turn_id: fixture.inputId,
-        }),
-        ...(lane === 'main' ? [undefined, undefined] : ['session']),
-      );
-      expect(fixture.commitCursor).toHaveBeenCalledWith(fixture.inputId);
-      expect(fixture.globals.hadError).toBe(false);
-      // A side conversation's completed turn refreshes its context ring.
-      if (lane === 'session') {
-        expect(fixture.globals.broadcastContextUsage).toHaveBeenCalledWith(
-          'routing-fixture',
-          'session',
-        );
-      }
-    },
-  );
-
-  test.each(['main', 'session'] as const)(
-    '%s keeps a late initial IM final on its own scope after Web admission',
-    async (lane) => {
-      const fixture = makeOutputRuntime(lane);
-      const inputId = 'initial-im-input';
-      fixture.globals.replySourceImJid = null;
-      fixture.globals.channelOutboxScopesByInput.set(inputId, {
-        sourceJid: OLD_IM,
-        token: 'initial-scope',
-        turnRunId: 'initial-run',
-      });
-      fixture.globals.turnOutputCoordinators.set(
-        inputId,
-        new TurnOutputCoordinator(),
-      );
-      await fixture.emit(finalOutput(inputId, 'Delayed IM answer.'));
-      expect(db.getMessagesForTurn(fixture.virtualChatJid, inputId)).toEqual([
-        expect.objectContaining({ content: 'Delayed IM answer.' }),
-      ]);
-      expect(fixture.sendImWithRetry).toHaveBeenCalledExactlyOnceWith(
-        OLD_IM,
-        'Delayed IM answer.',
-        [],
-        expect.objectContaining({ scopeToken: 'initial-scope' }),
-      );
-      expect(fixture.commitCursor).toHaveBeenCalledWith(inputId);
-      expect(fixture.globals.hadError).toBe(false);
-    },
-  );
-
-  test.each(['main', 'session'] as const)(
-    '%s still sends the final IM answer after a held background-task progress reply',
-    async (lane) => {
-      const fixture = makeOutputRuntime(lane);
-      const inputId = 'initial-im-input';
-      fixture.globals.replySourceImJid = null;
-      fixture.globals.channelOutboxScopesByInput.set(inputId, {
-        sourceJid: OLD_IM,
-        token: 'initial-scope',
-        turnRunId: 'initial-run',
-      });
-      fixture.globals.turnOutputCoordinators.set(
-        inputId,
-        new TurnOutputCoordinator(),
-      );
-      await fixture.emit({
-        status: 'success',
-        result: 'Started a background search.',
-        sourceKind: 'sdk_final',
-        finalizationReason: 'completed',
-        pendingBgTasks: 1,
-        inputTurnId: inputId,
-        sdkMessageUuid: 'sdk-held',
-      });
-      await fixture.emit(finalOutput(inputId, 'Found 16 remote roles.'));
-      expect(fixture.sendImWithRetry).toHaveBeenCalledTimes(2);
-      expect(fixture.sendImWithRetry).toHaveBeenLastCalledWith(
-        OLD_IM,
-        'Found 16 remote roles.',
-        [],
-        expect.objectContaining({ scopeToken: 'initial-scope' }),
-      );
-      expect(fixture.commitCursor).toHaveBeenCalledWith(inputId);
-      expect(fixture.globals.hadError).toBe(false);
-    },
-  );
-
-  test.each(['main', 'session'] as const)(
-    '%s does not persist or acknowledge a Web input whose admission was rejected',
-    async (lane) => {
-      const fixture = makeOutputRuntime(lane);
-      fixture.globals.rejectedChannelInputTurns.add(fixture.inputId);
-      fixture.globals.rejectedAgentInputTurns.add(fixture.inputId);
-      await fixture.emit(finalOutput(fixture.inputId));
-      expect(
-        db.getMessagesForTurn(fixture.virtualChatJid, fixture.inputId),
-      ).toEqual([]);
-      expect(fixture.broadcastNewMessage).not.toHaveBeenCalled();
-      expect(fixture.sendImWithRetry).not.toHaveBeenCalled();
-      expect(fixture.commitCursor).not.toHaveBeenCalled();
-      expect(fixture.globals.hadError).toBe(true);
-    },
-  );
-
-  test.each(['main', 'session'] as const)(
-    '%s persists a Proactive Web tail failure locally without notifying the previous IM',
-    async (lane) => {
-      const fixture = makeOutputRuntime(lane);
-      const { globals, inputId } = fixture;
-      globals.interactionMode = 'proactive';
-      globals.channelPhysicalDeliveryAckByInput.set(inputId, true);
-      globals.agentPhysicalDeliveryAckByInput.set(inputId, true);
-      const notify =
-        globals[
-          lane === 'main'
-            ? 'notifyProactiveTailInterruption'
-            : 'notifyProactiveAgentTailInterruption'
-        ];
-      expect(await notify(inputId)).toBe(true);
-      expect(await notify(inputId)).toBe(false);
-      expect(db.getMessagesPage(fixture.virtualChatJid)).toEqual([
-        expect.objectContaining({
-          sender: '__system__',
-          content: `proactive_interrupted:${interactionRuntime.PROACTIVE_TAIL_INTERRUPTION_NOTICE}`,
-        }),
-      ]);
-      expect(globals.resolveDurableChannelRoute).not.toHaveBeenCalled();
-      expect(
-        globals.deliverIndependentChannelSystemNotice,
-      ).not.toHaveBeenCalled();
-    },
-  );
-});
-
-describe('actual message loop dispatches the unconsumed channel suffix', () => {
-  test('a plugin-only A prefix schedules B through GroupQueue without another arrival', async () => {
-    const chatJid = `web:batch-${crypto.randomUUID()}`;
-    const group = { folder: 'batch-fixture', executionMode: 'host' };
-    db.ensureChatExists(chatJid);
-    for (const [id, sourceJid, content] of [
-      ['a', 'feishu:a', '/inline'],
-      ['b', 'feishu:b', 'Question for B'],
-    ]) {
-      db.storeMessageDirect(
-        id,
-        chatJid,
-        'owner',
-        'Owner',
-        content,
-        `2026-09-06T00:00:0${id === 'a' ? 1 : 2}Z`,
-        false,
-        { sourceJid },
-      );
-    }
-    const queue = new GroupQueue();
-    queue.setHostModeChecker(() => true);
-    let releaseWarm!: () => void;
-    const warmFinished = new Promise<void>((resolve) => {
-      releaseWarm = resolve;
+  test('persists a warm Web final after an IM input, without sending it to IM', async () => {
+    const fixture = makeOutputRuntime();
+    await fixture.emit(finalOutput(fixture.inputId));
+    const rows = db.getMessagesForTurn(fixture.virtualChatJid, fixture.inputId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      content: 'Answer to the Web follow-up.',
+      source_kind: 'sdk_final',
+      finalization_reason: 'completed',
+      is_from_me: true,
     });
-    const received: string[][] = [];
-    let calls = 0;
-    let polls = 0;
-    const globals: Record<string, any> = {
-      ...replySource,
-      ...interactionRuntime,
-      ...channelInteraction,
-      channelConversationJid,
-      ...db,
-      getChannelType,
-      EMPTY_CURSOR,
-      registeredGroups: { [chatJid]: group },
-      messageLoopRunning: false,
-      shuttingDown: false,
-      globalMessageCursor: EMPTY_CURSOR,
-      lastAgentTimestamp: {},
-      lastCommittedCursor: {},
-      saveState: vi.fn(),
-      routerCursorPersistence: { markDirty: vi.fn() },
-      logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
-      resolveEffectiveGroup: () => ({ effectiveGroup: group }),
-      getWorkspaceInteractionMode: () => 'assistant',
-      resolveBatchChannelContext: () => null,
-      queue,
-      buildExpandContext: () => ({ executionMode: 'host' }),
-      persistPluginExpansion: vi.fn(),
-      expandMessagesIfNeeded: vi.fn(async (messages: NewMessage[]) => ({
-        toSend: [],
-        replies: messages.map((originalMsg) => ({
-          originalMsg,
-          text: 'Inline result',
-        })),
-      })),
-      sendPluginExpanderReply: vi.fn(async () => ({ acknowledged: true })),
-      clearStandaloneProcessingIndicator: vi.fn(),
-      hasEarlierPendingMessage: () => false,
-      flushDeferredOutOfBandMessages: vi.fn(),
-      flushAcknowledgedIpcForJid: vi.fn(),
-      stuckRunnerCheckCounter: 0,
-      STUCK_RUNNER_CHECK_INTERVAL_POLLS: 15,
-      POLL_INTERVAL: 1,
-      interruptibleSleep: async () => {
-        if (++polls === 2) globals.shuttingDown = true;
-      },
-    };
-    const harness = createRuntimeSourceHarness(globals);
-    for (const name of [
-      'resolveTrustedInteractionMode',
-      'selectRuntimeInteractionBatch',
-      'isCursorAfter',
-      'createIpcDeliveryTarget',
-      'advanceNextPullCursorOnly',
-      'advanceCursors',
-      'completeOutOfBandMessage',
-      'startMessageLoop',
-    ]) {
-      harness.install(name);
-    }
-    queue.setProcessMessagesFn(async (jid) => {
-      if (++calls === 1) await warmFinished;
-      else
-        received.push(
-          db
-            .getMessagesSince(
-              jid,
-              globals.lastAgentTimestamp[jid] ?? EMPTY_CURSOR,
-            )
-            .map((m) => m.id),
-        );
-      return true;
+    expect(
+      db.getMessagesForTurn(fixture.virtualChatJid, 'initial-im-input'),
+    ).toEqual([]);
+    expect(fixture.sendImWithRetry).not.toHaveBeenCalled();
+    expect(fixture.broadcastNewMessage).toHaveBeenCalledWith(
+      fixture.virtualChatJid,
+      expect.objectContaining({
+        content: rows[0].content,
+        turn_id: fixture.inputId,
+      }),
+      'session',
+    );
+    expect(fixture.commitCursor).toHaveBeenCalledWith(fixture.inputId);
+    expect(fixture.globals.hadError).toBe(false);
+    // A completed turn refreshes the session's context ring.
+    expect(fixture.globals.broadcastContextUsage).toHaveBeenCalledWith(
+      'routing-fixture',
+      'session',
+    );
+  });
+
+  test('keeps a late initial IM final on its own scope after Web admission', async () => {
+    const fixture = makeOutputRuntime();
+    const inputId = 'initial-im-input';
+    fixture.globals.replySourceImJid = null;
+    fixture.globals.channelOutboxScopesByInput.set(inputId, {
+      sourceJid: OLD_IM,
+      token: 'initial-scope',
+      turnRunId: 'initial-run',
     });
-    try {
-      queue.enqueueMessageCheck(chatJid);
-      await vi.waitFor(() => expect(calls).toBe(1));
-      await globals.startMessageLoop();
-      expect(globals.logger.error).not.toHaveBeenCalled();
-      expect(globals.globalMessageCursor.id).toBe('b');
-      expect(globals.lastCommittedCursor[chatJid].id).toBe('a');
-      expect(
-        db
-          .getMessagesSince(chatJid, globals.lastAgentTimestamp[chatJid])
-          .map((m) => m.id),
-      ).toEqual(['b']);
-      expect(
-        globals.expandMessagesIfNeeded.mock.calls.map(
-          ([messages]: [NewMessage[]]) => messages.map((m) => m.id),
-        ),
-      ).toEqual([['a']]);
-      releaseWarm();
-      await vi.waitFor(() => expect(received).toEqual([['b']]));
-      expect(calls).toBe(2);
-    } finally {
-      releaseWarm();
-      await queue.shutdown(0);
-    }
+    fixture.globals.turnOutputCoordinators.set(
+      inputId,
+      new TurnOutputCoordinator(),
+    );
+    await fixture.emit(finalOutput(inputId, 'Delayed IM answer.'));
+    expect(db.getMessagesForTurn(fixture.virtualChatJid, inputId)).toEqual([
+      expect.objectContaining({ content: 'Delayed IM answer.' }),
+    ]);
+    expect(fixture.sendImWithRetry).toHaveBeenCalledExactlyOnceWith(
+      OLD_IM,
+      'Delayed IM answer.',
+      [],
+      expect.objectContaining({ scopeToken: 'initial-scope' }),
+    );
+    expect(fixture.commitCursor).toHaveBeenCalledWith(inputId);
+    expect(fixture.globals.hadError).toBe(false);
+  });
+
+  test('still sends the final IM answer after a held background-task progress reply', async () => {
+    const fixture = makeOutputRuntime();
+    const inputId = 'initial-im-input';
+    fixture.globals.replySourceImJid = null;
+    fixture.globals.channelOutboxScopesByInput.set(inputId, {
+      sourceJid: OLD_IM,
+      token: 'initial-scope',
+      turnRunId: 'initial-run',
+    });
+    fixture.globals.turnOutputCoordinators.set(
+      inputId,
+      new TurnOutputCoordinator(),
+    );
+    await fixture.emit({
+      status: 'success',
+      result: 'Started a background search.',
+      sourceKind: 'sdk_final',
+      finalizationReason: 'completed',
+      pendingBgTasks: 1,
+      inputTurnId: inputId,
+      sdkMessageUuid: 'sdk-held',
+    });
+    await fixture.emit(finalOutput(inputId, 'Found 16 remote roles.'));
+    expect(fixture.sendImWithRetry).toHaveBeenCalledTimes(2);
+    expect(fixture.sendImWithRetry).toHaveBeenLastCalledWith(
+      OLD_IM,
+      'Found 16 remote roles.',
+      [],
+      expect.objectContaining({ scopeToken: 'initial-scope' }),
+    );
+    expect(fixture.commitCursor).toHaveBeenCalledWith(inputId);
+    expect(fixture.globals.hadError).toBe(false);
+  });
+
+  test('does not persist or acknowledge a Web input whose admission was rejected', async () => {
+    const fixture = makeOutputRuntime();
+    fixture.globals.rejectedChannelInputTurns.add(fixture.inputId);
+    fixture.globals.rejectedAgentInputTurns.add(fixture.inputId);
+    await fixture.emit(finalOutput(fixture.inputId));
+    expect(
+      db.getMessagesForTurn(fixture.virtualChatJid, fixture.inputId),
+    ).toEqual([]);
+    expect(fixture.broadcastNewMessage).not.toHaveBeenCalled();
+    expect(fixture.sendImWithRetry).not.toHaveBeenCalled();
+    expect(fixture.commitCursor).not.toHaveBeenCalled();
+    expect(fixture.globals.hadError).toBe(true);
+  });
+
+  test('persists a Proactive Web tail failure locally without notifying the previous IM', async () => {
+    const fixture = makeOutputRuntime();
+    const { globals, inputId } = fixture;
+    globals.interactionMode = 'proactive';
+    globals.channelPhysicalDeliveryAckByInput.set(inputId, true);
+    globals.agentPhysicalDeliveryAckByInput.set(inputId, true);
+    const notify = globals.notifyProactiveAgentTailInterruption;
+    expect(await notify(inputId)).toBe(true);
+    expect(await notify(inputId)).toBe(false);
+    expect(db.getMessagesPage(fixture.virtualChatJid)).toEqual([
+      expect.objectContaining({
+        sender: '__system__',
+        content: `proactive_interrupted:${interactionRuntime.PROACTIVE_TAIL_INTERRUPTION_NOTICE}`,
+      }),
+    ]);
+    expect(globals.resolveDurableChannelRoute).not.toHaveBeenCalled();
+    expect(
+      globals.deliverIndependentChannelSystemNotice,
+    ).not.toHaveBeenCalled();
   });
 });
 
@@ -575,7 +420,7 @@ describe('actual runtime mount-mode admission and resume safety', () => {
 
   test('a source-mode switch resets only its SDK namespace and preserves stored conversation history', () => {
     const folder = `resume-mode-${crypto.randomUUID()}`;
-    const jid = `web:${folder}`;
+    const jid = `web:${folder}#agent:agent-own`;
     db.ensureChatExists(jid);
     db.storeMessageDirect(
       'history',
@@ -586,125 +431,101 @@ describe('actual runtime mount-mode admission and resume safety', () => {
       '2026-09-13T00:00:00Z',
       false,
     );
-    db.setSession(folder, 'sdk-main');
-    db.setSessionInteractionMode(folder, undefined, 'proactive');
+    db.setSession(folder, 'sdk-own', 'agent-own');
+    db.setSessionInteractionMode(folder, 'agent-own', 'proactive');
     db.setSession(folder, 'sdk-agent', 'agent-sibling');
     db.setSessionInteractionMode(folder, 'agent-sibling', 'proactive');
     const globals: Record<string, any> = {
       ...db,
       ...interactionRuntime,
       ...channelInteraction,
-      sessions: { [folder]: 'sdk-main' },
       getWorkspaceInteractionMode: () => 'proactive',
       logger: { info: vi.fn() },
     };
     const harness = createRuntimeSourceHarness(globals);
     harness.install('resetSessionForInteractionModeMismatch');
-    expect(
-      globals.resetSessionForInteractionModeMismatch({ folder }, 'assistant'),
-    ).toBe(true);
-    expect(db.getSession(folder)).toBeUndefined();
-    expect(globals.sessions[folder]).toBeUndefined();
+    const reset = (mode: string) =>
+      globals.resetSessionForInteractionModeMismatch(
+        { folder },
+        mode,
+        'agent-own',
+        'conversation',
+      );
+    expect(reset('assistant')).toBe(true);
+    expect(db.getSession(folder, 'agent-own')).toBeUndefined();
     expect(db.getSession(folder, 'agent-sibling')).toBe('sdk-agent');
     expect(db.getMessagesPage(jid)[0].content).toBe('既有历史不变');
-    db.setSession(folder, 'sdk-new');
-    db.setSessionInteractionMode(folder, undefined, 'assistant');
-    expect(
-      globals.resetSessionForInteractionModeMismatch({ folder }, 'assistant'),
-    ).toBe(false);
-    expect(db.getSession(folder)).toBe('sdk-new');
-    expect(
-      globals.resetSessionForInteractionModeMismatch({ folder }, 'proactive'),
-    ).toBe(true);
+    db.setSession(folder, 'sdk-new', 'agent-own');
+    db.setSessionInteractionMode(folder, 'agent-own', 'assistant');
+    expect(reset('assistant')).toBe(false);
+    expect(db.getSession(folder, 'agent-own')).toBe('sdk-new');
+    expect(reset('proactive')).toBe(true);
     expect(db.getSession(folder, 'agent-sibling')).toBe('sdk-agent');
   });
 });
 
-test.each(['main', 'session'] as const)(
-  '%s keeps a failed final retryable after a successful held checkpoint',
-  async (lane) => {
-    const fixture = makeOutputRuntime(lane);
-    const inputId = 'initial-im-input';
-    const scopes =
-      lane === 'main'
-        ? fixture.globals.channelOutboxScopesByInput
-        : fixture.globals.agentChannelOutboxScopesByInput;
-    const physical =
-      lane === 'main'
-        ? fixture.globals.channelPhysicalDeliveryAckByInput
-        : fixture.globals.agentPhysicalDeliveryAckByInput;
-    const progress =
-      lane === 'main'
-        ? fixture.globals.channelNonTerminalDeliveryAckByInput
-        : fixture.globals.agentNonTerminalDeliveryAckByInput;
-    const genuine =
-      lane === 'main'
-        ? fixture.globals.genuineReplyDeliveredByInput
-        : fixture.globals.agentGenuineReplyDeliveredByInput;
-    const replied =
-      lane === 'main'
-        ? fixture.globals.sentReplyByInput
-        : fixture.globals.agentReplySentByInput;
-    const coordinators =
-      lane === 'main'
-        ? fixture.globals.turnOutputCoordinators
-        : fixture.globals.agentTurnOutputCoordinators;
-    fixture.globals.replySourceImJid = null;
-    scopes.set(inputId, {
-      sourceJid: OLD_IM,
-      token: 'initial-scope',
-      turnRunId: 'initial-run',
-    });
-    coordinators.set(inputId, new TurnOutputCoordinator());
-    const runtime = {
-      runId: 'initial-run',
-      markFinalizing: () => true,
-      complete: vi.fn(() => true),
-      dispose: vi.fn(),
-    };
-    Object.assign(fixture.globals, {
-      channelTurnRuntimes: new Map([[inputId, runtime]]),
-      agentChannelTurnRuntimes: new Map([[inputId, runtime]]),
-      hasUnfinishedProactiveOutput,
-      getUncertainChannelOutboxForTurn: () => undefined,
-      getDeliveredChannelOutboxForTurn: () => undefined,
-      clearProcessingIndicatorForInput: vi.fn(),
-      clearAgentProcessingIndicatorForInput: vi.fn(),
-      markMainOutputSettled: vi.fn(),
-      markAgentOutputSettled: vi.fn(),
-    });
-    fixture.harness.install(
-      lane === 'main'
-        ? 'completeChannelRuntimesForOutput'
-        : 'completeAgentChannelRuntimesForOutput',
-      lane === 'main' ? 'processGroupMessages' : 'processAgentConversation',
-    );
-    fixture.sendImWithRetry
-      .mockResolvedValueOnce(true)
-      .mockResolvedValueOnce(false)
-      .mockResolvedValueOnce(true);
-    await fixture.emit({
-      status: 'success',
-      result: 'Search running.',
-      sourceKind: 'sdk_final',
-      finalizationReason: 'completed',
-      pendingBgTasks: 1,
-      inputTurnId: inputId,
-      sdkMessageUuid: 'sdk-held',
-    });
-    expect(progress.get(inputId)).toBe(true);
-    expect(physical.get(inputId)).not.toBe(true);
-    await expect(
-      fixture.emit(finalOutput(inputId, 'Final results.')),
-    ).rejects.toThrow(/host_turn_settlement_failed/);
-    expect(genuine.get(inputId)).not.toBe(true);
-    expect(replied.get(inputId)).not.toBe(true);
-    expect(fixture.commitCursor).not.toHaveBeenCalled();
-    expect(runtime.complete).not.toHaveBeenCalled();
-    await fixture.emit(finalOutput(inputId, 'Final results.'));
-    expect(physical.get(inputId)).toBe(true);
-    expect(genuine.get(inputId)).toBe(true);
-    expect(runtime.complete).toHaveBeenCalledOnce();
-    expect(fixture.commitCursor).toHaveBeenCalledWith(inputId);
-  },
-);
+test('keeps a failed final retryable after a successful held checkpoint', async () => {
+  const fixture = makeOutputRuntime();
+  const inputId = 'initial-im-input';
+  const scopes = fixture.globals.agentChannelOutboxScopesByInput;
+  const physical = fixture.globals.agentPhysicalDeliveryAckByInput;
+  const progress = fixture.globals.agentNonTerminalDeliveryAckByInput;
+  const genuine = fixture.globals.agentGenuineReplyDeliveredByInput;
+  const replied = fixture.globals.agentReplySentByInput;
+  const coordinators = fixture.globals.agentTurnOutputCoordinators;
+  fixture.globals.replySourceImJid = null;
+  scopes.set(inputId, {
+    sourceJid: OLD_IM,
+    token: 'initial-scope',
+    turnRunId: 'initial-run',
+  });
+  coordinators.set(inputId, new TurnOutputCoordinator());
+  const runtime = {
+    runId: 'initial-run',
+    markFinalizing: () => true,
+    complete: vi.fn(() => true),
+    dispose: vi.fn(),
+  };
+  Object.assign(fixture.globals, {
+    channelTurnRuntimes: new Map([[inputId, runtime]]),
+    agentChannelTurnRuntimes: new Map([[inputId, runtime]]),
+    hasUnfinishedProactiveOutput,
+    getUncertainChannelOutboxForTurn: () => undefined,
+    getDeliveredChannelOutboxForTurn: () => undefined,
+    clearProcessingIndicatorForInput: vi.fn(),
+    clearAgentProcessingIndicatorForInput: vi.fn(),
+    markMainOutputSettled: vi.fn(),
+    markAgentOutputSettled: vi.fn(),
+  });
+  fixture.harness.install(
+    'completeAgentChannelRuntimesForOutput',
+    'processAgentConversation',
+  );
+  fixture.sendImWithRetry
+    .mockResolvedValueOnce(true)
+    .mockResolvedValueOnce(false)
+    .mockResolvedValueOnce(true);
+  await fixture.emit({
+    status: 'success',
+    result: 'Search running.',
+    sourceKind: 'sdk_final',
+    finalizationReason: 'completed',
+    pendingBgTasks: 1,
+    inputTurnId: inputId,
+    sdkMessageUuid: 'sdk-held',
+  });
+  expect(progress.get(inputId)).toBe(true);
+  expect(physical.get(inputId)).not.toBe(true);
+  await expect(
+    fixture.emit(finalOutput(inputId, 'Final results.')),
+  ).rejects.toThrow(/host_turn_settlement_failed/);
+  expect(genuine.get(inputId)).not.toBe(true);
+  expect(replied.get(inputId)).not.toBe(true);
+  expect(fixture.commitCursor).not.toHaveBeenCalled();
+  expect(runtime.complete).not.toHaveBeenCalled();
+  await fixture.emit(finalOutput(inputId, 'Final results.'));
+  expect(physical.get(inputId)).toBe(true);
+  expect(genuine.get(inputId)).toBe(true);
+  expect(runtime.complete).toHaveBeenCalledOnce();
+  expect(fixture.commitCursor).toHaveBeenCalledWith(inputId);
+});

@@ -12,6 +12,10 @@ import { resolveInputChannelReplySource } from '../src/channel-reply-source.js';
 import { channelTurnScope } from '../src/channel-turn-registry.js';
 import { getChannelType } from '../src/im-channel.js';
 import {
+  shouldSkipRetryAfterLateError,
+  wasGenuineReplyDeliveredForInput,
+} from '../src/reply-delivery.js';
+import {
   buildInteractionTextOutboxPayload,
   shouldSendProactiveTailInterruptionNotice,
 } from '../src/workspace-interaction-runtime.js';
@@ -137,285 +141,42 @@ function webSystemMessages(chatJid: string): string[] {
     .map((message) => message.content);
 }
 
-function mainLane(input: {
+function agentLane(input: {
   imSend: (...args: unknown[]) => Promise<void>;
-  replySourceImJid?: string | null;
   interactionMode?: 'assistant' | 'proactive';
 }) {
   const runtime = createNoticeRuntime(input.imSend);
-  const chatJid = `web:terminal-${crypto.randomUUID()}`;
+  const virtualChatJid = `web:agent-${crypto.randomUUID()}#agent:session`;
   const inputTurnId = `input-${crypto.randomUUID()}`;
   Object.assign(runtime.globals, {
-    chatJid,
+    virtualChatJid,
+    agentId: 'session',
     effectiveGroup: { folder: `folder-${crypto.randomUUID()}` },
     interactionMode: input.interactionMode ?? 'assistant',
-    replySourceImJid:
-      input.replySourceImJid === undefined
-        ? TELEGRAM_JID
-        : input.replySourceImJid,
-    ipcReplyTurnTracker: { inputTurnId, delivered: false },
+    replySourceImJid: TELEGRAM_JID,
+    activeAgentInputTurnId: inputTurnId,
     lastProcessed: { id: inputTurnId, timestamp: '2026-09-25T00:00:00.000Z' },
     cursorCommittedInputTurns: new Set<string>(),
-    proactiveTailNoticesDelivered: new Set<string>(),
-    settleCurrentAutomationRun: vi.fn(),
-    clearProcessingIndicatorForInput: vi.fn(async () => {}),
-    // A settled turn closes the progress a failed attempt left (none here).
-    turnTraces: new TurnTraceTracker({
-      mode: input.interactionMode ?? 'assistant',
-      getVisibility: () => 'full',
-      store: () => {},
-    }),
-    proactiveProgressCarry: new ProactiveProgressCarry(),
-    missedMessages: [{ id: inputTurnId }],
+    agentDeterministicTerminalError: null,
+    agentConfigFailureSettled: false,
+    retryUnfinishedTurn: true,
+    chatJid: virtualChatJid,
+    agentPhysicalDeliveryAckByInput: new Map<string, boolean>(),
+    healthyAgentCompletedInputTurns: new Set<string>(),
+    clearAgentProcessingIndicatorForInput: vi.fn(async () => {}),
   });
   for (const name of [
+    'isCursorCommitted',
     'commitCursor',
-    'takeCarriedProgress',
-    'persistProactiveTurnTrace',
-    'keepProactiveProgress',
-    'settleDeterministicFailure',
+    'settleAgentDeterministicFailure',
+    'settleAgentConfigFailure',
   ]) {
-    runtime.harness.install(name, 'processGroupMessages');
+    runtime.harness.install(name, 'processAgentConversation');
   }
-  return {
-    ...runtime,
-    chatJid,
-    inputTurnId,
-    settle: runtime.globals.settleDeterministicFailure as (
-      noticeKey: string,
-      webType: string,
-      text: string,
-      runError?: string,
-    ) => Promise<boolean>,
-  };
+  return { ...runtime, virtualChatJid, inputTurnId };
 }
 
-describe('processGroupMessages deterministic failure settlement', () => {
-  test('commits, records Web and sends the channel notice once', async () => {
-    const lane = mainLane({ imSend: async () => {} });
-
-    await expect(
-      lane.settle('context-overflow', 'context_overflow', 'Context too long'),
-    ).resolves.toBe(true);
-
-    expect(lane.advanceCursors).toHaveBeenCalledTimes(1);
-    expect(webSystemMessages(lane.chatJid)).toEqual([
-      'context_overflow:Context too long',
-    ]);
-    expect(lane.imManager.sendMessage).toHaveBeenCalledTimes(1);
-    expect(lane.imManager.sendMessage).toHaveBeenCalledWith(
-      TELEGRAM_JID,
-      'Context too long',
-      [],
-      expect.not.objectContaining({ presentation: 'native' }),
-    );
-    expect(lane.globals.clearProcessingIndicatorForInput).toHaveBeenCalledWith(
-      lane.inputTurnId,
-    );
-  });
-
-  test('a rejected notice still commits the input and keeps the Web record', async () => {
-    const lane = mainLane({
-      imSend: async () => {
-        throw new DefinitiveChannelDeliveryError('bot was blocked by the user');
-      },
-    });
-
-    // true resolves the GroupQueue attempt: no backoff replay of the Agent.
-    await expect(
-      lane.settle(
-        'agent-profile-unavailable',
-        'system_error',
-        'Skill foo is disabled',
-      ),
-    ).resolves.toBe(true);
-
-    expect(lane.imManager.sendMessage).toHaveBeenCalledTimes(1);
-    expect(lane.advanceCursors).toHaveBeenCalledTimes(1);
-    expect(lane.globals.cursorCommittedInputTurns.has(lane.inputTurnId)).toBe(
-      true,
-    );
-    // The refused notice closes its own Turn: nothing reclaims `retry_wait`.
-    const noticeRunId = `turn_${crypto
-      .createHash('sha256')
-      .update(
-        [
-          'channel-turn-v1',
-          'telegram',
-          'tg-bot',
-          `${lane.inputTurnId}:system-notice:agent-profile-unavailable`,
-          'main',
-        ].join(':'),
-      )
-      .digest('hex')
-      .slice(0, 32)}`;
-    expect(reliability.getChannelTurnRun(noticeRunId)?.status).toBe('failed');
-    expect(webSystemMessages(lane.chatJid)).toEqual([
-      'system_error:Skill foo is disabled',
-    ]);
-    expect(lane.logger.warn).toHaveBeenCalledWith(
-      expect.objectContaining({ noticeKey: 'agent-profile-unavailable' }),
-      expect.stringContaining('not delivered'),
-    );
-  });
-
-  test('a transcript reset after a delivered reply is not replayed when the notice fails', async () => {
-    const lane = mainLane({
-      imSend: async () => {
-        throw new DefinitiveChannelDeliveryError('message thread not found');
-      },
-    });
-    // The input's own Turn already completed with a delivered reply; replaying
-    // it would run the Agent again and send a second reply.
-    const route = parseChannelAddress(TELEGRAM_JID)!;
-    const replyTurn = ChannelTurnRuntime.start({
-      provider: route.provider,
-      accountId: route.channelAccountId!,
-      sourceJid: TELEGRAM_JID,
-      chatId: route.externalChatId,
-      externalMessageId: lane.inputTurnId,
-    });
-    expect(replyTurn.markFinalizing() && replyTurn.complete()).toBe(true);
-    replyTurn.dispose();
-
-    await expect(
-      lane.settle(
-        'unrecoverable-transcript',
-        'context_reset',
-        '会话已自动重置：bad image',
-        '无法恢复的会话记录错误：bad image',
-      ),
-    ).resolves.toBe(true);
-
-    // The independent notice Turn is not blocked by the completed reply Turn.
-    expect(lane.imManager.sendMessage).toHaveBeenCalledTimes(1);
-    expect(lane.advanceCursors).toHaveBeenCalledTimes(1);
-    expect(lane.globals.settleCurrentAutomationRun).toHaveBeenCalledWith({
-      status: 'failed',
-      error: '无法恢复的会话记录错误：bad image',
-    });
-    expect(webSystemMessages(lane.chatJid)).toEqual([
-      'context_reset:会话已自动重置：bad image',
-    ]);
-  });
-
-  test('an unroutable channel (unbound account) settles without a send', async () => {
-    const lane = mainLane({
-      imSend: async () => {},
-      replySourceImJid: 'telegram:legacy-without-account',
-    });
-
-    await expect(
-      lane.settle('context-budget', 'context_overflow', 'Prompt too large'),
-    ).resolves.toBe(true);
-
-    expect(lane.imManager.sendMessage).not.toHaveBeenCalled();
-    expect(lane.advanceCursors).toHaveBeenCalledTimes(1);
-    expect(webSystemMessages(lane.chatJid)).toEqual([
-      'context_overflow:Prompt too large',
-    ]);
-  });
-
-  test('proactive workspaces send the notice with native presentation', async () => {
-    const lane = mainLane({
-      imSend: async () => {},
-      interactionMode: 'proactive',
-    });
-
-    await lane.settle('oom-context-reset', 'context_reset', 'OOM reset');
-
-    expect(lane.imManager.sendMessage).toHaveBeenCalledWith(
-      TELEGRAM_JID,
-      'OOM reset',
-      [],
-      expect.objectContaining({ presentation: 'native' }),
-    );
-  });
-
-  test('a proactive turn that a failed attempt left progress for closes with one note when no attempt follows', async () => {
-    const lane = mainLane({
-      imSend: async () => {},
-      replySourceImJid: null,
-      interactionMode: 'proactive',
-    });
-    const notes: string[] = [];
-    Object.assign(lane.globals, {
-      sendMessage: vi.fn(async (_jid: string, text: string) => {
-        notes.push(text);
-        return 'note-1';
-      }),
-      resolveIpcOutputWorkspaceJid: () => null,
-      getLastAgentMessageIdForTurn: () => undefined,
-      announceTurnTrace: vi.fn(),
-      excludeMessageFromHistoryRecovery: vi.fn(),
-      activeSessionId: 'sdk-session',
-      proactiveClosingNote,
-      // The queue would retry, but this failure is settled for good.
-      queue: { willRetryAfterFailure: () => true },
-      admittedWarmMainInputs: new Map(),
-    });
-    lane.globals.proactiveProgressCarry.hold(lane.chatJid, lane.inputTurnId, [
-      { at: 1_000, text: '先看日志' },
-    ]);
-
-    await lane.settle('context-overflow', 'context_overflow', '上下文溢出');
-
-    expect(notes).toEqual([proactiveClosingNote('failed')]);
-  });
-
-  test('a delivered proactive tail notice is not followed by a second channel notice', async () => {
-    const lane = mainLane({
-      imSend: async () => {},
-      interactionMode: 'proactive',
-    });
-    lane.globals.proactiveTailNoticesDelivered.add(lane.inputTurnId);
-
-    await expect(
-      lane.settle('unrecoverable-transcript', 'context_reset', 'reset'),
-    ).resolves.toBe(true);
-
-    expect(lane.imManager.sendMessage).not.toHaveBeenCalled();
-    expect(webSystemMessages(lane.chatJid)).toEqual(['context_reset:reset']);
-    expect(lane.advanceCursors).toHaveBeenCalledTimes(1);
-  });
-});
-
 describe('processAgentConversation deterministic failure settlement', () => {
-  function agentLane(input: {
-    imSend: (...args: unknown[]) => Promise<void>;
-    interactionMode?: 'assistant' | 'proactive';
-  }) {
-    const runtime = createNoticeRuntime(input.imSend);
-    const virtualChatJid = `web:agent-${crypto.randomUUID()}#agent:session`;
-    const inputTurnId = `input-${crypto.randomUUID()}`;
-    Object.assign(runtime.globals, {
-      virtualChatJid,
-      agentId: 'session',
-      effectiveGroup: { folder: `folder-${crypto.randomUUID()}` },
-      interactionMode: input.interactionMode ?? 'assistant',
-      replySourceImJid: TELEGRAM_JID,
-      activeAgentInputTurnId: inputTurnId,
-      lastProcessed: { id: inputTurnId, timestamp: '2026-09-25T00:00:00.000Z' },
-      cursorCommittedInputTurns: new Set<string>(),
-      agentDeterministicTerminalError: null,
-      agentConfigFailureSettled: false,
-      retryUnfinishedTurn: true,
-      chatJid: virtualChatJid,
-      agentPhysicalDeliveryAckByInput: new Map<string, boolean>(),
-      healthyAgentCompletedInputTurns: new Set<string>(),
-      clearAgentProcessingIndicatorForInput: vi.fn(async () => {}),
-    });
-    for (const name of [
-      'isCursorCommitted',
-      'commitCursor',
-      'settleAgentDeterministicFailure',
-      'settleAgentConfigFailure',
-    ]) {
-      runtime.harness.install(name, 'processAgentConversation');
-    }
-    return { ...runtime, virtualChatJid, inputTurnId };
-  }
-
   test('a rejected notice still fails the Turn durably and commits', async () => {
     const lane = agentLane({
       imSend: async () => {
@@ -491,12 +252,188 @@ describe('processAgentConversation deterministic failure settlement', () => {
       'context_reset:reset',
     ]);
   });
+  test('proactive sessions send the notice with native presentation', async () => {
+    const lane = agentLane({
+      imSend: async () => {},
+      interactionMode: 'proactive',
+    });
+
+    await lane.globals.settleAgentDeterministicFailure(
+      'oom-context-reset',
+      'context_reset',
+      'OOM reset',
+      'OOM reset',
+    );
+
+    expect(lane.imManager.sendMessage).toHaveBeenCalledWith(
+      TELEGRAM_JID,
+      'OOM reset',
+      [],
+      expect.objectContaining({ presentation: 'native' }),
+    );
+  });
+
+  test('an unroutable channel (unbound account) settles without a send', async () => {
+    const lane = agentLane({ imSend: async () => {} });
+    lane.globals.replySourceImJid = 'telegram:legacy-without-account';
+
+    await lane.globals.settleAgentDeterministicFailure(
+      'context-budget',
+      'context_overflow',
+      'Prompt too large',
+      'Prompt too large',
+    );
+
+    expect(lane.imManager.sendMessage).not.toHaveBeenCalled();
+    expect(lane.advanceCursors).toHaveBeenCalledTimes(1);
+    expect(webSystemMessages(lane.virtualChatJid)).toEqual([
+      'context_overflow:Prompt too large',
+    ]);
+  });
+});
+
+describe('processAgentConversation error exits (Assistant mode)', () => {
+  test('the lane takes the retry decision from the error exit', () => {
+    const source = fs.readFileSync('src/index.ts', 'utf8');
+    const lane = source.slice(
+      source.indexOf('async function processAgentConversation('),
+      source.indexOf('async function startRunnerSupervisor('),
+    );
+    expect(lane).toMatch(
+      /\) \{\n\s+retryUnfinishedTurn = await settleAgentErrorExit\(\n\s+output\.error \|\| lastError \|\| '未知错误',\n\s+\);\n\s+\} else if \(!errorExit\) \{\n\s+clearSessionOomExits\(oomKey\);/,
+    );
+    // A retried turn is reported as not done, so the queue runs it again.
+    expect(lane).toMatch(/\n {2}return !retryUnfinishedTurn;\n\}/);
+  });
+
+  function errorLane(options: { retryCount?: number; stopped?: boolean } = {}) {
+    const lane = agentLane({ imSend: async () => {} });
+    const queue = {
+      isRecentlyStopped: () => options.stopped === true,
+      willRetryAfterFailure: () => (options.retryCount ?? 0) < 5,
+      getRetryCount: () => options.retryCount ?? 0,
+    };
+    Object.assign(lane.globals, {
+      queue,
+      virtualJid: lane.virtualChatJid,
+      currentAgentSessionId: 'sdk-session',
+      agentGenuineReplyDeliveredByInput: new Map<string, boolean>(),
+      agentIpcReplyTracker: { inputTurnId: lane.inputTurnId, delivered: false },
+      broadcastStreamEvent: vi.fn(),
+      shouldSkipRetryAfterLateError,
+      wasGenuineReplyDeliveredForInput,
+      clearSessionRuntimeFiles: vi.fn(async () => {}),
+      deleteSession: vi.fn(),
+      OOM_EXIT_RE: /code 137/,
+      OOM_AUTO_RESET_THRESHOLD: 2,
+      consecutiveOomExits: {},
+      oomKey: 'folder#session',
+      setRouterState: db.setRouterState,
+      deleteRouterState: db.deleteRouterState,
+    });
+    lane.harness.install('recordSessionOomExit');
+    lane.harness.install('clearSessionOomExits');
+    lane.harness.install('settleAgentErrorExit', 'processAgentConversation');
+    const exit = (error: string) =>
+      lane.globals.settleAgentErrorExit(error) as Promise<boolean>;
+    return { ...lane, exit };
+  }
+
+  test('a failure with no reply retries quietly while retries remain', async () => {
+    const lane = errorLane();
+
+    await expect(lane.exit('upstream 500')).resolves.toBe(true);
+
+    expect(lane.advanceCursors).not.toHaveBeenCalled();
+    expect(webSystemMessages(lane.virtualChatJid)).toEqual([]);
+    // The Web stops waiting during the backoff.
+    expect(lane.globals.broadcastStreamEvent).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ eventType: 'status', statusText: 'idle' }),
+      'session',
+    );
+  });
+
+  test('the last attempt tells the session about the error and still retries', async () => {
+    const lane = errorLane({ retryCount: 5 });
+
+    await expect(lane.exit('upstream 500')).resolves.toBe(true);
+
+    expect(webSystemMessages(lane.virtualChatJid)).toEqual([
+      'agent_error:upstream 500',
+    ]);
+    expect(lane.advanceCursors).not.toHaveBeenCalled();
+  });
+
+  test('a late error after a delivered answer commits instead of answering twice', async () => {
+    for (const via of ['final', 'send_message'] as const) {
+      const lane = errorLane();
+      if (via === 'final') {
+        lane.globals.agentGenuineReplyDeliveredByInput.set(
+          lane.inputTurnId,
+          true,
+        );
+      } else {
+        lane.globals.agentIpcReplyTracker.delivered = true;
+      }
+
+      await expect(lane.exit('runner exited'), via).resolves.toBe(false);
+
+      expect(lane.advanceCursors, via).toHaveBeenCalledTimes(1);
+      expect(webSystemMessages(lane.virtualChatJid), via).toEqual([]);
+    }
+  });
+
+  test('prompt budget and context overflow settle once and never replay', async () => {
+    for (const [error, notice] of [
+      ['context_budget_exceeded: 提示词过大', 'context_overflow:提示词过大'],
+      ['prompt_plan_invalid: 计划无效', 'context_overflow:计划无效'],
+      ['context_overflow: 上下文太长', 'context_overflow:上下文太长'],
+    ] as const) {
+      const lane = errorLane();
+
+      await expect(lane.exit(error), error).resolves.toBe(false);
+
+      expect(lane.advanceCursors, error).toHaveBeenCalledTimes(1);
+      expect(webSystemMessages(lane.virtualChatJid), error).toEqual([notice]);
+      expect(lane.globals.agentDeterministicTerminalError, error).toBeTruthy();
+    }
+  });
+
+  test('two consecutive OOM kills reset the session; a user stop does not count', async () => {
+    const lane = errorLane();
+    await expect(lane.exit('Container exited with code 137')).resolves.toBe(
+      true,
+    );
+    expect(lane.globals.deleteSession).not.toHaveBeenCalled();
+
+    await expect(lane.exit('Container exited with code 137')).resolves.toBe(
+      false,
+    );
+    expect(lane.globals.clearSessionRuntimeFiles).toHaveBeenCalledWith(
+      lane.globals.effectiveGroup.folder,
+      'session',
+    );
+    expect(lane.globals.deleteSession).toHaveBeenCalledWith(
+      lane.globals.effectiveGroup.folder,
+      'session',
+    );
+    expect(webSystemMessages(lane.virtualChatJid)).toEqual([
+      'context_reset:会话文件过大导致内存溢出（OOM），已自动重置会话。之前的对话上下文已清除，请重新描述您的需求。',
+    ]);
+
+    const stopped = errorLane({ stopped: true });
+    await stopped.exit('Container exited with code 137');
+    await stopped.exit('Container exited with code 137');
+    expect(stopped.globals.deleteSession).not.toHaveBeenCalled();
+  });
 });
 
 describe('message retry exhaustion notice', () => {
   function exhaustion(imSend: (...args: unknown[]) => Promise<void>) {
     const runtime = createNoticeRuntime(imSend);
-    const groupJid = `web:retries-${crypto.randomUUID()}`;
+    const workspaceJid = `web:retries-${crypto.randomUUID()}`;
+    const groupJid = `${workspaceJid}#agent:retry-session`;
     const group = {
       name: 'Retry fixture',
       folder: `folder-${crypto.randomUUID()}`,
@@ -514,7 +451,14 @@ describe('message retry exhaustion notice', () => {
       { sourceJid: TELEGRAM_JID },
     );
     Object.assign(runtime.globals, {
-      registeredGroups: { [groupJid]: group },
+      registeredGroups: { [workspaceJid]: group },
+      stripVirtualJidSuffix: (jid: string) => jid.split('#agent:')[0],
+      getAgent: (id: string) =>
+        id === 'retry-session'
+          ? { id, name: 'Retry session', chat_jid: workspaceJid }
+          : undefined,
+      settleAutomationRun: vi.fn(),
+      automationRunIdOf: () => null,
       getAgentBuilderInputMessage: db.getAgentBuilderInputMessage,
       resolveEffectiveGroup: (value: unknown) => ({ effectiveGroup: value }),
       resolveTrustedInteractionMode: () => 'assistant',
@@ -547,8 +491,8 @@ describe('message retry exhaustion notice', () => {
 
     expect(lane.imManager.sendMessage).toHaveBeenCalledTimes(2);
     expect(webSystemMessages(lane.groupJid)).toEqual([
-      'agent_max_retries:Retry fixture 处理失败，已达最大重试次数',
-      'agent_max_retries:Retry fixture 处理失败，已达最大重试次数',
+      'agent_max_retries:Retry session 处理失败，已达最大重试次数',
+      'agent_max_retries:Retry session 处理失败，已达最大重试次数',
     ]);
   });
 
@@ -561,7 +505,7 @@ describe('message retry exhaustion notice', () => {
 
     expect(lane.imManager.sendMessage).toHaveBeenCalledTimes(1);
     expect(webSystemMessages(lane.groupJid)).toEqual([
-      'agent_max_retries:Retry fixture 处理失败，已达最大重试次数',
+      'agent_max_retries:Retry session 处理失败，已达最大重试次数',
     ]);
     expect(lane.globals.clearTrackedProcessingIndicators).toHaveBeenCalledWith(
       lane.groupJid,

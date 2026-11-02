@@ -57,7 +57,7 @@ describe('stuck runner recovery policy', () => {
     expect(
       decideStuckRunnerRecovery(
         ipcCandidate({
-          reason: 'pending_messages',
+          reason: 'pending_tasks',
           idleMs: FORCE_RESTART_MS,
           ipcOwedMs: null,
         }),
@@ -91,7 +91,7 @@ describe('stuck runner recovery policy', () => {
     expect(
       decideStuckRunnerRecovery(
         ipcCandidate({
-          reason: 'pending_messages',
+          reason: 'pending_tasks',
           runtime: 'container',
           idleMs: FORCE_RESTART_MS,
           ipcOwedMs: null,
@@ -158,7 +158,7 @@ describe('stuck runner recovery policy', () => {
   test('container pending-message recovery gets the same 3m grace', () => {
     const pending: Candidate = {
       ...ipcCandidate(),
-      reason: 'pending_messages',
+      reason: 'pending_tasks',
       runtime: 'container',
       ipcOwedMs: null,
     };

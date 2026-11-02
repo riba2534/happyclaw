@@ -59,7 +59,9 @@ describe('pruneProcessedHistoryImagesInTranscriptContent', () => {
         text: `${PRUNED_HISTORY_IMAGE_MARKER} [图片: downloads/old.png]`,
       },
     ]);
-    expect(entries[2].message.content[1]).toEqual(makeImageBlock('latest-base64'));
+    expect(entries[2].message.content[1]).toEqual(
+      makeImageBlock('latest-base64'),
+    );
   });
 
   test('幂等，第二次执行不再修改 transcript', () => {
@@ -72,7 +74,10 @@ describe('pruneProcessedHistoryImagesInTranscriptContent', () => {
           content: [
             { type: 'text', text: '历史图片' },
             { type: 'text', text: '[历史图片已归档 2026-04-14 02:03]' },
-            { type: 'text', text: '[image data removed - already processed by model (640×480 image/png)]' },
+            {
+              type: 'text',
+              text: '[image data removed - already processed by model (640×480 image/png)]',
+            },
           ],
         },
       }),
@@ -86,12 +91,18 @@ describe('pruneProcessedHistoryImagesInTranscriptContent', () => {
       }),
     ].join('\n');
 
-    const firstRun = pruneProcessedHistoryImagesInTranscriptContent(transcript, {
-      getImageDimensions: () => ({ width: 640, height: 480 }),
-    });
-    const secondRun = pruneProcessedHistoryImagesInTranscriptContent(firstRun.content, {
-      getImageDimensions: () => ({ width: 640, height: 480 }),
-    });
+    const firstRun = pruneProcessedHistoryImagesInTranscriptContent(
+      transcript,
+      {
+        getImageDimensions: () => ({ width: 640, height: 480 }),
+      },
+    );
+    const secondRun = pruneProcessedHistoryImagesInTranscriptContent(
+      firstRun.content,
+      {
+        getImageDimensions: () => ({ width: 640, height: 480 }),
+      },
+    );
 
     expect(firstRun.didMutate).toBe(false);
     expect(secondRun.didMutate).toBe(false);
@@ -231,7 +242,11 @@ describe('pruneProcessedHistoryImagesInTranscriptContent', () => {
     const entries = result.content.split('\n').map((line) => JSON.parse(line));
 
     expect(result.didMutate).toBe(false);
-    expect(entries[0].message.content[1]).toEqual(makeImageBlock('assistant-image'));
-    expect(entries[1].message.content[1]).toEqual(makeImageBlock('latest-user-image'));
+    expect(entries[0].message.content[1]).toEqual(
+      makeImageBlock('assistant-image'),
+    );
+    expect(entries[1].message.content[1]).toEqual(
+      makeImageBlock('latest-user-image'),
+    );
   });
 });

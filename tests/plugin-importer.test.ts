@@ -119,7 +119,9 @@ describe('hashDirectoryContents', () => {
       fs.mkdirSync(path.join(b, 'node_modules', 'foo'), { recursive: true });
       fs.writeFileSync(path.join(b, 'node_modules', 'foo', 'pkg.js'), 'x');
 
-      expect(await hashDirectoryContents(a)).toBe(await hashDirectoryContents(b));
+      expect(await hashDirectoryContents(a)).toBe(
+        await hashDirectoryContents(b),
+      );
     } finally {
       fs.rmSync(a, { recursive: true, force: true });
       fs.rmSync(b, { recursive: true, force: true });
@@ -150,8 +152,14 @@ describe('hashDirectoryContents', () => {
     try {
       fs.writeFileSync(path.join(dir, 'small.md'), 'hello');
       fs.mkdirSync(path.join(dir, 'sub'));
-      fs.writeFileSync(path.join(dir, 'sub', 'medium.txt'), Buffer.alloc(64 * 1024, 0x42));
-      fs.writeFileSync(path.join(dir, 'large.bin'), Buffer.alloc(2 * 1024 * 1024, 0xab));
+      fs.writeFileSync(
+        path.join(dir, 'sub', 'medium.txt'),
+        Buffer.alloc(64 * 1024, 0x42),
+      );
+      fs.writeFileSync(
+        path.join(dir, 'large.bin'),
+        Buffer.alloc(2 * 1024 * 1024, 0xab),
+      );
 
       // Legacy algorithm reproduced inline. Mirrors src/plugin-importer.ts
       // pre-stream behaviour, including HASH_EXCLUDES and the
@@ -163,7 +171,12 @@ describe('hashDirectoryContents', () => {
         function walk(prefix: string) {
           const names = fs.readdirSync(path.join(rootDir, prefix));
           for (const name of names) {
-            if (name === '.git' || name === '.DS_Store' || name === 'node_modules') continue;
+            if (
+              name === '.git' ||
+              name === '.DS_Store' ||
+              name === 'node_modules'
+            )
+              continue;
             const rel = prefix ? `${prefix}/${name}` : name;
             const abs = path.join(rootDir, rel);
             const stat = fs.lstatSync(abs);
@@ -199,7 +212,10 @@ describe('hashDirectoryContents', () => {
     // hit the same code path with more iterations.
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hd-stream-'));
     try {
-      fs.writeFileSync(path.join(dir, 'big.bin'), Buffer.alloc(8 * 1024 * 1024, 0xcd));
+      fs.writeFileSync(
+        path.join(dir, 'big.bin'),
+        Buffer.alloc(8 * 1024 * 1024, 0xcd),
+      );
       const h = await hashDirectoryContents(dir);
       expect(h).toMatch(/^[0-9a-f]{64}$/);
     } finally {
@@ -219,13 +235,11 @@ describe('hashDirectoryContents', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hd-guard-'));
     try {
       fs.writeFileSync(path.join(dir, 'one.txt'), 'data');
-      const spy = vi
-        .spyOn(fs, 'createReadStream')
-        .mockImplementation(
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          ((..._args: unknown[]) =>
-            Readable.from(['this-should-be-a-buffer-but-isnt'])) as any,
-        );
+      const spy = vi.spyOn(fs, 'createReadStream').mockImplementation(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        ((..._args: unknown[]) =>
+          Readable.from(['this-should-be-a-buffer-but-isnt'])) as any,
+      );
       try {
         await expect(hashDirectoryContents(dir)).rejects.toThrow(
           /string chunk/i,
@@ -279,13 +293,11 @@ describe('scanHostMarketplaces', () => {
       snapshotId,
     );
     expect(
-      fs.existsSync(
-        path.join(snapshotDir, '.claude-plugin', 'plugin.json'),
-      ),
+      fs.existsSync(path.join(snapshotDir, '.claude-plugin', 'plugin.json')),
     ).toBe(true);
-    expect(
-      fs.existsSync(path.join(snapshotDir, 'commands', 'status.md')),
-    ).toBe(true);
+    expect(fs.existsSync(path.join(snapshotDir, 'commands', 'status.md'))).toBe(
+      true,
+    );
 
     // No leftover .tmp directories at the versions/ level.
     const versionsDir = path.dirname(snapshotDir);
@@ -330,12 +342,8 @@ describe('scanHostMarketplaces', () => {
     expect(snap1).not.toBe(snap2);
 
     // Old snapshot must still exist (immutable).
-    expect(
-      fs.existsSync(getCatalogSnapshotDir('mp1', 'p1', snap1)),
-    ).toBe(true);
-    expect(
-      fs.existsSync(getCatalogSnapshotDir('mp1', 'p1', snap2)),
-    ).toBe(true);
+    expect(fs.existsSync(getCatalogSnapshotDir('mp1', 'p1', snap1))).toBe(true);
+    expect(fs.existsSync(getCatalogSnapshotDir('mp1', 'p1', snap2))).toBe(true);
     expect(Object.keys(idx2.plugins['p1@mp1'].snapshots).sort()).toEqual(
       [snap1, snap2].sort(),
     );
@@ -408,12 +416,10 @@ describe('scanHostMarketplaces', () => {
 
     const r = await scanHostMarketplaces();
     expect(r.warnings.length).toBeGreaterThan(0);
+    expect(r.warnings.some((w) => w.includes('bad name'))).toBe(true);
     expect(
-      r.warnings.some((w) => w.includes('bad name')),
-    ).toBe(true);
-    expect(
-      r.warnings.some((w) =>
-        w.includes('noManifest') && w.includes('plugin.json'),
+      r.warnings.some(
+        (w) => w.includes('noManifest') && w.includes('plugin.json'),
       ),
     ).toBe(true);
   });
@@ -433,7 +439,10 @@ describe('scanHostMarketplaces', () => {
         name: 'mp1',
         plugins: [
           { name: 'inline-ok', source: './plugins/inline-ok' },
-          { name: 'inline-placeholder', source: './plugins/inline-placeholder' },
+          {
+            name: 'inline-placeholder',
+            source: './plugins/inline-placeholder',
+          },
           { name: 'remote-url', source: { source: 'url', url: 'https://x' } },
           {
             name: 'remote-subdir',
@@ -444,7 +453,14 @@ describe('scanHostMarketplaces', () => {
     });
     for (const name of ['inline-placeholder', 'remote-url', 'remote-subdir']) {
       fs.mkdirSync(
-        path.join(tmpHostDir, 'plugins', 'marketplaces', 'mp1', 'plugins', name),
+        path.join(
+          tmpHostDir,
+          'plugins',
+          'marketplaces',
+          'mp1',
+          'plugins',
+          name,
+        ),
         { recursive: true },
       );
     }
@@ -453,9 +469,7 @@ describe('scanHostMarketplaces', () => {
 
     expect(r.pluginsScanned).toBe(1);
     for (const name of ['inline-placeholder', 'remote-url', 'remote-subdir']) {
-      expect(
-        r.warnings.some((w) => w.includes(name)),
-      ).toBe(false);
+      expect(r.warnings.some((w) => w.includes(name))).toBe(false);
     }
 
     const idx = readCatalogIndex();
@@ -476,15 +490,20 @@ describe('scanHostMarketplaces', () => {
     });
     // Orphan dir
     fs.mkdirSync(
-      path.join(tmpHostDir, 'plugins', 'marketplaces', 'mp1', 'plugins', 'orphan'),
+      path.join(
+        tmpHostDir,
+        'plugins',
+        'marketplaces',
+        'mp1',
+        'plugins',
+        'orphan',
+      ),
       { recursive: true },
     );
 
     const r = await scanHostMarketplaces();
     expect(
-      r.warnings.some(
-        (w) => w.includes('orphan') && w.includes('plugin.json'),
-      ),
+      r.warnings.some((w) => w.includes('orphan') && w.includes('plugin.json')),
     ).toBe(true);
   });
 
@@ -613,9 +632,9 @@ describe('scanHostMarketplaces', () => {
     const report = await scanHostMarketplaces();
     expect(report.marketplacesScanned).toBe(1);
     expect(report.pluginsScanned).toBe(1);
-    expect(
-      report.warnings.some((w) => w.includes('known_marketplaces')),
-    ).toBe(false);
+    expect(report.warnings.some((w) => w.includes('known_marketplaces'))).toBe(
+      false,
+    );
   });
 
   test('malformed known_marketplaces.json warns but does not block marketplaces/ scan', async () => {

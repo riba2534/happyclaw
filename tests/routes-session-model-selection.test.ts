@@ -636,7 +636,7 @@ describe('PUT /:jid/model-selection inside a ChatGPT configuration', () => {
     issueCodexGatewayToken('chatgpt', {
       kind: 'container',
       groupFolder: GROUP_FOLDER,
-      sessionAgentId: SESSION_ID,
+      agentId: SESSION_ID,
       ...owner,
     });
 
@@ -739,7 +739,7 @@ describe('PUT /:jid/model-selection inside a ChatGPT configuration', () => {
     const leaving = issueCodexGatewayToken('glm', {
       kind: 'container',
       groupFolder: GROUP_FOLDER,
-      sessionAgentId: SESSION_ID,
+      agentId: SESSION_ID,
       sessionEffort: 'low',
     });
     try {
@@ -752,7 +752,7 @@ describe('PUT /:jid/model-selection inside a ChatGPT configuration', () => {
 
   test('a Runtime Session is changed on its own', async () => {
     const main = live({ sessionEffort: 'low' });
-    const session = live({ sessionAgentId: AGENT_ID, sessionEffort: 'low' });
+    const session = live({ agentId: AGENT_ID, sessionEffort: 'low' });
     try {
       await call('PUT', '', {
         agentId: AGENT_ID,

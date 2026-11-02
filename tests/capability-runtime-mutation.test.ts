@@ -8,7 +8,6 @@ const state = vi.hoisted(() => ({
   safetyBlocked: false,
   profiles: new Map<string, any[]>(),
   workspaces: new Map<string, any[]>(),
-  sessions: { 'u1-inherit-folder': 'old-session' } as Record<string, string>,
 }));
 
 vi.mock('../src/db.js', () => ({
@@ -33,7 +32,6 @@ vi.mock('../src/runtime-state-store.js', () => ({
 
 vi.mock('../src/web-context.js', () => ({
   getWebDeps: () => ({
-    sessions: state.sessions,
     queue: {
       blockGroupsForRuntimeSafety: (jids: string[]) => state.blocked.push(jids),
       unblockGroupsForRuntimeSafety: (jids: string[]) =>
@@ -88,7 +86,6 @@ beforeEach(() => {
   state.safetyBlocked = false;
   state.profiles.clear();
   state.workspaces.clear();
-  state.sessions = { 'u1-inherit-folder': 'old-session' };
 });
 
 describe('capability runtime mutation invalidation', () => {
@@ -125,7 +122,6 @@ describe('capability runtime mutation invalidation', () => {
       'u1-inherit-folder',
       'u2-custom-folder',
     ]);
-    expect(state.sessions).not.toHaveProperty('u1-inherit-folder');
     // Each reset session is owed the history hand-off, marked before the
     // session rows it reads from are deleted.
     expect(state.events).toEqual(

@@ -86,13 +86,13 @@ describe('GroupQueue.listDescendantJids', () => {
     expect(q.listDescendantJids('web:main')).toEqual(['web:main#agent:a1']);
   });
 
-  test('includes a descendant present ONLY in waitingGroups (message-only, no pendingTasks)', () => {
+  test('includes a descendant present ONLY in waitingGroups (no pendingTasks)', () => {
     const q = new GroupQueue();
     seedResolver(q, { 'web:main': 'main' });
-    // A capacity-blocked message-check descendant: enqueueMessageCheck adds it to
-    // waitingGroups + sets pendingMessages, but pendingTasks stays empty. This
-    // exercises the waitingGroups predicate branch independently of pendingTasks,
-    // so a future regression that drops that branch is caught here.
+    // A lane drainGroup parked in waitingGroups (no slot yet) while its
+    // pendingTasks is empty. This exercises the waitingGroups predicate branch
+    // independently of pendingTasks, so a future regression that drops that
+    // branch is caught here.
     seed(q, 'web:main#agent:a1', { active: false, pendingTasks: [] });
     (q as unknown as { waitingGroups: Set<string> }).waitingGroups.add(
       'web:main#agent:a1',

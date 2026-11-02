@@ -16,14 +16,9 @@ import {
 } from '../src/workspace-interaction-runtime.js';
 
 describe('workspace interaction runtime policy', () => {
-  test('proactive applies to public main and conversation loops only', () => {
+  test('proactive applies to conversation sessions only', () => {
     expect(
-      resolveRuntimeInteractionMode('proactive', { agentKind: 'main' }),
-    ).toBe('proactive');
-    expect(
-      resolveRuntimeInteractionMode('proactive', {
-        agentKind: 'conversation',
-      }),
+      resolveRuntimeInteractionMode('proactive', { agentKind: 'conversation' }),
     ).toBe('proactive');
     expect(
       resolveRuntimeInteractionMode('proactive', { agentKind: 'spawn' }),
@@ -309,13 +304,7 @@ describe('workspace interaction runtime policy', () => {
     expect(helper).toContain("sender: '__system__'");
     expect(helper).toContain('sendSystemMessage(');
     expect(source).toContain(
-      'await notifyProactiveTailInterruption(ipcReplyTurnTracker.inputTurnId)',
-    );
-    expect(source).toContain(
       'await notifyProactiveAgentTailInterruption(activeAgentInputTurnId)',
-    );
-    expect(source).toContain(
-      'healthyInputTurnCompleted: healthyCompletedInputTurns.has(inputTurnId)',
     );
     expect(source).toContain(
       'healthyAgentCompletedInputTurns.has(inputTurnId)',

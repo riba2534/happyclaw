@@ -21,6 +21,7 @@ import { createRuntimeSourceHarness } from './helpers/runtime-source.js';
 
 const FOLDER = 'team';
 const OWNER = 'owner-1';
+const SESSION = 'team-session';
 
 const registrations: Record<string, Record<string, unknown>> = {
   'web:team': { folder: FOLDER, created_by: OWNER },
@@ -62,7 +63,15 @@ function host(inputs: Record<string, AgentBuilderPersistedInput>) {
     agentBuilderTurnScope,
     getAgentBuilderInputMessage: (_chatJid: string, messageId: string) =>
       inputs[messageId] ?? null,
-    getAgent: () => undefined,
+    getAgent: (id: string) =>
+      id === SESSION
+        ? {
+            id,
+            kind: 'conversation',
+            group_folder: FOLDER,
+            chat_jid: 'web:team',
+          }
+        : undefined,
     isWorkspaceMemoryMutation,
     isWorkspaceMemoryOwnerTurn,
     workspaceMemoryWriteRejection,
@@ -87,7 +96,7 @@ function host(inputs: Record<string, AgentBuilderPersistedInput>) {
     sign = true,
     admittedTurnId: string | null = turnId,
   ) => {
-    const scope = { groupFolder: FOLDER, agentId: null };
+    const scope = { groupFolder: FOLDER, agentId: SESSION };
     const capability = issueWorkspaceMemoryWriteCapability(
       scope,
       admittedTurnId,
@@ -116,7 +125,7 @@ function host(inputs: Record<string, AgentBuilderPersistedInput>) {
         false,
         registrations['web:team'],
         '/tmp/unused',
-        null,
+        SESSION,
       );
     } finally {
       revokeWorkspaceMemoryWriteCapability(scope, capability.runnerInstanceId);
@@ -127,7 +136,13 @@ function host(inputs: Record<string, AgentBuilderPersistedInput>) {
     chatJid: string,
     messageId: string,
     automationRunId: string | null = null,
-  ) => activeAgentBuilderTurns.set(FOLDER, chatJid, messageId, automationRunId);
+  ) =>
+    activeAgentBuilderTurns.set(
+      agentBuilderTurnScope(FOLDER, SESSION),
+      chatJid,
+      messageId,
+      automationRunId,
+    );
   return { create, start, createWorkspaceMemory };
 }
 

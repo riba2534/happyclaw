@@ -107,7 +107,9 @@ describe('readCatalogIndex / writeCatalogIndex', () => {
 
     // No leftover tmp files.
     const indexDir = path.dirname(getCatalogIndexFile());
-    const leftovers = fs.readdirSync(indexDir).filter((n) => n.includes('.tmp'));
+    const leftovers = fs
+      .readdirSync(indexDir)
+      .filter((n) => n.includes('.tmp'));
     expect(leftovers).toEqual([]);
   });
 

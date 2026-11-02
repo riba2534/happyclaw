@@ -85,7 +85,6 @@ function conversationInput(opts?: {
     turnId: opts?.turnId ?? 'pending-now',
     currentBatchMessageIds: opts?.currentBatchMessageIds,
     agentId: opts?.agentId,
-    isMain: true,
   };
 }
 
@@ -132,7 +131,6 @@ describe('provider failover keeps conversation context', () => {
     const prepared = applyProviderSwitchToInput(
       conversationInput({ groupFolder, chatJid }),
       selected,
-      null,
     );
 
     expect(prepared.sessionId).toBeUndefined();
@@ -158,7 +156,6 @@ describe('provider failover keeps conversation context', () => {
     const prepared = applyProviderSwitchToInput(
       conversationInput({ groupFolder, chatJid, sessionId: 'sess-on-a' }),
       leaveSessionConnection(groupFolder, null),
-      null,
     );
     expect(prepared.sessionId).toBeUndefined();
     expect(prepared.prompt).toContain('记住代号 Atlas');
@@ -191,7 +188,7 @@ describe('provider failover keeps conversation context', () => {
       sessionId: 'sess-keep',
       prompt: '只问这一句',
     });
-    const prepared = applyProviderSwitchToInput(input, selected, null);
+    const prepared = applyProviderSwitchToInput(input, selected);
     expect(prepared.sessionId).toBe('sess-keep');
     expect(prepared.prompt).toBe('只问这一句');
     expect(prepared.prompt).not.toContain('<system_context>');
@@ -236,7 +233,6 @@ describe('provider failover keeps conversation context', () => {
         previousProviderId: created[0],
         resetSession: true,
       },
-      null,
     );
 
     const historyBlock = prepared.prompt.slice(
@@ -259,7 +255,6 @@ describe('provider failover keeps conversation context', () => {
         previousProviderId: created[0],
         resetSession: true,
       },
-      null,
     );
     expect(prepared.prompt).toBe(already);
     expect(prepared.sessionId).toBeUndefined();

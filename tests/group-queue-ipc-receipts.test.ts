@@ -25,15 +25,23 @@ vi.mock('../src/db.js', () => ({}));
 const { GroupQueue } = await import('../src/group-queue.js');
 type Receipt = import('../src/group-queue.js').IpcDeliveryReceipt;
 
-const JID = 'web:ipc-receipts';
+const AGENT_ID = 'session';
+const JID = `web:ipc-receipts#agent:${AGENT_ID}`;
 const FOLDER = 'ipc-receipts';
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 
 let queue: InstanceType<typeof GroupQueue>;
 let releaseRun: (() => void) | undefined;
+/** The lane's conversation task; a test may replace it before starting. */
+let runTurn: () => Promise<boolean>;
+let taskSeq = 0;
+
+function enqueueTurn(jid = JID): void {
+  queue.enqueueTask(jid, `turn-${++taskSeq}`, () => runTurn());
+}
 
 function inputDir(): string {
-  return path.join(DATA_DIR, 'ipc', FOLDER, 'input');
+  return path.join(DATA_DIR, 'ipc', FOLDER, 'agents', AGENT_ID, 'input');
 }
 
 function readPayloads(): Array<{ receipt?: Receipt; queryRunId?: string }> {
@@ -53,7 +61,7 @@ async function startRunner(
     interactionMode?: 'assistant' | 'proactive';
   } = {},
 ): Promise<void> {
-  queue.enqueueMessageCheck(JID);
+  enqueueTurn();
   await tick();
   queue.registerProcess(
     JID,
@@ -67,6 +75,7 @@ async function startRunner(
     {
       containerName: options.containerName ?? null,
       groupFolder: FOLDER,
+      agentId: AGENT_ID,
       feishuCliAccountId: options.feishuCliAccountId,
       interactionMode: options.interactionMode,
     },
@@ -93,12 +102,10 @@ beforeEach(() => {
   fs.rmSync(DATA_DIR, { recursive: true, force: true });
   queue = new GroupQueue();
   queue.setIpcDeliveryCommitEligibilityChecker(() => true);
-  queue.setProcessMessagesFn(
-    () =>
-      new Promise<boolean>((resolve) => {
-        releaseRun = () => resolve(true);
-      }),
-  );
+  runTurn = () =>
+    new Promise<boolean>((resolve) => {
+      releaseRun = () => resolve(true);
+    });
 });
 
 afterEach(async () => {
@@ -111,22 +118,6 @@ afterEach(async () => {
 });
 
 describe('GroupQueue IPC delivery receipts', () => {
-  test('closes the runner boot window when an incompatible suffix is already queued', async () => {
-    queue.enqueueMessageCheck(JID);
-    await tick();
-    // Simulates processGroupMessages splitting the durable input prefix before
-    // onProcess has registered the child/input directory.
-    queue.enqueueMessageCheck(JID);
-    expect(fs.existsSync(path.join(inputDir(), '_drain'))).toBe(false);
-
-    queue.registerProcess(JID, { killed: false, kill: () => true } as never, {
-      containerName: null,
-      groupFolder: FOLDER,
-      interactionMode: 'assistant',
-    });
-    expect(fs.existsSync(path.join(inputDir(), '_drain'))).toBe(true);
-  });
-
   test('drains a warm runner before injecting another interaction contract', async () => {
     await startRunner({ interactionMode: 'assistant' });
 
@@ -876,7 +867,7 @@ describe('GroupQueue IPC delivery receipts', () => {
     const durableReplay: Receipt[] = [];
     const recoveryCalls: string[][] = [];
 
-    queue.setProcessMessagesFn(async () => {
+    runTurn = async () => {
       attempts++;
       if (attempts === 1) {
         return new Promise<boolean>((resolve) => {
@@ -888,7 +879,8 @@ describe('GroupQueue IPC delivery receipts', () => {
       const replay = durableReplay.shift();
       if (replay) replies++;
       return true;
-    });
+    };
+    queue.setLaneStarter((jid) => enqueueTurn(jid));
     queue.setOnUnacknowledgedIpcDeliveries((_jid, receipts) => {
       recoveryCalls.push(receipts.map((receipt) => receipt.cursor.id));
       durableReplay.push(...receipts);

@@ -168,6 +168,7 @@ import type {
 } from './types.js';
 import type { TeamRole } from './work-items.js';
 import { validateSkillId, validateSkillPath } from './skill-utils.js';
+import { sessionClaudeDir, sessionIpcDir } from './utils.js';
 import type { ClaudeContextAudit } from './stream-event.types.js';
 import type { ContainerOutput } from './agent-runtime-contracts.js';
 export type { ContainerOutput } from './agent-runtime-contracts.js';
@@ -678,8 +679,6 @@ export interface ContainerInput {
   currentSourceJid?: string;
   /** Sanitized provider identity for the exact input turn. */
   channelContext?: ChannelTurnContext;
-  /** @deprecated Use isHome + isAdminHome instead */
-  isMain: boolean;
   turnId?: string;
   /** Persisted message IDs already represented by this cold-run prompt. */
   readonly currentBatchMessageIds?: readonly string[];
@@ -692,8 +691,6 @@ export interface ContainerInput {
   workspaceMemoryMutationSigningSecret?: string;
   /** Public identity paired with the runner-private signing secret. */
   workspaceMemoryRunnerInstanceId?: string;
-  /** Claude session/provider namespace when it differs from agentId. */
-  sessionAgentId?: string;
   images?: Array<{ data: string; mimeType?: string }>;
   agentProfile?: {
     id: string;
@@ -740,7 +737,11 @@ export interface ContainerInput {
   happyClawOwnerProfileEnabled?: boolean;
   /** Host-derived capability flag for main-HappyClaw interactive sessions. */
   agentBuilderEnabled?: boolean;
-  agentId?: string;
+  /**
+   * The session this launch runs: its Claude session, IPC root and
+   * conversation-level choices are all keyed by it.
+   */
+  agentId: string;
   agentName?: string;
   /**
    * Claude Code plugins to inject into the SDK query (via `options.plugins`).
@@ -1839,12 +1840,10 @@ export function leaveSessionConnection(
 export function prepareLaunchInput(
   input: ContainerInput,
   selection: PoolProviderSelection | null,
-  sessionAgentId: string | undefined,
 ): ContainerInput {
   const switched = applyProviderSwitchToInput(
     input,
-    selection ?? leaveSessionConnection(input.groupFolder, sessionAgentId),
-    sessionAgentId,
+    selection ?? leaveSessionConnection(input.groupFolder, input.agentId),
   );
   return selection?.launchEffort !== undefined
     ? { ...switched, launchEffort: selection.launchEffort }
@@ -1958,6 +1957,23 @@ export function applyFallbackModelToEnvLines(
   envLines.push(`HAPPYCLAW_FALLBACK_MODEL=${fallbackModel}`);
 }
 
+/**
+ * A session's Claude directory: ~/.claude in a container, CLAUDE_CONFIG_DIR
+ * on the host.
+ */
+/**
+ * Create a session's owner-only IPC root (the runner's /workspace/ipc) and
+ * the directories the host and runner exchange files through.
+ */
+function ensureSessionIpcDir(groupFolder: string, agentId: string): string {
+  const ipcDir = sessionIpcDir(groupFolder, agentId);
+  mkdirForContainer(ipcDir);
+  for (const sub of ['messages', 'tasks', 'input']) {
+    mkdirForContainer(path.join(ipcDir, sub));
+  }
+  return ipcDir;
+}
+
 function assertRuntimeEnvPathSegment(value: string, label: string): string {
   if (!/^[A-Za-z0-9_-]{1,128}$/.test(value)) {
     throw new Error(`Invalid ${label} for container environment isolation`);
@@ -1966,15 +1982,15 @@ function assertRuntimeEnvPathSegment(value: string, label: string): string {
 }
 
 /**
- * Keep generated env files isolated by both runtime and Feishu Bot identity.
+ * Keep generated env files isolated by both session and Feishu Bot identity.
  *
- * The main session and conversation agents can execute concurrently inside
- * one workspace. A bound channel account is also included so two Bots routed to
- * the same main workspace can never overwrite each other's credentials.
+ * The sessions of one workspace can execute concurrently, each from its own
+ * directory. A bound channel account is also included so two Bots routed to
+ * the same workspace can never overwrite each other's credentials.
  */
 export function getContainerRuntimeEnvDir(
   groupFolder: string,
-  ipcAgentId?: string,
+  agentId: string,
   feishuChannelAccountId?: string | null,
 ): string {
   const safeGroupFolder = assertValidWorkspaceFolderName(
@@ -1990,15 +2006,13 @@ export function getContainerRuntimeEnvDir(
         ),
       ]
     : ['default'];
-  const runtimePath = ipcAgentId
-    ? ['agents', assertRuntimeEnvPathSegment(ipcAgentId, 'agent id')]
-    : ['main'];
   return path.join(
     DATA_DIR,
     'env',
     safeGroupFolder,
     ...identityPath,
-    ...runtimePath,
+    'agents',
+    assertRuntimeEnvPathSegment(agentId, 'agent id'),
   );
 }
 
@@ -2022,11 +2036,10 @@ interface PreparedVolumeMounts {
 function prepareVolumeMounts(
   group: RegisteredGroup,
   isAdminHome: boolean,
+  agentId: string,
   mountUserSkills = true,
-  sessionAgentId?: string,
   ownerHomeFolder?: string,
   resolvedProvider?: ResolvedProvider,
-  ipcAgentId?: string,
   agentProfile?: RunnerAgentProfile,
   channelContext?: ChannelTurnContext,
   containerProxy: ResolvedContainerProxyConfig = {
@@ -2092,18 +2105,8 @@ function prepareVolumeMounts(
     });
   }
 
-  // Per-group Claude sessions directory (isolated from other groups)
-  // Sub-agents and task sessions get their own session dir under agents/{id}/.claude/
-  const groupSessionsDir = sessionAgentId
-    ? path.join(
-        DATA_DIR,
-        'sessions',
-        group.folder,
-        'agents',
-        sessionAgentId,
-        '.claude',
-      )
-    : path.join(DATA_DIR, 'sessions', group.folder, '.claude');
+  // The session's own Claude directory, isolated from every other session.
+  const groupSessionsDir = sessionClaudeDir(group.folder, agentId);
   mkdirForContainer(groupSessionsDir);
   const userSkillsPolicy = resolveAgentProfileUserSkillsPolicy(
     ownerId,
@@ -2301,23 +2304,8 @@ function prepareVolumeMounts(
     });
   }
 
-  // Per-group IPC namespace: each group gets its own IPC directory
-  // Sub-agents get their own IPC subdirectory under agents/{agentId}/
-  // Keep host IPC roots owner-only; the entrypoint applies the selected bridge.
-  const groupIpcDir = ipcAgentId
-    ? path.join(DATA_DIR, 'ipc', group.folder, 'agents', ipcAgentId)
-    : path.join(DATA_DIR, 'ipc', group.folder);
-  mkdirForContainer(groupIpcDir);
-  // All agents (main + sub/conversation) get agents/ subdir for spawn/message IPC
-  for (const sub of ['messages', 'tasks', 'input', 'agents'] as const) {
-    const subDir = path.join(groupIpcDir, sub);
-    fs.mkdirSync(subDir, { recursive: true });
-    try {
-      fs.chmodSync(subDir, 0o700);
-    } catch {
-      /* ignore if already correct */
-    }
-  }
+  // The session's own IPC root; the entrypoint applies the selected bridge.
+  const groupIpcDir = ensureSessionIpcDir(group.folder, agentId);
   mounts.push({
     hostPath: groupIpcDir,
     containerPath: '/workspace/ipc',
@@ -2328,7 +2316,7 @@ function prepareVolumeMounts(
   // Global config merged with per-container overrides.
   const envDir = getContainerRuntimeEnvDir(
     group.folder,
-    ipcAgentId,
+    agentId,
     feishuCliBinding?.source === 'channel_account'
       ? feishuCliBinding.accountId
       : null,
@@ -3003,7 +2991,6 @@ export async function runContainerAgent(
   // selection, so everything from selection to spawn stays one synchronous
   // step while the docker CLI round trip no longer blocks the event loop.
   const hostIdentity = await detectContainerHostIdentityAsync();
-  const sessionAgentId = input.sessionAgentId ?? input.agentId;
 
   const groupDir = path.join(GROUPS_DIR, group.folder);
   mkdirForContainer(groupDir);
@@ -3011,14 +2998,14 @@ export async function runContainerAgent(
   // synchronous selection-to-spawn block.
   await refreshLaunchOAuthCredentials(
     group.folder,
-    sessionAgentId,
+    input.agentId,
     input.agentProfile?.modelConfigId,
   );
 
   // ─── Model connection selection ───
   const poolResult = trySelectPoolProvider(
     group.folder,
-    sessionAgentId,
+    input.agentId,
     input.agentProfile?.modelConfigId,
     input.agentProfile?.model,
     resolveAgentSdkEffort(input.agentProfile?.runtimePolicy),
@@ -3034,11 +3021,11 @@ export async function runContainerAgent(
   let providerFailureDecision: ContainerOutput | undefined;
   let providerFailureMaintenance = false;
   let healthyInputTurnCompleted = false;
-  input = prepareLaunchInput(input, poolResult, sessionAgentId);
+  input = prepareLaunchInput(input, poolResult);
 
   const workspaceMemoryCapabilityScope: WorkspaceMemoryCapabilityScope = {
     groupFolder: group.folder,
-    agentId: input.agentId ?? null,
+    agentId: input.agentId,
   };
   const {
     runnerInstanceId: workspaceMemoryRunnerInstanceId,
@@ -3050,8 +3037,7 @@ export async function runContainerAgent(
   const codexGatewayLease = new CodexGatewayRunnerLease({
     kind: 'container',
     groupFolder: group.folder,
-    agentId: input.agentId ?? null,
-    sessionAgentId: sessionAgentId ?? null,
+    agentId: input.agentId,
     agentEffort:
       poolResult?.gatewayAgentEffort ??
       resolveAgentSdkEffort(input.agentProfile?.runtimePolicy),
@@ -3067,11 +3053,10 @@ export async function runContainerAgent(
     const preparedLaunch = prepareVolumeMounts(
       group,
       isAdminHome,
+      input.agentId,
       shouldMountUserSkills,
-      sessionAgentId,
       ownerHomeFolder,
       resolvedProvider,
-      input.agentId,
       input.agentProfile,
       input.channelContext,
       containerProxy,
@@ -3109,10 +3094,8 @@ export async function runContainerAgent(
     };
     const skillManifest = preparedLaunch.claudeContextPlan.effectiveSkills;
     const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
-    const agentSuffix = sessionAgentId
-      ? `-${sessionAgentId.replace(/[^a-zA-Z0-9-]/g, '-')}`
-      : '';
-    const containerName = `happyclaw-${safeName}${agentSuffix}-${Date.now()}`;
+    const safeAgentId = input.agentId.replace(/[^a-zA-Z0-9-]/g, '-');
+    const containerName = `happyclaw-${safeName}-${safeAgentId}-${Date.now()}`;
     const containerArgs = buildContainerArgs(
       mounts,
       containerName,
@@ -3145,7 +3128,7 @@ export async function runContainerAgent(
         group: group.name,
         containerName,
         mountCount: mounts.length,
-        isMain: input.isMain,
+        agentId: input.agentId,
         imageProfile:
           containerImage === CONTAINER_IMAGE_HEADROOM ? 'headroom' : 'core',
       },
@@ -3515,16 +3498,17 @@ export interface AvailableGroup {
 }
 
 /**
- * Write available groups snapshot for the container to read.
- * Only admin home can see all available groups (for activation).
- * Other groups see nothing (they can't activate groups).
+ * Write the available groups snapshot into a session's IPC root (the runner's
+ * /workspace/ipc). Only admin home sees all available groups (for
+ * activation); other workspaces see nothing (they can't activate groups).
  */
 export function writeGroupsSnapshot(
   groupFolder: string,
+  agentId: string,
   isAdminHome: boolean,
   groups: AvailableGroup[],
 ): void {
-  const groupIpcDir = path.join(DATA_DIR, 'ipc', groupFolder);
+  const groupIpcDir = sessionIpcDir(groupFolder, agentId);
   fs.mkdirSync(groupIpcDir, { recursive: true });
 
   // Admin home sees all groups; others see nothing (they can't activate groups)
@@ -3880,7 +3864,6 @@ export async function runHostAgent(
   ownerHomeFolder?: string,
 ): Promise<ContainerOutput> {
   const startTime = Date.now();
-  const sessionAgentId = input.sessionAgentId ?? input.agentId;
   const setupInstallHint = 'npm --prefix container/agent-runner install';
   const setupBuildHint = 'npm --prefix container/agent-runner run build';
   const hostModeSetupError = (message: string): ContainerOutput => ({
@@ -3996,39 +3979,9 @@ export async function runHostAgent(
   const logsBaseDir = path.join(defaultGroupDir, 'logs');
   fs.mkdirSync(logsBaseDir, { recursive: true });
 
-  // 2. 确保目录结构（宿主机模式下限制目录权限）
-  // Sub-agents get their own IPC and session directories
-  const groupIpcDir = input.agentId
-    ? path.join(DATA_DIR, 'ipc', group.folder, 'agents', input.agentId)
-    : path.join(DATA_DIR, 'ipc', group.folder);
-  fs.mkdirSync(path.join(groupIpcDir, 'messages'), {
-    recursive: true,
-    mode: 0o700,
-  });
-  fs.mkdirSync(path.join(groupIpcDir, 'tasks'), {
-    recursive: true,
-    mode: 0o700,
-  });
-  fs.mkdirSync(path.join(groupIpcDir, 'input'), {
-    recursive: true,
-    mode: 0o700,
-  });
-  // All agents (main + sub/conversation) get agents/ subdir for spawn/message IPC
-  fs.mkdirSync(path.join(groupIpcDir, 'agents'), {
-    recursive: true,
-    mode: 0o700,
-  });
-
-  const groupSessionsDir = sessionAgentId
-    ? path.join(
-        DATA_DIR,
-        'sessions',
-        group.folder,
-        'agents',
-        sessionAgentId,
-        '.claude',
-      )
-    : path.join(DATA_DIR, 'sessions', group.folder, '.claude');
+  // 2. 确保目录结构（宿主机模式下限制目录权限）：会话自己的 IPC 与 .claude 目录
+  const groupIpcDir = ensureSessionIpcDir(group.folder, input.agentId);
+  const groupSessionsDir = sessionClaudeDir(group.folder, input.agentId);
   fs.mkdirSync(groupSessionsDir, { recursive: true });
 
   // Symlink .claude.json 到宿主机 ~/.claude.json，确保 deviceId 一致
@@ -4119,13 +4072,13 @@ export async function runHostAgent(
   // ─── Model connection selection (host mode) ───
   await refreshLaunchOAuthCredentials(
     group.folder,
-    sessionAgentId,
+    input.agentId,
     input.agentProfile?.modelConfigId,
   );
   const containerOverride = getContainerEnvConfig(group.folder);
   const hostPoolResult = trySelectPoolProvider(
     group.folder,
-    sessionAgentId,
+    input.agentId,
     input.agentProfile?.modelConfigId,
     input.agentProfile?.model,
     resolveAgentSdkEffort(input.agentProfile?.runtimePolicy),
@@ -4143,11 +4096,11 @@ export async function runHostAgent(
   let hostProviderFailureMaintenance = false;
   let hostHealthyInputTurnCompleted = false;
   let hostOauthLaunch: OAuthLaunchSnapshot | null = null;
-  input = prepareLaunchInput(input, hostPoolResult, sessionAgentId);
+  input = prepareLaunchInput(input, hostPoolResult);
 
   const workspaceMemoryCapabilityScope: WorkspaceMemoryCapabilityScope = {
     groupFolder: group.folder,
-    agentId: input.agentId ?? null,
+    agentId: input.agentId,
   };
   const {
     runnerInstanceId: workspaceMemoryRunnerInstanceId,
@@ -4159,8 +4112,7 @@ export async function runHostAgent(
   const codexGatewayLease = new CodexGatewayRunnerLease({
     kind: 'host',
     groupFolder: group.folder,
-    agentId: input.agentId ?? null,
-    sessionAgentId: sessionAgentId ?? null,
+    agentId: input.agentId,
     agentEffort:
       hostPoolResult?.gatewayAgentEffort ??
       resolveAgentSdkEffort(input.agentProfile?.runtimePolicy),
@@ -4455,7 +4407,7 @@ export async function runHostAgent(
       {
         group: group.name,
         workingDir: groupDir,
-        isMain: input.isMain,
+        agentId: input.agentId,
       },
       'Spawning host agent',
     );

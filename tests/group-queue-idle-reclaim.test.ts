@@ -11,8 +11,6 @@ vi.mock('../src/runtime-config.js', () => ({
 vi.mock('../src/db.js', () => ({}));
 
 const { GroupQueue } = await import('../src/group-queue.js');
-type Queue = InstanceType<typeof GroupQueue>;
-
 function deferred() {
   let resolve!: () => void;
   const promise = new Promise<void>((done) => {
@@ -35,8 +33,9 @@ afterEach(async () => {
 });
 
 /**
- * A queue whose message runs stay alive until released, like a warm runner
- * that went idle after its query. `exits` resolves a lane's run.
+ * A queue whose session runs stay alive until released, like a warm runner
+ * that went idle after its query. `exits` resolves a lane's run; `enqueue`
+ * queues a turn on a lane.
  */
 function harness(host: boolean | ((jid: string) => boolean) = false) {
   const isHost = typeof host === 'function' ? host : () => host;
@@ -44,120 +43,123 @@ function harness(host: boolean | ((jid: string) => boolean) = false) {
   queue.setHostModeChecker(isHost);
   const exits = new Map<string, () => void>();
   const started: string[] = [];
-  queue.setProcessMessagesFn(async (jid) => {
-    started.push(jid);
-    queue.registerProcess(jid, {} as never, {
-      containerName: isHost(jid) ? null : `c-${jid}`,
-      groupFolder: jid.replace('web:', ''),
+  let taskSeq = 0;
+  const enqueue = (jid: string) =>
+    queue.enqueueTask(jid, `turn-${++taskSeq}`, async () => {
+      started.push(jid);
+      queue.registerProcess(jid, {} as never, {
+        containerName: isHost(jid) ? null : `c-${jid}`,
+        groupFolder: jid.slice('web:'.length).split('#')[0],
+        agentId: 's',
+      });
+      const exit = deferred();
+      exits.set(jid, exit.resolve);
+      releases.push(exit.resolve);
+      await exit.promise;
+      return true;
     });
-    const exit = deferred();
-    exits.set(jid, exit.resolve);
-    releases.push(exit.resolve);
-    await exit.promise;
-    return true;
-  });
   const closed = vi
     .spyOn(queue, 'closeStdin')
     .mockImplementation((jid: string) => {
       // The runner honours _close by exiting.
       exits.get(jid)?.();
     });
-  return { queue, started, closed, exits };
-}
-
-async function idleRunner(queue: Queue, jid: string): Promise<void> {
-  queue.enqueueMessageCheck(jid);
-  await tick();
-  queue.markRunnerQueryIdle(jid);
+  /** Start a turn on `jid` and let its query go idle, runner kept warm. */
+  const idle = async (jid: string) => {
+    enqueue(jid);
+    await tick();
+    queue.markRunnerQueryIdle(jid);
+  };
+  return { queue, started, closed, exits, enqueue, idle };
 }
 
 describe('reclaiming idle warm container runners', () => {
   test('waiting work takes the slot of the idle runner', async () => {
-    const { queue, started, closed } = harness();
-    await idleRunner(queue, 'web:a');
+    const { queue, started, closed, enqueue, idle } = harness();
+    await idle('web:a#agent:s');
     expect(closed).not.toHaveBeenCalled();
 
-    queue.enqueueMessageCheck('web:b');
-    expect(closed).toHaveBeenCalledWith('web:a');
+    enqueue('web:b#agent:s');
+    expect(closed).toHaveBeenCalledWith('web:a#agent:s');
     await tick();
-    expect(started).toEqual(['web:a', 'web:b']);
+    expect(started).toEqual(['web:a#agent:s', 'web:b#agent:s']);
     expect(queue.getStatus().activeContainerCount).toBe(1);
   });
 
   test('a runner going idle while work waits is reclaimed at once', async () => {
-    const { queue, started, closed } = harness();
-    queue.enqueueMessageCheck('web:a');
+    const { queue, started, closed, enqueue } = harness();
+    enqueue('web:a#agent:s');
     await tick();
-    queue.enqueueMessageCheck('web:b');
+    enqueue('web:b#agent:s');
     // Mid-query: never reclaimed.
     expect(closed).not.toHaveBeenCalled();
     expect(queue.getStatus().waitingCount).toBe(1);
 
-    queue.markRunnerQueryIdle('web:a');
-    expect(closed).toHaveBeenCalledWith('web:a');
+    queue.markRunnerQueryIdle('web:a#agent:s');
+    expect(closed).toHaveBeenCalledWith('web:a#agent:s');
     await tick();
-    expect(started).toEqual(['web:a', 'web:b']);
+    expect(started).toEqual(['web:a#agent:s', 'web:b#agent:s']);
   });
 
   test('a runner whose lane has queued input or background work keeps its slot', async () => {
-    const { queue, started, closed } = harness();
-    const owesWork = new Set(['web:a']);
+    const { queue, started, closed, enqueue, idle } = harness();
+    const owesWork = new Set(['web:a#agent:s']);
     queue.setIdleRunnerReclaimBlocker((jid) => owesWork.has(jid));
-    await idleRunner(queue, 'web:a');
+    await idle('web:a#agent:s');
 
-    queue.enqueueMessageCheck('web:b');
+    enqueue('web:b#agent:s');
     await tick();
     expect(closed).not.toHaveBeenCalled();
-    expect(started).toEqual(['web:a']);
+    expect(started).toEqual(['web:a#agent:s']);
 
     // Once the queue drained, the next idle reclaims it.
     owesWork.clear();
-    queue.markRunnerQueryIdle('web:a');
+    queue.markRunnerQueryIdle('web:a#agent:s');
     expect(closed).not.toHaveBeenCalled(); // no query was in flight
-    queue.enqueueMessageCheck('web:c');
-    expect(closed).toHaveBeenCalledWith('web:a');
+    enqueue('web:c#agent:s');
+    expect(closed).toHaveBeenCalledWith('web:a#agent:s');
   });
 
   test('the longest-idle runner goes first, and only as many as are needed', async () => {
     settings.maxConcurrentContainers = 2;
-    const { queue, closed } = harness();
+    const { closed, enqueue, idle } = harness();
     const now = vi.spyOn(Date, 'now');
     now.mockReturnValue(1_000);
-    await idleRunner(queue, 'web:old');
+    await idle('web:old#agent:s');
     now.mockReturnValue(5_000);
-    await idleRunner(queue, 'web:recent');
+    await idle('web:recent#agent:s');
     now.mockRestore();
 
-    queue.enqueueMessageCheck('web:new');
-    expect(closed.mock.calls.map(([jid]) => jid)).toEqual(['web:old']);
+    enqueue('web:new#agent:s');
+    expect(closed.mock.calls.map(([jid]) => jid)).toEqual(['web:old#agent:s']);
   });
 
   test('an idle Host runner never gives up its process for a container lane', async () => {
-    const { queue, started, closed } = harness((jid) =>
+    const { queue, started, closed, enqueue, idle } = harness((jid) =>
       jid.startsWith('web:host'),
     );
-    await idleRunner(queue, 'web:host-idle');
-    queue.enqueueMessageCheck('web:busy');
+    await idle('web:host-idle#agent:s');
+    enqueue('web:busy#agent:s');
     await tick();
-    queue.enqueueMessageCheck('web:waiting');
+    enqueue('web:waiting#agent:s');
     expect(closed).not.toHaveBeenCalled();
-    expect(started).toEqual(['web:host-idle', 'web:busy']);
+    expect(started).toEqual(['web:host-idle#agent:s', 'web:busy#agent:s']);
     expect(queue.getStatus().waitingCount).toBe(1);
   });
 
   test('Host runners are never reclaimed and never wait for a slot', async () => {
-    const { queue, started, closed } = harness(true);
-    await idleRunner(queue, 'web:a');
-    queue.enqueueMessageCheck('web:b');
+    const { queue, started, closed, enqueue, idle } = harness(true);
+    await idle('web:a#agent:s');
+    enqueue('web:b#agent:s');
     await tick();
     expect(closed).not.toHaveBeenCalled();
-    expect(started).toEqual(['web:a', 'web:b']);
+    expect(started).toEqual(['web:a#agent:s', 'web:b#agent:s']);
     expect(queue.getStatus().activeHostProcessCount).toBe(2);
   });
 
   test('reclaims the same user’s idle container when per-user container limit is reached below global limit', async () => {
     settings.maxConcurrentContainers = 5;
-    const { queue, started, closed } = harness();
+    const { queue, started, closed, enqueue, idle } = harness();
     const userOf = (jid: string) => (jid.startsWith('web:u1-') ? 'u1' : 'u2');
     const activeByUser = new Map<string, number>();
     queue.setUserConcurrentLimitChecker((jid) => {
@@ -171,10 +173,10 @@ describe('reclaiming idle warm container runners', () => {
     // u2 has an older idle container; u1 has a newer idle container
     const now = vi.spyOn(Date, 'now');
     now.mockReturnValue(1_000);
-    await idleRunner(queue, 'web:u2-idle');
+    await idle('web:u2-idle#agent:s');
     activeByUser.set('u2', 1);
     now.mockReturnValue(2_000);
-    await idleRunner(queue, 'web:u1-idle');
+    await idle('web:u1-idle#agent:s');
     activeByUser.set('u1', 1);
     now.mockRestore();
 
@@ -183,15 +185,15 @@ describe('reclaiming idle warm container runners', () => {
       activeByUser.set(userOf(jid), 0);
       queue.stopGroup(jid);
     });
-    queue.enqueueMessageCheck('web:u1-next');
-    expect(closed).toHaveBeenCalledWith('web:u1-idle');
-    expect(closed).not.toHaveBeenCalledWith('web:u2-idle');
-    expect(started).toContain('web:u1-idle');
+    enqueue('web:u1-next#agent:s');
+    expect(closed).toHaveBeenCalledWith('web:u1-idle#agent:s');
+    expect(closed).not.toHaveBeenCalledWith('web:u2-idle#agent:s');
+    expect(started).toContain('web:u1-idle#agent:s');
   });
 
   test('picking a runner for a user at their limit checks each lane’s owner once', async () => {
     settings.maxConcurrentContainers = 20;
-    const { queue, closed } = harness();
+    const { queue, closed, enqueue, idle } = harness();
     const userOf = (jid: string) => (jid.startsWith('web:u1-') ? 'u1' : 'u2');
     const active = { u1: 0 };
     // Like the real checker, every call walks all workspaces of the owner.
@@ -203,57 +205,63 @@ describe('reclaiming idle warm container runners', () => {
     });
     const now = vi.spyOn(Date, 'now');
     const idleJids = [
-      'web:u2-a',
-      'web:u1-old',
-      'web:u2-b',
-      'web:u2-c',
-      'web:u1-new',
-      'web:u2-d',
-      'web:u2-e',
+      'web:u2-a#agent:s',
+      'web:u1-old#agent:s',
+      'web:u2-b#agent:s',
+      'web:u2-c#agent:s',
+      'web:u1-new#agent:s',
+      'web:u2-d#agent:s',
+      'web:u2-e#agent:s',
     ];
     for (const [index, jid] of idleJids.entries()) {
       now.mockReturnValue(1_000 * (index + 1));
-      await idleRunner(queue, jid);
+      await idle(jid);
       if (userOf(jid) === 'u1') active.u1++;
     }
     now.mockRestore();
     calls.clear();
 
-    queue.enqueueMessageCheck('web:u1-next');
+    enqueue('web:u1-next#agent:s');
 
-    expect(closed.mock.calls.map(([jid]) => jid)).toEqual(['web:u1-old']);
+    expect(closed.mock.calls.map(([jid]) => jid)).toEqual([
+      'web:u1-old#agent:s',
+    ]);
     for (const jid of idleJids) {
       expect(calls.get(jid) ?? 0, jid).toBeLessThanOrEqual(1);
     }
   });
 
-  test('hasActiveMainRunnerForMessage returns false while a runner is closing', async () => {
+  test('hasActiveRunnerForMessage returns false while a runner is closing', async () => {
     settings.maxConcurrentContainers = 1;
-    const { queue, closed } = harness();
+    const { queue, closed, enqueue, idle } = harness();
     // Do not auto-exit on closeStdin so state.closing stays set
     closed.mockImplementation(() => {});
-    await idleRunner(queue, 'web:closing-test');
-    expect(queue.hasActiveMainRunnerForMessage('web:closing-test')).toBe(true);
+    await idle('web:closing-test#agent:s');
+    expect(queue.hasActiveRunnerForMessage('web:closing-test#agent:s')).toBe(
+      true,
+    );
 
-    queue.enqueueMessageCheck('web:waiting-peer');
-    expect(closed).toHaveBeenCalledWith('web:closing-test');
-    expect(queue.hasActiveMainRunnerForMessage('web:closing-test')).toBe(false);
+    enqueue('web:waiting-peer#agent:s');
+    expect(closed).toHaveBeenCalledWith('web:closing-test#agent:s');
+    expect(queue.hasActiveRunnerForMessage('web:closing-test#agent:s')).toBe(
+      false,
+    );
   });
 });
 
 describe('deferring a mutation stop to the end of the current query', () => {
   test('the runner that committed the change finishes its turn, then closes and settles', async () => {
-    const { queue, closed, exits } = harness();
-    queue.enqueueMessageCheck('web:self');
+    const { queue, closed, exits, enqueue } = harness();
+    enqueue('web:self#agent:s');
     await tick();
     const settled: string[] = [];
 
-    const token = queue.pauseGroupsForMutation(['web:self']);
+    const token = queue.pauseGroupsForMutation(['web:self#agent:s']);
     await queue.deferStopsToQueryEnd(
-      'web:self',
+      'web:self#agent:s',
       (jid) => settled.push(jid),
       async () => {
-        await queue.stopGroup('web:self', {
+        await queue.stopGroup('web:self#agent:s', {
           force: true,
           preserveQueuedWork: true,
         });
@@ -265,50 +273,50 @@ describe('deferring a mutation stop to the end of the current query', () => {
     expect(queue.getStatus().activeContainerCount).toBe(1);
 
     // The turn ends: no further query is accepted, the runner closes.
-    queue.markRunnerQueryIdle('web:self');
-    expect(queue.reserveNextQuery('web:self')).toBeNull();
-    expect(queue.sendMessage('web:self', 'next')).toBe('no_active');
-    expect(closed).toHaveBeenCalledWith('web:self');
-    expect(exits.has('web:self')).toBe(true);
+    queue.markRunnerQueryIdle('web:self#agent:s');
+    expect(queue.reserveNextQuery('web:self#agent:s')).toBeNull();
+    expect(queue.sendMessage('web:self#agent:s', 'next')).toBe('no_active');
+    expect(closed).toHaveBeenCalledWith('web:self#agent:s');
+    expect(exits.has('web:self#agent:s')).toBe(true);
     await tick();
-    expect(settled).toEqual(['web:self']);
+    expect(settled).toEqual(['web:self#agent:s']);
     expect(queue.getStatus().activeContainerCount).toBe(0);
   });
 
   test('outside the deferral, a mutation stop still stops the runner', async () => {
-    const { queue, started, closed } = harness();
-    queue.enqueueMessageCheck('web:other');
+    const { queue, started, closed, enqueue } = harness();
+    enqueue('web:other#agent:s');
     await tick();
-    const token = queue.pauseGroupsForMutation(['web:other']);
-    await queue.stopGroup('web:other', {
+    const token = queue.pauseGroupsForMutation(['web:other#agent:s']);
+    await queue.stopGroup('web:other#agent:s', {
       force: true,
       preserveQueuedWork: true,
     });
-    expect(closed).toHaveBeenCalledWith('web:other');
+    expect(closed).toHaveBeenCalledWith('web:other#agent:s');
     queue.resumeGroupsAfterMutation(token);
     await tick();
     // The preserved work replays on a fresh runner.
-    expect(started).toEqual(['web:other', 'web:other']);
+    expect(started).toEqual(['web:other#agent:s', 'web:other#agent:s']);
   });
 });
 
 describe('an ordinary stop discards lane work kept outside GroupQueue', () => {
   test('stop, reset and delete report the lane; a mutation stop does not', async () => {
-    const { queue } = harness();
+    const { queue, enqueue } = harness();
     const discarded: string[] = [];
     queue.setOnLaneDiscarded((jid) => discarded.push(jid));
 
-    await queue.stopGroup('web:idle-lane');
-    expect(discarded).toEqual(['web:idle-lane']);
+    await queue.stopGroup('web:idle-lane#agent:s');
+    expect(discarded).toEqual(['web:idle-lane#agent:s']);
 
-    queue.enqueueMessageCheck('web:busy');
+    enqueue('web:busy#agent:s');
     await tick();
-    const token = queue.pauseGroupsForMutation(['web:busy']);
-    await queue.stopGroup('web:busy', {
+    const token = queue.pauseGroupsForMutation(['web:busy#agent:s']);
+    await queue.stopGroup('web:busy#agent:s', {
       force: true,
       preserveQueuedWork: true,
     });
     queue.resumeGroupsAfterMutation(token);
-    expect(discarded).toEqual(['web:idle-lane']);
+    expect(discarded).toEqual(['web:idle-lane#agent:s']);
   });
 });

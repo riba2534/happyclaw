@@ -48,7 +48,9 @@ const { createRuntimeSourceHarness } =
 import type { AutomationRunOutcome } from '../src/automation-contract.js';
 import type { NewMessage } from '../src/types.js';
 
-const LANE = 'web:ended';
+const WORKSPACE = 'web:ended';
+const SESSION_ID = 'ended-session';
+const LANE = `${WORKSPACE}#agent:${SESSION_ID}`;
 const FOLDER = 'ended';
 
 /** A fake core whose run table is `live`. */
@@ -103,7 +105,7 @@ function storeInput(
 
 beforeAll(() => {
   db.initDatabase();
-  db.setRegisteredGroup(LANE, {
+  db.setRegisteredGroup(WORKSPACE, {
     name: 'Ended',
     folder: FOLDER,
     added_at: new Date().toISOString(),
@@ -314,23 +316,28 @@ describe('an input answered without the agent settles its run', () => {
       const tracker = new ledger.AutomationTurnTracker();
       tracker.remember('input-d', [{ automation_run_id: runId }]);
       const globals: Record<string, unknown> = {
-        channelTurnRuntime: {
+        agentChannelTurnRuntime: {
           executionDisposition: disposition,
           openedStatus,
           dispose: vi.fn(),
         },
-        streamingAddress: { provider: 'feishu', externalChatId: 'oc_group' },
-        streamingAccountId: 'account-1',
-        streamingSessionJid: 'feishu:oc_group',
+        agentStreamingAddress: {
+          provider: 'feishu',
+          externalChatId: 'oc_group',
+        },
+        agentStreamingAccountId: 'account-1',
+        replySourceImJid: 'feishu:oc_group',
         interactionMode: 'assistant',
         deliverChannelManualReconciliationNotice: vi.fn(async () => true),
         channelTurnScope: (folder: string) => folder,
-        idleTimer: null,
-        clearTimeout,
-        clearProcessingIndicatorForInput: vi.fn(async () => {}),
-        activeImReplyRoutes: new Map(),
+        clearAgentProcessingIndicatorForInput: vi.fn(async () => {}),
+        updateAgentStatus: vi.fn(),
+        agent: { kind: 'conversation' },
+        agentId: SESSION_ID,
+        logger: { info: vi.fn() },
         effectiveGroup: { folder: FOLDER },
-        chatJid: LANE,
+        chatJid: WORKSPACE,
+        virtualChatJid: LANE,
         lastProcessed: { id: 'input-d', timestamp: '' },
         advanceCursors: vi.fn(),
         automationTurns: tracker,
@@ -338,8 +345,8 @@ describe('an input answered without the agent settles its run', () => {
       const harness = createRuntimeSourceHarness(globals);
       harness.installTail(
         'channelTurnDisposition',
-        'processGroupMessages',
-        "channelTurnRuntime &&\n    channelTurnRuntime.executionDisposition !== 'execute'",
+        'processAgentConversation',
+        "agentChannelTurnRuntime &&\n    agentChannelTurnRuntime.executionDisposition !== 'execute'",
       );
       await expect(
         (globals.channelTurnDisposition as () => Promise<boolean>)(),
@@ -350,6 +357,7 @@ describe('an input answered without the agent settles its run', () => {
 });
 
 describe('cancelling and checking an automation input', () => {
+  const SCOPE = agentBuilderTurnScope(FOLDER, SESSION_ID);
   function laneHarness(overrides: Record<string, unknown> = {}) {
     const registry = new AgentBuilderTurnRegistry();
     const queue = {
@@ -361,10 +369,10 @@ describe('cancelling and checking an automation input', () => {
       getQueuedFollowUp: db.getQueuedFollowUp,
       withdrawQueuedFollowUp: db.withdrawQueuedFollowUp,
       settleCancelledFollowUp: vi.fn(),
-      resolveEffectiveFolder: () => FOLDER,
       activeAgentBuilderTurns: registry,
       agentBuilderTurnScope,
-      agentIdOfJid: () => null,
+      getAgent: (id: string) =>
+        id === SESSION_ID ? { id, group_folder: FOLDER } : undefined,
       queue,
       getAgentBuilderInputMessage: db.getAgentBuilderInputMessage,
       getMessageCursor: db.getMessageCursor,
@@ -423,7 +431,7 @@ describe('cancelling and checking an automation input', () => {
     core(new Set(['r-executing']));
     const input = storeInput('r-executing');
     const lane = laneHarness();
-    lane.registry.startBatch(FOLDER, [
+    lane.registry.startBatch(SCOPE, [
       {
         chatJid: LANE,
         messageId: input.id,
@@ -442,10 +450,10 @@ describe('cancelling and checking an automation input', () => {
     const settled = core(live);
     const input = storeInput('r-piped');
     const lane = laneHarness();
-    lane.registry.startBatch(FOLDER, [
+    lane.registry.startBatch(SCOPE, [
       { chatJid: LANE, messageId: 'user-turn', runtimeTurnId: 'user-turn' },
     ]);
-    lane.registry.enqueueBatch(FOLDER, [
+    lane.registry.enqueueBatch(SCOPE, [
       {
         chatJid: LANE,
         messageId: input.id,
@@ -459,10 +467,10 @@ describe('cancelling and checking an automation input', () => {
     expect(lane.queue.closeStdin).not.toHaveBeenCalled();
 
     // The user's turn settles; the run's batch becomes the active one.
-    lane.promote(FOLDER, LANE, [{ chatJid: LANE, messageId: 'user-turn' }]);
+    lane.promote(SCOPE, LANE, [{ chatJid: LANE, messageId: 'user-turn' }]);
     expect(lane.queue.interruptQuery).toHaveBeenCalledTimes(1);
     expect(lane.queue.interruptQuery).toHaveBeenCalledWith(LANE);
-    expect(lane.registry.activeBatch(FOLDER).map((t) => t.messageId)).toEqual([
+    expect(lane.registry.activeBatch(SCOPE).map((t) => t.messageId)).toEqual([
       input.id,
     ]);
     // The run stays cancelled: nothing here settled it again.
@@ -473,10 +481,10 @@ describe('cancelling and checking an automation input', () => {
   test('a live piped batch becoming active is not interrupted', () => {
     core(new Set(['r-piped-live']));
     const lane = laneHarness();
-    lane.registry.startBatch(FOLDER, [
+    lane.registry.startBatch(SCOPE, [
       { chatJid: LANE, messageId: 'user-turn', runtimeTurnId: 'user-turn' },
     ]);
-    lane.registry.enqueueBatch(FOLDER, [
+    lane.registry.enqueueBatch(SCOPE, [
       {
         chatJid: LANE,
         messageId: 'automation-run-r-piped-live',
@@ -484,7 +492,7 @@ describe('cancelling and checking an automation input', () => {
         automationRunId: 'r-piped-live',
       },
     ]);
-    lane.promote(FOLDER, LANE, [{ chatJid: LANE, messageId: 'user-turn' }]);
+    lane.promote(SCOPE, LANE, [{ chatJid: LANE, messageId: 'user-turn' }]);
     expect(lane.queue.interruptQuery).not.toHaveBeenCalled();
   });
 

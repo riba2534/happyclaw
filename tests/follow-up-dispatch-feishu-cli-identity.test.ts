@@ -18,7 +18,7 @@ function harness(options: {
   const sendMessage = vi.fn(() => 'no_active');
   const item = {
     id: 'om_queued',
-    chat_jid: 'web:workspace',
+    chat_jid: 'web:workspace#agent:session-1',
     source_jid: 'tg:-100123',
   };
   const globals: Record<string, unknown> = {
@@ -26,7 +26,7 @@ function harness(options: {
     resolveForwardBundleBatchAnchor: () => null,
     createIpcDeliveryTarget: () => null,
     resolveFollowUpRuntime: () => ({
-      agentId: undefined,
+      agentId: 'session-1',
       baseChatJid: 'web:workspace',
       effectiveGroup: {
         folder: 'flow-workspace',
@@ -37,7 +37,12 @@ function harness(options: {
     resolveBatchChannelContext: () => options.channelContext,
     collectPersistedReferencedMessageIds: () => new Set<string>(),
     collectMessageImages: () => [],
-    selectRuntimeInteractionBatch: () => undefined,
+    selectRuntimeInteractionBatch: () => ({
+      messages: [{ id: item.id }],
+      interactionMode: 'assistant',
+      hasDeferredMessages: false,
+    }),
+    resolveTeamRole: () => null,
     getAgent: () => undefined,
     resolveFeishuCliBoundAccountId,
     formatMessages: () => '<messages/>',
@@ -48,7 +53,9 @@ function harness(options: {
     Date,
     logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
   };
-  createRuntimeSourceHarness(globals).install('injectPreparedFollowUp');
+  const runtime = createRuntimeSourceHarness(globals);
+  runtime.install('releaseFollowUpToColdReader');
+  runtime.install('injectPreparedFollowUp');
   const inject = globals.injectPreparedFollowUp as (
     items: unknown[],
     prepared: { messages: unknown[]; replies: unknown[] },

@@ -21,7 +21,7 @@ vi.mock('../src/db.js', () => ({}));
 const { GroupQueue, setRetryJitterSourceForTesting } =
   await import('../src/group-queue.js');
 
-const JID = 'web:close-retry';
+const JID = 'web:close-retry#agent:conversation';
 const flushPromises = async () => {
   await Promise.resolve();
   await Promise.resolve();
@@ -29,6 +29,12 @@ const flushPromises = async () => {
 };
 
 let queue: InstanceType<typeof GroupQueue>;
+let taskSeq = 0;
+
+/** One conversation turn on the lane; a false result asks for a retry. */
+function enqueueTurn(fn: () => Promise<boolean>): void {
+  queue.enqueueTask(JID, `turn-${++taskSeq}`, fn);
+}
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -46,14 +52,12 @@ afterEach(async () => {
 describe('GroupQueue close outcome retry lifecycle', () => {
   test('replays after backoff without requiring a new message', async () => {
     let runs = 0;
-    queue.setProcessMessagesFn(async () => {
+    enqueueTurn(async () => {
       runs += 1;
       // First result models closed + no reply + no healthy input completion;
       // the replay then models a completed turn.
       return runs > 1;
     });
-
-    queue.enqueueMessageCheck(JID);
     await flushPromises();
     expect(runs).toBe(1);
     expect(queue.getRetryCount(JID)).toBe(1);
@@ -61,8 +65,8 @@ describe('GroupQueue close outcome retry lifecycle', () => {
     await vi.advanceTimersByTimeAsync(4_999);
     expect(runs).toBe(1);
 
-    // No enqueueMessageCheck call occurs here: expiry of the queue-owned
-    // backoff timer alone must start the replay.
+    // No enqueue call occurs here: expiry of the queue-owned backoff timer
+    // alone must start the replay.
     await vi.advanceTimersByTimeAsync(1);
     await flushPromises();
     expect(runs).toBe(2);
@@ -71,12 +75,10 @@ describe('GroupQueue close outcome retry lifecycle', () => {
 
   test('user stop cancels a pending failed-run retry', async () => {
     let runs = 0;
-    queue.setProcessMessagesFn(async () => {
+    enqueueTurn(async () => {
       runs += 1;
       return false;
     });
-
-    queue.enqueueMessageCheck(JID);
     await flushPromises();
     expect(queue.getRetryCount(JID)).toBe(1);
 
@@ -94,20 +96,26 @@ describe('GroupQueue close outcome retry lifecycle', () => {
     const replacementFinished = new Promise<void>((resolve) => {
       finishReplacement = resolve;
     });
-    queue.setProcessMessagesFn(async () => {
+    const turn = async () => {
       runs += 1;
       if (runs === 1) return false;
       if (runs === 2) await replacementFinished;
       return true;
+    };
+    const started: string[] = [];
+    queue.setLaneStarter((jid) => {
+      started.push(jid);
+      enqueueTurn(turn);
     });
 
-    queue.enqueueMessageCheck(JID);
+    enqueueTurn(turn);
     await flushPromises();
     expect(runs).toBe(1);
     expect(queue.getRetryCount(JID)).toBe(1);
 
     await queue.restartGroup(JID);
     await flushPromises();
+    expect(started).toEqual([JID]);
     expect(runs).toBe(2);
     expect(queue.getRetryCount(JID)).toBe(0);
 
@@ -122,27 +130,27 @@ describe('GroupQueue close outcome retry lifecycle', () => {
     expect(runs).toBe(2);
   });
 
-  test('a fresh message supersedes the pending failed-run timer', async () => {
+  test('a fresh turn supersedes the pending failed-run timer', async () => {
     let runs = 0;
     let finishFreshRun!: () => void;
     const freshRunFinished = new Promise<void>((resolve) => {
       finishFreshRun = resolve;
     });
-    queue.setProcessMessagesFn(async () => {
+    const turn = async () => {
       runs += 1;
       if (runs === 1) return false;
       await freshRunFinished;
       return true;
-    });
+    };
 
-    queue.enqueueMessageCheck(JID);
+    enqueueTurn(turn);
     await flushPromises();
     expect(runs).toBe(1);
     expect(queue.getRetryCount(JID)).toBe(1);
 
-    // A newly-arrived message starts immediately and owns recovery. The old
-    // 5s timer must not drain or enqueue this in-flight replacement.
-    queue.enqueueMessageCheck(JID);
+    // A newly-arrived turn starts immediately and owns recovery. The old 5s
+    // timer must not drain or enqueue this in-flight replacement.
+    enqueueTurn(turn);
     await flushPromises();
     expect(runs).toBe(2);
 
@@ -158,13 +166,11 @@ describe('GroupQueue close outcome retry lifecycle', () => {
   test('consecutive failures exhaust the bounded exponential backoff', async () => {
     let runs = 0;
     const onMaxRetriesExceeded = vi.fn();
-    queue.setProcessMessagesFn(async () => {
+    queue.setOnMaxRetriesExceeded(onMaxRetriesExceeded);
+    enqueueTurn(async () => {
       runs += 1;
       return false;
     });
-    queue.setOnMaxRetriesExceeded(onMaxRetriesExceeded);
-
-    queue.enqueueMessageCheck(JID);
     await flushPromises();
     expect(runs).toBe(1);
     expect(queue.getRetryCount(JID)).toBe(1);
@@ -192,6 +198,7 @@ describe('GroupQueue close outcome retry lifecycle', () => {
     await flushPromises();
     expect(runs).toBe(6);
     expect(onMaxRetriesExceeded).toHaveBeenCalledOnce();
+    // No attempt registered a batch.
     expect(onMaxRetriesExceeded).toHaveBeenCalledWith(JID, null);
     expect(queue.getRetryCount(JID)).toBe(0);
 
@@ -220,7 +227,7 @@ describe('GroupQueue close outcome retry lifecycle', () => {
     });
     const observedSnapshots: unknown[] = [];
 
-    queue.setProcessMessagesFn(async () => {
+    const turn = async () => {
       runs += 1;
       queue.setMessageRetrySnapshot(JID, {
         coveredCursors:
@@ -228,13 +235,13 @@ describe('GroupQueue close outcome retry lifecycle', () => {
         cursor: runs <= 6 ? failedCursor : laterCursor,
       });
       return runs > 6;
-    });
+    };
     queue.setOnMaxRetriesExceeded(async (_jid, snapshot) => {
       observedSnapshots.push(snapshot);
       await terminalReleased;
     });
 
-    queue.enqueueMessageCheck(JID);
+    enqueueTurn(turn);
     await flushPromises();
     for (const delay of [5_000, 10_000, 20_000, 40_000, 80_000]) {
       await vi.advanceTimersByTimeAsync(delay);
@@ -251,7 +258,7 @@ describe('GroupQueue close outcome retry lifecycle', () => {
     // This models a new prompt arriving after the final attempt snapshot.
     // The active max-retry callback must finish its exact terminal work before
     // the queue starts the new batch, and the old callback never sees B.
-    queue.enqueueMessageCheck(JID);
+    enqueueTurn(turn);
     await flushPromises();
     expect(runs).toBe(6);
 
@@ -261,47 +268,28 @@ describe('GroupQueue close outcome retry lifecycle', () => {
     expect(observedSnapshots).toHaveLength(1);
   });
 
-  test('conversation task retries on its task lane without invoking message processing', async () => {
-    const agentJid = `${JID}#agent:conversation-retry`;
-    let taskRuns = 0;
-    let messageRuns = 0;
-    queue.setProcessMessagesFn(async () => {
-      messageRuns += 1;
-      return true;
-    });
-
-    queue.enqueueTask(agentJid, 'agent-conversation', async () => {
-      taskRuns += 1;
-      return taskRuns > 1;
-    });
-    await flushPromises();
-    expect(taskRuns).toBe(1);
-    expect(messageRuns).toBe(0);
-    expect(queue.getRetryCount(agentJid)).toBe(1);
-
-    await vi.advanceTimersByTimeAsync(5_000);
-    await flushPromises();
-    expect(taskRuns).toBe(2);
-    expect(messageRuns).toBe(0);
-    expect(queue.getRetryCount(agentJid)).toBe(0);
-  });
-
-  test('ordinary stop discards a pending conversation-task retry', async () => {
-    const agentJid = `${JID}#agent:conversation-stop`;
-    let taskRuns = 0;
-    queue.enqueueTask(agentJid, 'agent-conversation', async () => {
-      taskRuns += 1;
+  test('a later attempt that registers no batch does not inherit an earlier snapshot', async () => {
+    const cursor = { timestamp: '2026-07-30T00:00:00.000Z', id: 'first' };
+    let runs = 0;
+    const onMaxRetriesExceeded = vi.fn();
+    queue.setOnMaxRetriesExceeded(onMaxRetriesExceeded);
+    enqueueTurn(async () => {
+      runs += 1;
+      if (runs === 1) {
+        queue.setMessageRetrySnapshot(JID, {
+          coveredCursors: [cursor],
+          cursor,
+        });
+      }
       return false;
     });
     await flushPromises();
-    expect(taskRuns).toBe(1);
-    expect(queue.getRetryCount(agentJid)).toBe(1);
-
-    await queue.stopGroup(agentJid);
-    await vi.advanceTimersByTimeAsync(5_000);
-    await flushPromises();
-    expect(taskRuns).toBe(1);
-    expect(queue.getRetryCount(agentJid)).toBe(0);
+    for (const delay of [5_000, 10_000, 20_000, 40_000, 80_000]) {
+      await vi.advanceTimersByTimeAsync(delay);
+      await flushPromises();
+    }
+    expect(runs).toBe(6);
+    expect(onMaxRetriesExceeded).toHaveBeenCalledWith(JID, null);
   });
 });
 
@@ -309,11 +297,10 @@ describe('GroupQueue retry jitter', () => {
   test('delays a retry by at most 20% beyond the base backoff', async () => {
     setRetryJitterSourceForTesting(() => 1);
     let runs = 0;
-    queue.setProcessMessagesFn(async () => {
+    enqueueTurn(async () => {
       runs += 1;
       return runs > 1;
     });
-    queue.enqueueMessageCheck(JID);
     await flushPromises();
     expect(runs).toBe(1);
 

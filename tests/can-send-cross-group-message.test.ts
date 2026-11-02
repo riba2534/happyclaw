@@ -11,7 +11,7 @@ import type { RegisteredGroup } from '../src/types.js';
  *  1. admin home → always allowed
  *  2. target.folder === sourceFolder (same workspace)
  *  3. member home + same created_by (cross-workspace, same user)
- *  4. target.target_main_jid → bound workspace folder === sourceFolder
+ *  4. topic group target_main_jid → bound workspace folder === sourceFolder
  *     (added in f93d922 — without this, agent in non-home sub-workspaces
  *      could not reply to its IM channel after agent-runner started
  *      rewriting ctx.chatJid to the IM source jid)
@@ -101,15 +101,16 @@ describe('canSendCrossGroupMessage', () => {
     ).toBe(false);
   });
 
-  // Branch 4: the f93d922 fix. Sub-workspace flow-x is bound to an IM
-  // chat (qq:c2c:xxx) via target_main_jid; replies must succeed.
-  test('IM chat bound to source workspace via target_main_jid → allowed', () => {
+  // Branch 4: a topic group bound to workspace flow-x via target_main_jid;
+  // replies from its sessions must succeed.
+  test('topic group bound to source workspace via target_main_jid → allowed', () => {
     const source = makeGroup({ folder: 'flow-x', created_by: 'u1' });
-    // The IM "group" entry has target_main_jid pointing at the workspace's
+    // The topic group's entry has target_main_jid pointing at the workspace's
     // web jid. The lookup resolves that jid to the bound workspace whose
     // folder matches sourceFolder.
     const imTarget = makeGroup({
-      folder: 'main', // home folder of admin (where IM messages land)
+      folder: 'main', // the channel account's default workspace
+      binding_mode: 'thread_map',
       target_main_jid: 'web:flow-x',
     });
     const lookupGroup = vi.fn((jid: string) =>
@@ -131,12 +132,37 @@ describe('canSendCrossGroupMessage', () => {
     expect(lookupGroup).toHaveBeenCalledWith('web:flow-x');
   });
 
+  test('target_main_jid outside a topic group grants nothing', () => {
+    const source = makeGroup({ folder: 'flow-x', created_by: 'u1' });
+    const imTarget = makeGroup({
+      folder: 'main',
+      target_main_jid: 'web:flow-x',
+    });
+    const lookupGroup = vi.fn((jid: string) =>
+      jid === 'web:flow-x'
+        ? makeGroup({ folder: 'flow-x', created_by: 'u1' })
+        : undefined,
+    );
+    expect(
+      canSendCrossGroupMessage(
+        false,
+        false,
+        'flow-x',
+        source,
+        imTarget,
+        lookupGroup,
+        () => undefined,
+      ),
+    ).toBe(false);
+  });
+
   test('Feishu native topic route inherits its bound conversation ACL', () => {
     const source = makeGroup({ folder: 'flow-x', created_by: 'u1' });
     const topicRoute =
       'feishu:oc_topic#thread:omt_current#root:om_current_root';
     const imTarget = makeGroup({
       folder: 'main',
+      binding_mode: 'thread_map',
       target_main_jid: 'web:flow-x',
     });
     const lookupGroup = vi.fn((jid: string) => {
@@ -169,6 +195,7 @@ describe('canSendCrossGroupMessage', () => {
     const source = makeGroup({ folder: 'flow-x', created_by: 'u1' });
     const imTarget = makeGroup({
       folder: 'main',
+      binding_mode: 'thread_map',
       target_main_jid: 'web:flow-y',
     });
     const lookupGroup = vi.fn((jid: string) =>
@@ -193,6 +220,7 @@ describe('canSendCrossGroupMessage', () => {
     const source = makeGroup({ folder: 'flow-x', created_by: 'u1' });
     const imTarget = makeGroup({
       folder: 'main',
+      binding_mode: 'thread_map',
       target_main_jid: 'web:does-not-exist',
     });
     const lookupGroup = vi.fn(() => undefined);

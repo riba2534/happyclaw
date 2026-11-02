@@ -71,6 +71,12 @@ function hostClaudeProfile() {
   };
 }
 
+const SESSION = 'session-1';
+
+function sessionClaudeDir(folder: string): string {
+  return path.join(ROOT, 'sessions', folder, 'agents', SESSION, '.claude');
+}
+
 function mountSession(folder: string) {
   const mounts = buildVolumeMounts(
     {
@@ -81,14 +87,13 @@ function mountSession(folder: string) {
       is_home: false,
     } as never,
     false,
+    SESSION,
     true,
-    undefined,
     'main',
-    undefined,
     undefined,
     hostClaudeProfile() as never,
   );
-  const sessionDir = path.join(ROOT, 'sessions', folder, '.claude');
+  const sessionDir = sessionClaudeDir(folder);
   const mounted = mounts.find(
     (mount: { containerPath: string }) =>
       mount.containerPath === '/home/node/.claude',
@@ -140,7 +145,7 @@ describe('host_claude in a container', () => {
   });
 
   test('a session an earlier build wrote them into loses them on its next launch', () => {
-    const sessionDir = path.join(ROOT, 'sessions', 'leaked', '.claude');
+    const sessionDir = sessionClaudeDir('leaked');
     fs.mkdirSync(sessionDir, { recursive: true });
     const leaked = {
       env: {

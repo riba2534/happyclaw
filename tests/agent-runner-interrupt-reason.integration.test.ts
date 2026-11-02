@@ -209,8 +209,8 @@ async function interruptedRun(name: string, reason: 'stop' | 'steer') {
   const scratch = path.join(scratchRoot, name);
   const dirs = {
     group: path.join(scratch, 'group'),
-    // Where the Host's GroupQueue writes this runner's sentinels.
-    ipc: path.join(scratchRoot, 'ipc', name),
+    // Where the Host's GroupQueue writes this session runner's sentinels.
+    ipc: path.join(scratchRoot, 'ipc', name, 'agents', 'session'),
     config: path.join(scratch, 'claude-config'),
     home: path.join(scratch, 'home'),
   };
@@ -238,10 +238,12 @@ async function interruptedRun(name: string, reason: 'stop' | 'steer') {
   let interruptedAt = 0;
   let interruptWritten = false;
   const queue = new GroupQueue();
-  const lane = (queue as any).getGroup(`web:${name}`);
+  const laneJid = `web:${name}#agent:session`;
+  const lane = (queue as any).getGroup(laneJid);
   Object.assign(lane, {
     active: true,
     groupFolder: name,
+    agentId: 'session',
     queryInFlight: true,
     queryId: QUERY_RUN_ID,
   });
@@ -252,8 +254,8 @@ async function interruptedRun(name: string, reason: 'stop' | 'steer') {
     // As /break (stop) and /steer or 「发送」 (no reason) call it.
     const written =
       reason === 'stop'
-        ? queue.interruptQuery(`web:${name}`, QUERY_RUN_ID, 'stop')
-        : queue.interruptQuery(`web:${name}`, QUERY_RUN_ID);
+        ? queue.interruptQuery(laneJid, QUERY_RUN_ID, 'stop')
+        : queue.interruptQuery(laneJid, QUERY_RUN_ID);
     if (!written) throw new Error('GroupQueue did not write the interrupt');
   };
   const server = http.createServer((request, response) => {

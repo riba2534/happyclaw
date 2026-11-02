@@ -847,15 +847,17 @@ try {
   abortController = new AbortController();
   timer = setTimeout(() => abortController.abort(), 60000);
   const pickedModel = 'gpt-6-astra';
+  // Every conversation is a session; its runner's grant names it.
   const conversation = {
     groupFolder: 'e2e-conversation',
-    sessionAgentId: null,
+    sessionAgentId: 'session-1',
   };
   // What a launch does for a pinned conversation: the picked effort is minted
   // into the runner's grant, the picked model becomes the runner's model.
   const pickLease = new CodexGatewayRunnerLease({
     kind: 'host',
-    ...conversation,
+    groupFolder: conversation.groupFolder,
+    agentId: conversation.sessionAgentId,
     sessionEffort: 'ultra',
   });
   overrideKey = resolveCodexGatewayLaunchConfig(

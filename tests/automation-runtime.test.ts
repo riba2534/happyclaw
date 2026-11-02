@@ -456,7 +456,6 @@ describe('run lifecycle reports', () => {
       FOLDER,
       {
         queue: { stopGroup: vi.fn(async () => {}) },
-        sessions: {},
         broadcast: vi.fn(),
         setLastAgentTimestamp: vi.fn(),
       },
@@ -478,7 +477,6 @@ describe('run lifecycle reports', () => {
       FOLDER,
       {
         queue: { stopGroup: vi.fn(async () => {}) },
-        sessions: {},
         broadcast: vi.fn(),
         setLastAgentTimestamp: vi.fn(),
       },

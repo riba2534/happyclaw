@@ -570,13 +570,37 @@ describe('changing the model starts a new session', () => {
         chatJid: 'web:grp',
       },
       selected,
-      null,
     );
     expect(input.sessionId).toBeUndefined();
     // deleteSession wiped the row; the new session is bound and recorded again.
     expect(db.getSession('grp', null) || undefined).toBeUndefined();
     expect(db.getSessionProviderId('grp', null)).toBe('gpt');
     expect(db.getSessionModel('grp', null)).toBe('gpt-6-astra');
+  });
+
+  test('the reset rebinds the session the launch runs', () => {
+    const session = 'session-1';
+    db.setSession('grp', 'sdk-session-1', session);
+    db.setSessionProviderId('grp', session, 'gpt');
+    db.setSessionModel('grp', session, 'gpt-6.1-sol');
+    db.setSessionModelSelection('grp', session, 'gpt', 'ops-1', {
+      model: 'gpt-6-astra',
+    });
+    const selected = runner.trySelectPoolProvider('grp', session);
+    providerPool.releaseSession('gpt');
+    applyProviderSwitchToInput(
+      {
+        prompt: 'continue',
+        sessionId: 'sdk-session-1',
+        groupFolder: 'grp',
+        chatJid: `web:grp#agent:${session}`,
+        agentId: session,
+      },
+      selected,
+    );
+    expect(db.getSession('grp', session) || undefined).toBeUndefined();
+    expect(db.getSessionProviderId('grp', session)).toBe('gpt');
+    expect(db.getSessionModel('grp', session)).toBe('gpt-6-astra');
   });
 });
 

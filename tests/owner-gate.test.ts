@@ -83,7 +83,11 @@ describe('owner gate — per-path drop decision', () => {
     // deleteUser is a SOFT delete (db.ts): row stays with status='deleted',
     // so getUserById still returns it — the gate blocks on the status value.
     'u-deleted': { id: 'u-deleted', role: 'member', status: 'deleted' },
-    'u-admin-disabled': { id: 'u-admin-disabled', role: 'admin', status: 'disabled' },
+    'u-admin-disabled': {
+      id: 'u-admin-disabled',
+      role: 'admin',
+      status: 'disabled',
+    },
   };
   const lookup = (id: string) => users[id];
 

@@ -123,9 +123,10 @@ const OWNER_JID = 'web:idempotency-owner';
 const OTHER_JID = 'web:idempotency-other';
 const SESSION_ID = '11111111-2222-4333-8444-555555555555';
 const SESSION_JID = `${OWNER_JID}#agent:${SESSION_ID}`;
+const OTHER_SESSION_ID = '33333333-2222-4333-8444-555555555555';
+const OTHER_SESSION_JID = `${OTHER_JID}#agent:${OTHER_SESSION_ID}`;
 
 const calls = {
-  enqueue: [] as string[],
   promote: [] as string[],
   tasks: [] as string[],
   dispatched: [] as string[],
@@ -143,16 +144,14 @@ const app = web.createAppForTest({
     stopGroup: async () => {},
     getActiveQueryId: () => activeRunId,
     requiresFeishuCliContainerRestart: () => false,
-    hasActiveMainRunnerForMessage: () => false,
+    hasActiveRunnerForMessage: () => false,
     sendMessage: () => 'no_active',
-    enqueueMessageCheck: (jid: string) => calls.enqueue.push(jid),
     enqueueTask: (jid: string) => calls.tasks.push(jid),
     closeStdin: () => {},
   },
   processAgentConversation: async () => {},
   getLastAgentTimestamp: () => pullCursors,
   dispatchQueuedFollowUps: (jid: string) => calls.dispatched.push(jid),
-  getSessions: () => ({}),
   setLastAgentTimestamp: () => {},
   getRegisteredGroups: () => ({}),
   resolveEffectiveGroup: (group: unknown) => {
@@ -166,7 +165,6 @@ const app = web.createAppForTest({
     if (failFormat) throw new Error('failed after the message was stored');
     return 'formatted';
   },
-  advanceGlobalCursor: () => {},
   advanceNextPullCursorOnly: () => {},
   promoteFollowUp: async (_jid: string, messageId: string) => {
     calls.promote.push(messageId);
@@ -192,21 +190,26 @@ beforeAll(() => {
   db.initDatabase();
   registerGroup(OWNER_JID, 'idempotency-owner', 'owner');
   registerGroup(OTHER_JID, 'idempotency-other', 'other');
-  db.createAgent({
-    id: SESSION_ID,
-    group_folder: 'idempotency-owner',
-    chat_jid: OWNER_JID,
-    name: 'Session',
-    prompt: '',
-    status: 'idle',
-    kind: 'conversation',
-    created_by: 'owner',
-    created_at: new Date().toISOString(),
-    completed_at: null,
-    result_summary: null,
-    last_im_jid: null,
-    spawned_from_jid: null,
-  });
+  for (const [id, folder, chatJid, owner] of [
+    [SESSION_ID, 'idempotency-owner', OWNER_JID, 'owner'],
+    [OTHER_SESSION_ID, 'idempotency-other', OTHER_JID, 'other'],
+  ]) {
+    db.createAgent({
+      id,
+      group_folder: folder,
+      chat_jid: chatJid,
+      name: 'Session',
+      prompt: '',
+      status: 'idle',
+      kind: 'conversation',
+      created_by: owner,
+      created_at: new Date().toISOString(),
+      completed_at: null,
+      result_summary: null,
+      last_im_jid: null,
+      spawned_from_jid: null,
+    });
+  }
   wsClients.set(
     {
       readyState: 1,
@@ -239,7 +242,6 @@ beforeEach(() => {
   calls.dispatched.length = 0;
   for (const jid of Object.keys(pullCursors)) delete pullCursors[jid];
   announced.length = 0;
-  calls.enqueue.length = 0;
   calls.promote.length = 0;
 });
 
@@ -253,7 +255,7 @@ async function post(body: Record<string, unknown>) {
   const res = await app.request('/api/messages', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ chatJid: OWNER_JID, ...body }),
+    body: JSON.stringify({ chatJid: OWNER_JID, agentId: SESSION_ID, ...body }),
   });
   const text = await res.text();
   let json: any = {};
@@ -282,15 +284,15 @@ describe('Web send idempotency', () => {
     expect(second.body.messageId).toBe(first.body.messageId);
     expect(second.body.disposition).toBe(first.body.disposition);
     expect(second.body.deduplicated).toBe(true);
-    expect(storedWith(OWNER_JID, 'resend me')).toHaveLength(1);
-    expect(calls.enqueue).toEqual([OWNER_JID]);
+    expect(storedWith(SESSION_JID, 'resend me')).toHaveLength(1);
+    expect(calls.tasks).toEqual([SESSION_JID]);
   });
 
   test('different ids are different messages', async () => {
     await post({ content: 'twice on purpose', clientMessageId: uuid() });
     await post({ content: 'twice on purpose', clientMessageId: uuid() });
-    expect(storedWith(OWNER_JID, 'twice on purpose')).toHaveLength(2);
-    expect(calls.enqueue).toHaveLength(2);
+    expect(storedWith(SESSION_JID, 'twice on purpose')).toHaveLength(2);
+    expect(calls.tasks).toHaveLength(2);
   });
 
   test('a client without ids keeps the old behaviour', async () => {
@@ -299,7 +301,7 @@ describe('Web send idempotency', () => {
     expect(first.status).toBe(200);
     expect(second.body.messageId).not.toBe(first.body.messageId);
     expect(second.body.deduplicated).toBeUndefined();
-    expect(storedWith(OWNER_JID, 'legacy client')).toHaveLength(2);
+    expect(storedWith(SESSION_JID, 'legacy client')).toHaveLength(2);
   });
 
   test('a concurrent resend waits for the first attempt and shares its answer', async () => {
@@ -321,7 +323,7 @@ describe('Web send idempotency', () => {
     expect(a.status).toBe(200);
     expect(b.status).toBe(200);
     expect(b.body.messageId).toBe(a.body.messageId);
-    expect(storedWith(OWNER_JID, 'steer concurrently')).toHaveLength(1);
+    expect(storedWith(SESSION_JID, 'steer concurrently')).toHaveLength(1);
     expect(calls.promote).toHaveLength(1);
   });
 
@@ -336,10 +338,10 @@ describe('Web send idempotency', () => {
     });
 
     expect(clash.status).toBe(409);
-    expect(storedWith(OWNER_JID, 'edited')).toHaveLength(0);
+    expect(storedWith(SESSION_JID, 'edited')).toHaveLength(0);
     // Steering instead of queueing is a different send.
     expect(asSteer.status).toBe(409);
-    expect(storedWith(OWNER_JID, 'original')).toHaveLength(1);
+    expect(storedWith(SESSION_JID, 'original')).toHaveLength(1);
   });
 
   test('the announced message carries its id, so the client can tell it was stored', async () => {
@@ -375,18 +377,18 @@ describe('Web send idempotency', () => {
     const resent = await post(body);
 
     expect(failed.status).toBe(500);
-    const [stored] = storedWith(OWNER_JID, 'stored then failed');
+    const [stored] = storedWith(SESSION_JID, 'stored then failed');
     expect(failed.body).toMatchObject({ stored: true, messageId: stored.id });
     expect(resent.status).toBe(200);
     expect(resent.body.deduplicated).toBe(true);
     expect(resent.body.partial).toBeUndefined();
-    expect(storedWith(OWNER_JID, 'stored then failed')).toHaveLength(1);
+    expect(storedWith(SESSION_JID, 'stored then failed')).toHaveLength(1);
     expect(resent.body.messageId).toBe(
-      storedWith(OWNER_JID, 'stored then failed')[0].id,
+      storedWith(SESSION_JID, 'stored then failed')[0].id,
     );
     expect(calls.promote).toHaveLength(1);
     // The steer is a durable follow-up whose dispatch the failure skipped.
-    expect(calls.dispatched).toEqual([OWNER_JID, OWNER_JID]);
+    expect(calls.dispatched).toEqual([SESSION_JID, SESSION_JID]);
   });
 
   test('a session input stored before a failure is queued again, and again on resend', async () => {
@@ -545,8 +547,8 @@ describe('Web send idempotency', () => {
     expect(failed.status).toBe(500);
     expect(retried.status).toBe(200);
     expect(retried.body.deduplicated).toBeUndefined();
-    expect(storedWith(OWNER_JID, 'after failure')).toHaveLength(1);
-    expect(calls.enqueue).toEqual([OWNER_JID]);
+    expect(storedWith(SESSION_JID, 'after failure')).toHaveLength(1);
+    expect(calls.tasks).toEqual([SESSION_JID]);
   });
 
   test('an expired record no longer answers and is pruned', async () => {
@@ -613,12 +615,13 @@ describe('Web send idempotency', () => {
 
     const ownChat = await post({
       chatJid: OTHER_JID,
+      agentId: OTHER_SESSION_ID,
       content: 'mine',
       clientMessageId: id,
     });
     expect(ownChat.status).toBe(200);
     expect(ownChat.body.deduplicated).toBeUndefined();
-    expect(storedWith(OTHER_JID, 'mine')).toHaveLength(1);
+    expect(storedWith(OTHER_SESSION_JID, 'mine')).toHaveLength(1);
   });
 
   test('a malformed id is rejected', async () => {

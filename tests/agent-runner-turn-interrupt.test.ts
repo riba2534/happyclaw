@@ -68,19 +68,28 @@ afterAll(() => {
 
 let folderSeq = 0;
 
-/** A Host lane whose runner is registered and running query `run-1`. */
+/** A Host session lane whose runner is registered and running query `run-1`. */
 function runningLane() {
   const folder = `lane-${++folderSeq}`;
-  const jid = `web:${folder}`;
+  const agentId = `session-${folderSeq}`;
+  const jid = `web:${folder}#agent:${agentId}`;
   const queue = new GroupQueue();
   const state = (queue as any).getGroup(jid);
   state.active = true;
   state.process = { pid: 4242 };
   state.groupFolder = folder;
+  state.agentId = agentId;
   state.queryInFlight = true;
   state.queryId = 'run-1';
-  const inputDir = path.join(dataDir, 'ipc', folder, 'input');
-  return { queue, state, jid, folder, inputDir };
+  const inputDir = path.join(
+    dataDir,
+    'ipc',
+    folder,
+    'agents',
+    agentId,
+    'input',
+  );
+  return { queue, state, jid, folder, agentId, inputDir };
 }
 
 /** A processor fed task_started frames as Claude Code 2.1.296 sends them. */
@@ -253,7 +262,7 @@ describe('Host → runner interrupt reason', () => {
       true,
     );
     // Runner exit clears it with the other sentinels.
-    (lane.queue as any).cleanupIpcSentinels(lane.folder);
+    (lane.queue as any).cleanupIpcSentinels(lane.folder, lane.agentId);
     expect(fs.readdirSync(lane.inputDir)).toEqual([]);
   });
 
@@ -265,6 +274,7 @@ describe('Host → runner interrupt reason', () => {
     ] as const) {
       const lane = runningLane();
       lane.state.groupFolder = null;
+      lane.state.agentId = null;
       lane.state.process = null;
       for (const reason of order) {
         expect(lane.queue.interruptQuery(lane.jid, 'run-1', reason)).toBe(true);
@@ -273,6 +283,7 @@ describe('Host → runner interrupt reason', () => {
       lane.queue.registerProcess(lane.jid, { pid: 4243 } as any, {
         containerName: null,
         groupFolder: lane.folder,
+        agentId: lane.agentId,
       });
       expect(consumeInterruptSentinel(lane.inputDir)).toEqual({
         queryRunId: 'run-1',

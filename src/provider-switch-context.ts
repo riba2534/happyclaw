@@ -71,14 +71,13 @@ function seedPromptWithPersistedHistory<T extends ProviderSwitchInput>(
 export function applyProviderSwitchToInput<T extends ProviderSwitchInput>(
   input: T,
   poolResult: ProviderSwitchSelection | null,
-  sessionAgentId?: string | null,
 ): T {
   if (!poolResult?.resetSession) return input;
 
   logger.info(
     {
       groupFolder: input.groupFolder,
-      agentId: sessionAgentId || null,
+      agentId: input.agentId || null,
       previousProviderId: poolResult.previousProviderId,
       providerId: poolResult.profileId,
     },
@@ -91,16 +90,16 @@ export function applyProviderSwitchToInput<T extends ProviderSwitchInput>(
   // fresh pool pick, and the model so the next launch compares against the
   // model this new session actually starts on.
   if (input.sessionId) {
-    deleteSession(input.groupFolder, sessionAgentId);
+    deleteSession(input.groupFolder, input.agentId);
     setSessionProviderId(
       input.groupFolder,
-      sessionAgentId,
+      input.agentId,
       poolResult.profileId,
     );
     if (poolResult.sessionModel) {
       setSessionModel(
         input.groupFolder,
-        sessionAgentId,
+        input.agentId,
         poolResult.sessionModel,
       );
     }

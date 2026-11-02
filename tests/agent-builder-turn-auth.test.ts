@@ -312,23 +312,14 @@ describe('Agent Builder host turn authorization', () => {
 
 describe('Agent Builder runtime eligibility', () => {
   const base = {
-    runtimeAgentId: null,
-    runtimeAgentKind: null,
-    runtimeAgentFolder: null,
+    runtimeAgentKind: 'conversation',
+    runtimeAgentFolder: 'workspace-a',
     sourceFolder: 'workspace-a',
     sourceProfileIsDefault: true,
   } as const;
 
-  test('allows the main session and ordinary runtime sessions in any workspace', () => {
+  test('allows any conversation session of the workspace', () => {
     expect(getAgentBuilderRuntimeRejection(base)).toBeNull();
-    expect(
-      getAgentBuilderRuntimeRejection({
-        ...base,
-        runtimeAgentId: 'conversation-a',
-        runtimeAgentKind: 'conversation',
-        runtimeAgentFolder: 'workspace-a',
-      }),
-    ).toBeNull();
   });
 
   test('rejects custom profiles, spawn agents, and cross-workspace impersonation', () => {
@@ -338,19 +329,14 @@ describe('Agent Builder runtime eligibility', () => {
         sourceProfileIsDefault: false,
       }),
     ).toMatch(/main HappyClaw/);
+    for (const runtimeAgentKind of ['spawn', 'task', null] as const) {
+      expect(
+        getAgentBuilderRuntimeRejection({ ...base, runtimeAgentKind }),
+      ).toMatch(/ordinary main-Agent conversations/);
+    }
     expect(
       getAgentBuilderRuntimeRejection({
         ...base,
-        runtimeAgentId: 'spawn-a',
-        runtimeAgentKind: 'spawn',
-        runtimeAgentFolder: 'workspace-a',
-      }),
-    ).toMatch(/ordinary main-Agent conversations/);
-    expect(
-      getAgentBuilderRuntimeRejection({
-        ...base,
-        runtimeAgentId: 'conversation-b',
-        runtimeAgentKind: 'conversation',
         runtimeAgentFolder: 'workspace-b',
       }),
     ).toMatch(/ordinary main-Agent conversations/);

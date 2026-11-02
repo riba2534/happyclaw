@@ -22,7 +22,7 @@ describe('strict physical acknowledgement contract', () => {
   test('plugin-expander reply owns an auxiliary durable Turn and awaits its exact Outbox ACK', () => {
     const helper = sliceBetween(
       'async function sendPluginExpanderReply(',
-      '\nfunction getSessionClaudeDir(',
+      '\nasync function clearSessionRuntimeFiles(',
     );
 
     expect(helper).toContain(
@@ -40,8 +40,8 @@ describe('strict physical acknowledgement contract', () => {
     expect(helper).not.toContain('void sendImWith');
   });
 
-  test('cold main, cold agent, warm runner and follow-up all await plugin delivery before cursor/release', () => {
-    expect(source.match(/await sendPluginExpanderReply\(/g)).toHaveLength(4);
+  test('cold session and follow-up both await plugin delivery before cursor/release', () => {
+    expect(source.match(/await sendPluginExpanderReply\(/g)).toHaveLength(2);
     expect(source).not.toMatch(/void\s+sendPluginExpanderReply\(/);
 
     const followUp = sliceBetween(
@@ -55,8 +55,8 @@ describe('strict physical acknowledgement contract', () => {
     const callIndexes = [
       ...source.matchAll(/await sendPluginExpanderReply\(/g),
     ].map((match) => match.index);
-    // The first call is follow-up (asserted above). Cold main, cold Agent, and
-    // warm IPC are the remaining three and must gate their cursor locally.
+    // The first call is follow-up (asserted above). The cold session start is
+    // the other and must gate its cursor locally.
     for (const callIndex of callIndexes.slice(1)) {
       const callSite = source.slice(callIndex, callIndex + 2_000);
       const ackGate = callSite.indexOf('if (!delivery.acknowledged)');

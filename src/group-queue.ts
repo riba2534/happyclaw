@@ -3,12 +3,12 @@ import fs from 'fs';
 import path from 'path';
 import { randomUUID } from 'node:crypto';
 
-import { DATA_DIR } from './config.js';
 import { killProcessTree } from './container-runner.js';
 import { getSystemSettings } from './runtime-config.js';
 import { logger } from './logger.js';
 import { resolveFeishuCliBoundAccountId } from './feishu-cli-runtime.js';
 import { isIpcInputPayloadFilename } from './ipc-delivery-recovery.js';
+import { sessionIpcDir } from './utils.js';
 import type {
   RunnerRuntime,
   StuckRecoveryCandidate,
@@ -37,7 +37,7 @@ export interface IpcDeliveryTarget {
   coveredCursors: IpcMessageCursor[];
   cursor: IpcMessageCursor;
 }
-/** Immutable DB-message batch owned by one concrete message-lane attempt. */
+/** Immutable DB-message batch owned by one concrete runner attempt. */
 export interface MessageRetrySnapshot {
   coveredCursors: IpcMessageCursor[];
   cursor: IpcMessageCursor;
@@ -106,12 +106,14 @@ function compareIpcMessageCursors(
 
 interface QueuedTask {
   id: string;
-  groupJid: string;
-  /** Returning false asks GroupQueue to replay this exact task with the same
-   * bounded backoff used by message runs. Void/true remain one-shot success. */
+  /** Returning false asks GroupQueue to replay this exact task with bounded
+   * backoff. Void/true remain one-shot success. */
   fn: () => Promise<void | boolean>;
   /** Release caller-owned reservations when queued work is discarded. */
   onDropped?: () => void;
+  /** False for a runner that serves no conversation input (a terminal
+   * warm-up): it takes no IPC turn and closes once the lane has queued work. */
+  acceptsInput: boolean;
 }
 
 export type QueryFinishReason =
@@ -172,19 +174,16 @@ interface GroupState {
   /** Set synchronously by stopGroup and cleared only when a later run starts.
    * Prevents the killed run from scheduling a retry during its close handler. */
   stopRequested: boolean;
-  /** stopGroup waits on the runForGroup/runTask finally handshake instead of
-   * guessing from docker-kill completion or polling child-process state. */
+  /** stopGroup waits on the runTask finally handshake instead of guessing
+   * from docker-kill completion or polling child-process state. */
   teardownWaiters: Set<() => void>;
   active: boolean;
-  /** Monotonic identity for each concrete runForGroup/runTask lifecycle. */
+  /** Monotonic identity for each concrete runTask lifecycle. */
   runnerGeneration: number;
   /** Runtime actually assigned when this runner was launched. */
   runnerRuntime: RunnerRuntime | null;
-  /** True when the active runner is executing a scheduled task (not user messages). */
-  activeRunnerIsTask: boolean;
   /** Exact task currently owning this state. Mutation stops park this task so
-   * resume cannot accidentally route a conversation-agent turn through the
-   * ordinary processGroupMessages lane. */
+   * the lane replays it once the mutation is released. */
   activeTask: QueuedTask | null;
   /** Last time this runner produced any observable output. */
   lastActivityAt: number | null;
@@ -205,7 +204,6 @@ interface GroupState {
   pendingInterruptReason: InterruptReason;
   /** Host callback when a deferred cold-boot interrupt cannot be published. */
   deferredInterruptFailure?: (queryId: string) => void;
-  pendingMessages: boolean;
   pendingTasks: QueuedTask[];
   process: ChildProcess | null;
   containerName: string | null;
@@ -214,9 +212,9 @@ interface GroupState {
   agentId: string | null;
   retryCount: number;
   retryTimer: ReturnType<typeof setTimeout> | null;
-  /** Exact task captured by a retry timer; null means a message-lane retry. */
+  /** Exact task captured by the pending retry timer. */
   retryTask: QueuedTask | null;
-  /** Exact message batch captured by the current message-lane attempt. */
+  /** Exact message batch captured by the current runner attempt. */
   messageRetrySnapshot: MessageRetrySnapshot | null;
   /** Physical inputs owned by the current logical query only. Unlike the
    * runner-attempt retry snapshot, this is cleared at every query boundary. */
@@ -228,16 +226,10 @@ interface GroupState {
    * Host processes always keep this null because their native feishu-cli
    * environment/config is authoritative. */
   feishuCliAccountId: string | null;
-  /** Main runner contract; null for task/legacy runners. */
+  /** Delivery contract the runner was started with; null when unspecified. */
   interactionMode: InteractionMode | null;
   /** True when a _drain sentinel has been written for the current active runner. */
   drainSentinelWritten: boolean;
-  /** True when messages have been IPC-injected into the running agent via sendMessage().
-   *  Used to detect lost messages on abnormal exit: if the agent crashes after IPC
-   *  injection, the caller already advanced the cursor so processGroupMessages won't
-   *  re-read those messages.  The close handler uses this flag to force pendingMessages
-   *  so drainGroup triggers a fresh run. */
-  hasIpcInjectedMessages: boolean;
   /** Oldest IPC inject still owed by the current logical query. Unlike
    * lastActivityAt, ordinary runner output must never refresh this timestamp. */
   ipcOwedSinceAt: number | null;
@@ -265,7 +257,35 @@ interface GroupState {
   afterRunnerExit?: ((runnerJid: string) => void) | null;
 }
 
-type ActiveGroupState = GroupState & { groupFolder: string };
+/** A session's IPC input directory: data/ipc/{folder}/agents/{id}/input/ */
+function sessionIpcInputDir(groupFolder: string, agentId: string): string {
+  return path.join(sessionIpcDir(groupFolder, agentId), 'input');
+}
+
+/** Why the queue asks the host to start a lane's processing task. */
+export type LaneStartReason = 'restart' | 'unconsumed_ipc';
+
+/** A lane whose runner has registered: it always serves one session. */
+type ActiveGroupState = GroupState & { groupFolder: string; agentId: string };
+
+/** The runner registered its session, so its IPC directory is known. */
+function hasRunnerIpc(state: GroupState): state is ActiveGroupState {
+  return !!state.groupFolder && !!state.agentId;
+}
+
+export interface QueueGroupStatus {
+  jid: string;
+  active: boolean;
+  pendingMessages: boolean;
+  pendingTasks: number;
+  containerName: string | null;
+  displayName: string | null;
+  groupFolder: string | null;
+  selectedProviderId: string | null;
+  queryInFlight: boolean;
+  queryId: string | null;
+  queryStartedAt: number | null;
+}
 
 export class GroupQueue {
   private groups = new Map<string, GroupState>();
@@ -291,16 +311,16 @@ export class GroupQueue {
    * mutation pause this holds one lane, never its workspace family.
    */
   private heldLanes = new Map<string, number>();
-  // 记录每个 lane（序列化 key）最近一次 stopGroup 的时间戳（毫秒）。runForGroup
-  // finally 块会用它来决定是否跳过自动 drainGroup —— stopGroup 中清空
-  // pendingMessages 之后，hasIpcInjectedMessages 重新置 pendingMessages=true，
-  // 会让用户的 'stop' 之后容器立即又被拉起来。同时让主消息循环在 OOM 计数前
-  // 看一眼这个标志，避免把 user-stopped (SIGKILL → 137) 误判为真实 OOM 触发
-  // 会话重置。按 lane 记录：停一个会话不影响同一工作区的其他 lane。
+  // 记录每个 lane（序列化 key）最近一次 stopGroup 的时间戳（毫秒）。runner 退出
+  // 时用它跳过未消费 IPC 的恢复，避免用户 'stop' 之后容器立即又被拉起来；宿主在
+  // OOM 计数前也看一眼这个标志，避免把 user-stopped (SIGKILL → 137) 误判为真实
+  // OOM 触发会话重置。按 lane 记录：停一个会话不影响同一工作区的其他 lane。
   private recentlyStoppedLanes = new Map<string, number>();
   private static RECENTLY_STOPPED_WINDOW_MS = 30_000;
-  private processMessagesFn: ((groupJid: string) => Promise<boolean>) | null =
-    null;
+  /** Host hook that enqueues a lane's processing task from durable state. */
+  private laneStarterFn:
+    | ((groupJid: string, reason: LaneStartReason) => void)
+    | null = null;
   private shuttingDown = false;
   private hostModeChecker: ((groupJid: string) => boolean) | null = null;
   private serializationKeyResolver: ((groupJid: string) => string) | null =
@@ -333,9 +353,6 @@ export class GroupQueue {
   private userConcurrentLimitFn:
     | ((groupJid: string) => { allowed: boolean; userId?: string | null })
     | null = null;
-  private onUnconsumedAgentIpcFn:
-    | ((groupJid: string, agentId: string) => void)
-    | null = null;
   private onUnacknowledgedIpcDeliveriesFn:
     | ((groupJid: string, receipts: IpcDeliveryReceipt[]) => void)
     | null = null;
@@ -365,7 +382,6 @@ export class GroupQueue {
         active: false,
         runnerGeneration: 0,
         runnerRuntime: null,
-        activeRunnerIsTask: false,
         activeTask: null,
         lastActivityAt: null,
         queryInFlight: false,
@@ -374,7 +390,6 @@ export class GroupQueue {
         announcedQueryId: null,
         pendingInterruptQueryId: null,
         pendingInterruptReason: 'steer',
-        pendingMessages: false,
         pendingTasks: [],
         process: null,
         containerName: null,
@@ -391,7 +406,6 @@ export class GroupQueue {
         feishuCliAccountId: null,
         interactionMode: null,
         drainSentinelWritten: false,
-        hasIpcInjectedMessages: false,
         ipcOwedSinceAt: null,
         pendingIpcDeliveries: new Map(),
         acknowledgedIpcDeliveryIds: new Set(),
@@ -478,7 +492,7 @@ export class GroupQueue {
     if (released.size === 0) return;
     for (const [jid, state] of this.groups) {
       if (!released.has(this.getMutationPauseKey(jid))) continue;
-      if (state.pendingMessages || state.pendingTasks.length > 0) {
+      if (state.pendingTasks.length > 0) {
         this.waitingGroups.add(jid);
       }
       state.mutationKey = null;
@@ -555,10 +569,10 @@ export class GroupQueue {
   }
 
   /**
-   * Hold one lane (a Runtime Session being deleted) without pausing its
-   * workspace: the lane's queued and newly arriving work waits instead of
-   * starting a runner, and stopGroup(..., { preserveQueuedWork: true }) keeps
-   * it, while the main session and the other sessions keep running.
+   * Hold one lane (a Session being deleted) without pausing its workspace:
+   * the lane's queued and newly arriving work waits instead of starting a
+   * runner, and stopGroup(..., { preserveQueuedWork: true }) keeps it, while
+   * the workspace's other sessions keep running.
    */
   holdLane(groupJid: string): void {
     this.heldLanes.set(groupJid, (this.heldLanes.get(groupJid) ?? 0) + 1);
@@ -574,7 +588,7 @@ export class GroupQueue {
     if (state && !state.active) {
       this.recoverUnacknowledgedIpcDeliveries(groupJid, state);
     }
-    if (state && (state.pendingMessages || state.pendingTasks.length > 0)) {
+    if (state && state.pendingTasks.length > 0) {
       this.waitingGroups.add(groupJid);
     }
     this.drainWaiting();
@@ -640,7 +654,6 @@ export class GroupQueue {
 
   /** Drop a lane's queued work and run its discard hook, as stopGroup does. */
   private discardLaneWork(groupJid: string, state: GroupState): void {
-    state.pendingMessages = false;
     this.discardPendingTasks(state, groupJid);
     this.clearRetryTimer(state);
     this.waitingGroups.delete(groupJid);
@@ -706,13 +719,12 @@ export class GroupQueue {
     for (const [jid, state] of this.groups) {
       if (!releasedKeys.has(this.getMutationPauseKey(jid))) continue;
       if (terminalReleasedKeys.has(this.getMutationPauseKey(jid))) {
-        state.pendingMessages = false;
         this.discardPendingTasks(state, jid);
         this.clearRetryTimer(state);
         this.waitingGroups.delete(jid);
         continue;
       }
-      if (state.pendingMessages || state.pendingTasks.length > 0) {
+      if (state.pendingTasks.length > 0) {
         this.waitingGroups.add(jid);
       }
       state.mutationKey = null;
@@ -778,7 +790,7 @@ export class GroupQueue {
     }
   }
 
-  /** 当前重试轮次（0 = 首次尝试）。供 processMessages 侧识别静默重试轮。 */
+  /** 当前重试轮次（0 = 首次尝试）。供会话处理侧识别静默重试轮。 */
   getRetryCount(groupJid: string): number {
     return this.groups.get(groupJid)?.retryCount ?? 0;
   }
@@ -786,10 +798,6 @@ export class GroupQueue {
   /** 本轮失败后队列是否还会再次重试（决定错误提示发本轮还是等最终失败）。 */
   willRetryAfterFailure(groupJid: string): boolean {
     return (this.groups.get(groupJid)?.retryCount ?? 0) < MAX_RETRIES;
-  }
-
-  setProcessMessagesFn(fn: (groupJid: string) => Promise<boolean>): void {
-    this.processMessagesFn = fn;
   }
 
   setHostModeChecker(fn: (groupJid: string) => boolean): void {
@@ -810,15 +818,41 @@ export class GroupQueue {
   }
 
   /**
+   * Enqueue the processing task of a lane whose runner the queue tore down
+   * itself (restartGroup) or that exited leaving unread IPC input behind
+   * (issue #240). The host reads the lane's work from durable state.
+   */
+  setLaneStarter(
+    fn: (groupJid: string, reason: LaneStartReason) => void,
+  ): void {
+    this.laneStarterFn = fn;
+  }
+
+  private startLane(groupJid: string, reason: LaneStartReason): void {
+    if (!this.laneStarterFn) {
+      logger.warn(
+        { groupJid, reason },
+        'No lane starter set; lane not started',
+      );
+      return;
+    }
+    try {
+      this.laneStarterFn(groupJid, reason);
+    } catch (err) {
+      logger.error({ groupJid, reason, err }, 'Lane starter failed');
+    }
+  }
+
+  /**
    * Fence retry exhaustion to the immutable DB batch read by the current
-   * message-lane attempt. Messages arriving after this snapshot must remain
+   * runner attempt. Messages arriving after this snapshot must remain
    * pending work and cannot be attributed to the failed attempt.
    */
   setMessageRetrySnapshot(
     groupJid: string,
     snapshot: MessageRetrySnapshot,
   ): boolean {
-    // A cold message runner becomes active before it registers its folder and
+    // A cold runner becomes active before it registers its folder and
     // process handle. Prefer that exact state during the boot window; sibling
     // JIDs still fall back to the fully registered shared runner.
     const ownState = this.groups.get(groupJid);
@@ -830,12 +864,6 @@ export class GroupQueue {
       .map((cursor) => ({ ...cursor }))
       .sort(compareIpcMessageCursors);
     if (coveredCursors.length === 0) return false;
-    // Conversation-agent lanes are implemented with runTask but still own
-    // user-message queries. Track their coverage without turning it into a
-    // message-lane retry snapshot. Scheduled task runners remain excluded.
-    if (state.activeRunnerIsTask) {
-      return groupJid.includes('#agent:');
-    }
     state.messageRetrySnapshot = {
       coveredCursors,
       cursor: { ...coveredCursors[coveredCursors.length - 1] },
@@ -990,17 +1018,6 @@ export class GroupQueue {
     this.onLaneDiscardedFn = fn;
   }
 
-  /**
-   * Called when an agent runner exits with unconsumed IPC message files.
-   * The callback should re-enqueue processAgentConversation for the agent.
-   * See GitHub issue #240.
-   */
-  setOnUnconsumedAgentIpc(
-    fn: (groupJid: string, agentId: string) => void,
-  ): void {
-    this.onUnconsumedAgentIpcFn = fn;
-  }
-
   setOnUnacknowledgedIpcDeliveries(
     fn: (groupJid: string, receipts: IpcDeliveryReceipt[]) => void,
   ): void {
@@ -1055,17 +1072,11 @@ export class GroupQueue {
     state.retryTask = null;
   }
 
-  /** Preserve the exact task lane across a policy mutation stop. Returning
-   * true tells stopGroup not to synthesize pendingMessages for this state. */
-  private parkTaskForMutation(state: GroupState, groupJid: string): boolean {
+  /** Preserve the exact task lane across a policy mutation stop: the active
+   * or retrying task runs again, ahead of the queued ones, once released. */
+  private parkTaskForMutation(state: GroupState, groupJid: string): void {
     const retryTask = state.retryTask;
     const task = state.activeTask ?? retryTask;
-    const isVirtualTaskLane =
-      this.isVirtualJid(groupJid) &&
-      !state.active &&
-      state.pendingTasks.length > 0;
-    if (!task && !isVirtualTaskLane) return false;
-
     if (
       task &&
       !state.pendingTasks.some((candidate) => candidate.id === task.id)
@@ -1073,16 +1084,15 @@ export class GroupQueue {
       state.pendingTasks.unshift(task);
     }
     if (retryTask) this.cancelRetryTimer(state);
-    this.waitingGroups.add(groupJid);
-    return true;
+    if (state.pendingTasks.length > 0) this.waitingGroups.add(groupJid);
   }
 
   /**
    * Whether stopGroup was issued for this lane (its serialization key, so
    * the JIDs sharing one runner count as one lane) in the recent window.
    * Used by:
-   *   1. runForGroup finally — skip pendingMessages re-arm + drainGroup
-   *   2. main loop OOM handler — don't count user-stopped 137 as OOM
+   *   1. runner exit — skip unconsumed-IPC recovery after an ordinary stop
+   *   2. host OOM handler — don't count user-stopped 137 as OOM
    *   3. anything else that needs to suppress auto-restart shortly after a stop
    */
   isRecentlyStopped(groupJid: string): boolean {
@@ -1189,7 +1199,7 @@ export class GroupQueue {
       const state = this.groups.get(jid);
       if (
         state &&
-        (state.pendingMessages || state.pendingTasks.length > 0) &&
+        state.pendingTasks.length > 0 &&
         !runnerKeys.has(this.getSerializationKey(jid)) &&
         !this.isHostMode(jid) &&
         !this.isMutationPaused(jid) &&
@@ -1231,8 +1241,6 @@ export class GroupQueue {
     return (
       state.active &&
       state.runnerRuntime === 'container' &&
-      // Scheduled-task runners close themselves when their run ends.
-      (!state.activeRunnerIsTask || jid.includes('#agent:')) &&
       !state.queryInFlight &&
       state.idleSince != null &&
       !state.idleFromContinuation &&
@@ -1240,13 +1248,11 @@ export class GroupQueue {
       !state.stopRequested &&
       !state.restarting &&
       !state.drainSentinelWritten &&
-      !state.pendingMessages &&
-      state.pendingTasks.length === 0 &&
-      !state.hasIpcInjectedMessages &&
       state.ipcOwedSinceAt === null &&
       state.pendingIpcDeliveries.size === 0 &&
       !!state.groupFolder &&
-      !this.isMutationPaused(jid)
+      !this.isMutationPaused(jid) &&
+      !this.laneHasQueuedTasks(jid)
     );
   }
 
@@ -1359,52 +1365,41 @@ export class GroupQueue {
 
   private resolveActiveState(groupJid: string): ActiveGroupState | null {
     const own = this.getGroup(groupJid);
-    if (own.active && own.groupFolder) return own as ActiveGroupState;
+    if (own.active && hasRunnerIpc(own)) return own;
 
     const activeRunner = this.findActiveRunnerFor(groupJid);
     if (!activeRunner) return null;
     const shared = this.getGroup(activeRunner);
-    if (!shared.active || !shared.groupFolder) return null;
-    return shared as ActiveGroupState;
+    if (!shared.active || !hasRunnerIpc(shared)) return null;
+    return shared;
   }
 
   /**
-   * Write _drain to the exact conversation runner, or the main runner that
-   * owns this serialization key. This must target the runner state rather than
-   * the caller's group state because sibling JIDs can share one process.
+   * Write _drain to the runner serving this lane. A session runner is drained
+   * only through its own JID.
    */
   private requestDrainForActiveRunner(
     groupJid: string,
     reason: string,
   ): boolean {
-    const directState = this.groups.get(groupJid);
-    const exactConversationRunner =
-      directState?.active &&
-      directState.agentId !== null &&
-      groupJid.endsWith(`#agent:${directState.agentId}`);
-    const activeRunner = exactConversationRunner
-      ? groupJid
-      : this.findActiveRunnerFor(groupJid);
-    if (!activeRunner) return false;
+    const state = this.groups.get(groupJid);
+    if (!state?.active || !hasRunnerIpc(state)) return false;
 
-    const runnerState = this.getGroup(activeRunner);
-    if (
-      !runnerState.active ||
-      !runnerState.groupFolder ||
-      (runnerState.agentId !== null && !exactConversationRunner)
-    ) {
-      return false;
-    }
-
-    if (runnerState.drainSentinelWritten) {
+    if (state.drainSentinelWritten) {
       return true;
     }
 
-    const wrote = this.writeDrainSentinel(runnerState as ActiveGroupState);
-    if (!wrote) return false;
-    runnerState.drainSentinelWritten = true;
-    logger.info({ groupJid, activeRunner }, reason);
+    if (!this.writeDrainSentinel(state)) return false;
+    state.drainSentinelWritten = true;
+    logger.info({ groupJid }, reason);
     return true;
+  }
+
+  /** The lanes whose runner is active, without building a status snapshot. */
+  *activeLaneJids(): IterableIterator<string> {
+    for (const [jid, state] of this.groups) {
+      if (state.active) yield jid;
+    }
   }
 
   /** 检查指定 JID 是否有自己直接启动的活跃 runner（非通过 folder 共享匹配） */
@@ -1450,25 +1445,6 @@ export class GroupQueue {
     const state = this.resolveActiveState(groupJid);
     if (!state?.active) return;
     state.lastActivityAt = Date.now();
-  }
-
-  /**
-   * Mark that a message was IPC-injected into the running agent.
-   * The caller (web.ts) has already advanced the per-group cursor for this
-   * message.  If the agent crashes without processing it, the close handler
-   * uses this flag to force pendingMessages so drainGroup re-reads from DB.
-   */
-  markIpcInjectedMessage(groupJid: string): void {
-    const state = this.resolveActiveState(groupJid);
-    if (!state?.active) return;
-    state.hasIpcInjectedMessages = true;
-    // Restart the idle window at the user's latest message: stuck detection
-    // must measure silence *after* the inject, not since the previous turn's
-    // last output — otherwise a follow-up injected into a long-idle warm
-    // runner would look instantly stuck (#618).
-    const injectedAt = Date.now();
-    state.lastActivityAt = injectedAt;
-    state.ipcOwedSinceAt ??= injectedAt;
   }
 
   acknowledgeIpcDeliveries(
@@ -1635,7 +1611,12 @@ export class GroupQueue {
    * durable queued follow-up while it is being prepared for IPC injection. */
   reserveNextQuery(groupJid: string): string | null {
     const state = this.resolveActiveState(groupJid);
-    if (!state?.active || state.queryInFlight || state.closing) {
+    if (
+      !state?.active ||
+      state.queryInFlight ||
+      state.closing ||
+      state.activeTask?.acceptsInput === false
+    ) {
       return null;
     }
     state.queryInFlight = true;
@@ -1696,18 +1677,12 @@ export class GroupQueue {
     idleThresholdMs: number,
     ipcForceThresholdMs = Number.POSITIVE_INFINITY,
   ): StuckRecoveryCandidate | null {
-    if (!state.active) return null;
-    if (state.activeRunnerIsTask) return null;
-    // Warm follow-ups are IPC-injected without re-arming pendingMessages, so
-    // a wedged in-flight turn with injected input was invisible here (#618).
-    // The dedicated debt timestamp is cleared when the query reports idle;
-    // unlike hasIpcInjectedMessages, it does not persist for the runner's
-    // lifetime and ordinary output never refreshes it.
+    if (!state.active || state.restarting) return null;
+    // Owed work: IPC input still owed by the query in flight (#618), or tasks
+    // queued behind this runner. The debt timestamp is cleared when the query
+    // reports idle and ordinary output never refreshes it.
     const ipcOwedSinceAt = state.ipcOwedSinceAt ?? null;
     const hasIpcOwed = ipcOwedSinceAt !== null && state.queryInFlight;
-    if (!state.pendingMessages && !hasIpcOwed) return null;
-    if (state.agentId !== null) return null;
-    if (state.restarting) return null;
     const lastActivityAt = state.lastActivityAt ?? 0;
     if (lastActivityAt <= 0) return null;
     const idleMs = now - lastActivityAt;
@@ -1716,10 +1691,12 @@ export class GroupQueue {
     const reachedAbsoluteIpcCeiling =
       ipcOwedMs !== null && ipcOwedMs >= ipcForceThresholdMs;
     if (!reachedIdleThreshold && !reachedAbsoluteIpcCeiling) return null;
+    // Checked last: it scans every lane state.
+    if (!hasIpcOwed && !this.laneHasQueuedTasks(jid)) return null;
     return {
       jid,
       idleMs,
-      reason: hasIpcOwed ? 'ipc_injected' : 'pending_messages',
+      reason: hasIpcOwed ? 'ipc_injected' : 'pending_tasks',
       runtime:
         state.runnerRuntime ??
         (state.containerName !== null ? 'container' : 'host'),
@@ -1729,6 +1706,17 @@ export class GroupQueue {
       ipcOwedSinceAt,
       ipcOwedMs,
     };
+  }
+
+  /** Tasks queued for the lane of `jid` (its serialization key). */
+  private laneHasQueuedTasks(jid: string): boolean {
+    let key: string | undefined;
+    for (const [otherJid, other] of this.groups) {
+      if (other.pendingTasks.length === 0) continue;
+      key ??= this.getSerializationKey(jid);
+      if (this.getSerializationKey(otherJid) === key) return true;
+    }
+    return false;
   }
 
   getStuckPendingGroups(
@@ -1799,37 +1787,35 @@ export class GroupQueue {
   }
 
   /**
-   * Returns true iff `sendMessage(groupJid, ...)` would return 'sent' right
-   * now — i.e. there is an active runner and it is compatible with piping a
-   * user message in. Specifically:
-   *   - `resolveActiveState(groupJid)` returns non-null (active state, own
-   *     or via serialization sibling), AND
-   *   - the active runner is NOT a scheduled-task runner unless the caller
-   *     IS a `#agent:` conversation virtual JID (those are user-message
-   *     handlers started via `enqueueTask`).
-   *
-   * This predicate exists ONLY to gate web.ts eager plugin-command expansion
-   * against the same compatibility rules `sendMessage` uses internally.
-   * Returning `true` when `sendMessage` would actually return `no_active`
-   * causes a double-fire: eager expand runs inline `!` here, sendMessage
-   * rejects, cold-start re-reads the original DB row, expands a SECOND time,
-   * and inline `!` runs again under the wrong runner context (#21 round-13
-   * P1-1). The name is deliberately specific to discourage accidental reuse
-   * for "is a runner up at all?" semantics — that's `resolveActiveState() !==
-   * null`, which doesn't match `sendMessage`'s acceptance set.
+   * The runner that would take an IPC turn for `groupJid` right now, before
+   * `sendMessage` checks its Bot identity and interaction mode: active (own
+   * state or a serialization sibling), not on its way out, and started to
+   * serve conversation input.
    */
-  hasActiveMainRunnerForMessage(groupJid: string): boolean {
-    if (this.isTerminalMutationDiscarded(groupJid)) return false;
-    if (this.isMutationPaused(groupJid)) return false;
+  private resolveInputRunner(groupJid: string): ActiveGroupState | null {
+    if (this.isTerminalMutationDiscarded(groupJid)) return null;
+    if (this.isMutationPaused(groupJid)) return null;
     const state = this.resolveActiveState(groupJid);
-    if (!state) return false;
-    if (state.closing) return false;
-    // Task-runner exclusion mirrors sendMessage(). Conversation agents
-    // (`#agent:` virtual JIDs) DO accept IPC messages — exempt them.
-    if (state.activeRunnerIsTask && !groupJid.includes('#agent:')) {
-      return false;
-    }
-    return true;
+    // A runner on its way out must not take a new turn; the caller's cold
+    // start runs once it has exited.
+    if (!state || state.closing) return null;
+    if (state.activeTask?.acceptsInput === false) return null;
+    return state;
+  }
+
+  /**
+   * True when an active runner of this lane would accept an IPC turn right
+   * now: the same conditions as `sendMessage`, minus its Bot identity and
+   * interaction-mode requirements.
+   *
+   * Gates web.ts eager plugin-command expansion. Returning `true` when
+   * `sendMessage` would return `no_active` causes a double-fire: eager expand
+   * runs inline `!` here, sendMessage rejects, cold-start re-reads the
+   * original DB row, expands a SECOND time, and inline `!` runs again under
+   * the wrong runner context (#21 round-13 P1-1).
+   */
+  hasActiveRunnerForMessage(groupJid: string): boolean {
+    return this.resolveInputRunner(groupJid) !== null;
   }
 
   requiresFeishuCliContainerRestart(
@@ -1855,81 +1841,37 @@ export class GroupQueue {
     return state !== null && state.interactionMode !== interactionMode;
   }
 
-  enqueueMessageCheck(groupJid: string): void {
-    if (this.shuttingDown) return;
-
-    const state = this.getGroup(groupJid);
-    const mutationKey = this.getMutationPauseKey(groupJid);
-    if (this.terminalDiscardMutationKeys.has(mutationKey)) {
-      state.mutationKey = mutationKey;
-      state.pendingMessages = false;
-      this.waitingGroups.delete(groupJid);
-      logger.debug(
-        { groupJid, mutationKey },
-        'Terminal mutation discard active, dropping message check',
-      );
-      return;
-    }
-
-    if (this.isMutationPaused(groupJid)) {
-      state.pendingMessages = true;
-      this.waitingGroups.add(groupJid);
-      logger.debug({ groupJid }, 'Mutation pause active, message queued');
-      return;
-    }
-
-    const activeRunner = this.findActiveRunnerFor(groupJid);
-    if (state.active || (activeRunner && activeRunner !== groupJid)) {
-      state.pendingMessages = true;
-      this.waitingGroups.add(groupJid);
-      // Write _drain to the actual active runner so sibling JIDs sharing one
-      // folder also unblock immediately instead of waiting for idle timeout.
-      this.requestDrainForActiveRunner(
-        groupJid,
-        'Drain sentinel written during enqueueMessageCheck to unblock pending messages',
-      );
-      logger.debug(
-        { groupJid, activeRunner: activeRunner || groupJid },
-        'Group runner active, message queued',
-      );
-      return;
-    }
-
-    if (!this.hasCapacityFor(groupJid)) {
-      const isHost = this.isHostMode(groupJid);
-      state.pendingMessages = true;
-      this.waitingGroups.add(groupJid);
-      logger.debug(
-        {
-          groupJid,
-          activeContainerCount: this.activeContainerCount,
-          activeHostProcessCount: this.activeHostProcessCount,
-          mode: isHost ? 'host' : 'container',
-        },
-        'At concurrency limit, message queued',
-      );
-      this.reclaimIdleContainerRunner(groupJid);
-      return;
-    }
-
-    this.waitingGroups.delete(groupJid);
-    this.runForGroup(groupJid, 'messages');
-  }
-
+  /**
+   * Run `fn` as the lane's runner, or queue it behind the lane's active
+   * runner, a mutation pause or the container capacity. `acceptsInput: false`
+   * starts a runner that serves no conversation input (a terminal warm-up):
+   * it takes no IPC turn and closes as soon as other work is queued for its
+   * lane.
+   */
   enqueueTask(
     groupJid: string,
     taskId: string,
     fn: () => Promise<void | boolean>,
-    options?: { onDropped?: () => void },
+    options?: { onDropped?: () => void; acceptsInput?: boolean },
   ): boolean {
+    return this.admitTask(groupJid, {
+      id: taskId,
+      fn,
+      onDropped: options?.onDropped,
+      acceptsInput: options?.acceptsInput ?? true,
+    });
+  }
+
+  private admitTask(groupJid: string, task: QueuedTask): boolean {
     if (this.shuttingDown) return false;
 
+    const taskId = task.id;
     const state = this.getGroup(groupJid);
     const mutationKey = this.getMutationPauseKey(groupJid);
     if (this.terminalDiscardMutationKeys.has(mutationKey)) {
       state.mutationKey = mutationKey;
       try {
-        options?.onDropped?.();
+        task.onDropped?.();
       } catch (err) {
         logger.warn(
           { groupJid, taskId, err },
@@ -1950,41 +1892,27 @@ export class GroupQueue {
     }
 
     if (this.isMutationPaused(groupJid)) {
-      state.pendingTasks.push({
-        id: taskId,
-        groupJid,
-        fn,
-        onDropped: options?.onDropped,
-      });
+      state.pendingTasks.push(task);
       this.waitingGroups.add(groupJid);
       logger.debug({ groupJid, taskId }, 'Mutation pause active, task queued');
       return true;
     }
 
     const activeRunner = this.findActiveRunnerFor(groupJid);
-    if (state.active || (activeRunner && activeRunner !== groupJid)) {
-      state.pendingTasks.push({
-        id: taskId,
-        groupJid,
-        fn,
-        onDropped: options?.onDropped,
-      });
+    if (activeRunner) {
+      state.pendingTasks.push(task);
       this.waitingGroups.add(groupJid);
       logger.debug(
-        { groupJid, taskId, activeRunner: activeRunner || groupJid },
+        { groupJid, taskId, activeRunner },
         'Group runner active, task queued',
       );
+      this.retireRunnerServingNoInput(activeRunner);
       return true;
     }
 
     if (!this.hasCapacityFor(groupJid)) {
       const isHost = this.isHostMode(groupJid);
-      state.pendingTasks.push({
-        id: taskId,
-        groupJid,
-        fn,
-        onDropped: options?.onDropped,
-      });
+      state.pendingTasks.push(task);
       this.waitingGroups.add(groupJid);
       logger.debug(
         {
@@ -2002,13 +1930,20 @@ export class GroupQueue {
 
     // Run immediately
     this.waitingGroups.delete(groupJid);
-    this.runTask(groupJid, {
-      id: taskId,
-      groupJid,
-      fn,
-      onDropped: options?.onDropped,
-    });
+    this.runTask(groupJid, task);
     return true;
+  }
+
+  /** Queued work for its lane retires a runner that serves no input now
+   * instead of after its idle timeout. */
+  private retireRunnerServingNoInput(runnerJid: string): void {
+    const state = this.groups.get(runnerJid);
+    if (state?.activeTask?.acceptsInput !== false || state.closing) return;
+    logger.info(
+      { groupJid: runnerJid, taskId: state.activeTask.id },
+      'Retiring a runner that serves no input for work queued on its lane',
+    );
+    this.retireRunnerAfterQuery(runnerJid);
   }
 
   registerProcess(
@@ -2018,7 +1953,7 @@ export class GroupQueue {
       containerName: string | null;
       groupFolder?: string;
       displayName?: string;
-      agentId?: string;
+      agentId: string;
       selectedProviderId?: string | null;
       feishuCliAccountId?: string | null;
       interactionMode?: InteractionMode;
@@ -2031,7 +1966,7 @@ export class GroupQueue {
     state.runnerRuntime = opts.containerName === null ? 'host' : 'container';
     state.displayName = opts.displayName || null;
     if (opts.groupFolder) state.groupFolder = opts.groupFolder;
-    state.agentId = opts.agentId || null;
+    state.agentId = opts.agentId;
     state.selectedProviderId = opts.selectedProviderId ?? null;
     state.feishuCliAccountId = opts.feishuCliAccountId ?? null;
     state.interactionMode = opts.interactionMode ?? null;
@@ -2063,36 +1998,13 @@ export class GroupQueue {
     } else if (pendingInterruptQueryId) {
       state.pendingInterruptQueryId = null;
     }
-    // An incompatible suffix or a new message can be queued after runForGroup
-    // marks the lane active but before the child process registers. The first
-    // drain attempt has no groupFolder/input path yet; close that boot window
-    // here so pending work does not wait for the warm runner's idle timeout.
-    if (
-      state.pendingMessages &&
-      !state.activeRunnerIsTask &&
-      !state.drainSentinelWritten
-    ) {
-      const wrote = this.writeDrainSentinel(state as ActiveGroupState);
-      if (wrote) state.drainSentinelWritten = true;
-    }
+    // A runner retired before it had an IPC path closes once it has one.
+    if (state.closing && !state.queryInFlight) this.closeStdin(groupJid);
   }
 
-  /**
-   * Resolve IPC input directory for a group state.
-   * Sub-agents use a nested path: data/ipc/{folder}/agents/{agentId}/input/
-   */
+  /** The session's IPC input directory: data/ipc/{folder}/agents/{id}/input/ */
   private resolveIpcInputDir(state: ActiveGroupState): string {
-    if (state.agentId) {
-      return path.join(
-        DATA_DIR,
-        'ipc',
-        state.groupFolder,
-        'agents',
-        state.agentId,
-        'input',
-      );
-    }
-    return path.join(DATA_DIR, 'ipc', state.groupFolder, 'input');
+    return sessionIpcInputDir(state.groupFolder, state.agentId);
   }
 
   /**
@@ -2100,7 +2012,9 @@ export class GroupQueue {
    *
    * Returns:
    * - 'sent': message written to IPC (包括 queryInFlight 时的排队写入)
-   * - 'no_active': no active container/process for this group
+   * - 'no_active': no runner of this lane takes the turn now (none active,
+   *   closing, serving no input, or started for another Bot or mode); the
+   *   caller enqueues the lane's task, which runs once that runner exits
    */
   sendMessage(
     groupJid: string,
@@ -2115,13 +2029,8 @@ export class GroupQueue {
     ) => IpcPrePublishAdmission | false | void,
     requirements?: RunnerMessageRequirements,
   ): SendMessageResult {
-    if (this.isTerminalMutationDiscarded(groupJid)) return 'no_active';
-    if (this.isMutationPaused(groupJid)) return 'no_active';
-    const state = this.resolveActiveState(groupJid);
+    const state = this.resolveInputRunner(groupJid);
     if (!state) return 'no_active';
-    // A runner on its way out must not take a new turn; the caller's cold
-    // start runs once it has exited.
-    if (state.closing) return 'no_active';
 
     // Container credentials are immutable process environment. Never inject a
     // turn from Bot B into a warm runner that started with Bot A (or with no
@@ -2167,26 +2076,6 @@ export class GroupQueue {
           requiredInteractionMode: requirements.interactionMode,
         },
         'Rejected warm IPC injection across interaction modes',
-      );
-      return 'no_active';
-    }
-
-    // If the active runner is a scheduled task (not a user-message handler),
-    // do NOT pipe user messages into it.  The task container has no knowledge
-    // of the user conversation context, so any IPC message injected here would
-    // be silently consumed (or confusingly processed) by the task agent and the
-    // reply would never reach the user.  Returning 'no_active' causes the
-    // caller to enqueue a fresh message-processing run that will execute once
-    // the task finishes.  See GitHub issue riba2534/happyclaw#151.
-    //
-    // Exception: conversation agent tasks (virtual JIDs with #agent:) are
-    // user-message handlers started via enqueueTask.  They DO accept IPC
-    // messages — blocking them causes a deadlock where the agent waits for
-    // IPC input that never arrives.
-    if (state.activeRunnerIsTask && !groupJid.includes('#agent:')) {
-      logger.debug(
-        { groupJid },
-        'Active runner is a scheduled task; deferring user message until task completes',
       );
       return 'no_active';
     }
@@ -2279,7 +2168,6 @@ export class GroupQueue {
       // Rename + in-memory delivery registration are one synchronous critical
       // section. Mutation pause/stop cannot observe a written file without its
       // recovery metadata (the old callback→mark race window).
-      state.hasIpcInjectedMessages = true;
       // Idle window restarts at the user's latest injected message (#618).
       const injectedAt = Date.now();
       state.lastActivityAt = injectedAt;
@@ -2349,7 +2237,7 @@ export class GroupQueue {
         );
       }
       // 不静默：磁盘满 / 权限错 / inode 耗尽这些根因不应该被伪装成
-      // 'no_active'。下游会重新 enqueueMessageCheck 走 fallback 路径，
+      // 'no_active'。下游会重新入队该 lane 的任务走 fallback 路径，
       // 但运维需要看到根因日志。
       logger.warn(
         { groupJid, inputDir, err },
@@ -2383,11 +2271,10 @@ export class GroupQueue {
    */
   private cleanupIpcSentinels(
     groupFolder: string,
-    agentId?: string | null,
+    agentId: string | null,
   ): void {
-    const inputDir = agentId
-      ? path.join(DATA_DIR, 'ipc', groupFolder, 'agents', agentId, 'input')
-      : path.join(DATA_DIR, 'ipc', groupFolder, 'input');
+    if (!agentId) return;
+    const inputDir = sessionIpcInputDir(groupFolder, agentId);
     for (const name of [
       '_drain',
       '_close',
@@ -2403,25 +2290,14 @@ export class GroupQueue {
   }
 
   /**
-   * Check if there are unconsumed IPC message files (.json) in the input directory.
-   * Called after process exit to detect messages written via sendMessage() that were
-   * never consumed due to a race condition (process exiting before reading IPC).
-   * See GitHub issue #240.
-   */
-  /**
-   * Check for unconsumed IPC messages after agent/task exit and recover.
+   * Check for unconsumed IPC messages after a runner exit and recover.
    * Handles the race where sendMessage() wrote a file but the process
    * exited before reading it (issue #240).
    */
-  private recoverUnconsumedIpc(
-    groupJid: string,
-    state: GroupState,
-    context: string,
-  ): void {
-    if (!state.groupFolder) return;
-    // 与 runForGroup finally 的逻辑保持一致：刚被 stopGroup 标记的 folder 不
-    // 应该在这里重新点亮 pendingMessages，否则 stopGroup 之后的 drainGroup 路径
-    // 会拉起一个新 runner。
+  private recoverUnconsumedIpc(groupJid: string, state: GroupState): void {
+    if (!hasRunnerIpc(state)) return;
+    // 刚被 stopGroup 普通停止的 lane 不在这里重新入队，否则 stop 之后会立刻
+    // 拉起一个新 runner。
     if (
       this.isRecentlyStopped(groupJid) &&
       !this.mutationPreserveStopJids.has(groupJid)
@@ -2432,19 +2308,11 @@ export class GroupQueue {
       if (!this.hasRemainingIpcMessages(state.groupFolder, state.agentId))
         return;
 
-      if (state.agentId && this.onUnconsumedAgentIpcFn) {
-        logger.warn(
-          { groupJid, agentId: state.agentId },
-          `Unconsumed IPC messages found after ${context}, re-enqueuing`,
-        );
-        this.onUnconsumedAgentIpcFn(groupJid, state.agentId);
-      } else {
-        state.pendingMessages = true;
-        logger.warn(
-          { groupJid },
-          `Unconsumed IPC messages found after ${context}, marking pending`,
-        );
-      }
+      logger.warn(
+        { groupJid, agentId: state.agentId },
+        'Unconsumed IPC messages found after runner exit, starting the lane',
+      );
+      this.startLane(groupJid, 'unconsumed_ipc');
     } catch (err) {
       logger.warn({ groupJid, err }, 'Failed to check remaining IPC messages');
     }
@@ -2491,8 +2359,8 @@ export class GroupQueue {
     state: GroupState,
     deliveryIds: Set<string>,
   ): boolean {
-    if (!state.groupFolder || deliveryIds.size === 0) return true;
-    const inputDir = this.resolveIpcInputDir(state as ActiveGroupState);
+    if (!hasRunnerIpc(state) || deliveryIds.size === 0) return true;
+    const inputDir = this.resolveIpcInputDir(state);
     let filenames: string[];
     try {
       filenames = fs.readdirSync(inputDir).filter(isIpcInputPayloadFilename);
@@ -2559,13 +2427,11 @@ export class GroupQueue {
 
   private hasRemainingIpcMessages(
     groupFolder: string,
-    agentId?: string | null,
+    agentId: string | null,
   ): boolean {
-    const inputDir = agentId
-      ? path.join(DATA_DIR, 'ipc', groupFolder, 'agents', agentId, 'input')
-      : path.join(DATA_DIR, 'ipc', groupFolder, 'input');
+    if (!agentId) return false;
     try {
-      const files = fs.readdirSync(inputDir);
+      const files = fs.readdirSync(sessionIpcInputDir(groupFolder, agentId));
       return files.some(isIpcInputPayloadFilename);
     } catch {
       return false;
@@ -2596,8 +2462,8 @@ export class GroupQueue {
   closeAllActiveForCredentialRefresh(): number {
     let closed = 0;
     for (const [jid, state] of this.groups) {
-      if (state.active && state.groupFolder) {
-        const inputDir = this.resolveIpcInputDir(state as ActiveGroupState);
+      if (state.active && hasRunnerIpc(state)) {
+        const inputDir = this.resolveIpcInputDir(state);
         try {
           fs.mkdirSync(inputDir, { recursive: true });
           fs.writeFileSync(path.join(inputDir, '_close'), '');
@@ -2634,13 +2500,13 @@ export class GroupQueue {
       if (
         !state.active ||
         !state.process ||
-        !state.groupFolder ||
+        !hasRunnerIpc(state) ||
         state.selectedProviderId !== providerId ||
         state.drainSentinelWritten
       ) {
         continue;
       }
-      if (!this.writeDrainSentinel(state as ActiveGroupState)) continue;
+      if (!this.writeDrainSentinel(state)) continue;
       state.drainSentinelWritten = true;
       drained++;
       logger.info(
@@ -2668,14 +2534,14 @@ export class GroupQueue {
       const state = this.groups.get(jid);
       if (
         !state?.active ||
-        !state.groupFolder ||
+        !hasRunnerIpc(state) ||
         state.drainSentinelWritten ||
         (targetProviderId !== null &&
           state.selectedProviderId === targetProviderId)
       ) {
         continue;
       }
-      if (!this.writeDrainSentinel(state as ActiveGroupState)) continue;
+      if (!this.writeDrainSentinel(state)) continue;
       state.drainSentinelWritten = true;
       drained++;
       logger.info(
@@ -2716,7 +2582,7 @@ export class GroupQueue {
     // 中断把已积累的 backoff 进度归零。
     this.cancelRetryTimer(state);
 
-    if (!state.groupFolder) {
+    if (!hasRunnerIpc(state)) {
       if (!state.queryId) return false;
       const stopPending =
         state.pendingInterruptQueryId === state.queryId &&
@@ -2731,7 +2597,7 @@ export class GroupQueue {
     }
     state.pendingInterruptQueryId = null;
 
-    const inputDir = this.resolveIpcInputDir(state as ActiveGroupState);
+    const inputDir = this.resolveIpcInputDir(state);
     try {
       fs.mkdirSync(inputDir, { recursive: true });
       try {
@@ -2804,7 +2670,6 @@ export class GroupQueue {
     const requestedState = this.getGroup(groupJid);
     requestedState.stopRequested = true;
     if (!preserveQueuedWork) {
-      requestedState.pendingMessages = false;
       this.discardPendingTasks(requestedState, groupJid);
       this.clearRetryTimer(requestedState);
       try {
@@ -2812,12 +2677,11 @@ export class GroupQueue {
       } catch (err) {
         logger.error({ groupJid, err }, 'onLaneDiscarded callback failed');
       }
-    } else if (!this.parkTaskForMutation(requestedState, groupJid)) {
-      requestedState.pendingMessages = true;
-      this.waitingGroups.add(groupJid);
+    } else {
+      this.parkTaskForMutation(requestedState, groupJid);
     }
-    // 标记 stop 时间：runForGroup finally + index.ts OOM 计数 + 主消息循环
-    // 都用这个时间窗判断 user-stopped vs 真 OOM / IPC-injected drain。
+    // 标记 stop 时间：runner 退出时的 IPC 恢复与宿主的 OOM 计数都用这个时间窗
+    // 判断 user-stopped vs 真 OOM。
     if (requestedState.groupFolder)
       this.markStopped(groupJid, preserveQueuedWork);
     const activeRunner = this.findActiveRunnerFor(groupJid);
@@ -2826,12 +2690,10 @@ export class GroupQueue {
     state.stopRequested = true;
     if (targetJid !== groupJid) {
       if (!preserveQueuedWork) {
-        state.pendingMessages = false;
         this.discardPendingTasks(state, targetJid);
         this.clearRetryTimer(state);
-      } else if (!this.parkTaskForMutation(state, targetJid)) {
-        state.pendingMessages = true;
-        this.waitingGroups.add(targetJid);
+      } else {
+        this.parkTaskForMutation(state, targetJid);
       }
     }
     if (preserveQueuedWork) {
@@ -2877,7 +2739,7 @@ export class GroupQueue {
         killProcessTree(state.process, 'SIGTERM');
       }
 
-      // Wait for state.active to become false (runForGroup/runTask finally block)
+      // Wait for state.active to become false (runTask finally block)
       if (state.active) {
         await this.waitForRunnerTeardown(state, 10_000);
       }
@@ -2914,7 +2776,8 @@ export class GroupQueue {
   }
 
   /**
-   * Stop the running container, wait for it to finish, then start a new one.
+   * Stop the lane's runner and wait for its teardown, then run the lane's
+   * queued tasks and ask the host to start the lane again (setLaneStarter).
    */
   async restartGroup(groupJid: string): Promise<void> {
     const activeRunner = this.findActiveRunnerFor(groupJid);
@@ -2959,7 +2822,7 @@ export class GroupQueue {
         killProcessTree(state.process, 'SIGTERM');
       }
 
-      // Wait for runForGroup to finish and reset state
+      // Wait for runTask to finish and reset state
       await this.waitForRunnerTeardown(state, 20000);
 
       if (state.active) {
@@ -2991,243 +2854,12 @@ export class GroupQueue {
         throw new Error(`Failed to restart container for group ${targetJid}`);
       }
 
-      // Trigger a fresh container start
       logger.info({ groupJid: targetJid }, 'Restarting container');
-      this.enqueueMessageCheck(groupJid);
+      // The exit deferred the lane's queued work to this point.
+      this.drainGroup(targetJid);
+      this.startLane(groupJid, 'restart');
     } finally {
       state.restarting = false;
-    }
-  }
-
-  private async runForGroup(
-    groupJid: string,
-    reason: 'messages' | 'drain',
-  ): Promise<void> {
-    const state = this.getGroup(groupJid);
-    if (this.isMutationPaused(groupJid)) {
-      state.pendingMessages = true;
-      this.waitingGroups.add(groupJid);
-      return;
-    }
-    // Defensive re-entrancy guard: never start a second runner on a GroupState
-    // that is already active. Pending work is picked up by the active runner's
-    // finally → drainGroup, so returning here loses nothing.
-    if (state.active) {
-      logger.warn(
-        { groupJid, reason },
-        'runForGroup called on already-active group, ignoring re-entry',
-      );
-      return;
-    }
-    // A fresh user message may legitimately start a replacement before the
-    // previous failed run's backoff expires. That launch supersedes the old
-    // timer; leaving it armed would enqueue/drain the new active runner when
-    // it fires and can cause a second close cycle. Preserve retryCount so a
-    // sequence of closed/no-reply outcomes still reaches MAX_RETRIES.
-    this.cancelRetryTimer(state);
-    // A new user request after an ordinary Stop owns a fresh lifecycle. Clear
-    // the old discard marker before processGroupMessages starts; mutation
-    // markers are removed by resumeGroupsAfterMutation before reaching here.
-    if (state.stopRequested) {
-      this.recentlyStoppedLanes.delete(this.getSerializationKey(groupJid));
-    }
-    state.stopRequested = false;
-    const isHostMode = this.isHostMode(groupJid);
-    state.active = true;
-    state.runnerGeneration = (state.runnerGeneration ?? 0) + 1;
-    state.runnerRuntime = isHostMode ? 'host' : 'container';
-    state.activeRunnerIsTask = false;
-    state.lastActivityAt = Date.now();
-    state.queryInFlight = true;
-    state.ipcOwedSinceAt = null;
-    state.queryId = randomUUID();
-    state.queryStartedAt = Date.now();
-    state.announcedQueryId = null;
-    state.pendingInterruptQueryId = null;
-    state.pendingMessages = false;
-    state.messageRetrySnapshot = null;
-    state.currentQueryCoveredMessageIds = new Set();
-    this.waitingGroups.delete(groupJid);
-    this.activeCount++;
-    if (isHostMode) {
-      this.activeHostProcessCount++;
-    } else {
-      this.activeContainerCount++;
-    }
-
-    logger.debug(
-      {
-        groupJid,
-        reason,
-        activeCount: this.activeCount,
-        activeContainerCount: this.activeContainerCount,
-      },
-      'Starting container for group',
-    );
-
-    try {
-      this.announceQueryStart(groupJid, state);
-      this.onRunnerStateChangeFn?.(groupJid, 'running');
-    } catch (err) {
-      logger.error({ groupJid, err }, 'onRunnerStateChange(running) failed');
-    }
-
-    try {
-      if (this.processMessagesFn) {
-        const success = await this.processMessagesFn(groupJid);
-        if (success) {
-          state.retryCount = 0;
-          state.messageRetrySnapshot = null;
-          // Defensive: clear any lingering retry timer from a previous failed
-          // run that was superseded by a successful drain-triggered run.
-          this.clearRetryTimer(state);
-        } else if (this.canScheduleRetry(state)) {
-          await this.scheduleRetry(groupJid, state);
-        } else {
-          logger.info(
-            {
-              groupJid,
-              stopRequested: state.stopRequested,
-              restarting: state.restarting,
-            },
-            'Runner stop/restart in progress; suppressing failed-run retry',
-          );
-        }
-      }
-    } catch (err) {
-      logger.error({ groupJid, err }, 'Error processing messages for group');
-      if (this.canScheduleRetry(state)) {
-        await this.scheduleRetry(groupJid, state);
-      } else {
-        logger.info(
-          {
-            groupJid,
-            stopRequested: state.stopRequested,
-            restarting: state.restarting,
-          },
-          'Runner stop/restart in progress; suppressing exception retry',
-        );
-      }
-    } finally {
-      // Clean up stale sentinel files before clearing groupFolder/agentId
-      const exitFolder = state.groupFolder;
-      const isStopRequested =
-        state.stopRequested ||
-        (exitFolder ? this.isRecentlyStopped(groupJid) : false);
-      if (state.groupFolder) {
-        try {
-          this.cleanupIpcSentinels(state.groupFolder, state.agentId);
-        } catch (err) {
-          logger.warn({ groupJid, err }, 'Failed to clean up IPC sentinels');
-        }
-        if (
-          this.mutationPreserveStopJids.has(groupJid) &&
-          this.isMutationPaused(groupJid)
-        ) {
-          this.parkUnacknowledgedIpcDeliveries(groupJid, state);
-        } else {
-          this.recoverUnacknowledgedIpcDeliveries(groupJid, state);
-        }
-        this.recoverUnconsumedIpc(groupJid, state, 'agent exit');
-      }
-      // If messages were IPC-injected during this run, always mark pending
-      // so drainGroup triggers a fresh processGroupMessages.  If the agent
-      // already replied to them, processGroupMessages will find 0 new messages
-      // (cursor was committed) and return immediately — harmless.  If the
-      // agent crashed, this ensures the messages are re-read from DB.
-      //
-      // BUT: when the user just clicked Stop, this re-armed pendingMessages
-      // was racing stopGroup's clear → the agent restarted itself instantly.
-      // Honor stopGroup's intent by skipping this re-arm if a stop was issued
-      // for this folder in the last RECENTLY_STOPPED_WINDOW_MS.
-      const preserveMutationWork = this.mutationPreserveStopJids.has(groupJid);
-      if (
-        state.hasIpcInjectedMessages &&
-        (!isStopRequested || preserveMutationWork)
-      ) {
-        state.pendingMessages = true;
-        logger.debug(
-          { groupJid },
-          'IPC-injected messages detected, marking pending for safety re-check',
-        );
-      } else if (state.hasIpcInjectedMessages && isStopRequested) {
-        logger.info(
-          { groupJid, folder: exitFolder },
-          'Stop requested recently, skipping pendingMessages re-arm',
-        );
-      }
-      const unfinishedQueryId = state.queryId;
-      state.active = false;
-      state.drainSentinelWritten = false;
-      state.hasIpcInjectedMessages = false;
-      state.ipcOwedSinceAt = null;
-      state.lastActivityAt = null;
-      state.queryInFlight = false;
-      state.queryId = null;
-      state.queryStartedAt = null;
-      state.announcedQueryId = null;
-      state.pendingInterruptQueryId = null;
-      state.currentQueryCoveredMessageIds = new Set();
-      try {
-        this.onRunnerQueryTeardownFn?.(groupJid);
-      } catch (err) {
-        logger.error(
-          { groupJid, err },
-          'onRunnerQueryTeardown callback failed',
-        );
-      }
-      if (unfinishedQueryId) {
-        this.announceQueryFinish(
-          groupJid,
-          unfinishedQueryId,
-          isStopRequested ? 'stopped' : 'runner_exit',
-        );
-      }
-      state.process = null;
-      state.containerName = null;
-      state.displayName = null;
-      state.groupFolder = null;
-      state.agentId = null;
-      state.runnerRuntime = null;
-      state.interactionMode = null;
-      state.deferredInterruptFailure = undefined;
-      this.activeCount--;
-      if (isHostMode) {
-        this.activeHostProcessCount--;
-      } else {
-        this.activeContainerCount--;
-      }
-      this.settleRunnerExit(groupJid, state);
-      try {
-        this.onRunnerStateChangeFn?.(groupJid, 'idle');
-      } catch (err) {
-        logger.error({ groupJid, err }, 'onRunnerStateChange(idle) failed');
-      }
-      try {
-        this.onContainerExitFn?.(groupJid);
-      } catch (err) {
-        logger.error({ groupJid, err }, 'onContainerExit callback failed');
-      }
-      // Skip auto-drain when a stop was just requested — drainGroup would
-      // start a fresh runForGroup if any pending* slipped through.
-      if (state.restarting) {
-        logger.debug(
-          { groupJid, folder: exitFolder },
-          'Restart in progress; deferring replacement launch to restartGroup',
-        );
-      } else if (!isStopRequested || preserveMutationWork) {
-        try {
-          this.drainGroup(groupJid);
-        } catch (err) {
-          logger.error({ groupJid, err }, 'drainGroup failed');
-        }
-      } else {
-        logger.info(
-          { groupJid, folder: exitFolder },
-          'Stop requested recently, skipping drainGroup',
-        );
-      }
-      this.resolveRunnerTeardownWaiters(state);
     }
   }
 
@@ -3238,8 +2870,8 @@ export class GroupQueue {
       this.waitingGroups.add(groupJid);
       return;
     }
-    // Defensive re-entrancy guard (see runForGroup): a task must never start on
-    // an already-active GroupState, or it would overwrite the live process
+    // Defensive re-entrancy guard: a task must never start on an
+    // already-active GroupState, or it would overwrite the live process
     // handle and double-count the concurrency slot.
     if (state.active) {
       logger.warn(
@@ -3251,22 +2883,30 @@ export class GroupQueue {
       return;
     }
     // A newly-arrived conversation turn supersedes an older pending retry for
-    // the same virtual lane. Preserve retryCount until this run succeeds.
+    // the same lane. Preserve retryCount until this run succeeds.
     this.cancelRetryTimer(state);
+    // A new run after an ordinary stop owns a fresh lifecycle: its exit must
+    // not read as the stop. Mutation markers are cleared on release.
+    if (state.stopRequested) {
+      this.recentlyStoppedLanes.delete(this.getSerializationKey(groupJid));
+    }
     const isHostMode = this.isHostMode(groupJid);
     state.stopRequested = false;
     state.active = true;
     state.runnerGeneration = (state.runnerGeneration ?? 0) + 1;
     state.runnerRuntime = isHostMode ? 'host' : 'container';
-    state.activeRunnerIsTask = true;
     state.activeTask = task;
     state.lastActivityAt = Date.now();
-    state.queryInFlight = groupJid.includes('#agent:');
+    // A conversation task's cold start is its first query; a runner serving
+    // no input has none and is idle (reclaimable) from the start.
+    state.queryInFlight = task.acceptsInput;
+    state.idleSince = task.acceptsInput ? null : Date.now();
     state.ipcOwedSinceAt = null;
     state.queryId = state.queryInFlight ? randomUUID() : null;
     state.queryStartedAt = state.queryInFlight ? Date.now() : null;
     state.announcedQueryId = null;
     state.pendingInterruptQueryId = null;
+    state.messageRetrySnapshot = null;
     state.currentQueryCoveredMessageIds = new Set();
     this.waitingGroups.delete(groupJid);
     this.activeCount++;
@@ -3296,19 +2936,7 @@ export class GroupQueue {
     try {
       const success = await task.fn();
       if (success === false) {
-        if (this.canScheduleRetry(state)) {
-          await this.scheduleRetry(groupJid, state, task);
-        } else {
-          logger.info(
-            {
-              groupJid,
-              taskId: task.id,
-              stopRequested: state.stopRequested,
-              restarting: state.restarting,
-            },
-            'Task retry suppressed because the runner is stopping or restarting',
-          );
-        }
+        await this.scheduleRetry(groupJid, state, task);
       } else {
         this.clearRetryTimer(state);
       }
@@ -3330,11 +2958,10 @@ export class GroupQueue {
         } else {
           this.recoverUnacknowledgedIpcDeliveries(groupJid, state);
         }
-        this.recoverUnconsumedIpc(groupJid, state, 'task exit');
+        this.recoverUnconsumedIpc(groupJid, state);
       }
       const unfinishedQueryId = state.queryId;
       state.active = false;
-      state.activeRunnerIsTask = false;
       state.activeTask = null;
       state.drainSentinelWritten = false;
       state.lastActivityAt = null;
@@ -3385,7 +3012,12 @@ export class GroupQueue {
       } catch (err) {
         logger.error({ groupJid, err }, 'onContainerExit callback failed');
       }
-      if (!state.stopRequested) {
+      if (state.restarting) {
+        logger.debug(
+          { groupJid },
+          'Restart in progress; deferring the lane drain to restartGroup',
+        );
+      } else if (!state.stopRequested) {
         try {
           this.drainGroup(groupJid);
         } catch (err) {
@@ -3406,12 +3038,13 @@ export class GroupQueue {
   private async scheduleRetry(
     groupJid: string,
     state: GroupState,
-    retryTask: QueuedTask | null = null,
+    retryTask: QueuedTask,
   ): Promise<void> {
     if (!this.canScheduleRetry(state)) {
       logger.info(
         {
           groupJid,
+          taskId: retryTask.id,
           stopRequested: state.stopRequested,
           restarting: state.restarting,
           shuttingDown: this.shuttingDown,
@@ -3422,11 +3055,7 @@ export class GroupQueue {
     }
 
     // 清除可能存在的旧定时器（不重置 retryCount，因为这里在递增）
-    if (state.retryTimer !== null) {
-      clearTimeout(state.retryTimer);
-      state.retryTimer = null;
-    }
-    state.retryTask = null;
+    this.cancelRetryTimer(state);
 
     state.retryCount++;
     if (state.retryCount > MAX_RETRIES) {
@@ -3435,11 +3064,10 @@ export class GroupQueue {
         'Max retries exceeded, dropping messages (will retry on next incoming message)',
       );
       state.retryCount = 0;
-      state.retryTask = null;
       try {
         await this.onMaxRetriesExceededFn?.(
           groupJid,
-          retryTask ? null : state.messageRetrySnapshot,
+          state.messageRetrySnapshot,
         );
       } catch (err) {
         logger.error({ groupJid, err }, 'onMaxRetriesExceeded callback failed');
@@ -3458,7 +3086,7 @@ export class GroupQueue {
     logger.info(
       {
         groupJid,
-        taskId: retryTask?.id,
+        taskId: retryTask.id,
         retryCount: state.retryCount,
         delayMs,
       },
@@ -3469,13 +3097,7 @@ export class GroupQueue {
       state.retryTimer = null;
       state.retryTask = null;
       if (this.canScheduleRetry(state)) {
-        if (retryTask) {
-          this.enqueueTask(groupJid, retryTask.id, retryTask.fn, {
-            onDropped: retryTask.onDropped,
-          });
-        } else {
-          this.enqueueMessageCheck(groupJid);
-        }
+        this.admitTask(groupJid, retryTask);
       } else {
         logger.info(
           {
@@ -3495,7 +3117,7 @@ export class GroupQueue {
 
     const state = this.getGroup(groupJid);
     if (this.isMutationPaused(groupJid)) {
-      if (state.pendingMessages || state.pendingTasks.length > 0) {
+      if (state.pendingTasks.length > 0) {
         this.waitingGroups.add(groupJid);
       }
       // The slot a paused lane's runner just gave up serves the others.
@@ -3512,66 +3134,43 @@ export class GroupQueue {
       return;
     }
 
-    // Tasks first (they won't be re-discovered from SQLite like messages)
     const task = state.pendingTasks.shift();
     if (task) {
       this.runTask(groupJid, task);
       return;
     }
 
-    // Then pending messages — but NOT if a retry timer is already scheduled.
-    // When processMessagesFn() fails, both scheduleRetry() and drainGroup() fire.
-    // Without this guard, drainGroup would start a new container while the retry
-    // timer later starts another, causing duplicate processing of the same messages.
-    if (state.pendingMessages && !state.retryTimer) {
-      this.runForGroup(groupJid, 'drain');
-      return;
-    }
-
     this.waitingGroups.delete(groupJid);
 
-    // GC virtual session JIDs (#agent:) once fully idle; without this the
-    // groups Map grows with every session ever run. Only virtual JIDs are collected; real chat JIDs are
-    // bounded by the number of registered groups and keep useful state. We only
-    // reach here when there are no pending tasks and no runnable messages.
-    if (this.isVirtualJid(groupJid)) {
-      const s = this.groups.get(groupJid);
-      if (
-        s &&
-        !s.active &&
-        !s.queryInFlight &&
-        !s.pendingMessages &&
-        s.pendingTasks.length === 0 &&
-        !s.retryTimer &&
-        !s.restarting &&
-        !this.waitingGroups.has(groupJid)
-      ) {
-        this.groups.delete(groupJid);
-        // fall through to drainWaiting so other waiting groups still get a slot
-      }
+    // GC the lane state once fully idle; without this the groups Map grows
+    // with every session ever run. Receipts parked by a preserving stop
+    // still await their replay or abandonment.
+    if (
+      !state.active &&
+      !state.queryInFlight &&
+      !state.retryTimer &&
+      !state.restarting &&
+      state.pendingIpcDeliveries.size === 0
+    ) {
+      this.groups.delete(groupJid);
     }
 
     // Nothing pending for this group; check if other groups are waiting for a slot
     this.drainWaiting();
   }
 
-  /** Session JIDs (`{jid}#agent:{id}`). */
-  private isVirtualJid(jid: string): boolean {
-    return jid.includes('#agent:');
-  }
-
   private drainWaiting(): void {
     // Drain waiting groups one at a time, re-checking capacity after each launch.
-    // runTask/runForGroup increment counters synchronously, so capacity checks
-    // stay accurate even though the async work is not awaited.
+    // runTask increments counters synchronously, so capacity checks stay
+    // accurate even though the async work is not awaited.
     const candidates = [...this.waitingGroups];
 
     for (const jid of candidates) {
       if (this.isMutationPaused(jid)) continue;
       const activeRunner = this.findActiveRunnerFor(jid);
       // Any active runner sharing this serialization key — including jid's OWN
-      // runner — means no new runner may start. enqueueMessageCheck adds a jid
-      // to waitingGroups even while its own runner is active (state.active), so
+      // runner — means no new runner may start. enqueueTask adds a jid to
+      // waitingGroups even while its own runner is active (state.active), so
       // without checking self-active we would start a SECOND concurrent runner
       // on the same GroupState (duplicate replies, orphaned containers, broken
       // counters). Pending work is drained by the active runner's
@@ -3582,15 +3181,8 @@ export class GroupQueue {
       this.waitingGroups.delete(jid);
       const state = this.getGroup(jid);
 
-      // Prioritize tasks over messages
       const task = state.pendingTasks.shift();
-      if (task) {
-        this.runTask(jid, task);
-      } else if (state.pendingMessages && !state.retryTimer) {
-        // Skip if retry timer is pending to avoid duplicate processing
-        this.runForGroup(jid, 'drain');
-      }
-      // If neither pending, skip this group
+      if (task) this.runTask(jid, task);
     }
     if (this.waitingGroups.size > 0) this.reclaimIdleContainerRunner();
   }
@@ -3601,39 +3193,16 @@ export class GroupQueue {
     activeHostProcessCount: number;
     waitingCount: number;
     waitingGroupJids: string[];
-    groups: Array<{
-      jid: string;
-      active: boolean;
-      pendingMessages: boolean;
-      pendingTasks: number;
-      containerName: string | null;
-      displayName: string | null;
-      groupFolder: string | null;
-      selectedProviderId: string | null;
-      queryInFlight: boolean;
-      queryId: string | null;
-      queryStartedAt: number | null;
-    }>;
+    groups: QueueGroupStatus[];
   } {
-    const groups: Array<{
-      jid: string;
-      active: boolean;
-      pendingMessages: boolean;
-      pendingTasks: number;
-      containerName: string | null;
-      displayName: string | null;
-      groupFolder: string | null;
-      selectedProviderId: string | null;
-      queryInFlight: boolean;
-      queryId: string | null;
-      queryStartedAt: number | null;
-    }> = [];
+    const groups: QueueGroupStatus[] = [];
 
     for (const [jid, state] of this.groups) {
       groups.push({
         jid,
         active: state.active,
-        pendingMessages: state.pendingMessages,
+        // Monitor/API field: the lane has queued work.
+        pendingMessages: state.pendingTasks.length > 0,
         pendingTasks: state.pendingTasks.length,
         containerName: state.containerName,
         displayName: state.displayName,
@@ -3674,22 +3243,13 @@ export class GroupQueue {
       'GroupQueue shutting down, waiting for containers',
     );
 
-    // 主动写 _close sentinel：runForGroup 的 query() loop 一直在等 IPC 输入，
+    // 主动写 _close sentinel：runner 的 query() loop 一直在等 IPC 输入，
     // 没有 sentinel 就需要等到 grace 用完再被 SIGTERM/docker stop 强制结束。
     // 写入后 agent 看到 sentinel 自然 break loop、走 finally 清理、conversation
     // archive 完成。和 closeAllActiveForCredentialRefresh 的策略一致。
     for (const [, state] of this.groups) {
-      if (!state.active || !state.groupFolder) continue;
-      const inputDir = state.agentId
-        ? path.join(
-            DATA_DIR,
-            'ipc',
-            state.groupFolder,
-            'agents',
-            state.agentId,
-            'input',
-          )
-        : path.join(DATA_DIR, 'ipc', state.groupFolder, 'input');
+      if (!state.active || !hasRunnerIpc(state)) continue;
+      const inputDir = this.resolveIpcInputDir(state);
       try {
         fs.mkdirSync(inputDir, { recursive: true });
         fs.writeFileSync(path.join(inputDir, '_close'), '');

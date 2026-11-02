@@ -114,9 +114,13 @@ describe('testFeishuCredentials', () => {
         { status: 200, headers: { 'Content-Type': 'application/json' } },
       );
     try {
-      const res = await testFeishuCredentials('cli_aa83c54c96b8dbd0', 'secret', {
-        endpoint: fakeEndpoint,
-      });
+      const res = await testFeishuCredentials(
+        'cli_aa83c54c96b8dbd0',
+        'secret',
+        {
+          endpoint: fakeEndpoint,
+        },
+      );
       expect(res.ok).toBe(true);
     } finally {
       globalThis.fetch = originalFetch;
