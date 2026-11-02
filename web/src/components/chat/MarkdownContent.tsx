@@ -22,6 +22,7 @@ import { DetailSheet } from './DetailSheet';
 import { downloadFromUrl, downloadTextFile } from '../../utils/download';
 import { ImageLightbox } from './ImageLightbox';
 import {
+  decodeMarkdownImagePath,
   resolveMarkdownImageSrc,
   resolveMarkdownLinkHref,
 } from '../../utils/markdownImageSrc';
@@ -131,24 +132,44 @@ const markdownUrlTransform: UrlTransform = (url, key, node) =>
     ? url
     : defaultUrlTransform(url);
 
+interface Gallery {
+  images: string[];
+  names: (string | undefined)[];
+  index: number;
+}
+
 /**
  * The images of the Markdown around `image`, in order, and where it is among
  * them: one viewer pages through a reply's images, as the attachments do.
  */
-function markdownGallery(image: HTMLImageElement): {
-  images: string[];
-  index: number;
-} {
+function markdownGallery(image: HTMLImageElement): Gallery {
   const root = image.closest('[data-markdown-root]');
   const all = root
     ? [...root.querySelectorAll<HTMLImageElement>('img[data-hc-md-image]')]
     : [image];
-  const index = Math.max(0, all.indexOf(image));
-  return { images: all.map((img) => img.currentSrc || img.src), index };
+  return {
+    images: all.map((img) => img.currentSrc || img.src),
+    names: all.map((img) => img.dataset.hcMdName),
+    index: Math.max(0, all.indexOf(image)),
+  };
+}
+
+/**
+ * The file name a Markdown image or link path ends in, decoded (the parser
+ * percent-encodes it), to show and save it under.
+ */
+function markdownFileName(src: string): string | undefined {
+  if (/^(?:data|blob):/i.test(src)) return undefined;
+  const base = src
+    .replace(/[?#].*$/, '')
+    .split('/')
+    .pop();
+  return base ? decodeMarkdownImagePath(base) : undefined;
 }
 
 function MarkdownImage({
   src,
+  name,
   alt,
   title,
   width,
@@ -156,16 +177,15 @@ function MarkdownImage({
   loading,
 }: {
   src?: string;
+  /** What saving it from the viewer names the file. */
+  name?: string;
   alt?: string;
   title?: string;
   width?: number | string;
   height?: number | string;
   loading?: 'lazy' | 'eager';
 }) {
-  const [gallery, setGallery] = useState<{
-    images: string[];
-    index: number;
-  } | null>(null);
+  const [gallery, setGallery] = useState<Gallery | null>(null);
   const [error, setError] = useState(false);
   const open = (event: React.SyntheticEvent<HTMLImageElement>) =>
     setGallery(markdownGallery(event.currentTarget));
@@ -207,6 +227,7 @@ function MarkdownImage({
         className="my-3 h-auto max-w-full touch-callout-default cursor-zoom-in rounded-lg border border-surface-border transition-colors hover:border-foreground/25"
         style={{ maxHeight: '400px', objectFit: 'contain' }}
         data-hc-md-image=""
+        data-hc-md-name={name}
         onClick={open}
         onKeyDown={(event) => {
           if (event.key === 'Enter' || event.key === ' ') {
@@ -219,6 +240,7 @@ function MarkdownImage({
       {gallery && (
         <ImageLightbox
           images={gallery.images}
+          names={gallery.names}
           initialIndex={gallery.index}
           onClose={() => setGallery(null)}
         />
@@ -524,11 +546,7 @@ function MarkdownLink({
     href && !inPage ? resolveMarkdownLinkHref(href, groupJid) : href;
   const workspaceFile = !!href && !inPage && resolved !== href;
   const inApp = isPhone && workspaceFile;
-  const name =
-    href
-      ?.replace(/[?#].*$/, '')
-      .split('/')
-      .pop() || '文件';
+  const name = (href && markdownFileName(href)) || '文件';
   return (
     <>
       <a
@@ -558,6 +576,7 @@ function MarkdownLink({
         (IMAGE_FILE.test(name) ? (
           <ImageLightbox
             images={[resolved]}
+            names={[name]}
             initialIndex={0}
             onClose={() => setPreview(false)}
           />
@@ -656,6 +675,7 @@ function markdownComponents(
             ? resolveMarkdownImageSrc(src, groupJid)
             : undefined
         }
+        name={typeof src === 'string' ? markdownFileName(src) : undefined}
         alt={alt}
         title={title}
         width={width}

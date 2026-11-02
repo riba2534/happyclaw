@@ -1,13 +1,21 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { Dialog as DialogPrimitive } from 'radix-ui';
 import { ChevronLeft, ChevronRight, Download, X } from 'lucide-react';
 import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
-import { saveImage } from '../../utils/download';
+import {
+  CrossOriginImageError,
+  fetchImageFile,
+  isAbortError,
+  prefersShareSheet,
+  saveImageFile,
+} from '../../utils/download';
 import { ZoomPanSurface } from './ZoomPanSurface';
 
 interface ImageLightboxProps {
   images: string[];
+  /** File names to save each image under, where known. */
+  names?: (string | undefined)[];
   initialIndex: number;
   onClose: () => void;
 }
@@ -18,17 +26,36 @@ const viewerButtonClass =
 /** How far a pull down goes before the backdrop is gone. */
 const PULL_FADE_DISTANCE = 400;
 
+/** The shown image's file on its way, and once it is here. */
+interface PreparedFile {
+  file: Promise<File>;
+  ready?: File;
+}
+
+function reportSaveError(err: unknown) {
+  // A switch or close cancelled the fetch.
+  if (isAbortError(err)) return;
+  if (err instanceof CrossOriginImageError) {
+    toast.error('长按图片保存，或在新标签页打开原图');
+    return;
+  }
+  console.error('Save image failed:', err);
+  toast.error('图片保存失败');
+}
+
 /**
  * Full-screen image viewer. A Radix dialog, so it traps focus, closes on Esc,
  * locks page scroll and returns focus to the thumbnail. ←/→ and the side
  * buttons switch images. On touch (ZoomPanSurface) two fingers zoom about
  * their midpoint and pan, one finger pans the zoomed image, a double tap
  * zooms in or out, and at 1× a swipe switches images and a pull down closes.
- * Long-press opens the system image menu; the save button shares the file
- * (Save Image on phones) or downloads it.
+ * At 1× a long press opens the system image menu; the save button hands
+ * the file to the share sheet on iOS ("Save Image") and downloads it
+ * elsewhere.
  */
 export function ImageLightbox({
   images,
+  names,
   initialIndex,
   onClose,
 }: ImageLightboxProps) {
@@ -63,17 +90,46 @@ export function ImageLightbox({
     [images.length],
   );
 
+  const src = images[currentIndex];
+  const name = names?.[currentIndex];
+  // The share sheet opens only within the tap's user activation, which an
+  // `await fetch()` of a large image outlasts. Where saving goes through it,
+  // the image on screen is fetched once it has loaded (so from the cache)
+  // and the tap hands the file over at once. One image at a time: a switch
+  // or close cancels the fetch and lets the file go.
+  const [loadedSrc, setLoadedSrc] = useState<string | null>(null);
+  const prepared = useRef<PreparedFile | null>(null);
+  useEffect(() => {
+    if (loadedSrc !== src || !prefersShareSheet()) return;
+    const controller = new AbortController();
+    const entry: PreparedFile = {
+      file: fetchImageFile(src, name, controller.signal),
+    };
+    prepared.current = entry;
+    const forget = () => {
+      if (prepared.current === entry) prepared.current = null;
+    };
+    entry.file.then((file) => {
+      entry.ready = file;
+    }, forget);
+    return () => {
+      controller.abort();
+      forget();
+    };
+  }, [loadedSrc, src, name]);
+
   const [saving, setSaving] = useState(false);
-  const handleSave = async () => {
-    setSaving(true);
-    try {
-      await saveImage(images[currentIndex], `image-${Date.now()}`);
-    } catch (err) {
-      console.error('Save image failed:', err);
-      toast.error('图片保存失败');
-    } finally {
-      setSaving(false);
+  const handleSave = () => {
+    const entry = prepared.current;
+    if (entry?.ready) {
+      saveImageFile(entry.ready).catch(reportSaveError);
+      return;
     }
+    setSaving(true);
+    (entry?.file ?? fetchImageFile(src, name))
+      .then(saveImageFile)
+      .catch(reportSaveError)
+      .finally(() => setSaving(false));
   };
 
   const visible = isOpen && !isClosing;
@@ -121,7 +177,7 @@ export function ImageLightbox({
               disabled={saving}
               onClick={(e) => {
                 e.stopPropagation();
-                void handleSave();
+                handleSave();
               }}
               className={cn(viewerButtonClass, 'pointer-coarse:size-11')}
             >
@@ -183,10 +239,12 @@ export function ImageLightbox({
             onPullClose={handleClose}
           >
             <img
-              src={images[currentIndex]}
+              src={src}
               alt={`${currentIndex + 1} / ${images.length}`}
-              className="max-h-[calc(var(--vvh,100dvh)-2rem)] max-w-[calc(100vw-2rem)] touch-callout-default object-contain select-none sm:max-w-[calc(100vw-8rem)]"
+              // The system image menu at 1× only: zoomed, a held finger pans.
+              className="max-h-[calc(var(--vvh,100dvh)-2rem)] max-w-[calc(100vw-2rem)] object-contain select-none in-data-[zoomed=false]:touch-callout-default sm:max-w-[calc(100vw-8rem)]"
               draggable={false}
+              onLoad={() => setLoadedSrc(src)}
               onClick={(e) => e.stopPropagation()}
             />
           </ZoomPanSurface>
