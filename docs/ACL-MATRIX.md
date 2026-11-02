@@ -108,6 +108,15 @@ backfill 会修复旧数据中的错误 Home 绑定。
 
 Host Workspace 在 Access 之外还要求 admin。
 
+文件读取（`GET /api/groups/:jid/files` 与 `files/{download,preview,office-preview,content}/:path`，
+GET 与 HEAD）使用 View：Host 工作区另需 admin 或访客授权（`canViewHostGroup`），文件根随
+`?agentId=` 解析，访客的隐藏规则见第 11 节。上传、保存、删除和建目录仍要求 Access，
+Host 工作区要求 admin。Office 预览（`files/office-preview/:path`）与其他读取的授权完全
+相同；它的 PDF 缓存按源文件内容寻址、跨用户共享，所以响应不带命中与否的标记。配置了
+`OFFICE_PREVIEW_SOFFICE_BIN` 时，任何能预览的人都能让宿主机上的 LibreOffice 以服务身份
+解析工作区里的文档（Container 工作区也一样），因此该转换器只在运维显式设置时启用，见
+`DEPLOYMENT.md`。
+
 ### 4.2 Modify
 
 `canModifyGroup()` 是 owner-only。需要 Modify 的典型操作：
@@ -426,7 +435,7 @@ Agent MCP 调用没有 Cookie，但必须携带由主进程创建的运行上下
   `GET /api/groups`、`GET /api/groups/:jid/{messages,agents,sessions}`、消息附件原图、
   `GET /api/groups/:jid/turn-traces/:turnId`、`GET /api/follow-ups`、
   `GET /api/workspaces[/:jid]`；`GET /api/groups/:jid/files` 与
-  `files/{download,preview,content}/:path`；Workspace Memory 的列表、搜索、条目和版本；
+  `files/{download,preview,office-preview,content}/:path`；Workspace Memory 的列表、搜索、条目和版本；
   `GET /api/automations[/:id[/runs]]`。放行的处理器仍按 `canViewGroup` 判断，
   未授权返回 404。
 - 有意不放行的读取：`/api/groups/:jid/git/*`（diff 可能包含被隐藏的点文件）、

@@ -149,3 +149,34 @@ curl -fsS http://127.0.0.1:3000/api/health
 所有者选择不保留数据备份，因此数据库迁移后不存在数据恢复路径。若迁移导致旧代码
 不兼容，应停止继续切换并以前向修复恢复服务，不得自行创建或恢复备份。回滚后重复第 4
 节的健康检查与真实功能测试，并明确报告仅发生了代码回滚。
+
+## 6. Office 文件预览（可选）
+
+文件面板把 doc/docx/xls/xlsx/ppt/pptx/odt/ods/odp 在服务端转成 PDF 预览。没有配置转换器
+时预览返回「未配置」，其他功能不受影响。配置写在现有 `.env` 里（同第 3 节，原地修改、
+不建备份），重启服务后生效：
+
+| 变量                               | 默认值  | 含义                                                                                 |
+| ---------------------------------- | ------- | ------------------------------------------------------------------------------------ |
+| `OFFICE_PREVIEW_STIRLING_URL`      | 未设置  | Stirling-PDF 兼容服务的完整转换地址（`.../api/v1/convert/file/pdf`）；设置后优先使用 |
+| `OFFICE_PREVIEW_STIRLING_KEY_FILE` | 未设置  | 可选，内容作为 `X-API-KEY` 发给该服务；密钥只从文件读取，文件应为 `600`              |
+| `OFFICE_PREVIEW_SOFFICE_BIN`       | 未设置  | 本机 LibreOffice `soffice` 的绝对路径；只有显式设置才启用，不搜索 PATH               |
+| `OFFICE_PREVIEW_MAX_MB`            | `50`    | 源文件上限；转换结果上限是它的 4 倍                                                  |
+| `OFFICE_PREVIEW_TIMEOUT_MS`        | `60000` | 单次转换超时                                                                         |
+| `OFFICE_PREVIEW_CACHE_MAX_MB`      | `1024`  | `data/cache/office-preview/` 的总量上限，超出时先淘汰最久未用的                      |
+
+同时最多 2 个转换、8 个排队，再多返回 503。缓存按源文件内容寻址、跨用户共享，可以随时
+删除，删除后下次打开重新转换。
+
+本机 LibreOffice 的安全前提：`soffice` 在宿主机上以 HappyClaw 服务的身份运行，解析的是
+工作区里的文档，包括 member 的 Container 工作区里由 Agent 或其他人写入的不可信文件。
+LibreOffice 的解析漏洞因此会以服务身份执行，能读到服务能读的一切（`data/`、`.env`、
+渠道凭据），越过「非 admin 的工作区在容器里运行」这条边界。HappyClaw 只给它最小环境
+（`PATH`、指向本次临时目录的 `HOME`/`TMPDIR`、`LANG`/`LC_ALL`），让它在独立进程组里
+运行并在超时时整组杀掉，但这不是沙箱。只有所有能预览文件的人都可信时（例如只有所有者
+自己使用的实例）才设置 `OFFICE_PREVIEW_SOFFICE_BIN`；Mac mini 上的路径是
+`/Applications/LibreOffice.app/Contents/MacOS/soffice`。
+
+多用户部署推荐 Stirling-PDF：把它作为独立容器运行在只有 HappyClaw 能访问的地址上，
+配置 `OFFICE_PREVIEW_STIRLING_URL` 和密钥文件，文档在它的容器里解析。两者都设置时使用
+Stirling。配置后在文件面板打开一个 docx 确认能预览；第二次打开应立即显示（命中缓存）。

@@ -428,6 +428,7 @@ HTTP 状态为 409；请求不会停止现有 Runner，也不会修改绑定。
 - `POST /api/groups/:jid/files/open-directory`
 - `GET /api/groups/:jid/files/download/:path`
 - `GET /api/groups/:jid/files/preview/:path`
+- `GET|HEAD /api/groups/:jid/files/office-preview/:path`
 - `GET|PUT /api/groups/:jid/files/content/:path`
 - `DELETE /api/groups/:jid/files/:path`
 - `POST /api/groups/:jid/directories`
@@ -438,6 +439,30 @@ HTTP 状态为 409；请求不会停止现有 Runner，也不会修改绑定。
 `data/groups/{folder}`。以上接口都接受查询参数 `agentId`（Runtime Session ID）；缺省时以
 工作区目录为根，会话有独立 worktree 时以 worktree 为根。`agentId` 不属于该工作区时
 返回 404。
+
+读取接口（列表、`download`、`preview`、`office-preview`、`content`）对 owner 和持有有效
+授权的访客开放，访客看不到隐藏路径（返回 404），见 `docs/ACL-MATRIX.md`；写入接口只对
+owner 开放。`:path` 是工作区相对路径的 base64url。`preview` 带 `ETag` 与
+`Last-Modified`，`Cache-Control: private, no-cache`，`If-None-Match` 命中时回 304。
+
+`office-preview` 把 doc/docx/xls/xlsx/ppt/pptx/odt/ods/odp 转成 PDF 返回
+（`Content-Type: application/pdf`，`Content-Security-Policy: default-src 'none'; sandbox`）。
+转换结果按源文件内容的 sha256 缓存在 `data/cache/office-preview/`；`ETag` 是这个哈希
+（强 ETag），`Cache-Control: private, no-cache`，`If-None-Match` 命中时直接回 304，不做
+转换。`HEAD` 同样执行转换并返回状态与头，不带正文，前端用它预检后再让 iframe 加载同一
+地址。同时最多 2 个转换、8 个排队。转换器与上限由 `OFFICE_PREVIEW_*` 环境变量配置，见
+`DEPLOYMENT.md`。错误返回 `{"error", "code"}`：
+
+| 状态 | `code`             | 含义                                                        |
+| ---- | ------------------ | ----------------------------------------------------------- |
+| 400  | `UNSUPPORTED_TYPE` | 不是上面列出的扩展名（目录也是 400，但没有 `code`）         |
+| 403  | 无                 | 宿主机工作区，调用者既不是 admin 也没有访客授权             |
+| 404  | 无                 | 文件不存在、对访客隐藏、工作区不可见或 `agentId` 不属于它   |
+| 413  | `FILE_TOO_LARGE`   | 源文件超过 `OFFICE_PREVIEW_MAX_MB`，或转换结果超过它的 4 倍 |
+| 501  | `NOT_CONFIGURED`   | 没有配置转换器，或 Stirling 的密钥文件读不到                |
+| 502  | `CONVERT_FAILED`   | 转换器出错、不可用或没有返回 PDF                            |
+| 503  | `BUSY`             | 转换名额与排队都已满，稍后重试                              |
+| 504  | `TIMEOUT`          | 超过 `OFFICE_PREVIEW_TIMEOUT_MS`                            |
 
 ## 代码改动与会话 worktree
 
