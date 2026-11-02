@@ -84,14 +84,19 @@ describe('OfficePreview', () => {
     expect(iframe?.getAttribute('src')).toBe(PREVIEW_URL);
   });
 
-  test('a busy converter is reported without loading the viewer', async () => {
-    fetchMock.mockResolvedValue({ ok: false, status: 503 });
-    await renderPreview();
+  test.each([
+    [503, '正在转换的文件较多，请稍后再试'],
+    [401, '登录已过期，请重新登录'],
+    [403, '没有权限预览这个文件'],
+  ])(
+    'a %i is worded for the user without loading the viewer',
+    async (status, message) => {
+      fetchMock.mockResolvedValue({ ok: false, status });
+      await renderPreview();
 
-    expect(document.body.querySelector('iframe')).toBeNull();
-    expect(document.body.textContent).toContain(
-      '正在转换的文件较多，请稍后再试',
-    );
-    expect(document.body.textContent).toContain('下载原文件');
-  });
+      expect(document.body.querySelector('iframe')).toBeNull();
+      expect(document.body.textContent).toContain(message);
+      expect(document.body.textContent).toContain('下载原文件');
+    },
+  );
 });

@@ -752,6 +752,8 @@ type OfficePreviewLoad =
 /** A HEAD response has no body, so the status (one per error code) speaks. */
 const OFFICE_PREVIEW_ERRORS: Record<number, string> = {
   400: '不支持预览这种文件',
+  401: '登录已过期，请重新登录',
+  403: '没有权限预览这个文件',
   404: '文件不存在',
   413: '文件太大，无法预览',
   501: '未配置 Office 预览转换器',
