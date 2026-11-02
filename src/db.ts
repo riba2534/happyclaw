@@ -117,6 +117,7 @@ import {
 } from './work-item-store.js';
 import {
   migrateLegacyMainSessions,
+  forgetOrphanedLegacyMainState,
   relocateLegacyMainSessionDirectories,
   type LegacyMainSessionMigrationReport,
 } from './legacy-main-session-migration.js';
@@ -620,7 +621,11 @@ export function initDatabase(
     /** False leaves session directories alone (the v88 report runs on a copy). */
     relocateLegacySessionDirectories?: boolean;
   } = {},
-): { legacyMainSessions: LegacyMainSessionMigrationReport | null } {
+): {
+  legacyMainSessions: LegacyMainSessionMigrationReport | null;
+  /** v88 mappings and OOM counters forgotten because their session is gone. */
+  forgottenLegacyMainState: { mappings: number; oomCounters: number };
+} {
   const dbPath = path.join(STORE_DIR, 'messages.db');
   assertDatabaseMaintenanceAccess(dbPath);
   fs.mkdirSync(path.dirname(dbPath), { recursive: true });
@@ -2788,15 +2793,22 @@ export function initDatabase(
     'INSERT OR REPLACE INTO router_state (key, value) VALUES (?, ?)',
   ).run('schema_version', String(CURRENT_SCHEMA_VERSION));
 
-  // Every startup, before any Runner: finishes a move a crash interrupted.
-  // Maintenance bootstraps leave the filesystem alone.
-  if (
-    !options.requireCurrentSchema &&
-    options.relocateLegacySessionDirectories !== false
-  ) {
-    relocateLegacyMainSessionDirectories(db);
+  // Every startup, before any Runner: forgets v88 mappings and OOM counters
+  // of sessions that no longer exist (a database write), then finishes a
+  // directory move a crash interrupted. Maintenance bootstraps
+  // (requireCurrentSchema) do neither; relocateLegacySessionDirectories:
+  // false skips only the move.
+  let forgottenLegacyMainState: { mappings: number; oomCounters: number } = {
+    mappings: 0,
+    oomCounters: 0,
+  };
+  if (!options.requireCurrentSchema) {
+    forgottenLegacyMainState = forgetOrphanedLegacyMainState(db);
+    if (options.relocateLegacySessionDirectories !== false) {
+      relocateLegacyMainSessionDirectories(db);
+    }
   }
-  return { legacyMainSessions };
+  return { legacyMainSessions, forgottenLegacyMainState };
 }
 
 const LEGACY_ROUTER_CURSOR_BLOBS: ReadonlyArray<
@@ -9934,6 +9946,14 @@ export function deleteGroupData(
     );
     // 7. 删除 pin 记录与访客授权
     prepareCached('DELETE FROM user_pinned_groups WHERE jid = ?').run(jid);
+    // The workspace's v88 mapping and its sessions' OOM counters
+    // (`oom_exits:<folder>#<id>`), which deleteAgent clears one session at a time.
+    prepareCached('DELETE FROM router_state WHERE key = ?').run(
+      `${LEGACY_MAIN_SESSION_KEY_PREFIX}${jid}`,
+    );
+    prepareCached(
+      'DELETE FROM router_state WHERE key >= @from AND key < @to',
+    ).run(keyPrefixRange(`oom_exits:${folder}#`));
     prepareCached(
       'DELETE FROM guest_workspace_grants WHERE workspace_jid = ?',
     ).run(jid);

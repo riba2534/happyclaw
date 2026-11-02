@@ -45,6 +45,7 @@ import {
 
 type MainTargetPlan = ReturnType<typeof planMainTargets>;
 import { logger } from './logger.js';
+import { keyPrefixRange } from './sql-key-prefix.js';
 import { generateAutoTitle } from './session-title.js';
 import { isValidWorkspaceFolderName } from './workspace-folder.js';
 
@@ -701,6 +702,44 @@ const DONE = { relink: 'relinked', merge: 'merged', move: 'moved' } as const;
 /** An SDK state directory with a transcript, not a runner's fresh skeleton. */
 function hasTranscript(dir: string): boolean {
   return fs.existsSync(path.join(dir, 'projects'));
+}
+
+/**
+ * Forget v88 state whose session is gone: a `legacy_main_session:<workspace>`
+ * mapping that does not name a legacy_main session of that workspace (the
+ * rule the I7 check applies), and an `oom_exits:<folder>#<id>` counter of a
+ * session that no longer exists. Deleting a session or a workspace forgets
+ * its own; this clears what deletions left before they did.
+ */
+export function forgetOrphanedLegacyMainState(db: Db): {
+  mappings: number;
+  oomCounters: number;
+} {
+  const mappings = prep(
+    db,
+    `DELETE FROM router_state
+     WHERE key >= @from AND key < @to
+       AND NOT EXISTS (
+         SELECT 1 FROM agents a
+         WHERE a.id = router_state.value
+           AND a.source_kind = 'legacy_main'
+           AND a.chat_jid = substr(router_state.key, length(@from) + 1))`,
+  ).run(keyPrefixRange(LEGACY_MAIN_SESSION_KEY_PREFIX)).changes;
+  const oomCounters = prep(
+    db,
+    `DELETE FROM router_state
+     WHERE key >= @from AND key < @to
+       AND NOT EXISTS (
+         SELECT 1 FROM agents a
+         WHERE a.id = substr(router_state.key, instr(router_state.key, '#') + 1))`,
+  ).run(keyPrefixRange('oom_exits:')).changes;
+  if (mappings > 0 || oomCounters > 0) {
+    logger.info(
+      { mappings, oomCounters },
+      'Forgot v88 state of sessions that no longer exist',
+    );
+  }
+  return { mappings, oomCounters };
 }
 
 /**
