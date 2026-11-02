@@ -1156,6 +1156,49 @@ test.describe('the streamed answer', () => {
 
   const watched = (page: Page) => page.evaluate(() => window.__words);
 
+  /**
+   * Start the reply and let the page settle: mounting the live reply sets
+   * the composer and highlighter up in a long task, which must not fall
+   * between two renders a test times against a fade.
+   */
+  const startSettled = (page: Page) =>
+    page.evaluate(() => {
+      window.renderHarness.start();
+      return new Promise<void>((resolve) =>
+        requestIdleCallback(() => resolve(), { timeout: 2000 }),
+      );
+    });
+
+  /**
+   * Emit `text`, and `next` the moment the answer has a word span `shown`
+   * accepts: from inside the page, so no round trip to the test runner
+   * widens the gap while the words fade.
+   */
+  const emitThenOnShown = (
+    page: Page,
+    text: string,
+    next: string,
+    shown: string | null,
+  ) =>
+    page.evaluate(
+      ({ answer, text, next, shown }) =>
+        new Promise<void>((resolve) => {
+          const observer = new MutationObserver(() => {
+            const spans = document.querySelectorAll(`${answer} span`);
+            const ready = [...spans].some(
+              (span) => shown === null || span.textContent?.trim() === shown,
+            );
+            if (!ready) return;
+            observer.disconnect();
+            window.renderHarness.emit({ eventType: 'text_delta', text: next });
+            resolve();
+          });
+          observer.observe(document.body, { childList: true, subtree: true });
+          window.renderHarness.emit({ eventType: 'text_delta', text });
+        }),
+      { answer: ANSWER, text, next, shown },
+    );
+
   /** A word never loses any opacity it showed: nothing fades in twice. */
   function expectNeverFadesAgain(frames: number[], word: string) {
     frames.forEach((opacity, i) => {
@@ -1207,11 +1250,10 @@ test.describe('the streamed answer', () => {
   }) => {
     await open(page, 'scenario=live');
     await watchWords(page);
-    await page.evaluate(() => window.renderHarness.start());
-    await emitText(page, 'Heading words arrive');
-    await expect(block(page).getByText('Heading words arrive')).toBeVisible();
-    // The setext underline turns the paragraph into a heading: new elements.
-    await emitText(page, '\n===');
+    await startSettled(page);
+    // The setext underline turns the paragraph into a heading (new elements),
+    // sent as soon as the last word is in, while it fades.
+    await emitThenOnShown(page, 'Heading words arrive', '\n===', 'arrive');
     await expect(block(page).locator('h1')).toHaveText('Heading words arrive');
     await page.waitForTimeout(400);
     const words = await watched(page);
@@ -1230,28 +1272,23 @@ test.describe('the streamed answer', () => {
   }) => {
     await open(page, 'scenario=live');
     await watchWords(page);
-    // Enough words that they are still fading when the next block opens.
+    // Enough words that they are still fading when the next block opens, as
+    // soon as they are in.
     const first =
       'One two three four five six seven eight nine ten eleven twelve.';
-    await page.evaluate(
-      async ({ answer, first }) => {
-        window.__fadingWhenClosed = [];
-        new MutationObserver(() => {
-          const roots = document.querySelectorAll(answer);
-          if (roots.length === 2 && window.__fadingWhenClosed.length === 0) {
-            window.__fadingWhenClosed.push(
-              roots[0].querySelectorAll('.hc-stream-word').length,
-            );
-          }
-        }).observe(document.body, { childList: true, subtree: true });
-        const { start, emit } = window.renderHarness;
-        start();
-        emit({ eventType: 'text_delta', text: first });
-        await new Promise((resolve) => setTimeout(resolve, 20));
-        emit({ eventType: 'text_delta', text: '\n\nSecond one' });
-      },
-      { answer: ANSWER, first },
-    );
+    await page.evaluate((answer) => {
+      window.__fadingWhenClosed = [];
+      new MutationObserver(() => {
+        const roots = document.querySelectorAll(answer);
+        if (roots.length === 2 && window.__fadingWhenClosed.length === 0) {
+          window.__fadingWhenClosed.push(
+            roots[0].querySelectorAll('.hc-stream-word').length,
+          );
+        }
+      }).observe(document.body, { childList: true, subtree: true });
+    }, ANSWER);
+    await startSettled(page);
+    await emitThenOnShown(page, first, '\n\nSecond one', null);
     // Once its words are in, the closed paragraph shows as final again.
     const closed = page.locator(ANSWER).first();
     await expect(page.locator(ANSWER)).toHaveCount(2);

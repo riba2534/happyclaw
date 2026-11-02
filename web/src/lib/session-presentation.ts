@@ -9,6 +9,36 @@ export function sessionDisplayName(session: Pick<AgentInfo, 'name'>): string {
   return session.name || '新会话';
 }
 
+/** Sessions the host uses itself: a chat can never be bound to one. */
+const UNBINDABLE_SOURCES: ReadonlySet<string> = new Set([
+  'team_router',
+  'work_item',
+  'automation',
+  'native_thread',
+  'feishu_thread',
+]);
+
+/**
+ * Whether a chat can be bound to the session: a conversation, not a team
+ * lane, an automation run or a native topic's own session (the server's
+ * rule for every bind and for a deleted session's rebind).
+ */
+export function isBindableSession(
+  session: Pick<AgentInfo, 'kind' | 'source_kind'>,
+): boolean {
+  return (
+    session.kind === 'conversation' &&
+    !(session.source_kind && UNBINDABLE_SOURCES.has(session.source_kind))
+  );
+}
+
+/** A workspace's sessions a chat can be bound to, in list order. */
+export function bindableSessions<T extends AgentInfo>(
+  agents: readonly T[],
+): T[] {
+  return listedSessions(agents).filter(isBindableSession);
+}
+
 /** A workspace's conversations in the session lists' order (pinned first). */
 export function listedSessions<T extends AgentInfo>(agents: readonly T[]): T[] {
   return sortSessionsForList(
