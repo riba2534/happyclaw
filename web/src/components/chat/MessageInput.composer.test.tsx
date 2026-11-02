@@ -685,7 +685,7 @@ describe('layout', () => {
     await render(view('centered'));
     const root = container!.querySelector('[data-hc-composer]')!;
     expect(root.getAttribute('data-composer-layout')).toBe('centered');
-    expect(root.querySelector('.min-h-\\[120px\\]')).not.toBeNull();
+    expect(root.querySelector('.min-h-\\[140px\\]')).not.toBeNull();
 
     const { card, animate } = await dock();
     expect(animate).toHaveBeenCalledWith(
@@ -702,9 +702,7 @@ describe('layout', () => {
 
   test('a compact transcript still centres the hero at the starter width', async () => {
     env.displayMode = 'compact';
-    const column = () =>
-      container!.querySelector('[data-composer-card]')!.parentElement!
-        .parentElement!;
+    const column = () => container!.querySelector('[data-composer-column]')!;
 
     await render(view('centered'));
     expect(column().className).toContain('max-w-3xl');

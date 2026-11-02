@@ -1035,6 +1035,7 @@ export const MessageInput = memo(function MessageInput({
           keeps that width even in compact mode. */}
       <div
         ref={dockColumnRef}
+        data-composer-column
         className={
           isCompact && !centered
             ? 'mx-auto px-4'
@@ -1070,15 +1071,12 @@ export const MessageInput = memo(function MessageInput({
             ref={cardRef}
             data-composer-card
             className={cn(
-              'relative overflow-hidden border border-surface-border bg-surface-raised transition-[color,background-color,border-color,border-radius,box-shadow] focus-within:border-foreground/25 motion-reduce:transition-none',
+              'relative overflow-hidden border border-surface-border bg-surface-raised transition-[color,background-color,border-color,border-radius] focus-within:border-foreground/25 motion-reduce:transition-none',
               !dock
                 ? 'rounded-[12px]'
                 : pill
                   ? 'rounded-[25px]'
                   : 'rounded-[30px]',
-              // The hero copy floats on the page; a hairline of depth keeps
-              // it from reading as an empty table.
-              centered && 'shadow-card',
             )}
           >
             {dockCard && (
@@ -1125,11 +1123,7 @@ export const MessageInput = memo(function MessageInput({
                 dockCard && 'min-h-[104px] pt-[22px]',
                 !dock &&
                   (centered
-                    ? // One line plus the toolbar, with just enough slack
-                      // that a short prompt does not float in an empty box;
-                      // still a hair taller than the docked card so docking
-                      // does not make it grow.
-                      'min-h-[120px]'
+                    ? 'min-h-[140px]'
                     : 'min-h-[96px] sm:min-h-[118px]'),
               )}
               onMouseDown={focusFromBlankArea}
