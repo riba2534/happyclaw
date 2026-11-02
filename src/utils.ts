@@ -227,7 +227,10 @@ export function sessionIpcDir(folder: string, agentId: string): string {
   return path.join(DATA_DIR, 'ipc', folder, 'agents', agentId);
 }
 
-/** A session's Claude directory. */
+/**
+ * A session's Claude directory: ~/.claude in a container, CLAUDE_CONFIG_DIR
+ * on the host.
+ */
 export function sessionClaudeDir(folder: string, agentId: string): string {
   return path.join(DATA_DIR, 'sessions', folder, 'agents', agentId, '.claude');
 }

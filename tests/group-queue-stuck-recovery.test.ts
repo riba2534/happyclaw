@@ -131,6 +131,24 @@ describe('#618: IPC-injected follow-ups are visible to stuck recovery', () => {
     expect(stuck[0].reason).toBe('pending_tasks');
   });
 
+  test('a silent in-flight query with work queued behind it is not stuck; owed IPC is', () => {
+    const q = new GroupQueue();
+    // A five-minute build in one tool call: no output, a turn queued behind.
+    seedRunner(q, jid, {
+      groupFolder: folder,
+      queryInFlight: true,
+      pendingTasks: 1,
+      lastActivityAt: Date.now() - IDLE_THRESHOLD_MS - 120_000,
+    });
+    expect(q.getStuckPendingGroups(IDLE_THRESHOLD_MS)).toEqual([]);
+
+    // Input injected into that query and never read is owed by it.
+    getState(q, jid).ipcOwedSinceAt = Date.now() - IDLE_THRESHOLD_MS - 120_000;
+    expect(
+      q.getStuckPendingGroups(IDLE_THRESHOLD_MS).map((c) => [c.jid, c.reason]),
+    ).toEqual([[jid, 'ipc_injected']]);
+  });
+
   test('a turn queued on a sibling JID of the same lane is owed by its runner', () => {
     const q = new GroupQueue();
     const sibling = `feishu:${folder}#agent:${AGENT_ID}`;

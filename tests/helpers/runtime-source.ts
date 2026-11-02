@@ -146,6 +146,7 @@ const AUTOMATION_SOURCE_HELPERS = [
   'createReplyStreamingSession',
   // Team mode helpers every connector and /break path reaches.
   'breakLane',
+  'closeRetryWaitTurnsOfInputs',
   'onImMessagePersisted',
 ];
 

@@ -1958,10 +1958,6 @@ export function applyFallbackModelToEnvLines(
 }
 
 /**
- * A session's Claude directory: ~/.claude in a container, CLAUDE_CONFIG_DIR
- * on the host.
- */
-/**
  * Create a session's owner-only IPC root (the runner's /workspace/ipc) and
  * the directories the host and runner exchange files through.
  */

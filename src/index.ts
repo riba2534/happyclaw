@@ -17144,21 +17144,55 @@ function breakLane(
       void clearStandaloneProcessingIndicator(targetJid, indicatorJid, item.id);
     }
   }
-  for (const item of cancelled) {
-    closeRetryWaitTurnsForWithdrawnInputs(
-      channelTurnScopeForInput(targetJid, item.source_jid),
-      [item.id],
-      reason,
-    );
-  }
+  closeRetryWaitTurnsOfInputs(targetJid, cancelled, reason);
   // The cutoff took the inputs a usage-limit wait had parked.
   endUsageLimitWait(targetJid, 'cancelled');
 
-  const { activeRunId, interrupted } = interruptActiveSessionRun(
-    targetJid,
-    '/break',
-  );
-  return { activeRunId, interrupted, cancelled };
+  const run = interruptActiveSessionRun(targetJid, '/break');
+  return {
+    activeRunId: run.activeRunId,
+    // Between failed attempts no query runs: the stop ends the armed retry.
+    interrupted: run.interrupted || queue.stopArmedRetry(targetJid),
+    cancelled,
+  };
+}
+
+/** Close the retry_wait turns of inputs withdrawn from a lane. */
+function closeRetryWaitTurnsOfInputs(
+  laneJid: string,
+  inputs: ReadonlyArray<{ id: string; source_jid?: string | null }>,
+  reason: string,
+): void {
+  for (const input of inputs) {
+    closeRetryWaitTurnsForWithdrawnInputs(
+      channelTurnScopeForInput(laneJid, input.source_jid),
+      [input.id],
+      reason,
+    );
+  }
+}
+
+/** The stored inputs of the batch a failed attempt read. */
+function retrySnapshotInputs(laneJid: string, snapshot: MessageRetrySnapshot) {
+  return snapshot.coveredCursors
+    .map((cursor) => getAgentBuilderInputMessage(laneJid, cursor.id))
+    .filter((message) => message !== null);
+}
+
+/**
+ * An explicit stop ended a lane's armed retry: the batch the failed attempt
+ * read is settled as stopped, like a stopped turn, and never runs again.
+ */
+function settleStoppedRetryBatch(
+  laneJid: string,
+  snapshot: MessageRetrySnapshot | null,
+): void {
+  if (!snapshot) return;
+  const inputs = retrySnapshotInputs(laneJid, snapshot);
+  cancelAutomationInputs(inputs, 'break');
+  advanceCursors(laneJid, snapshot.cursor);
+  closeRetryWaitTurnsOfInputs(laneJid, inputs, 'Input stopped between retries');
+  void clearTrackedProcessingIndicators(laneJid);
 }
 
 async function handleFeishuSessionClear(input: {
@@ -18769,9 +18803,9 @@ async function main(): Promise<void> {
         // Use only the immutable batch read by the final failed attempt. A
         // prompt arriving while this callback runs belongs to a future
         // attempt and must not be marked failed or consumed here.
-        const exactMessages = (snapshot?.coveredCursors ?? [])
-          .map((cursor) => getAgentBuilderInputMessage(laneJid, cursor.id))
-          .filter((message) => message !== null);
+        const exactMessages = snapshot
+          ? retrySnapshotInputs(laneJid, snapshot)
+          : [];
         const automationRunIds = exactMessages
           .map(automationRunIdOf)
           .filter((runId): runId is string => !!runId);
@@ -18818,6 +18852,7 @@ async function main(): Promise<void> {
       }
     },
   );
+  queue.setOnRetryStopped(settleStoppedRetryBatch);
   // Billing: user-level concurrent container limit
   queue.setUserConcurrentLimitChecker(checkOwnerConcurrentLimit);
   queue.setOnUnacknowledgedIpcDeliveries(
