@@ -242,27 +242,23 @@ function rekeyTurnRuns(
          id = CASE WHEN id = ? THEN ? ELSE id END
        WHERE turn_run_id = ?`,
     ).run(id, oldCard, card, run.id);
-    // Outbox keys start with the run id (turn deliveries) or the card id.
-    prep(
+    // Outbox keys start with the run id (turn deliveries) or the card id and
+    // carry NUL-separated parts, which SQL substr()/length()/|| cut off at the
+    // first NUL: the prefix is swapped in JS so no part of a key is lost.
+    const outbox = prep(
       db,
-      `UPDATE channel_outbox SET turn_run_id = ?,
-         idempotency_key = CASE
-           WHEN substr(idempotency_key, 1, length(?)) = ? THEN ? || substr(idempotency_key, length(?) + 1)
-           WHEN substr(idempotency_key, 1, length(?)) = ? THEN ? || substr(idempotency_key, length(?) + 1)
-           ELSE idempotency_key END
-       WHERE turn_run_id = ?`,
-    ).run(
-      id,
-      run.id,
-      run.id,
-      id,
-      run.id,
-      oldCard,
-      oldCard,
-      card,
-      oldCard,
-      run.id,
+      'SELECT id, idempotency_key AS key FROM channel_outbox WHERE turn_run_id = ?',
+    ).all(run.id) as Array<{ id: string; key: string }>;
+    const swapPrefix = (value: string): string => {
+      if (value.startsWith(run.id)) return id + value.slice(run.id.length);
+      if (value.startsWith(oldCard)) return card + value.slice(oldCard.length);
+      return value;
+    };
+    const reKey = prep(
+      db,
+      'UPDATE channel_outbox SET turn_run_id = ?, idempotency_key = ? WHERE id = ?',
     );
+    for (const row of outbox) reKey.run(id, swapPrefix(row.key), row.id);
     prep(db, 'DELETE FROM turn_runs WHERE id = ?').run(run.id);
     prep(db, 'UPDATE turn_runs SET inbox_id = ? WHERE id = ?').run(
       run.inboxId,

@@ -1325,6 +1325,31 @@ describe('v88 legacy main session migration', () => {
           ('o2', '${oldId}', 1, 'card', '${oldCard}:page', 'feishu', 'acct',
            '${BOUND_GROUP}', 'h', 'pending', '${T(1)}', '${T(1)}', '${T(1)}');
       `);
+      // Semantic outbox keys carry NUL-separated parts after the run id; SQL
+      // string functions cut a value at the first NUL.
+      const nul = conn.prepare(
+        'INSERT INTO channel_outbox (id, turn_run_id, ordinal, kind, idempotency_key, provider, account_id, source_jid, payload_hash, status, available_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      );
+      for (const [id, ordinal, kind] of [
+        ['o3', 2, 'text'],
+        ['o4', 3, 'image'],
+      ] as const) {
+        nul.run(
+          id,
+          oldId,
+          ordinal,
+          kind,
+          `${oldId}:semantic-v1\u0000feishu\u0000acct\u0000${id}`,
+          'feishu',
+          'acct',
+          BOUND_GROUP,
+          'h',
+          'pending',
+          T(1),
+          T(1),
+          T(1),
+        );
+      }
     });
     const report = db.initDatabase().legacyMainSessions!;
     const home = report.workspaces[0];
@@ -1360,6 +1385,16 @@ describe('v88 legacy main session migration', () => {
       ).toEqual([
         { id: 'o1', turn_run_id: newId, idempotency_key: `${newId}:reply` },
         { id: 'o2', turn_run_id: newId, idempotency_key: `${newCard}:page` },
+        {
+          id: 'o3',
+          turn_run_id: newId,
+          idempotency_key: `${newId}:semantic-v1\u0000feishu\u0000acct\u0000o3`,
+        },
+        {
+          id: 'o4',
+          turn_run_id: newId,
+          idempotency_key: `${newId}:semantic-v1\u0000feishu\u0000acct\u0000o4`,
+        },
       ]);
     });
     // The replayed input, now routed to the session, finds the same run.
