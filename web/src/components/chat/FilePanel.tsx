@@ -305,9 +305,13 @@ function formatSize(bytes: number): string {
   return `${(bytes / Math.pow(k, i)).toFixed(1)} ${sizes[i]}`;
 }
 
-function buildPreviewUrl(groupJid: string, filePath: string): string {
+function buildPreviewUrl(
+  groupJid: string,
+  filePath: string,
+  route: 'preview' | 'office-preview' = 'preview',
+): string {
   return withBasePath(
-    workspaceFilesUrl(groupJid, `files/preview/${toBase64Url(filePath)}`),
+    workspaceFilesUrl(groupJid, `files/${route}/${toBase64Url(filePath)}`),
   );
 }
 
@@ -686,16 +690,13 @@ function MarkdownFileViewer({
 // ─── PDF Preview Overlay ────────────────────────────────────────
 
 function PdfPreview({
-  groupJid,
+  src,
   file,
   onClose,
-  src,
 }: {
-  groupJid: string;
+  src: string;
   file: FileEntry;
   onClose: () => void;
-  /** 覆盖默认的预览地址（Office 预览传入转换后的 blob URL） */
-  src?: string;
 }) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [viewerLoadVersion, setViewerLoadVersion] = useState(0);
@@ -731,7 +732,7 @@ function PdfPreview({
     <MediaOverlay onClose={onClose} fileName={file.name}>
       <iframe
         ref={iframeRef}
-        src={src ?? buildPreviewUrl(groupJid, file.path)}
+        src={src}
         title={file.name}
         className="h-[90dvh] w-[90vw] rounded-lg bg-white"
         tabIndex={0}
@@ -745,23 +746,21 @@ function PdfPreview({
 
 type OfficePreviewLoad =
   | { status: 'loading' }
-  | { status: 'ready'; url: string }
+  | { status: 'ready' }
   | { status: 'error'; message: string };
 
-async function readOfficePreviewError(res: Response): Promise<string> {
-  try {
-    const body = (await res.json()) as { error?: unknown; code?: unknown };
-    if (body.code === 'NOT_CONFIGURED') return '未配置 Office 预览转换器';
-    if (typeof body.error === 'string' && body.error.trim()) {
-      return body.error.trim();
-    }
-  } catch {
-    // fall through to the status-based message
-  }
-  return `Office 预览失败 (${res.status})`;
-}
+/** A HEAD response has no body, so the status (one per error code) speaks. */
+const OFFICE_PREVIEW_ERRORS: Record<number, string> = {
+  400: '不支持预览这种文件',
+  404: '文件不存在',
+  413: '文件太大，无法预览',
+  501: '未配置 Office 预览转换器',
+  502: '转换失败',
+  503: '正在转换的文件较多，请稍后再试',
+  504: '转换超时',
+};
 
-function OfficePreview({
+export function OfficePreview({
   groupJid,
   file,
   onClose,
@@ -773,53 +772,42 @@ function OfficePreview({
   onDownload: (file: FileEntry) => void;
 }) {
   const [state, setState] = useState<OfficePreviewLoad>({ status: 'loading' });
+  const url = buildPreviewUrl(groupJid, file.path, 'office-preview');
 
   useEffect(() => {
+    // HEAD runs the conversion and reports how it went without sending the
+    // PDF; the iframe then loads the same URL from the server's cache, so
+    // the PDF keeps the response's CSP sandbox (a blob: URL would not).
     const controller = new AbortController();
-    let objectUrl: string | null = null;
     setState({ status: 'loading' });
-    (async () => {
-      try {
-        const res = await fetch(
-          withBasePath(
-            `/api/groups/${encodeURIComponent(groupJid)}/files/office-preview/${toBase64Url(file.path)}`,
-          ),
-          { credentials: 'include', signal: controller.signal },
-        );
-        if (!res.ok) {
-          setState({
-            status: 'error',
-            message: await readOfficePreviewError(res),
-          });
-          return;
-        }
-        const blob = await res.blob();
-        if (controller.signal.aborted) return;
-        objectUrl = URL.createObjectURL(blob);
-        setState({ status: 'ready', url: objectUrl });
-      } catch (err) {
-        if (controller.signal.aborted) return;
-        setState({
+    fetch(url, {
+      method: 'HEAD',
+      credentials: 'include',
+      signal: controller.signal,
+    })
+      .then(
+        (res): OfficePreviewLoad =>
+          res.ok
+            ? { status: 'ready' }
+            : {
+                status: 'error',
+                message:
+                  OFFICE_PREVIEW_ERRORS[res.status] ??
+                  `Office 预览失败 (${res.status})`,
+              },
+        (): OfficePreviewLoad => ({
           status: 'error',
-          message: err instanceof Error ? err.message : 'Office 预览失败',
-        });
-      }
-    })();
-    return () => {
-      controller.abort();
-      if (objectUrl) URL.revokeObjectURL(objectUrl);
-    };
-  }, [groupJid, file.path]);
+          message: '网络连接失败，请稍后重试',
+        }),
+      )
+      .then((next) => {
+        if (!controller.signal.aborted) setState(next);
+      });
+    return () => controller.abort();
+  }, [url]);
 
   if (state.status === 'ready') {
-    return (
-      <PdfPreview
-        groupJid={groupJid}
-        file={file}
-        onClose={onClose}
-        src={state.url}
-      />
-    );
+    return <PdfPreview src={url} file={file} onClose={onClose} />;
   }
 
   return (
@@ -1610,7 +1598,7 @@ export function FilePanel({ groupJid, onClose }: FilePanelProps) {
       )}
       {preview?.kind === 'pdf' && (
         <PdfPreview
-          groupJid={groupJid}
+          src={buildPreviewUrl(groupJid, preview.file.path)}
           file={preview.file}
           onClose={() => setPreview(null)}
         />
