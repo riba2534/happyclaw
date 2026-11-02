@@ -181,12 +181,9 @@ export function resolveLocationInfo(
  * workspace binding, or a stale target). Never falls back to anything else.
  */
 export function resolveBoundChatTarget(
-  _sourceChatJid: string,
   group: RegisteredGroupLike,
   getRegisteredGroup: (jid: string) => RegisteredGroupLike | undefined,
   getAgent: (id: string) => AgentLike | undefined,
-  _findGroupNameByFolder?: (folder: string) => string,
-  _resolveWorkspaceJid?: (jid: string) => string | null,
 ): BoundChatTarget | null {
   return group.target_agent_id
     ? resolveSessionTarget(group.target_agent_id, getRegisteredGroup, getAgent)

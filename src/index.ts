@@ -284,6 +284,7 @@ import {
   buildNativeThreadWorkspaceUpdate,
   buildWorkspaceMountUpdate,
   hasRemainingThreadMapMount,
+  isBindableSession,
   isNativeContextContainer,
   unbindChannelMount,
   attachDefaultChannelAccountMount,
@@ -5186,8 +5187,7 @@ function resolveCommandSession(
     );
   }
   return (
-    resolveBoundChatTarget(chatJid, group, lookupGroup, getAgent) ??
-    UNBOUND_CHAT_REPLY
+    resolveBoundChatTarget(group, lookupGroup, getAgent) ?? UNBOUND_CHAT_REPLY
   );
 }
 
@@ -5304,37 +5304,61 @@ function collectWorkspaces(userId: string): WorkspaceInfo[] {
   return workspaces;
 }
 
+const BIND_TARGET_NOT_FOUND =
+  '未找到目标。先用 /list 查看工作区和会话短 ID，再执行 /bind <工作区>/<会话短ID>';
+
 /**
- * `/bind <workspace>[/<session>]`: the workspace, and the session named by
- * its short id or name when one is given. Null when either is not found.
+ * `/bind <workspace>[/<session>]`: the workspace, and the one session whose
+ * short id starts with, or whose name is, the part after the slash. The
+ * reply to send instead when there is no such workspace or session, the
+ * part after the slash is empty, it names several sessions, or the session
+ * is one chats cannot bind to.
  */
 function resolveBindingTarget(
   userId: string,
   rawSpec: string,
-): {
-  workspace: WorkspaceInfo;
-  session: WorkspaceInfo['agents'][number] | null;
-} | null {
+):
+  | {
+      workspace: WorkspaceInfo;
+      session: WorkspaceInfo['agents'][number] | null;
+    }
+  | string {
   const spec = rawSpec.trim();
-  if (!spec) return null;
-
-  const [workspaceSpecRaw, sessionSpecRaw] = spec.split('/', 2);
-  const workspaceSpec = workspaceSpecRaw.trim().toLowerCase();
-  const sessionSpec = sessionSpecRaw?.trim().toLowerCase();
+  const slash = spec.indexOf('/');
+  const workspaceSpec = (slash < 0 ? spec : spec.slice(0, slash))
+    .trim()
+    .toLowerCase();
   const workspace = collectWorkspaces(userId).find(
     (ws) =>
       ws.folder.toLowerCase() === workspaceSpec ||
       ws.name.trim().toLowerCase() === workspaceSpec,
   );
-  if (!workspace) return null;
-  if (!sessionSpec) return { workspace, session: null };
+  if (!workspace) return BIND_TARGET_NOT_FOUND;
+  if (slash < 0) return { workspace, session: null };
 
-  const session = workspace.agents.find(
+  const sessionSpec = spec
+    .slice(slash + 1)
+    .trim()
+    .toLowerCase();
+  if (!sessionSpec) {
+    return '请在 / 后写会话短 ID 或名称：/bind <工作区>/<会话短ID>';
+  }
+  const matches = workspace.agents.filter(
     (item) =>
       item.id.toLowerCase().startsWith(sessionSpec) ||
       item.name.trim().toLowerCase() === sessionSpec,
   );
-  return session ? { workspace, session } : null;
+  if (matches.length === 0) return BIND_TARGET_NOT_FOUND;
+  if (matches.length > 1) {
+    return [
+      '匹配到多个会话，请写更长的短 ID：',
+      ...matches.map((item) => `· ${item.name} [${item.id.slice(0, 8)}]`),
+    ].join('\n');
+  }
+  if (!isBindableSession(getAgent(matches[0].id))) {
+    return '这个会话不能绑定聊天（团队、自动化或话题的会话）。';
+  }
+  return { workspace, session: matches[0] };
 }
 
 /**
@@ -5459,9 +5483,7 @@ function handleBindCommand(chatJid: string, rawSpec: string): string {
     return '用法: /bind <工作区> 新建会话并绑定，或 /bind <工作区>/<会话短ID>';
 
   const resolved = resolveBindingTarget(userId, rawSpec);
-  if (!resolved) {
-    return '未找到目标。先用 /list 查看工作区和会话短 ID，再执行 /bind <工作区>/<会话短ID>';
-  }
+  if (typeof resolved === 'string') return resolved;
   const { workspace } = resolved;
 
   let updated: RegisteredGroup;
@@ -15981,10 +16003,7 @@ function resolveRouteSession(routeJid: string): string | null {
     }
     return null;
   }
-  return (
-    resolveBoundChatTarget(conversationJid, group, lookup, getAgent)
-      ?.targetChatJid ?? null
-  );
+  return resolveBoundChatTarget(group, lookup, getAgent)?.targetChatJid ?? null;
 }
 
 /** The IM chats bound to a session as a whole (topic containers excluded). */
@@ -16862,7 +16881,6 @@ function resolveRuntimeControlTarget(
   if (isNativeContextContainer(sourceJid, group)) return undefined;
   if (!isDirectImConversation(sourceJid, group, chatType)) return undefined;
   const target = resolveBoundChatTarget(
-    sourceJid,
     group,
     (jid) => registeredGroups[jid] ?? getRegisteredGroup(jid),
     getAgent,
