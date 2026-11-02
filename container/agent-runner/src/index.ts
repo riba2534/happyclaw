@@ -1835,6 +1835,7 @@ async function runQueryAttempt(
   // name in the return type, this includes the initial startup/idle-drain batch
   // as well as messages piped while the query is active.
   const ipcDeliveryTracker = new IpcTurnDeliveryTracker(initialIpcMessages);
+  const handedOverQueryRunIds = new Set<string>();
   // Registration is synchronous and precedes every await in this query. Only
   // now may the crash-recoverable disk claims be removed.
   acknowledgeRegisteredIpcInputs(initialIpcMessages);
@@ -2443,8 +2444,10 @@ async function runQueryAttempt(
       ipcQueryWatcher.close();
       return;
     }
-    const interruptReason = shouldInterrupt((queryRunId) =>
-      ipcDeliveryTracker.hasTurnFromQueryRun(queryRunId),
+    const interruptReason = shouldInterrupt(
+      (queryRunId) =>
+        ipcDeliveryTracker.hasTurnFromQueryRun(queryRunId) ||
+        handedOverQueryRunIds.has(queryRunId),
     );
     if (interruptReason) {
       log(
@@ -2868,6 +2871,11 @@ async function runQueryAttempt(
       (sdkUuid) => ipcDeliveryTracker.isLaterTurnSdkUuid(sdkUuid),
     );
     if (!held) return;
+    // A stop the host aimed at the held query before it saw this hand-over
+    // still means the background work, which the later input now owns.
+    if (containerInput.queryRunId) {
+      handedOverQueryRunIds.add(containerInput.queryRunId);
+    }
     const pendingBgTasks = processor.getBlockingPendingSdkTaskCount();
     log(
       `A later input started while the current input waited only on ${pendingBgTasks} background task(s); settling it and handing the background work over`,

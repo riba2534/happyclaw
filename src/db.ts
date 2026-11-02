@@ -3931,6 +3931,18 @@ export function claimNextQueuedFollowUp(
   })();
 }
 
+/** The batch the next claim would take, without claiming it. */
+export function peekNextQueuedFollowUpBatch(chatJid: string): QueuedFollowUp[] {
+  const rows = db
+    .prepare(
+      `${FOLLOW_UP_SELECT}
+       WHERE chat_jid = ? AND delivery_status = 'queued'
+       ORDER BY delivery_priority ASC, ingest_sequence ASC`,
+    )
+    .all(chatJid) as Array<Record<string, unknown>>;
+  return selectChannelReplyBatch(rows.map(normalizeQueuedFollowUpRow));
+}
+
 /**
  * Atomically snapshot the next durable follow-up turn.
  *
@@ -11712,6 +11724,36 @@ export function upsertSubagentCheckpoint(input: {
     now,
     now,
   );
+}
+
+/**
+ * A later input took over the given inputs' background work: their checkpoints
+ * now replay with it, since the handed-over inputs are not replayed again.
+ */
+export function reassignSubagentCheckpoints(
+  groupFolder: string,
+  chatJid: string,
+  fromInputMessageIds: readonly string[],
+  toInputMessageId: string,
+): number {
+  const ids = [...new Set(fromInputMessageIds.filter(Boolean))];
+  if (!groupFolder || !chatJid || !toInputMessageId || ids.length === 0) {
+    return 0;
+  }
+  return db
+    .prepare(
+      `UPDATE subagent_checkpoints
+          SET input_message_id = ?, updated_at = ?
+        WHERE group_folder = ? AND chat_jid = ?
+          AND input_message_id IN (${ids.map(() => '?').join(',')})`,
+    )
+    .run(
+      toInputMessageId,
+      new Date().toISOString(),
+      groupFolder,
+      chatJid,
+      ...ids,
+    ).changes;
 }
 
 /**

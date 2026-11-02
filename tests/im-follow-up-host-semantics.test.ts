@@ -37,6 +37,7 @@ function hostHarness() {
   let activeRunId: string | null = 'run-1';
   const queue = {
     getActiveQueryId: vi.fn(() => activeRunId),
+    hasBackgroundHold: vi.fn(() => false),
     interruptQuery: vi.fn(() => true),
     activeQueryExclusivelyCoversMessage: vi.fn(() => false),
   };
@@ -70,6 +71,7 @@ function hostHarness() {
   };
   const harness = createRuntimeSourceHarness(globals);
   for (const name of [
+    'deliverWithoutInterruptingBackgroundWork',
     'steerQueuedFollowUpBatch',
     'handleIncomingFollowUp',
     'resolveRuntimeControlTarget',

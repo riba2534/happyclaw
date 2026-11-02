@@ -203,6 +203,7 @@ async function fixture(
     channelTurnScope,
     agentAdmissionKey: scope,
     admittedWarmAgentInputs: new Map(),
+    agentInputMessagesByTurn: new Map(),
     resolveInputChannelReplySource: (jid: string | null) =>
       jid?.startsWith('feishu:') ? jid : null,
     parseChannelAddress,

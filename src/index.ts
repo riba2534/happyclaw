@@ -81,6 +81,7 @@ import {
   hasUnfinishedProactiveOutput,
   resolveTurnOutcome,
 } from './turn-outcome.js';
+import { backgroundHandoffRefusal } from './background-handoff-policy.js';
 import { finalizeChannelCardAfterDelivery } from './channel-card-finalization.js';
 import { persistUncertainStreamingDelivery } from './channel-streaming-uncertainty.js';
 import { resolveContainerOutputInputTurnId } from './channel-output-correlation.js';
@@ -195,6 +196,8 @@ import {
   markAllRunningTaskAgentsAsError,
   upsertSubagentCheckpoint,
   listSubagentCheckpointsForInputs,
+  peekNextQueuedFollowUpBatch,
+  reassignSubagentCheckpoints,
   pruneSubagentCheckpoints,
   markStaleSpawnAgentsAsError,
   listActiveConversationAgents,
@@ -719,7 +722,11 @@ export function formatMessages(
  * scheduled tasks that are only kept for history. They never wake a
  * usage-limit wait or vouch for an IM owner.
  */
-function isUnattendedInput(message: NewMessage): boolean {
+function isUnattendedInput(
+  message: Parameters<typeof automationRunIdOf>[0] & {
+    task_id?: string | null;
+  },
+): boolean {
   return (
     automationRunIdOf(message) !== null ||
     message.source_kind === 'work_item_input' ||
@@ -1582,6 +1589,18 @@ const HELD_TURN_DIVIDER = '\n\n---\n\n';
 const TRUNCATION_EXHAUSTED_STATUS = 'truncation_continue_exhausted';
 // 会话挂起卡 finalizer 注册表（key: virtualChatJid），由 web.ts / IM 注入点
 // 在注入成功回调里显式触发。
+type BackgroundHandoffSender = {
+  sender: string | null;
+  source_jid?: string | null;
+};
+/**
+ * Whether a session's next queued batch may take over from its held input
+ * (see backgroundHandoffRefusal). Set while the session's run is active.
+ */
+const activeBackgroundHandoffGates = new Map<
+  string,
+  (heldInputTurnId: string, next: QueuedFollowUp[]) => boolean
+>();
 const activeHeldCardFinalizers = new Map<
   string,
   (sourceJid?: string | null, inputTurnId?: string) => void
@@ -1990,8 +2009,39 @@ function withdrawQueuedInputsOfEndedRuns(chatJid: string): void {
   }
 }
 
+/** Whether the lane's queue head may take over from its held input now. */
+function canHandOffBackgroundWork(chatJid: string): boolean {
+  const heldInputTurnId = queue.backgroundHoldAwaitingNext(chatJid);
+  if (!heldInputTurnId) return false;
+  withdrawQueuedInputsOutsideAudience(chatJid);
+  withdrawQueuedInputsOfEndedRuns(chatJid);
+  const next = peekNextQueuedFollowUpBatch(chatJid);
+  return (
+    next.length > 0 &&
+    (activeBackgroundHandoffGates.get(chatJid)?.(heldInputTurnId, next) ??
+      false)
+  );
+}
+
+/**
+ * Deliver the queue head without interrupting a lane that only background
+ * tasks hold. True when the caller must not interrupt: the head is on its way,
+ * or an earlier one is already taking over.
+ */
+function deliverWithoutInterruptingBackgroundWork(chatJid: string): boolean {
+  if (!queue.hasBackgroundHold(chatJid)) return false;
+  if (!queue.backgroundHoldAwaitingNext(chatJid)) return true;
+  if (!canHandOffBackgroundWork(chatJid)) return false;
+  void dispatchNextQueuedFollowUp(chatJid);
+  return true;
+}
+
 async function dispatchNextQueuedFollowUp(chatJid: string): Promise<void> {
-  const reservedRunId = queue.reserveNextQuery(chatJid);
+  const reservedRunId =
+    queue.reserveNextQuery(chatJid) ??
+    (canHandOffBackgroundWork(chatJid)
+      ? queue.reserveBackgroundHandoffQuery(chatJid)
+      : null);
   if (!reservedRunId) return;
   withdrawQueuedInputsOutsideAudience(chatJid);
   withdrawQueuedInputsOfEndedRuns(chatJid);
@@ -2264,6 +2314,15 @@ function interruptAndRunFollowUp(
       item: getQueuedFollowUp(chatJid, messageId) ?? undefined,
     };
   }
+  if (deliverWithoutInterruptingBackgroundWork(chatJid)) {
+    broadcastFollowUpUpdate(chatJid);
+    return {
+      ok: true,
+      state: 'queued',
+      message: '后台任务继续运行，这条消息将接着处理。',
+      item: first,
+    };
+  }
   const activeRunId = queue.getActiveQueryId(chatJid);
   if (activeRunId) markSteeringInterrupt(chatJid);
   if (!activeRunId || !queue.interruptQuery(chatJid, activeRunId)) {
@@ -2305,6 +2364,15 @@ function steerQueuedFollowUpBatch(
   const item = getQueuedFollowUp(chatJid, messageId);
   if (!item) {
     return { ok: false, message: '这条引导消息已被处理或取消。' };
+  }
+  if (deliverWithoutInterruptingBackgroundWork(chatJid)) {
+    broadcastFollowUpUpdate(chatJid);
+    return {
+      ok: true,
+      state: 'queued',
+      message: '后台任务继续运行，引导将接着处理。',
+      item,
+    };
   }
   const activeRunId = queue.getActiveQueryId(chatJid);
   if (activeRunId) markSteeringInterrupt(chatJid);
@@ -11120,6 +11188,10 @@ async function processAgentConversation(
         resolveBatchChannelReplySource(missedMessages),
       );
   const initialAgentReplySourceImJid = replySourceImJid;
+  const agentInputMessagesByTurn = new Map<
+    string,
+    Array<Parameters<typeof isUnattendedInput>[0] & BackgroundHandoffSender>
+  >([[lastProcessed.id, missedMessages]]);
   if (replySourceImJid) {
     // Publish to activeImReplyRoutes so send_file/send_image IPC can route to IM.
     // Only use virtualChatJid key (per-agent) — folder-level key would collide
@@ -11720,7 +11792,7 @@ async function processAgentConversation(
   // 挂起序列异常收口：给合并行追加说明注记并广播
   const finalizeHeldAgentDbMessage = (
     note: string | null,
-    reason: 'interrupted' | 'truncated',
+    reason: 'interrupted' | 'truncated' | 'background_handoff',
     warning = true,
   ): void => {
     if (!heldAgentDbMsgId || heldAgentParts.length === 0) return;
@@ -12018,6 +12090,7 @@ async function processAgentConversation(
         agentChannelTurnRuntimes.set(inputTurnId, nextRuntime);
         agentChannelOutboxScopesByInput.set(inputTurnId, nextScope);
       }
+      agentInputMessagesByTurn.set(inputTurnId, admittedMessages);
       admittedWarmAgentInputs.set(inputTurnId, {
         sourceJid: newSourceJid,
         imJid: targetSourceJid,
@@ -12066,6 +12139,7 @@ async function processAgentConversation(
           const admitted = admittedWarmAgentInputs.get(inputTurnId);
           if (!admitted) return;
           automationTurns.forget(inputTurnId);
+          agentInputMessagesByTurn.delete(inputTurnId);
           admittedWarmAgentInputs.delete(inputTurnId);
           agentInputUsageProjection.rollback(inputTurnId);
           agentChannelTurnRuntimes.delete(inputTurnId);
@@ -12092,6 +12166,227 @@ async function processAgentConversation(
       };
     },
   );
+  // Only background tasks hold the current input: may the queue head take over?
+  const initialAgentQueryRunId = queue.getActiveQueryId(virtualJid);
+  const heldAgentReplySettleable = (
+    inputTurnId: string,
+    route: string | null,
+  ): boolean => {
+    const finalDelivered =
+      agentPhysicalDeliveryAckByInput.get(inputTurnId) === true;
+    const nonTerminalDelivered =
+      agentNonTerminalDeliveryAckByInput.get(inputTurnId) === true;
+    if (
+      hasUnfinishedProactiveOutput({
+        interactionMode,
+        nonTerminalDelivered,
+        finalDelivered,
+      })
+    ) {
+      return false;
+    }
+    if (!publishesFrameworkAnswer(interactionMode) || !route) return true;
+    return (
+      finalDelivered ||
+      nonTerminalDelivered ||
+      (heldAgentParts.length > 0 &&
+        agentStreamingSessionsByInput.get(inputTurnId)?.session.isActive() ===
+          true)
+    );
+  };
+  const inputsAreOwnersAlone = (
+    messages: readonly BackgroundHandoffSender[],
+  ): boolean => {
+    const ownerUserId = effectiveGroup.created_by;
+    if (!ownerUserId || messages.length === 0) return false;
+    const registration = (jid: string) =>
+      registeredGroups[jid] ?? getRegisteredGroup(jid);
+    return messages.every((message) =>
+      isOwnerProfileOwnerInput(
+        { sender: message.sender, source_jid: message.source_jid ?? null },
+        ownerUserId,
+        registration,
+        (provider) =>
+          workspaceOwnerImIds({
+            ownerUserId,
+            workspaceJids: getJidsByFolder(effectiveGroup.folder),
+            channelType: getChannelType,
+            registration,
+            provider,
+          }),
+      ),
+    );
+  };
+  const agentBackgroundHandoffRefusal = (
+    heldInputTurnId: string,
+    next: QueuedFollowUp[],
+  ): string | null => {
+    const heldMessages = agentInputMessagesByTurn.get(heldInputTurnId) ?? [];
+    const route =
+      heldInputTurnId === lastProcessed.id
+        ? initialAgentReplySourceImJid
+        : (admittedWarmAgentInputs.get(heldInputTurnId)?.imJid ?? null);
+    return backgroundHandoffRefusal({
+      teamRole,
+      runtimeKind: agent.kind,
+      heldReplySettleable: heldAgentReplySettleable(heldInputTurnId, route),
+      held: {
+        route,
+        unattended: heldMessages.some(isUnattendedInput),
+        ownerAlone: inputsAreOwnersAlone(heldMessages),
+      },
+      next: {
+        route: resolveBatchChannelReplySource(next),
+        unattended: next.some(isUnattendedInput),
+        ownerAlone: inputsAreOwnersAlone(next),
+      },
+    });
+  };
+  activeBackgroundHandoffGates.set(virtualChatJid, (heldInputTurnId, next) => {
+    const refusal = agentBackgroundHandoffRefusal(heldInputTurnId, next);
+    if (refusal) {
+      logger.debug(
+        { chatJid, agentId, heldInputTurnId, refusal },
+        'Queued input stays queued behind background tasks',
+      );
+    }
+    return !refusal;
+  });
+  // 挂起中的输入只剩后台任务、后续输入已在同一 SDK 流里开始：不带新正文地结算它，
+  // 后台任务及其汇总（含重启后的断点回注）转由后续输入承接。
+  const settleAgentBackgroundHandoff = async (
+    output: ContainerOutput,
+  ): Promise<void> => {
+    const inputTurnId = resolveContainerOutputInputTurnId(
+      output,
+      lastProcessed.id,
+    );
+    queue.finishBackgroundHold(virtualJid, inputTurnId);
+    const inputIds = output.ipcReceipts?.length
+      ? output.ipcReceipts.map((receipt) => receipt.deliveryId)
+      : [inputTurnId];
+    const heldText = heldAgentParts.join(HELD_TURN_DIVIDER);
+    finalizeHeldAgentDbMessage(
+      '后台任务已转交给下一条消息，完成后在那里汇总',
+      'background_handoff',
+      false,
+    );
+    heldAgentParts = [];
+    heldAgentDbMsgId = null;
+    heldAgentDbTurnId = null;
+    agentStreamingAccText = '';
+
+    const scope = agentChannelOutboxScopesByInput.get(inputTurnId);
+    const projection = agentStreamingSessionsByInput.get(inputTurnId);
+    let delivered =
+      agentNonTerminalDeliveryAckByInput.get(inputTurnId) === true ||
+      agentPhysicalDeliveryAckByInput.get(inputTurnId) === true;
+    if (
+      publishesFrameworkAnswer(interactionMode) &&
+      heldText &&
+      projection?.session.isActive()
+    ) {
+      const card = await finalizeChannelCardAfterDelivery(
+        projection.session,
+        heldText,
+        true,
+        '回复投递未确认，已切换为消息发送',
+      );
+      if (card.acknowledged) {
+        delivered = true;
+        unregisterStreamingSession(projection.jid, projection.session);
+        agentStreamingSessionsByInput.delete(inputTurnId);
+        if (projection.session === agentStreamingSession) {
+          agentStreamingSession = undefined;
+          activeAgentDurableCardLifecycle = undefined;
+        }
+      } else if (card.error) {
+        const uncertain = classifyImSendFailure(card.error) === 'uncertain';
+        logger.warn(
+          { err: card.error, chatJid, agentId, inputTurnId, uncertain },
+          'Held agent card did not finalize at background hand-off',
+        );
+        if (uncertain && scope) {
+          // completeAgentChannelRuntimesForOutput finds this fence and asks
+          // for manual reconciliation instead of resending.
+          await persistUncertainStreamingDelivery({
+            scope,
+            operationKey: `agent-streaming-card-handoff:${agentId}:${inputTurnId}`,
+            payload: {
+              role: 'agent_primary_stream_final',
+              contentHash: crypto
+                .createHash('sha256')
+                .update(heldText)
+                .digest('hex'),
+            },
+            error: card.error,
+          });
+        } else if (scope) {
+          const refusedText = feishuCardStaticFallbackText(card.error);
+          if (refusedText !== undefined) {
+            agentChannelTurnRuntimes
+              .get(inputTurnId)
+              ?.markStreamingCardStaticFallbackDelivered();
+          }
+          delivered = await sendImWithRetry(
+            scope.sourceJid,
+            refusedText ?? heldText,
+            [],
+            {
+              scopeKey: channelTurnScope(effectiveGroup.folder, agentId),
+              scopeToken: scope.token,
+              operationKey: `agent-handoff:${agentId}:${inputTurnId}`,
+            },
+          );
+        }
+      }
+    }
+    for (const inputId of inputIds) {
+      // Proactive output is acknowledged by its own final, never by progress.
+      if (delivered && publishesFrameworkAnswer(interactionMode)) {
+        agentPhysicalDeliveryAckByInput.set(inputId, true);
+        agentGenuineReplyDeliveredByInput.set(inputId, true);
+      }
+    }
+    if (!(await completeAgentChannelRuntimesForOutput(output))) {
+      throw new Error(
+        'host_turn_settlement_failed: background hand-off did not reach a durable terminal state',
+      );
+    }
+    const takeoverMessageId = output.activeIpcReceipts?.at(-1)?.cursor.id;
+    if (!takeoverMessageId) {
+      // No input to replay them with: keep the cursor so a restart replays
+      // this input and its checkpoints.
+      logger.error(
+        { chatJid, agentId, inputTurnId },
+        'Background hand-off named no later input; leaving the cursor behind',
+      );
+      return;
+    }
+    const moved = reassignSubagentCheckpoints(
+      effectiveGroup.folder,
+      virtualChatJid,
+      output.ipcReceipts?.length
+        ? output.ipcReceipts.flatMap((receipt) =>
+            (receipt.coveredCursors ?? [receipt.cursor]).map(
+              (cursor) => cursor.id,
+            ),
+          )
+        : missedMessages.map((message) => message.id),
+      takeoverMessageId,
+    );
+    commitCursor(inputTurnId);
+    if (!publishesFrameworkAnswer(interactionMode)) {
+      finalizeProactiveAgentOutputCoordinators(output);
+      persistProactiveTurnTrace(inputTurnId);
+    } else if (delivered) {
+      agentTurnOutputCoordinators.get(inputTurnId)?.markFinalized();
+    }
+    logger.info(
+      { chatJid, agentId, inputTurnId, moved, takeoverMessageId },
+      'Background-held input settled; a later input took over its background tasks',
+    );
+  };
   // 用户在挂起期间发来新消息 → 先定稿旧卡、开新卡（注入点在 web.ts /
   // 消息循环，经 activeHeldCardFinalizers 以 virtualChatJid 为键触达）。
   activeHeldCardFinalizers.set(virtualChatJid, (newSourceJid, inputTurnId) => {
@@ -12742,6 +13037,15 @@ async function processAgentConversation(
         { chatJid, agentId, turnId: outputTurnId, status: output.status },
         'Dropped the terminal output of a recalled input',
       );
+      return;
+    }
+
+    if (
+      output.backgroundHandoff === true &&
+      output.inputTurnCompleted === true
+    ) {
+      await settleAgentBackgroundHandoff(output);
+      resetIdleTimer();
       return;
     }
 
@@ -13912,6 +14216,30 @@ async function processAgentConversation(
       retryUnfinishedTurn = true;
       throw err;
     }
+    if (output.status !== 'stream' && output.inputTurnId) {
+      if (output.backgroundOnly === true) {
+        const heldQueryId =
+          output.inputTurnId === lastProcessed.id
+            ? initialAgentQueryRunId
+            : queue.getPublishedIpcQueryId(virtualJid, output.inputTurnId);
+        // After the reply is projected: the gate reads what it delivered.
+        if (
+          heldQueryId &&
+          queue.markRunnerBackgroundOnly(
+            virtualJid,
+            output.inputTurnId,
+            heldQueryId,
+          )
+        ) {
+          void dispatchNextQueuedFollowUp(virtualJid);
+        }
+      } else if (output.inputTurnCompleted === true) {
+        // It ended by itself before a next input started.
+        queue.finishBackgroundHold(virtualJid, output.inputTurnId);
+      } else {
+        queue.clearBackgroundHold(virtualJid, output.inputTurnId);
+      }
+    }
     // Match the main-runtime contract: IPC consumption becomes durable only
     // after every Host-side persistence/projection callback above has
     // completed. A thrown callback leaves these receipts replayable.
@@ -14304,6 +14632,7 @@ async function processAgentConversation(
 
     // ── Streaming card cleanup ──
     activeHeldCardFinalizers.delete(virtualChatJid);
+    activeBackgroundHandoffGates.delete(virtualChatJid);
     activeRouteAdmissions.delete(agentAdmissionKey);
     if (
       activeChannelTurnActivators.get(agentAdmissionKey) ===
@@ -16473,6 +16802,8 @@ function handleIncomingFollowUp(input: {
     if (result.ok) {
       return { disposition: 'steered', runId: activeRunId };
     }
+  } else if (queue.hasBackgroundHold(input.targetJid)) {
+    void dispatchNextQueuedFollowUp(input.targetJid);
   }
   const position =
     listQueuedFollowUps(input.targetJid).findIndex(

@@ -124,6 +124,7 @@ function agentRunEnd(streamedText: string) {
     agentAdmissionKey: 'steer-admission',
     agentBuilderScope: 'steer-builder',
     activeHeldCardFinalizers: new Map(),
+    activeBackgroundHandoffGates: new Map(),
     activeRouteAdmissions: new Map(),
     activeImReplyRoutes: new Map(),
     activeAgentBuilderTurns: new Map(),

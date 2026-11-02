@@ -76,6 +76,7 @@ function hostHarness(registeredGroups: Record<string, Group>) {
   const queue = {
     activeRunId: null as string | null,
     getActiveQueryId: vi.fn(() => queue.activeRunId),
+    hasBackgroundHold: vi.fn(() => false),
     interruptQuery: vi.fn(() => true),
     activeQueryExclusivelyCoversMessage: vi.fn(() => false),
     reserveNextQuery: vi.fn(() => 'run-next'),
@@ -149,6 +150,7 @@ function hostHarness(registeredGroups: Record<string, Group>) {
     'broadcastFollowUpBatchUpdate',
     'releaseQueuedFollowUpsToColdReader',
     'recoverDurableFollowUps',
+    'deliverWithoutInterruptingBackgroundWork',
     'steerQueuedFollowUpBatch',
     'handleIncomingFollowUp',
   ]) {

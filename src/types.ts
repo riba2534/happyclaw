@@ -572,7 +572,8 @@ export type MessageFinalizationReason =
   | 'error'
   | 'shutdown'
   | 'crash_recovery'
-  | 'truncated';
+  | 'truncated'
+  | 'background_handoff';
 
 export interface MessageAttachment {
   type: 'image';
