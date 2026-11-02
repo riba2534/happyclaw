@@ -81,7 +81,9 @@ describe('GET /:jid/files/preview/:path caching', () => {
   test('returns cache validators and serves 304 for a matching ETag', async () => {
     const first = await routes.request(URL);
     expect(first.status).toBe(200);
-    expect(first.headers.get('Cache-Control')).toBe('private, max-age=300');
+    // Revalidate on every open: a file the Agent just overwrote must show up
+    // at once, not after a freshness window.
+    expect(first.headers.get('Cache-Control')).toBe('private, no-cache');
     const etag = first.headers.get('ETag');
     expect(etag).toMatch(/^W\/"/);
     expect(first.headers.get('Last-Modified')).toBeTruthy();

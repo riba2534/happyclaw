@@ -833,14 +833,14 @@ fileRoutes.get('/:jid/files/preview/:path', authMiddleware, (c) => {
       disposition = `attachment; filename="${encodeURIComponent(fileName)}"`;
     }
 
-    // 预览经公网链路往返很慢：用大小+修改时间做 ETag，浏览器 5 分钟内直接用缓存，
-    // 之后带 If-None-Match 重新验证，没变就回 304、不再传整个文件。
+    // 预览经公网链路往返很慢：用大小+修改时间做 ETag，没变就回 304、不再传整个文件。
+    // no-cache 让浏览器每次打开都先验证：Agent 刚覆盖的图片/PDF 要立即可见。
     const etag = `W/"${fileSize.toString(16)}-${Math.floor(stats.mtimeMs).toString(16)}"`;
     const commonHeaders = {
       ...securityHeaders,
       'Content-Type': contentType,
       'Content-Disposition': disposition,
-      'Cache-Control': 'private, max-age=300',
+      'Cache-Control': 'private, no-cache',
       ETag: etag,
       'Last-Modified': stats.mtime.toUTCString(),
     };
