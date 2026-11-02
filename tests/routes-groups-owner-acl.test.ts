@@ -255,7 +255,21 @@ describe('GET / workspace activity', () => {
       const res = await groupRoutes.request('/');
       return (await res.json()).groups[jid];
     };
+    const emptyJid = 'web:activity-empty';
+    db.setRegisteredGroup(emptyJid, {
+      name: 'Empty',
+      folder: 'activity-empty',
+      added_at: '2026-01-05T00:00:00.000Z',
+      executionMode: 'container',
+      created_by: OWNER_ID,
+    } as any);
+    // Its own chat row is no session and says nothing about activity.
+    db.ensureChatExists(emptyJid);
     try {
+      // A workspace without a session is as recent as its creation.
+      asUser(OWNER_ID, 'member');
+      const groups = (await (await groupRoutes.request('/')).json()).groups;
+      expect(groups[emptyJid].lastMessageTime).toBe('2026-01-05T00:00:00.000Z');
       // No message yet: the newest session activity.
       expect(await list()).toMatchObject({
         lastMessageTime: '2026-03-01T00:00:00.000Z',
@@ -277,6 +291,7 @@ describe('GET / workspace activity', () => {
       });
     } finally {
       db.deleteGroupData(jid, folder);
+      db.deleteGroupData(emptyJid, 'activity-empty');
     }
   });
 });

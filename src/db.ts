@@ -11871,6 +11871,27 @@ function mapAgentRow(row: Record<string, unknown>): SubAgent {
   };
 }
 
+/** The conversation sessions of several workspaces at once, by workspace JID. */
+export function listConversationAgentsByJids(
+  chatJids: string[],
+): Map<string, SubAgent[]> {
+  const result = new Map<string, SubAgent[]>();
+  if (chatJids.length === 0) return result;
+  const rows = prepareCached(
+    `SELECT * FROM agents
+     WHERE kind = 'conversation'
+       AND chat_jid IN (SELECT value FROM json_each(?))
+     ORDER BY created_at DESC`,
+  ).all(JSON.stringify(chatJids)) as Array<Record<string, unknown>>;
+  for (const row of rows) {
+    const agent = mapAgentRow(row);
+    const list = result.get(agent.chat_jid);
+    if (list) list.push(agent);
+    else result.set(agent.chat_jid, [agent]);
+  }
+  return result;
+}
+
 export function deleteMessagesForChatJid(chatJid: string): void {
   prepareCached('DELETE FROM messages WHERE chat_jid = ?').run(chatJid);
   prepareCached('DELETE FROM turn_traces WHERE chat_jid = ?').run(chatJid);

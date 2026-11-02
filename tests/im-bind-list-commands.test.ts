@@ -41,6 +41,8 @@ const { sortSessionsForList } = await import('../src/session-order.js');
 const { createRuntimeSourceHarness } =
   await import('./helpers/runtime-source.js');
 
+import type { SubAgent } from '../src/types.js';
+
 const OWNER = 'bind-owner';
 const WORKSPACE = 'web:bind-ws';
 const FOLDER = 'bind-ws';
@@ -52,6 +54,7 @@ function session(
   name: string,
   lastActiveAt: string,
   createdAt: string,
+  sourceKind?: SubAgent['source_kind'],
 ): void {
   db.createAgent({
     id,
@@ -68,6 +71,7 @@ function session(
     last_im_jid: null,
     spawned_from_jid: null,
     last_active_at: lastActiveAt,
+    source_kind: sourceKind,
   });
 }
 
@@ -97,6 +101,7 @@ function commands() {
       }),
     sortSessionsForList,
     isNativeContextContainer: mountService.isNativeContextContainer,
+    isBindableSession: mountService.isBindableSession,
     buildSessionMountUpdate: mountService.buildSessionMountUpdate,
     buildWorkspaceMountUpdate: mountService.buildWorkspaceMountUpdate,
     markThreadMapWorkspace: () => {},
@@ -107,6 +112,7 @@ function commands() {
   };
   const harness = createRuntimeSourceHarness(globals);
   for (const name of [
+    'BIND_TARGET_NOT_FOUND',
     'resolveAutoImWorkspace',
     'createAutoImConversationAgent',
     'collectWorkspaces',
@@ -240,6 +246,51 @@ describe('/bind', () => {
       expect(c.bind(DM, spec)).toMatch(/^未找到目标/);
     }
     expect(db.getRegisteredGroup(DM)?.target_agent_id).toBe('main-3');
+  });
+
+  test('an empty session part, a prefix of several sessions or an unbindable session binds nothing', () => {
+    const c = commands();
+    session(
+      'dup-aaa1',
+      'Dup one',
+      '2026-01-02T00:00:00.000Z',
+      '2026-01-01T00:00:00.000Z',
+    );
+    session(
+      'dup-aaa2',
+      'Dup two',
+      '2026-01-02T00:00:00.000Z',
+      '2026-01-01T00:00:00.000Z',
+    );
+    session(
+      'router-9',
+      'Router',
+      '2026-01-02T00:00:00.000Z',
+      '2026-01-01T00:00:00.000Z',
+      'team_router',
+    );
+    const before = db.getRegisteredGroup(DM)?.target_agent_id;
+    const sessionsBefore = db.listAgentsByJid(WORKSPACE).length;
+    try {
+      expect(c.bind(DM, 'bind-ws/')).toBe(
+        '请在 / 后写会话短 ID 或名称：/bind <工作区>/<会话短ID>',
+      );
+      expect(c.bind(DM, 'bind-ws/dup-aaa')).toBe(
+        [
+          '匹配到多个会话，请写更长的短 ID：',
+          '· Dup one [dup-aaa1]',
+          '· Dup two [dup-aaa2]',
+        ].join('\n'),
+      );
+      expect(c.bind(DM, 'bind-ws/router')).toBe(
+        '这个会话不能绑定聊天（团队、自动化或话题的会话）。',
+      );
+      expect(db.getRegisteredGroup(DM)?.target_agent_id).toBe(before);
+      expect(db.listAgentsByJid(WORKSPACE)).toHaveLength(sessionsBefore);
+      expect(c.bind(DM, 'bind-ws/dup-aaa2')).toContain('Bind WS / Dup two');
+    } finally {
+      for (const id of ['dup-aaa1', 'dup-aaa2', 'router-9']) db.deleteAgent(id);
+    }
   });
 
   test('a topic group binds the workspace itself, never one session', () => {

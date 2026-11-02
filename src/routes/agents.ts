@@ -29,7 +29,6 @@ import {
   getAllRegisteredGroups,
   listAgentsByJid,
   getAgent,
-  getGroupsByTargetAgent,
   getGroupsByTargetAgents,
   setRegisteredGroup,
   getJidsByFolder,
@@ -38,26 +37,29 @@ import {
   updateChatName,
   getLatestMessagePreviewPerChat,
   listImContextBindingsByAgent,
-  listChannelMountsBySession,
   listChannelMountsBySessions,
   getRegisteredGroupNames,
   getChannelAccount,
   getUserPinnedSessions,
   pinSession,
+  runImmediateTransaction,
   unpinSession,
 } from '../db.js';
 import { sortSessionsForList } from '../session-order.js';
 import type {
   AudienceMode,
   AuthUser,
+  NewMessage,
   RegisteredGroup,
   SubAgent,
 } from '../types.js';
 import { logger } from '../logger.js';
 import { getChannelType, extractChatId } from '../im-channel.js';
 import {
+  carryUnprocessedInputs,
   createConversationSession,
   deleteConversationSession,
+  deliverCarriedInputs,
 } from '../session-factory.js';
 import { getAutomationService } from '../automation-run-ledger.js';
 import {
@@ -69,7 +71,10 @@ import {
   hasRemainingThreadMapMount,
   hasSessionMountConflict,
   hasWorkspaceMountConflict,
+  isBindableSession,
   isNativeContextContainer,
+  listSessionBoundChatJids,
+  SESSION_NOT_BINDABLE,
   matchesWorkspaceMount,
   unbindChannelMount,
   resolveWorkspaceJid,
@@ -816,32 +821,24 @@ router.patch('/:jid/sessions/:sessionId', authMiddleware, async (c) => {
  * automations.
  */
 function collectSessionDeleteImpact(jid: string, sessionId: string) {
-  const mounts = listChannelMountsBySession(sessionId);
+  const linkedJids = listSessionBoundChatJids(jid, sessionId);
   const contexts = listImContextBindingsByAgent(sessionId);
   const names = getRegisteredGroupNames([
     ...new Set([
-      ...mounts.map((mount) => mount.channel_jid),
+      ...linkedJids,
       ...contexts.map((binding) => binding.source_jid),
     ]),
   ]);
-  const linkedByJid = new Map<string, { jid: string; name: string }>();
-  for (const { jid: imJid, group: imGroup } of getGroupsByTargetAgent(
-    sessionId,
-  )) {
-    linkedByJid.set(imJid, { jid: imJid, name: imGroup.name });
-  }
-  for (const { channel_jid: imJid } of mounts) {
-    if (!linkedByJid.has(imJid)) {
-      linkedByJid.set(imJid, { jid: imJid, name: names.get(imJid) ?? imJid });
-    }
-  }
   const automations = (
     getAutomationService()?.listForSession(`${jid}#agent:${sessionId}`) ?? []
   )
     .filter((automation) => automation.status !== 'completed')
     .map((automation) => ({ id: automation.id, name: automation.name }));
   return {
-    linkedImGroups: Array.from(linkedByJid.values()),
+    linkedImGroups: linkedJids.map((imJid) => ({
+      jid: imJid,
+      name: names.get(imJid) ?? imJid,
+    })),
     threadBindings: contexts.map((binding) => ({
       jid: binding.source_jid,
       name: names.get(binding.source_jid) ?? binding.source_jid,
@@ -852,36 +849,86 @@ function collectSessionDeleteImpact(jid: string, sessionId: string) {
 }
 
 /**
+ * Moving the chats of session `doomed` to session `targetId` before it is
+ * deleted: every chat bound to it, each passing the checks a session bind
+ * runs, with its own reply, activation and audience settings kept. Either
+ * the whole move or a refusal; a chat whose row is gone has nothing to move.
+ */
+function planRebind(
+  user: AuthUser,
+  jid: string,
+  doomed: SubAgent,
+  targetId: string,
+): { updates: Array<[string, RegisteredGroup]> } | { refusal: string } {
+  const target = getAgent(targetId);
+  if (
+    targetId === doomed.id ||
+    target?.chat_jid !== jid ||
+    !isBindableSession(target)
+  ) {
+    return {
+      refusal:
+        'The rebind target must be another session of this workspace that chats can bind to',
+    };
+  }
+  const updates: Array<[string, RegisteredGroup]> = [];
+  for (const chatJid of listSessionBoundChatJids(jid, doomed.id)) {
+    const chat = getRegisteredGroup(chatJid);
+    if (!chat) continue;
+    // The PUT im-binding checks, on the stored chat kind (the move runs in one
+    // synchronous transaction, so no live chat info). The chat is bound here,
+    // so there is no conflict to force; a topic group's workspace binding is
+    // refused rather than detached.
+    if (
+      !canModifyGroup(user, { ...chat, jid: chatJid }) ||
+      !hasConsistentChannelAccount(user.id, chatJid, chat) ||
+      chat.target_main_jid ||
+      isNativeContextContainer(chatJid, chat) ||
+      conversationBindingPolicyError(
+        getConversationKind(chatJid, chat),
+        'session',
+      )
+    ) {
+      return {
+        refusal: `Chat ${chat.name || chatJid} cannot be bound to the rebind target`,
+      };
+    }
+    updates.push([
+      chatJid,
+      buildSessionMountUpdate(chat, targetId, {
+        replyPolicy: chat.reply_policy,
+      }),
+    ]);
+  }
+  return { updates };
+}
+
+/**
  * Delete one session of workspace `jid`. A session that chats, topics or
  * automations depend on answers 409 `session_has_bindings` until the client
- * confirms with `confirm_bindings=true`; `rebind_to=<session>` then moves all
- * of its direct-chat and group bindings, in one transaction, to another
- * session of the same workspace before the session is deleted. Without it
- * those chats are left unbound. Topic bindings go with the session (the topic's next
- * message opens a new one); bound automations pause.
+ * confirms with `confirm_bindings=true`; `rebind_to=<session>` then moves
+ * every chat bound to it to another session of the same workspace, together
+ * with their inputs it has not taken yet, in the same transaction that
+ * deletes it. Without it those chats are left unbound. Topic bindings go
+ * with the session (the topic's next message opens a new one); bound
+ * automations pause.
  */
 async function deleteWorkspaceSession(
   c: Context<{ Variables: Variables }>,
-  input: { jid: string; group: RegisteredGroup; session: SubAgent },
+  input: {
+    jid: string;
+    group: RegisteredGroup;
+    session: SubAgent;
+  },
 ): Promise<Response | null> {
   const { jid, group, session } = input;
-  const rebindTo = c.req.query('rebind_to') || null;
-  if (rebindTo !== null) {
-    const target = getAgent(rebindTo);
-    if (
-      rebindTo === session.id ||
-      !target ||
-      target.chat_jid !== jid ||
-      target.kind !== 'conversation'
-    ) {
-      return c.json(
-        {
-          error: 'The rebind target must be another session of this workspace',
-          code: 'invalid_rebind_target',
-        },
-        400,
-      );
-    }
+  const user = c.get('user');
+  const rebindTo = c.req.query('rebind_to');
+  const invalidRebind = (error: string) =>
+    c.json({ error, code: 'invalid_rebind_target' }, 400);
+  if (rebindTo) {
+    const plan = planRebind(user, jid, session, rebindTo);
+    if ('refusal' in plan) return invalidRebind(plan.refusal);
   }
 
   const impact =
@@ -923,19 +970,30 @@ async function deleteWorkspaceSession(
   });
   if ('refusal' in worktreeRelease) return worktreeRelease.refusal;
   try {
+    // From here on synchronous: the move is checked again against the rows
+    // as they are after the awaits, and commits with the deletion or not at
+    // all. (A worktree checkout removed above is not restored on a refusal;
+    // its branch is kept.)
+    let carried: NewMessage[] = [];
+    const refusal = runImmediateTransaction((): string | null => {
+      if (rebindTo) {
+        const plan = planRebind(user, jid, session, rebindTo);
+        if ('refusal' in plan) return plan.refusal;
+        commitChannelMountUpdates(plan.updates);
+        carried = carryUnprocessedInputs(
+          `${jid}#agent:${session.id}`,
+          `${jid}#agent:${rebindTo}`,
+          new Set(plan.updates.map(([imJid]) => imJid)),
+        );
+      }
+      deleteConversationSession({ workspaceJid: jid, group, session });
+      return null;
+    });
+    if (refusal) return invalidRebind(refusal);
     if (rebindTo) {
-      // Re-read after the awaits above: the rows as they are now.
-      commitChannelMountUpdates(
-        getGroupsByTargetAgent(session.id).map(
-          ({ jid: imJid, group: imGroup }) => [
-            imJid,
-            buildSessionMountUpdate(imGroup, rebindTo),
-          ],
-        ),
-      );
       refreshAgentLastImJid(rebindTo);
+      deliverCarriedInputs(jid, rebindTo, carried);
     }
-    await deleteConversationSession({ workspaceJid: jid, group, session });
   } finally {
     // The worktree is gone: whatever happened above, the lane's work must
     // not run on without it.
@@ -1005,7 +1063,11 @@ router.delete('/:jid/sessions/:sessionId', authMiddleware, async (c) => {
   if (!session || session.chat_jid !== jid || session.kind !== 'conversation') {
     return c.json({ error: 'Session not found' }, 404);
   }
-  const refused = await deleteWorkspaceSession(c, { jid, group, session });
+  const refused = await deleteWorkspaceSession(c, {
+    jid,
+    group,
+    session,
+  });
   if (refused) return refused;
 
   logger.info({ sessionId, jid, userId: user.id }, 'Session deleted by user');
@@ -1316,6 +1378,9 @@ router.put(
     ) {
       return c.json({ error: 'Session not found' }, 404);
     }
+    if (!isBindableSession(session)) {
+      return c.json(SESSION_NOT_BINDABLE, 400);
+    }
     const { chatInfo } = await fetchLiveChatInfo(user.id, imJid);
     // Re-read after the await: fetchLiveChatInfo makes a live network
     // call (e.g. Feishu getFeishuChatInfo) that yields the event loop,
@@ -1352,6 +1417,9 @@ router.put(
       !freshTargetGroup
     ) {
       return c.json({ error: 'Session not found' }, 404);
+    }
+    if (!isBindableSession(freshSession)) {
+      return c.json(SESSION_NOT_BINDABLE, 400);
     }
     if (!canModifyGroup(user, { ...freshTargetGroup, jid })) {
       return c.json({ error: 'Forbidden' }, 403);
@@ -1497,8 +1565,8 @@ router.put('/:jid/agents/:agentId/im-binding', authMiddleware, async (c) => {
   if (!agent || agent.chat_jid !== jid) {
     return c.json({ error: 'Session not found' }, 404);
   }
-  if (agent.kind !== 'conversation') {
-    return c.json({ error: 'Only workspace sessions can bind IM groups' }, 400);
+  if (!isBindableSession(agent)) {
+    return c.json(SESSION_NOT_BINDABLE, 400);
   }
 
   const body = await c.req.json().catch(() => ({}));
@@ -1539,6 +1607,9 @@ router.put('/:jid/agents/:agentId/im-binding', authMiddleware, async (c) => {
     !freshTargetGroup
   ) {
     return c.json({ error: 'Session not found' }, 404);
+  }
+  if (!isBindableSession(freshAgent)) {
+    return c.json(SESSION_NOT_BINDABLE, 400);
   }
   if (!canModifyGroup(user, { ...freshTargetGroup, jid })) {
     return c.json({ error: 'Forbidden' }, 403);
