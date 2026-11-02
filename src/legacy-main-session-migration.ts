@@ -704,6 +704,32 @@ function hasTranscript(dir: string): boolean {
 }
 
 /**
+ * Forget the mappings of workspaces that no longer exist. Deleting a
+ * workspace forgets its own; this clears the ones a deletion left before it
+ * did. Returns how many were forgotten.
+ */
+export function forgetOrphanedLegacyMainMappings(db: Db): number {
+  const orphans = legacyMainMappings(db).filter(
+    ({ workspaceJid }) =>
+      !prep(db, 'SELECT 1 FROM registered_groups WHERE jid = ?').get(
+        workspaceJid,
+      ),
+  );
+  for (const { workspaceJid } of orphans) {
+    prep(db, 'DELETE FROM router_state WHERE key = ?').run(
+      `${LEGACY_MAIN_SESSION_KEY_PREFIX}${workspaceJid}`,
+    );
+  }
+  if (orphans.length > 0) {
+    logger.info(
+      { workspaces: orphans.map((o) => o.workspaceJid) },
+      'Forgot legacy main session mappings of deleted workspaces',
+    );
+  }
+  return orphans.length;
+}
+
+/**
  * Move each migrated main session's SDK state directory under its session:
  * `sessions/<folder>/.claude` -> `sessions/<folder>/agents/<id>/.claude`.
  * Runs at every startup so an interrupted or failed move is finished next

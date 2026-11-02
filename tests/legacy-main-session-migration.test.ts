@@ -1542,6 +1542,53 @@ describe('v88 legacy main session migration', () => {
     expect(fs.existsSync(legacyDir)).toBe(true);
   });
 
+  test('deleting a workspace forgets its mapping and OOM counters; startup forgets mappings of deleted workspaces', () => {
+    buildV87((conn) => {
+      group(conn, HOME, { folder: 'main', isHome: true });
+      message(conn, HOME, 'h-1', T(1));
+      group(conn, WORK, { folder: 'flow-work' });
+      message(conn, WORK, 'w-1', T(1));
+    });
+    const report = db.initDatabase().legacyMainSessions!;
+    const home = report.workspaces.find((w) => w.workspaceJid === HOME)!;
+    const work = report.workspaces.find((w) => w.workspaceJid === WORK)!;
+    db.setRouterState(`oom_exits:main#${home.sessionId}`, '2');
+    db.setRouterState(`oom_exits:flow-work#${work.sessionId}`, '1');
+
+    db.deleteGroupData(WORK, 'flow-work');
+
+    expect(db.getRouterState(`legacy_main_session:${WORK}`)).toBeUndefined();
+    expect(
+      db.getRouterState(`oom_exits:flow-work#${work.sessionId}`),
+    ).toBeUndefined();
+    expect(db.getRouterState(`legacy_main_session:${HOME}`)).toBe(
+      home.sessionId,
+    );
+    expect(db.getRouterState(`oom_exits:main#${home.sessionId}`)).toBe('2');
+    db.closeDatabase();
+
+    // A mapping a workspace deletion left behind before it forgot its own.
+    const conn = new Database(databasePath);
+    conn
+      .prepare('INSERT INTO router_state (key, value) VALUES (?, ?)')
+      .run('legacy_main_session:web:deleted-earlier', 'gone-session');
+    conn.close();
+    db.initDatabase();
+    expect(
+      db.getRouterState('legacy_main_session:web:deleted-earlier'),
+    ).toBeUndefined();
+    expect(db.getRouterState(`legacy_main_session:${HOME}`)).toBe(
+      home.sessionId,
+    );
+    db.closeDatabase();
+    const checks = inspect((c) =>
+      verify.checkLegacyMainSessionInvariants(c, {
+        expectedSchemaVersion: db.CURRENT_SCHEMA_VERSION,
+      }),
+    );
+    expect(checks.filter((c) => !c.ok).map((c) => c.id)).toEqual([]);
+  });
+
   test('a failed move is finished into the skeleton the first run created; two transcripts conflict', async () => {
     const { logger } = await import('../src/logger.js');
     buildV87((conn) => {

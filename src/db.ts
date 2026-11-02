@@ -117,6 +117,7 @@ import {
 } from './work-item-store.js';
 import {
   migrateLegacyMainSessions,
+  forgetOrphanedLegacyMainMappings,
   relocateLegacyMainSessionDirectories,
   type LegacyMainSessionMigrationReport,
 } from './legacy-main-session-migration.js';
@@ -2790,11 +2791,11 @@ export function initDatabase(
 
   // Every startup, before any Runner: finishes a move a crash interrupted.
   // Maintenance bootstraps leave the filesystem alone.
-  if (
-    !options.requireCurrentSchema &&
-    options.relocateLegacySessionDirectories !== false
-  ) {
-    relocateLegacyMainSessionDirectories(db);
+  if (!options.requireCurrentSchema) {
+    forgetOrphanedLegacyMainMappings(db);
+    if (options.relocateLegacySessionDirectories !== false) {
+      relocateLegacyMainSessionDirectories(db);
+    }
   }
   return { legacyMainSessions };
 }
@@ -9934,6 +9935,14 @@ export function deleteGroupData(
     );
     // 7. 删除 pin 记录与访客授权
     prepareCached('DELETE FROM user_pinned_groups WHERE jid = ?').run(jid);
+    // The workspace's v88 mapping and its sessions' OOM counters
+    // (`oom_exits:<folder>#<id>`), which deleteAgent clears one session at a time.
+    prepareCached('DELETE FROM router_state WHERE key = ?').run(
+      `${LEGACY_MAIN_SESSION_KEY_PREFIX}${jid}`,
+    );
+    prepareCached(
+      'DELETE FROM router_state WHERE key >= @from AND key < @to',
+    ).run(keyPrefixRange(`oom_exits:${folder}#`));
     prepareCached(
       'DELETE FROM guest_workspace_grants WHERE workspace_jid = ?',
     ).run(jid);
