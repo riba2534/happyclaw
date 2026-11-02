@@ -16,7 +16,7 @@ export interface UnifiedProviderPublic {
   anthropicModel: string;
   /** null for third-party providers saved before the explicit choice. */
   anthropicAuthMode: 'bearer' | 'x-api-key' | null;
-  /** The connection's WebFetch domain check; omission enables the check. */
+  /** `skip` skips WebFetch's domain check; `check` follows Claude Code's settings. */
   webFetchPreflightPolicy?: WebFetchPreflightPolicy;
   hasAnthropicAuthToken: boolean;
   anthropicAuthTokenMasked: string | null;

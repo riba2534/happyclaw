@@ -397,9 +397,6 @@ function ConnectionSettings({
     provider.webFetchPreflightPolicy === 'skip' ? 'skip' : 'check';
   const [webFetchPolicyDraft, setWebFetchPolicyDraft] =
     useState<WebFetchPreflightPolicy | null>(null);
-  // A failed response may follow a persisted write. A matching cached value
-  // or background reload cannot confirm that this save finished successfully.
-  const [webFetchSaveUnconfirmed, setWebFetchSaveUnconfirmed] = useState(false);
   const webFetchPolicy = webFetchPolicyDraft ?? savedWebFetchPolicy;
   const [saving, setSaving] = useState(false);
   const baseUrlProblem =
@@ -412,9 +409,8 @@ function ConnectionSettings({
   const authModeChanged = authMode !== savedAuthMode;
   const protocolChanged =
     urlChanged || !!secret.trim() || envChanged || authModeChanged;
-  const webFetchPolicyNeedsSave =
-    webFetchPolicy !== savedWebFetchPolicy || webFetchSaveUnconfirmed;
-  const dirty = protocolChanged || webFetchPolicyNeedsSave;
+  const webFetchPolicyChanged = webFetchPolicy !== savedWebFetchPolicy;
+  const dirty = protocolChanged || webFetchPolicyChanged;
 
   const save = async () => {
     if (built.error) {
@@ -430,10 +426,7 @@ function ConnectionSettings({
     try {
       const patch: Record<string, unknown> = {};
       const secrets: Record<string, unknown> = {};
-      if (webFetchPolicyNeedsSave) {
-        patch.webFetchPreflightPolicy = webFetchPolicy;
-        setWebFetchSaveUnconfirmed(true);
-      }
+      if (webFetchPolicyChanged) patch.webFetchPreflightPolicy = webFetchPolicy;
       if (urlChanged) patch.anthropicBaseUrl = baseUrl.trim();
       // Null clears the stored header, so the server falls back again.
       if (authModeChanged) {
@@ -459,16 +452,16 @@ function ConnectionSettings({
       if (Object.keys(secrets).length > 0) {
         await saveConnectionSecrets(provider.id, secrets);
       }
-      if (webFetchPolicyNeedsSave) setWebFetchSaveUnconfirmed(false);
       setSecret('');
       setAuthModeDraft(null);
       setWebFetchPolicyDraft(null);
       setNotice(
         protocolChanged
           ? '连接设置已保存；建议测试一次连接'
-          : '网页抓取设置已保存，新消息将使用新设置',
+          : '网页抓取设置已保存，当前回复结束后生效',
       );
-      // Keep confirmed fields even if the credential-status reload fails.
+      // The PATCH answer is the saved state; a new credential also changes
+      // masked fields it lacks, so reload after applying it.
       onChanged(saved);
       if (saved && Object.keys(secrets).length > 0) onChanged();
     } catch (err) {
@@ -679,7 +672,7 @@ function ConnectionSettings({
       <SettingsField
         label="网页抓取域名检查"
         htmlFor="connection-web-fetch-preflight"
-        description="应用于使用此连接的所有会话。仅影响网页抓取前的 Anthropic 域名检查，不改变模型，仍受托管策略约束。单独修改此项后，新发送的消息使用新设置，正在处理及已接收的消息继续完成。"
+        description="抓取网页前先向 Anthropic 查询域名；连不上 Anthropic 时选择跳过。对使用此连接的所有会话生效。"
       >
         <NativeSelect
           id="connection-web-fetch-preflight"
@@ -693,16 +686,11 @@ function ConnectionSettings({
           className="w-full sm:w-72"
         >
           <NativeSelectOption value="check">
-            开启检查（默认）
+            跟随 Claude Code 设置（默认检查）
           </NativeSelectOption>
           <NativeSelectOption value="skip">跳过检查</NativeSelectOption>
         </NativeSelect>
       </SettingsField>
-      {webFetchSaveUnconfirmed && !saving && (
-        <p role="status" className="text-caption text-muted-foreground">
-          上次网页抓取设置保存尚未确认，可重新选择后保存。
-        </p>
-      )}
       <Button onClick={() => void save()} disabled={!dirty || saving}>
         {saving && <Loader2 className="animate-spin" />}
         保存连接设置
