@@ -242,27 +242,25 @@ function rekeyTurnRuns(
          id = CASE WHEN id = ? THEN ? ELSE id END
        WHERE turn_run_id = ?`,
     ).run(id, oldCard, card, run.id);
-    // Outbox keys start with the run id (turn deliveries) or the card id.
-    prep(
+    // Keys can contain NUL-delimited delivery identities. SQLite's TEXT
+    // substr truncates at NUL, so replace the prefix in JS to keep the full
+    // suffix (and distinct deliveries) intact.
+    const outbox = prep(
       db,
-      `UPDATE channel_outbox SET turn_run_id = ?,
-         idempotency_key = CASE
-           WHEN substr(idempotency_key, 1, length(?)) = ? THEN ? || substr(idempotency_key, length(?) + 1)
-           WHEN substr(idempotency_key, 1, length(?)) = ? THEN ? || substr(idempotency_key, length(?) + 1)
-           ELSE idempotency_key END
-       WHERE turn_run_id = ?`,
-    ).run(
-      id,
-      run.id,
-      run.id,
-      id,
-      run.id,
-      oldCard,
-      oldCard,
-      card,
-      oldCard,
-      run.id,
+      'SELECT id, idempotency_key AS key FROM channel_outbox WHERE turn_run_id = ?',
+    ).all(run.id) as Array<{ id: string; key: string }>;
+    const moveOutbox = prep(
+      db,
+      'UPDATE channel_outbox SET turn_run_id = ?, idempotency_key = ? WHERE id = ?',
     );
+    for (const row of outbox) {
+      const key = row.key.startsWith(run.id)
+        ? `${id}${row.key.slice(run.id.length)}`
+        : row.key.startsWith(oldCard)
+          ? `${card}${row.key.slice(oldCard.length)}`
+          : row.key;
+      moveOutbox.run(id, key, row.id);
+    }
     prep(db, 'DELETE FROM turn_runs WHERE id = ?').run(run.id);
     prep(db, 'UPDATE turn_runs SET inbox_id = ? WHERE id = ?').run(
       run.inboxId,
