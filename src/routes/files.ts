@@ -35,7 +35,11 @@ import {
 import { checkStorageLimit, isBillingEnabled } from '../billing.js';
 import { GROUPS_DIR, MAX_FILE_SIZE_MB } from '../config.js';
 import { createUploadBodyLimit } from '../http-upload-policy.js';
-import { getOfficePreviewPdf, OfficePreviewError } from '../office-preview.js';
+import {
+  hashOfficePreviewSource,
+  OfficePreviewError,
+  openOfficePreviewPdf,
+} from '../office-preview.js';
 import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -192,7 +196,7 @@ const SAFE_PREVIEW_MIME_TYPES = new Set(
  */
 function getFileRootOverride(
   group: RegisteredGroup,
-  agentId?: string | null,
+  agentId: string | null,
 ): string | undefined {
   const root = resolveWorkspaceProjectRoot(group, { agentId });
   return root === path.join(GROUPS_DIR, group.folder) ? undefined : root;
@@ -251,6 +255,15 @@ function parseSingleRange(
   if (!Number.isInteger(parsedEnd) || parsedEnd < start) return null;
 
   return { start, end: Math.min(parsedEnd, fileSize - 1) };
+}
+
+/** Whether If-None-Match names `etag` (weak comparison, per RFC 9110). */
+function matchesIfNoneMatch(header: string | undefined, etag: string): boolean {
+  if (!header) return false;
+  const opaque = (tag: string) => tag.trim().replace(/^W\//, '');
+  return header
+    .split(',')
+    .some((tag) => tag.trim() === '*' || opaque(tag) === opaque(etag));
 }
 
 async function openDirectoryInFileManager(targetDir: string): Promise<void> {
@@ -404,7 +417,45 @@ function authorizeFileGroup(
   };
 }
 
+/**
+ * The file a single-file read route serves: readable by the caller (guests
+ * included), inside the request's file root, not hidden from the caller and
+ * not a directory; otherwise the response to return. Throws when path
+ * validation rejects the path.
+ */
+function resolveReadableFile(
+  c: Context<{ Variables: Variables }>,
+  jid: string,
+  encodedPath: string,
+  directoryError: string,
+): { absolutePath: string; stats: fs.Stats } | Response {
+  const access = authorizeFileGroup(c, jid, 'read');
+  if (access instanceof Response) return access;
+  const { group, rootOverride, isHidden } = access;
+  const relativePath = Buffer.from(encodedPath, 'base64url').toString('utf-8');
+  const absolutePath = validateAndResolvePath(
+    group.folder,
+    relativePath,
+    rootOverride,
+  );
+  if (!fs.existsSync(absolutePath) || isHidden(relativePath, absolutePath)) {
+    return c.json({ error: 'File not found' }, 404);
+  }
+  const stats = fs.statSync(absolutePath);
+  if (stats.isDirectory()) {
+    return c.json({ error: directoryError }, 400);
+  }
+  return { absolutePath, stats };
+}
+
 const fileRoutes = new Hono<{ Variables: Variables }>();
+
+// Hono answers HEAD by running the GET handler and dropping its body without
+// cancelling it; cancel it here so a file stream the handler opened is closed.
+fileRoutes.use('/:jid/files/*', async (c, next) => {
+  await next();
+  if (c.req.method === 'HEAD') await c.res.body?.cancel();
+});
 
 // GET /api/groups/:jid/files?path= - 列出文件
 fileRoutes.get('/:jid/files', authMiddleware, (c) => {
@@ -670,31 +721,16 @@ fileRoutes.post('/:jid/files/open-directory', authMiddleware, async (c) => {
 // GET /api/groups/:jid/files/download/:path - 下载文件
 fileRoutes.get('/:jid/files/download/:path', authMiddleware, (c) => {
   const jid = c.req.param('jid');
-  const encodedPath = c.req.param('path');
-
-  const access = authorizeFileGroup(c, jid, 'read');
-  if (access instanceof Response) return access;
-  const { group, rootOverride, isHidden } = access;
 
   try {
-    // 解码 base64url 路径
-    const relativePath = Buffer.from(encodedPath, 'base64url').toString(
-      'utf-8',
+    const file = resolveReadableFile(
+      c,
+      jid,
+      c.req.param('path'),
+      'Cannot download directory',
     );
-    const absolutePath = validateAndResolvePath(
-      group.folder,
-      relativePath,
-      rootOverride,
-    );
-
-    if (!fs.existsSync(absolutePath) || isHidden(relativePath, absolutePath)) {
-      return c.json({ error: 'File not found' }, 404);
-    }
-
-    const stats = fs.statSync(absolutePath);
-    if (stats.isDirectory()) {
-      return c.json({ error: 'Cannot download directory' }, 400);
-    }
+    if (file instanceof Response) return file;
+    const { absolutePath, stats } = file;
 
     const fileName = path.basename(absolutePath);
     const fileSize = stats.size;
@@ -759,31 +795,16 @@ fileRoutes.get('/:jid/files/download/:path', authMiddleware, (c) => {
 // GET /api/groups/:jid/files/preview/:path - 预览文件
 fileRoutes.get('/:jid/files/preview/:path', authMiddleware, (c) => {
   const jid = c.req.param('jid');
-  const encodedPath = c.req.param('path');
-
-  const access = authorizeFileGroup(c, jid, 'read');
-  if (access instanceof Response) return access;
-  const { group, rootOverride, isHidden } = access;
 
   try {
-    // 解码 base64url 路径
-    const relativePath = Buffer.from(encodedPath, 'base64url').toString(
-      'utf-8',
+    const file = resolveReadableFile(
+      c,
+      jid,
+      c.req.param('path'),
+      'Cannot preview directory',
     );
-    const absolutePath = validateAndResolvePath(
-      group.folder,
-      relativePath,
-      rootOverride,
-    );
-
-    if (!fs.existsSync(absolutePath) || isHidden(relativePath, absolutePath)) {
-      return c.json({ error: 'File not found' }, 404);
-    }
-
-    const stats = fs.statSync(absolutePath);
-    if (stats.isDirectory()) {
-      return c.json({ error: 'Cannot preview directory' }, 400);
-    }
+    if (file instanceof Response) return file;
+    const { absolutePath, stats } = file;
 
     // 检测 MIME 类型（基于扩展名）
     const ext = path.extname(absolutePath).slice(1).toLowerCase();
@@ -823,11 +844,7 @@ fileRoutes.get('/:jid/files/preview/:path', authMiddleware, (c) => {
       ETag: etag,
       'Last-Modified': stats.mtime.toUTCString(),
     };
-    const ifNoneMatch = c.req.header('if-none-match');
-    if (
-      ifNoneMatch &&
-      ifNoneMatch.split(',').some((tag) => tag.trim() === etag)
-    ) {
+    if (matchesIfNoneMatch(c.req.header('if-none-match'), etag)) {
       return new Response(null, { status: 304, headers: commonHeaders });
     }
 
@@ -904,51 +921,51 @@ fileRoutes.get(
   authMiddleware,
   async (c) => {
     const jid = c.req.param('jid');
-    const encodedPath = c.req.param('path');
-
-    const access = authorizeFileGroup(c, jid);
-    if (access instanceof Response) return access;
-    const { group } = access;
 
     try {
-      const relativePath = Buffer.from(encodedPath, 'base64url').toString(
-        'utf-8',
+      const file = resolveReadableFile(
+        c,
+        jid,
+        c.req.param('path'),
+        'Cannot preview directory',
       );
-      const absolutePath = validateAndResolvePath(
-        group.folder,
-        relativePath,
-        getFileRootOverride(group),
+      if (file instanceof Response) return file;
+      const { absolutePath } = file;
+
+      // The ETag is the source content's hash, so an unchanged file
+      // revalidates to 304 without converting, even after cache eviction.
+      // No hit/miss header: the cache is shared across users, and such a
+      // header would tell anyone holding the same content that someone
+      // previewed it.
+      const hash = await hashOfficePreviewSource(absolutePath);
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/pdf',
+        'Content-Disposition': 'inline',
+        'Content-Security-Policy': "default-src 'none'; sandbox",
+        'X-Content-Type-Options': 'nosniff',
+        'Cache-Control': 'private, no-cache',
+        ETag: `"${hash}"`,
+      };
+      if (matchesIfNoneMatch(c.req.header('if-none-match'), headers.ETag)) {
+        return new Response(null, { status: 304, headers });
+      }
+
+      const pdf = await openOfficePreviewPdf(absolutePath, hash);
+      logger.debug(
+        { jid, cacheHit: pdf.cacheHit },
+        'Office preview: serving PDF',
       );
-
-      if (!fs.existsSync(absolutePath)) {
-        return c.json({ error: 'File not found' }, 404);
-      }
-      const stats = fs.statSync(absolutePath);
-      if (stats.isDirectory()) {
-        return c.json({ error: 'Cannot preview directory' }, 400);
-      }
-
-      const { pdfPath, cacheHit } = await getOfficePreviewPdf(absolutePath);
+      // The file may have changed while it was converted: describe what is
+      // actually served.
+      headers.ETag = `"${pdf.hash}"`;
+      headers['Content-Length'] = String(pdf.size);
       const stream = Readable.toWeb(
-        fs.createReadStream(pdfPath),
+        pdf.handle.createReadStream(),
       ) as ReadableStream<Uint8Array>;
-      return new Response(stream, {
-        status: 200,
-        headers: {
-          'Content-Type': 'application/pdf',
-          'Content-Disposition': 'inline',
-          'Content-Length': String(fs.statSync(pdfPath).size),
-          'Content-Security-Policy': "default-src 'none'; sandbox",
-          'X-Content-Type-Options': 'nosniff',
-          'X-Office-Preview-Cache': cacheHit ? 'hit' : 'miss',
-        },
-      });
+      return new Response(stream, { status: 200, headers });
     } catch (error) {
       if (error instanceof OfficePreviewError) {
-        return c.json(
-          { error: error.message, code: error.code },
-          error.status as 400 | 413 | 501 | 502 | 504,
-        );
+        return c.json({ error: error.message, code: error.code }, error.status);
       }
       logger.error({ err: error }, `Failed to build office preview for ${jid}`);
       return c.json({ error: 'Failed to build office preview' }, 500);
@@ -959,30 +976,16 @@ fileRoutes.get(
 // GET /api/groups/:jid/files/content/:path - 读取文本文件内容
 fileRoutes.get('/:jid/files/content/:path', authMiddleware, (c) => {
   const jid = c.req.param('jid');
-  const encodedPath = c.req.param('path');
-
-  const access = authorizeFileGroup(c, jid, 'read');
-  if (access instanceof Response) return access;
-  const { group, rootOverride, isHidden } = access;
 
   try {
-    const relativePath = Buffer.from(encodedPath, 'base64url').toString(
-      'utf-8',
+    const file = resolveReadableFile(
+      c,
+      jid,
+      c.req.param('path'),
+      'Cannot read directory content',
     );
-    const absolutePath = validateAndResolvePath(
-      group.folder,
-      relativePath,
-      rootOverride,
-    );
-
-    if (!fs.existsSync(absolutePath) || isHidden(relativePath, absolutePath)) {
-      return c.json({ error: 'File not found' }, 404);
-    }
-
-    const stats = fs.statSync(absolutePath);
-    if (stats.isDirectory()) {
-      return c.json({ error: 'Cannot read directory content' }, 400);
-    }
+    if (file instanceof Response) return file;
+    const { absolutePath, stats } = file;
 
     // 仅允许文本文件
     const ext = path.extname(absolutePath).slice(1).toLowerCase();
