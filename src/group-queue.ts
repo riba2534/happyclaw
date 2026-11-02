@@ -2698,13 +2698,13 @@ export class GroupQueue {
     options?: { force?: boolean; preserveQueuedWork?: boolean },
   ): Promise<void> {
     if (!agentIdOfJid(groupJid)) {
-      // A workspace runs nothing itself: stopping it stops every session.
+      // A workspace runs nothing itself: stopping it stops every session. Its
+      // own lane state is still discarded below, as for any JID.
       await Promise.all(
         this.sessionLanesOf(groupJid).map((jid) =>
           this.stopGroup(jid, options),
         ),
       );
-      return;
     }
     const force = options?.force ?? false;
     const preserveQueuedWork = options?.preserveQueuedWork ?? false;

@@ -486,6 +486,8 @@ describe('every way out of a wait reaches it', () => {
         activeRunId: null,
         interrupted: false,
       }),
+      // A parked lane has no failed attempt waiting to retry.
+      queue: { stopArmedRetry: () => false },
     });
     l.runtime.install('handleSessionBreak');
     await expect(
