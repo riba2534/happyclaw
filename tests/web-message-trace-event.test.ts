@@ -112,6 +112,7 @@ describe('a trace stored after its message was announced', () => {
   it('keeps a mark that arrives before its message, and applies it when the message does', () => {
     // A message with attachments is announced after its thumbnails are made, so
     // the trace notice can overtake it.
+    useChatStore.setState({ agentMessages: { s1: [] } });
     useChatStore.getState().handleMessageTrace(SESSION, 'late');
     useChatStore
       .getState()

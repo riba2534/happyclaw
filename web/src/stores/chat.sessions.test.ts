@@ -2,7 +2,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { apiGetMock, apiPostMock, apiPatchMock, apiDeleteMock, notifyMock } =
   vi.hoisted(() => ({
-    apiGetMock: vi.fn(async (): Promise<unknown> => ({ agents: [] })),
+    apiGetMock: vi.fn(
+      async (_url?: string): Promise<unknown> => ({
+        agents: [],
+      }),
+    ),
     apiPostMock: vi.fn(),
     apiPatchMock: vi.fn(),
     apiDeleteMock: vi.fn(),
@@ -55,6 +59,7 @@ vi.mock('../utils/messageSnapshotCache', () => ({
   saveAgentMessageSnapshot: vi.fn(async () => undefined),
 }));
 
+const snapshots = await import('../utils/messageSnapshotCache');
 const { useChatStore } = await import('./chat');
 const initialState = useChatStore.getState();
 
@@ -77,7 +82,7 @@ const reply = (id: string, agentId: string) => ({
   content: '完成了。',
   timestamp: '2026-01-01T00:01:00.000Z',
   is_from_me: true,
-  source_kind: 'sdk_final',
+  source_kind: 'sdk_final' as const,
 });
 
 beforeEach(() => {
@@ -240,5 +245,157 @@ describe('every conversation is a session', () => {
       delivery_status: 'queued',
     });
     expect(useChatStore.getState().agentWaiting.s1).toBe(true);
+  });
+});
+
+describe('a session whose history is not loaded', () => {
+  const at = (minute: number) =>
+    `2026-01-01T00:${String(minute).padStart(2, '0')}:00.000Z`;
+  const row = (id: string, minute: number) => ({
+    ...reply(id, 's3'),
+    content: id,
+    timestamp: at(minute),
+  });
+  /** GET …/messages answers newest first, as the server does. */
+  const page = (rows: ReturnType<typeof row>[], hasMore = false) => ({
+    messages: [...rows].reverse(),
+    hasMore,
+  });
+  /** The next GET answers when the test says so. */
+  const deferGet = () => {
+    let answer!: (value: unknown) => void;
+    apiGetMock.mockImplementationOnce(
+      () => new Promise((resolve) => (answer = resolve)),
+    );
+    return (value: unknown) => answer(value);
+  };
+  const ids = () =>
+    useChatStore.getState().agentMessages.s3?.map((message) => message.id);
+
+  beforeEach(() => {
+    useChatStore.setState({
+      agents: { [JID]: [session('s1'), session('s2'), session('s3')] },
+      currentGroup: JID,
+      activeAgentTab: { [JID]: 's1' },
+    });
+  });
+
+  it('stays not loaded when a message arrives in the background, and opening it loads the whole history', async () => {
+    useChatStore.getState().handleWsNewMessage(JID, row('m3', 3), 's3');
+    const state = useChatStore.getState();
+    expect(state.agentMessages.s3).toBeUndefined();
+    expect(snapshots.saveAgentMessageSnapshot).not.toHaveBeenCalled();
+    // Its row still shows the message, and it counts as unread.
+    expect(
+      state.agents[JID].find((s) => s.id === 's3')?.latest_message?.content,
+    ).toBe('m3');
+    expect(state.unreadReplies[JID]).toBe(1);
+
+    apiGetMock.mockResolvedValueOnce(
+      page([row('m1', 1), row('m2', 2), row('m3', 3)], true),
+    );
+    await useChatStore.getState().loadAgentMessages(JID, 's3');
+    expect(ids()).toEqual(['m1', 'm2', 'm3']);
+    expect(useChatStore.getState().agentHasMore.s3).toBe(true);
+    expect(snapshots.saveAgentMessageSnapshot).toHaveBeenLastCalledWith(
+      JID,
+      's3',
+      expect.arrayContaining([expect.objectContaining({ id: 'm1' })]),
+      true,
+    );
+  });
+
+  it('keeps what is announced while its history loads, once and in order', async () => {
+    const answer = deferGet();
+    const loading = useChatStore.getState().loadAgentMessages(JID, 's3');
+    // m2 is in the page too; m4 came after the page was read.
+    useChatStore.getState().handleWsNewMessage(JID, row('m4', 4), 's3');
+    useChatStore.getState().handleWsNewMessage(JID, row('m2', 2), 's3');
+    expect(useChatStore.getState().agentMessages.s3).toBeUndefined();
+    answer(page([row('m1', 1), row('m2', 2), row('m3', 3)]));
+    await loading;
+    expect(ids()).toEqual(['m1', 'm2', 'm3', 'm4']);
+
+    // That load is over: the next one starts from what the server says.
+    apiGetMock.mockResolvedValueOnce(page([row('m1', 1)]));
+    await useChatStore.getState().loadAgentMessages(JID, 's3');
+    expect(ids()).toEqual(['m1']);
+  });
+
+  it('a send answered while its history loads joins it', async () => {
+    const answer = deferGet();
+    const loading = useChatStore.getState().loadAgentMessages(JID, 's3');
+    apiPostMock.mockResolvedValueOnce({
+      success: true,
+      messageId: 'sent-3',
+      timestamp: at(5),
+      disposition: 'queued',
+    });
+    await useChatStore.getState().sendAgentMessage(JID, 's3', 'sent-3');
+    expect(useChatStore.getState().agentMessages.s3).toBeUndefined();
+    answer(page([row('m1', 1)]));
+    await loading;
+    expect(ids()).toEqual(['m1', 'sent-3']);
+  });
+
+  it('a message deleted while its history loads stays deleted', async () => {
+    const answer = deferGet();
+    const loading = useChatStore.getState().loadAgentMessages(JID, 's3');
+    useChatStore.getState().handleWsNewMessage(JID, row('m4', 4), 's3');
+    await useChatStore.getState().handleMessageDeleted(`${JID}#agent:s3`, 'm4');
+    answer(page([row('m1', 1)]));
+    await loading;
+    expect(ids()).toEqual(['m1']);
+  });
+
+  it('refreshing it loads its history instead of only the newest page, unless a load is under way', async () => {
+    apiGetMock.mockResolvedValueOnce(page([row('m1', 1), row('m2', 2)], true));
+    await useChatStore.getState().refreshAgentMessages(JID, 's4');
+    expect(apiGetMock.mock.calls[0][0]).not.toMatch(/after/);
+    expect(useChatStore.getState().agentMessages.s4).toHaveLength(2);
+    expect(useChatStore.getState().agentHasMore.s4).toBe(true);
+
+    const answer = deferGet();
+    const loading = useChatStore.getState().loadAgentMessages(JID, 's3');
+    await useChatStore.getState().refreshAgentMessages(JID, 's3');
+    expect(apiGetMock).toHaveBeenCalledTimes(2);
+    answer(page([row('m1', 1)]));
+    await loading;
+    expect(ids()).toEqual(['m1']);
+  });
+
+  it('a refresh that lands after its list was let go does not rebuild it', async () => {
+    useChatStore.setState({ agentMessages: { s3: [row('m1', 1)] } });
+    const answer = deferGet();
+    const refreshing = useChatStore.getState().refreshAgentMessages(JID, 's3');
+    useChatStore.setState({ agentMessages: {} });
+    answer({ messages: [row('m2', 2)] });
+    await refreshing;
+    expect(useChatStore.getState().agentMessages.s3).toBeUndefined();
+    expect(snapshots.saveAgentMessageSnapshot).not.toHaveBeenCalled();
+  });
+
+  it('a row announced during the load lands as the shown list last had it', async () => {
+    // Shown from its snapshot while the page loads.
+    useChatStore.setState({ agentMessages: { s3: [row('m1', 1)] } });
+    const answer = deferGet();
+    const loading = useChatStore.getState().loadAgentMessages(JID, 's3');
+    const queued = {
+      ...row('q1', 2),
+      is_from_me: false,
+      delivery_status: 'queued' as const,
+    };
+    useChatStore.getState().handleWsNewMessage(JID, queued, 's3');
+    useChatStore.getState().handleFollowUpUpdate(`${JID}#agent:s3`, [], {
+      id: 'q1',
+      delivery_status: 'released',
+      delivery_updated_at: at(3),
+    });
+    answer(page([row('m1', 1)]));
+    await loading;
+    expect(
+      useChatStore.getState().agentMessages.s3?.find((m) => m.id === 'q1')
+        ?.delivery_status,
+    ).toBe('released');
   });
 });
