@@ -14,8 +14,8 @@ import { DATA_DIR } from './config.js';
 import { channelConversationJid } from './channel-address.js';
 import {
   buildUnmountUpdate,
-  commitChannelMountUpdates,
   listSessionBoundChatJids,
+  writeChannelMountUpdates,
 } from './channel-mount-service.js';
 import {
   clearSessionChannelOwner,
@@ -27,6 +27,7 @@ import {
   getMessagesSince,
   getRegisteredGroup,
   listQueuedFollowUps,
+  runImmediateTransaction,
   storeMessageDirect,
   updateAgentStatus,
 } from './db.js';
@@ -38,7 +39,7 @@ import {
 } from './session-worktree.js';
 import type { SessionWorktree } from './session-worktree-store.js';
 import type { NewMessage, RegisteredGroup, SubAgent } from './types.js';
-import { ensureAgentDirectories } from './utils.js';
+import { ensureAgentDirectories, sessionIpcDir } from './utils.js';
 import {
   getWebDeps,
   projectWebAgentRemoved,
@@ -136,21 +137,50 @@ export function archiveConversationSession(
   );
 }
 
-/**
- * Stop a session's runner and delete its directories, transcript and rows.
- * Chats still bound to it are unbound through the binding write path, so
- * their mounts, the live cache and team mode follow. Synchronous, so a caller
- * can run it inside its own transaction; the rows go first, so a failed write
- * leaves the runner and the directories alone. The caller has already settled
- * the session's worktree.
- */
-export function deleteConversationSession(input: {
+/** The session a deletion removes, and its workspace. */
+export interface SessionDeletion {
   workspaceJid: string;
   group: RegisteredGroup;
   session: SubAgent;
-}): void {
-  const { workspaceJid, group, session } = input;
-  const laneJid = `${workspaceJid}#agent:${session.id}`;
+}
+
+/**
+ * Delete a session. A retry its lane has armed is settled as stopped first
+ * (the failed batch is neither run again nor carried anywhere). Then one
+ * transaction runs `moveFirst` (a caller's own writes, such as moving the
+ * session's chats elsewhere) and writes the deletion. Only after it commits
+ * do the effects outside the database follow: those `moveFirst` returned,
+ * the live cache of the chats, the runner stop, the directory removal and the
+ * Web updates. On a throw nothing outside the database has changed. The
+ * caller has already settled the session's worktree.
+ */
+export function deleteConversationSession(
+  input: SessionDeletion,
+  moveFirst?: () => () => void,
+): void {
+  const laneJid = `${input.workspaceJid}#agent:${input.session.id}`;
+  getWebDeps()?.queue.stopArmedRetry(laneJid);
+  const afterCommit = runImmediateTransaction(() => {
+    const finishMove = moveFirst?.();
+    const finishDeletion = writeSessionDeletion(input, laneJid);
+    return () => {
+      finishMove?.();
+      finishDeletion();
+    };
+  });
+  afterCommit();
+}
+
+/**
+ * The rows of a session's deletion: its transcript, session and runtime rows,
+ * and the bindings of the chats still bound to it (through the binding write
+ * path, so their mounts and team mode follow). Returns what follows the
+ * commit.
+ */
+function writeSessionDeletion(
+  { workspaceJid, group, session }: SessionDeletion,
+  laneJid: string,
+): () => void {
   const live = session.status === 'running' || session.status === 'idle';
   if (live) updateAgentStatus(session.id, 'error', '用户手动停止');
   if (session.kind === 'conversation') deleteMessagesForChatJid(laneJid);
@@ -166,25 +196,32 @@ export function deleteConversationSession(input: {
       chat.target_agent_id === session.id ? buildUnmountUpdate(chat) : chat,
     ]);
   }
-  commitChannelMountUpdates(unbound);
+  const applyCache = writeChannelMountUpdates(unbound);
   deleteAgent(session.id);
   forgetSessionWorktree(session.id);
-  // Bound automations of the session pause; persistent ones rebind next run.
-  getAutomationService()?.onSessionDeleted(laneJid);
   // Its work item ends, or its group stops routing (team mode).
-  onTeamSessionDeleted(session.id);
-  if (live) void getWebDeps()?.queue.stopGroup(laneJid);
-  for (const dir of [
-    path.join(DATA_DIR, 'ipc', group.folder, 'agents', session.id),
-    path.join(DATA_DIR, 'sessions', group.folder, 'agents', session.id),
-  ]) {
-    try {
-      fs.rmSync(dir, { recursive: true, force: true });
-    } catch {
-      /* ignore */
+  const announceTeam = onTeamSessionDeleted(session.id);
+  // Bound automations of the session pause; persistent ones rebind next run.
+  // Last of the writes: the automation service also tells its clients and
+  // wakes its scheduler as it goes, so that only happens once the rest
+  // succeeded.
+  getAutomationService()?.onSessionDeleted(laneJid);
+  return () => {
+    applyCache();
+    if (live) void getWebDeps()?.queue.stopGroup(laneJid);
+    for (const dir of [
+      sessionIpcDir(group.folder, session.id),
+      path.join(DATA_DIR, 'sessions', group.folder, 'agents', session.id),
+    ]) {
+      try {
+        fs.rmSync(dir, { recursive: true, force: true });
+      } catch {
+        /* ignore */
+      }
     }
-  }
-  projectWebAgentRemoved(workspaceJid, session.id, session.name);
+    announceTeam();
+    projectWebAgentRemoved(workspaceJid, session.id, session.name);
+  };
 }
 
 /** Inputs the host composes for a lane; they belong to the lane they were written for. */

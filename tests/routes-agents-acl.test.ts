@@ -110,19 +110,24 @@ beforeAll(() => {
 
 let enqueueTask = vi.fn();
 let broadcastNewMessage = vi.fn();
+let stopArmedRetry = vi.fn();
+let cursors: Record<string, { timestamp: string; id: string }> = {};
 
 beforeEach(() => {
   enqueueTask = vi.fn();
   broadcastNewMessage = vi.fn();
+  stopArmedRetry = vi.fn();
+  cursors = {};
   webContext.setWebDeps({
     getRegisteredGroups: () => ({}),
     broadcastAgentStatus: vi.fn(),
     broadcastAgentRemoved: vi.fn(),
     broadcastNewMessage,
-    getLastAgentTimestamp: () => ({}),
+    getLastAgentTimestamp: () => cursors,
     processAgentConversation: vi.fn(async () => {}),
     queue: {
       stopGroup: vi.fn(async () => {}),
+      stopArmedRetry,
       getActiveQueryId: () => null,
       enqueueTask,
     },
@@ -692,11 +697,45 @@ describe('formal sessions API', () => {
       }
     });
 
-    test('a delete that fails rolls back before the runner or the files are touched', async () => {
+    /** A session about to go with one chat bound to it, and a session to move the chat to. */
+    function rebindFixture(doomedExtra: Record<string, unknown> = {}) {
       seedTestGroup();
       asUser(OWNER_ID);
       const doomed = `doomed-${suffix()}`;
-      makeSession(doomed, { status: 'idle' });
+      const target = `target-${suffix()}`;
+      makeSession(doomed, doomedExtra);
+      makeSession(target);
+      const bound = `telegram:${nextChatId()}`;
+      chat(bound, { target_agent_id: doomed });
+      const doomedLane = `${GROUP_JID}#agent:${doomed}`;
+      db.ensureChatExists(doomedLane);
+      /** An input in the doomed session's lane, from the bound chat by default. */
+      const store = (
+        id: string,
+        input: {
+          sourceJid?: string;
+          timestamp?: string;
+          meta?: Record<string, unknown>;
+        } = {},
+      ) =>
+        db.storeMessageDirect(
+          id,
+          doomedLane,
+          'tg:user',
+          'User',
+          `text ${id}`,
+          input.timestamp ?? new Date().toISOString(),
+          false,
+          { sourceJid: input.sourceJid ?? bound, meta: input.meta },
+        );
+      const targetLane = `${GROUP_JID}#agent:${target}`;
+      return { doomed, target, bound, doomedLane, targetLane, store };
+    }
+
+    test('a delete that throws at its last step changes nothing outside the database either', async () => {
+      const { doomed, target, bound, doomedLane, targetLane, store } =
+        rebindFixture({ status: 'idle' });
+      store('pending-input');
       const sessionDir = path.join(
         tmpDataDir,
         'sessions',
@@ -705,6 +744,11 @@ describe('formal sessions API', () => {
         doomed,
       );
       fs.mkdirSync(sessionDir, { recursive: true });
+      const routerCache = { [bound]: db.getRegisteredGroup(bound)! };
+      mountService.injectChannelMountRuntimePort({
+        getRegisteredGroups: () => routerCache,
+      });
+      // The last write of the deletion fails.
       ledger.setAutomationRuntimeService({
         listForSession: () => [],
         onSessionDeleted: () => {
@@ -712,57 +756,80 @@ describe('formal sessions API', () => {
         },
       } as never);
       try {
-        const result = await deleteSessionRoute(doomed);
-        expect(result.status).toBe(500);
-        expect(db.getAgent(doomed)?.status).toBe('idle');
-        expect(fs.existsSync(sessionDir)).toBe(true);
-        expect(webContext.getWebDeps()?.queue.stopGroup).not.toHaveBeenCalled();
+        // With the chat moved to another session, and with it left unbound.
+        for (const attempt of [
+          () => rebind(doomed, target),
+          () => deleteSessionRoute(doomed, '?confirm_bindings=true'),
+        ]) {
+          expect((await attempt()).status).toBe(500);
+          expect(db.getAgent(doomed)?.status).toBe('idle');
+          expect(db.getRegisteredGroup(bound)?.target_agent_id).toBe(doomed);
+          expect(db.getMessage(doomedLane, 'pending-input')).not.toBeNull();
+          expect(db.getMessage(targetLane, 'pending-input')).toBeNull();
+          expect(routerCache[bound].target_agent_id).toBe(doomed);
+          expect(fs.existsSync(sessionDir)).toBe(true);
+          const deps = webContext.getWebDeps()!;
+          expect(deps.queue.stopGroup).not.toHaveBeenCalled();
+          expect(enqueueTask).not.toHaveBeenCalled();
+          expect(broadcastNewMessage).not.toHaveBeenCalled();
+          expect(deps.broadcastAgentRemoved).not.toHaveBeenCalled();
+        }
       } finally {
+        mountService.injectChannelMountRuntimePort(null);
         ledger.setAutomationRuntimeService(null);
+        db.deleteRegisteredGroup(bound);
         db.deleteAgent(doomed);
       }
     });
 
-    test('inputs the session had not taken yet follow the chat to the target', async () => {
-      seedTestGroup();
-      asUser(OWNER_ID);
-      const doomed = `doomed-${suffix()}`;
-      const target = `target-${suffix()}`;
-      makeSession(doomed);
-      makeSession(target);
-      const bound = `telegram:${nextChatId()}`;
-      const other = `telegram:${nextChatId()}`;
-      chat(bound, { target_agent_id: doomed });
-      const doomedLane = `${GROUP_JID}#agent:${doomed}`;
-      const targetLane = `${GROUP_JID}#agent:${target}`;
-      db.ensureChatExists(doomedLane);
-      const store = (
-        id: string,
-        sourceJid: string,
-        meta: Record<string, unknown> = {},
-      ) =>
-        db.storeMessageDirect(
-          id,
-          doomedLane,
-          'tg:user',
-          'User',
-          `text ${id}`,
-          new Date().toISOString(),
-          false,
-          { sourceJid, meta },
-        );
-      store('carry-plain', bound);
-      store('carry-queued', bound, {
-        deliveryMode: 'queue',
-        deliveryStatus: 'queued',
-        deliveryRunId: 'run-old',
-      });
-      store('stay-other', other);
-      store('stay-automation', bound, {
-        sourceKind: 'automation_prompt',
+    test('a failed batch waiting for its retry is settled with the lane, not carried', async () => {
+      const { doomed, target, bound, doomedLane, targetLane, store } =
+        rebindFixture();
+      store('retry-failed', { timestamp: '2026-11-01T10:00:00.000Z' });
+      store('after-retry', { timestamp: '2026-11-01T10:01:00.000Z' });
+      // The runtime settles the failed batch as stopped: the cursor passes it.
+      stopArmedRetry.mockImplementation((lane: string) => {
+        cursors[lane] = {
+          timestamp: '2026-11-01T10:00:00.000Z',
+          id: 'retry-failed',
+        };
       });
 
       expect((await rebind(doomed, target)).status).toBe(200);
+      expect(stopArmedRetry).toHaveBeenCalledWith(doomedLane);
+      expect(
+        db
+          .getMessagesSince(targetLane, { timestamp: '', id: '' })
+          .map((m) => m.id),
+      ).toEqual(['after-retry']);
+      db.deleteRegisteredGroup(bound);
+    });
+
+    test('inputs the session had not taken yet follow the chat to the target', async () => {
+      const { doomed, target, bound, doomedLane, targetLane, store } =
+        rebindFixture();
+      store('carry-plain');
+      store('carry-queued', {
+        meta: {
+          deliveryMode: 'queue',
+          deliveryStatus: 'queued',
+          deliveryRunId: 'run-old',
+        },
+      });
+      store('stay-other', { sourceJid: `telegram:${nextChatId()}` });
+      store('stay-automation', { meta: { sourceKind: 'automation_prompt' } });
+      const routerCache = { [bound]: db.getRegisteredGroup(bound)! };
+      mountService.injectChannelMountRuntimePort({
+        getRegisteredGroups: () => routerCache,
+      });
+
+      try {
+        expect((await rebind(doomed, target)).status).toBe(200);
+      } finally {
+        mountService.injectChannelMountRuntimePort(null);
+      }
+      // The router follows the commit.
+      expect(routerCache[bound].target_agent_id).toBe(target);
       const carried = db
         .getMessagesSince(targetLane, { timestamp: '', id: '' })
         .map((m) => m.id);

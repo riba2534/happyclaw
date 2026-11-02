@@ -425,17 +425,30 @@ export function commitChannelMountUpdate(
 export function commitChannelMountUpdates(
   updates: ReadonlyArray<readonly [string, RegisteredGroup]>,
 ): void {
+  writeChannelMountUpdates(updates)();
+}
+
+/**
+ * The database half of `commitChannelMountUpdates`, for a caller that runs
+ * it inside its own transaction. Returns the live router cache update, to
+ * apply once that transaction has committed.
+ */
+export function writeChannelMountUpdates(
+  updates: ReadonlyArray<readonly [string, RegisteredGroup]>,
+): () => void {
   runImmediateTransaction(() => {
     for (const [channelJid, updated] of updates) {
       setRegisteredGroup(channelJid, updated);
     }
   });
-  if (!channelMountRuntimePort) return;
-  const groups = channelMountRuntimePort.getRegisteredGroups();
-  for (const [channelJid, updated] of updates) {
-    if (groups[channelJid]) groups[channelJid] = updated;
-    channelMountRuntimePort.clearImFailCounts?.(channelJid);
-  }
+  return () => {
+    if (!channelMountRuntimePort) return;
+    const groups = channelMountRuntimePort.getRegisteredGroups();
+    for (const [channelJid, updated] of updates) {
+      if (groups[channelJid]) groups[channelJid] = updated;
+      channelMountRuntimePort.clearImFailCounts?.(channelJid);
+    }
+  };
 }
 
 /**

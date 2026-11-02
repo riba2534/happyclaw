@@ -2103,12 +2103,15 @@ export async function handleWorkIpc(
  * A deleted session leaves no live team state behind: its work item ends
  * stopped (nothing can run it any more), and a deleted router stops routing
  * until the group's settings are saved again (which creates a new one).
+ * Writes rows only; returns the Web update, to send once the caller's
+ * transaction commits.
  */
-export function onTeamSessionDeleted(agentId: string): void {
+export function onTeamSessionDeleted(agentId: string): () => void {
   const item = getWorkItemByAgent(agentId);
-  if (item && item.status === 'open') {
-    broadcast(stopItem(item, 'session_deleted', false));
-  }
+  const stopped =
+    item && item.status === 'open'
+      ? stopItem(item, 'session_deleted', false)
+      : null;
   const team = getTeamMountByRouter(agentId);
   if (team) {
     storeTeamMountSettings({
@@ -2120,6 +2123,9 @@ export function onTeamSessionDeleted(agentId: string): void {
       now: now(),
     });
   }
+  return () => {
+    if (stopped) broadcast(stopped);
+  };
 }
 
 /** Open work items of a group, for `/status`. */
