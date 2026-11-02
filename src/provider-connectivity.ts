@@ -4,6 +4,7 @@
 // 端点、密钥、认证方式和模型名的配置错误，而不是等到真实对话里才失败。
 // 结果只回传状态码、耗时、错误分类和脱敏后的错误摘要，绝不回传密钥。
 
+import { randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
 
 import { CLAUDE_OAUTH_BETA, CLAUDE_OAUTH_USAGE_URL } from './claude-oauth.js';
@@ -256,7 +257,12 @@ function answerProbe(
   };
 }
 
-/** The headers Claude Code sends: version, user agent, custom, credential. */
+/**
+ * The headers Claude Code sends: version, user agent, session, custom,
+ * credential. Gateways that route by session (OpenCode Go refuses a request
+ * without one) accept Claude Code's own session header, so each probe sends
+ * a fresh one rather than any gateway's private header.
+ */
 function upstreamHeaders(
   credential: string,
   authMode: ProviderAuthMode,
@@ -265,6 +271,7 @@ function upstreamHeaders(
   const headers: Record<string, string> = {
     'anthropic-version': '2023-06-01',
     'user-agent': claudeCodeUserAgent(),
+    'x-claude-code-session-id': randomUUID(),
   };
   for (const [name, value] of parseCustomHeaders(customHeaders)) {
     headers[name.toLowerCase()] = value;
@@ -297,9 +304,6 @@ export async function probeProviderModel(
       method: 'POST',
       headers: {
         'content-type': 'application/json',
-        ...(input.baseUrl.includes('opencode.ai')
-          ? { 'x-opencode-session': 'happyclaw-conn-test' }
-          : {}),
         ...upstreamHeaders(input.token, input.authMode, input.customHeaders),
       },
       body: JSON.stringify({
