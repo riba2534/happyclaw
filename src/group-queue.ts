@@ -1720,8 +1720,8 @@ export class GroupQueue {
       !state?.active ||
       !state.queryInFlight ||
       state.queryId !== expectedQueryId ||
-      // Once IPC is published this is a real turn, even if asynchronous
-      // prompt preparation still holds the old reservation identity.
+      // Another path published IPC under this reservation while its owner
+      // was still preparing: the runner is serving a real turn now.
       state.ipcOwedSinceAt !== null
     ) {
       return false;
@@ -1737,8 +1737,9 @@ export class GroupQueue {
     state.announcedQueryId = null;
     state.pendingInterruptQueryId = null;
     state.currentQueryCoveredMessageIds = new Set();
-    // A save may retire this idle runner while prompt expansion holds its
-    // reservation. No result will arrive to close it after release.
+    // Retired while the reservation was held (retireRunnerAfterQuery or
+    // closeAfterQuery skip the close while a query is in flight). No result
+    // will arrive to close it now, so close it here.
     if (state.closing === 'after_query') this.closeStdin(groupJid);
     if (wasAnnounced) {
       this.announceQueryFinish(
