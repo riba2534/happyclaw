@@ -154,6 +154,19 @@ const ARCHIVE_EXTENSIONS = new Set([
 
 const PDF_EXTENSIONS = new Set(['pdf']);
 
+// 与后端 office-preview.ts 的 OFFICE_PREVIEW_EXTENSIONS 保持一致
+const OFFICE_EXTENSIONS = new Set([
+  'doc',
+  'docx',
+  'xls',
+  'xlsx',
+  'ppt',
+  'pptx',
+  'odt',
+  'ods',
+  'odp',
+]);
+
 const VIDEO_EXTENSIONS = new Set(['mp4', 'webm', 'mov', 'avi', 'mkv']);
 
 const AUDIO_EXTENSIONS = new Set(['mp3', 'wav', 'ogg', 'aac', 'm4a', 'flac']);
@@ -217,6 +230,7 @@ type PreviewState =
   | { kind: 'edit'; file: FileEntry }
   | { kind: 'markdown'; file: FileEntry }
   | { kind: 'pdf'; file: FileEntry }
+  | { kind: 'office'; file: FileEntry }
   | { kind: 'video'; file: FileEntry }
   | { kind: 'audio'; file: FileEntry }
   | { kind: 'text'; file: FileEntry };
@@ -291,9 +305,13 @@ function formatSize(bytes: number): string {
   return `${(bytes / Math.pow(k, i)).toFixed(1)} ${sizes[i]}`;
 }
 
-function buildPreviewUrl(groupJid: string, filePath: string): string {
+function buildPreviewUrl(
+  groupJid: string,
+  filePath: string,
+  route: 'preview' | 'office-preview' = 'preview',
+): string {
   return withBasePath(
-    workspaceFilesUrl(groupJid, `files/preview/${toBase64Url(filePath)}`),
+    workspaceFilesUrl(groupJid, `files/${route}/${toBase64Url(filePath)}`),
   );
 }
 
@@ -349,7 +367,7 @@ function ImagePreview({
       <img
         src={buildPreviewUrl(groupJid, file.path)}
         alt={file.name}
-        className="max-h-[calc(100dvh-2rem)] max-w-[calc(100vw-2rem)] object-contain rounded-lg"
+        className="max-h-[calc(100dvh-2rem)] max-w-[calc(100vw-2rem)] touch-callout-default object-contain rounded-lg"
         onClick={(e) => e.stopPropagation()}
       />
     </MediaOverlay>
@@ -672,11 +690,11 @@ function MarkdownFileViewer({
 // ─── PDF Preview Overlay ────────────────────────────────────────
 
 function PdfPreview({
-  groupJid,
+  src,
   file,
   onClose,
 }: {
-  groupJid: string;
+  src: string;
   file: FileEntry;
   onClose: () => void;
 }) {
@@ -714,12 +732,113 @@ function PdfPreview({
     <MediaOverlay onClose={onClose} fileName={file.name}>
       <iframe
         ref={iframeRef}
-        src={buildPreviewUrl(groupJid, file.path)}
+        src={src}
         title={file.name}
         className="h-[90dvh] w-[90vw] rounded-lg bg-white"
         tabIndex={0}
         onLoad={() => setViewerLoadVersion((version) => version + 1)}
       />
+    </MediaOverlay>
+  );
+}
+
+// ─── Office Preview Overlay (server-side convert to PDF) ────────
+
+type OfficePreviewLoad =
+  | { status: 'loading' }
+  | { status: 'ready' }
+  | { status: 'error'; message: string };
+
+/** A HEAD response has no body, so the status (one per error code) speaks. */
+const OFFICE_PREVIEW_ERRORS: Record<number, string> = {
+  400: '不支持预览这种文件',
+  401: '登录已过期，请重新登录',
+  403: '没有权限预览这个文件',
+  404: '文件不存在',
+  413: '文件太大，无法预览',
+  501: '未配置 Office 预览转换器',
+  502: '转换失败',
+  503: '正在转换的文件较多，请稍后再试',
+  504: '转换超时',
+};
+
+export function OfficePreview({
+  groupJid,
+  file,
+  onClose,
+  onDownload,
+}: {
+  groupJid: string;
+  file: FileEntry;
+  onClose: () => void;
+  onDownload: (file: FileEntry) => void;
+}) {
+  const [state, setState] = useState<OfficePreviewLoad>({ status: 'loading' });
+  const url = buildPreviewUrl(groupJid, file.path, 'office-preview');
+
+  useEffect(() => {
+    // HEAD runs the conversion and reports how it went without sending the
+    // PDF; the iframe then loads the same URL from the server's cache, so
+    // the PDF keeps the response's CSP sandbox (a blob: URL would not).
+    const controller = new AbortController();
+    setState({ status: 'loading' });
+    fetch(url, {
+      method: 'HEAD',
+      credentials: 'include',
+      signal: controller.signal,
+    })
+      .then(
+        (res): OfficePreviewLoad =>
+          res.ok
+            ? { status: 'ready' }
+            : {
+                status: 'error',
+                message:
+                  OFFICE_PREVIEW_ERRORS[res.status] ??
+                  `Office 预览失败 (${res.status})`,
+              },
+        (): OfficePreviewLoad => ({
+          status: 'error',
+          message: '网络连接失败，请稍后重试',
+        }),
+      )
+      .then((next) => {
+        if (!controller.signal.aborted) setState(next);
+      });
+    return () => controller.abort();
+  }, [url]);
+
+  if (state.status === 'ready') {
+    return <PdfPreview src={url} file={file} onClose={onClose} />;
+  }
+
+  return (
+    <MediaOverlay onClose={onClose} fileName={file.name}>
+      <div
+        className="flex w-[min(90vw,24rem)] flex-col items-center gap-3 rounded-xl bg-surface-raised p-6 text-center"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {state.status === 'loading' ? (
+          <>
+            <Loader2 className="size-6 animate-spin text-muted-foreground" />
+            <p className="text-body text-foreground">正在转换为 PDF 预览...</p>
+            <p className="text-caption text-muted-foreground">
+              首次打开较大文件可能需要几十秒，之后会使用缓存。
+            </p>
+          </>
+        ) : (
+          <>
+            <p className="text-body text-foreground">无法预览此文件</p>
+            <p className="text-caption text-muted-foreground">
+              {state.message}
+            </p>
+            <Button onClick={() => onDownload(file)}>
+              <Download />
+              下载原文件
+            </Button>
+          </>
+        )}
+      </div>
     </MediaOverlay>
   );
 }
@@ -1005,6 +1124,8 @@ export function FilePanel({ groupJid, onClose }: FilePanelProps) {
         setPreview({ kind: 'image', file: item });
       } else if (PDF_EXTENSIONS.has(ext)) {
         setPreview({ kind: 'pdf', file: item });
+      } else if (OFFICE_EXTENSIONS.has(ext)) {
+        setPreview({ kind: 'office', file: item });
       } else if (VIDEO_EXTENSIONS.has(ext)) {
         setPreview({ kind: 'video', file: item });
       } else if (AUDIO_EXTENSIONS.has(ext)) {
@@ -1479,9 +1600,17 @@ export function FilePanel({ groupJid, onClose }: FilePanelProps) {
       )}
       {preview?.kind === 'pdf' && (
         <PdfPreview
+          src={buildPreviewUrl(groupJid, preview.file.path)}
+          file={preview.file}
+          onClose={() => setPreview(null)}
+        />
+      )}
+      {preview?.kind === 'office' && (
+        <OfficePreview
           groupJid={groupJid}
           file={preview.file}
           onClose={() => setPreview(null)}
+          onDownload={handleDownload}
         />
       )}
       {preview?.kind === 'video' && (

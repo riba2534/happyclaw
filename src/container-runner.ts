@@ -25,12 +25,14 @@ import {
   CONTAINER_HTTPS_PROXY,
   CONTAINER_IMAGE,
   CONTAINER_IMAGE_HEADROOM,
+  CONTAINER_MEMORY_LIMIT,
   CONTAINER_NO_PROXY,
   DATA_DIR,
   GROUPS_DIR,
   TIMEZONE,
   type ContainerProxyConfig,
 } from './config.js';
+import type { ContainerMemoryLimit } from './container-memory-limit.js';
 import { logger } from './logger.js';
 import { isCodexGatewayBaseUrl } from './codex-gateway/resolve-gateway-url.js';
 import {
@@ -2847,6 +2849,7 @@ export function buildContainerArgs(
   hostIdentity: ContainerHostIdentity = detectContainerHostIdentity(),
   networkConfig: ContainerNetworkConfig = { addHostGateway: false },
   containerImage = CONTAINER_IMAGE,
+  memoryLimit: ContainerMemoryLimit | null = CONTAINER_MEMORY_LIMIT,
 ): string[] {
   const args: string[] = ['run', '-i', '--rm', '--name', containerName];
   // Hardening from the Agent SDK secure-deployment guidance that this image
@@ -2854,6 +2857,11 @@ export function buildContainerArgs(
   // --no-sandbox, so nothing needs a setuid privilege gain; the pids limit
   // only stops runaway forks and stays far above browser and build loads.
   args.push('--security-opt', 'no-new-privileges', '--pids-limit', '4096');
+  // Opt-in cap so one runaway agent cannot exhaust a shared Docker VM.
+  if (memoryLimit) {
+    const { dockerValue } = memoryLimit;
+    args.push('--memory', dockerValue, '--memory-swap', dockerValue);
+  }
 
   // Set timezone so container Node.js processes use local time (Asia/Shanghai)
   args.push('-e', `TZ=${tz}`);
@@ -3127,6 +3135,7 @@ export async function runContainerAgent(
         agentId: input.agentId,
         imageProfile:
           containerImage === CONTAINER_IMAGE_HEADROOM ? 'headroom' : 'core',
+        memoryLimit: CONTAINER_MEMORY_LIMIT?.dockerValue ?? null,
       },
       'Spawning container agent',
     );

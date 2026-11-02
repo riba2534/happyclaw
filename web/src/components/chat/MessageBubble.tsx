@@ -292,10 +292,7 @@ export const MessageBubble = memo(
     agentAvatarColor,
   }: MessageBubbleProps) {
     const [copied, setCopied] = useState(false);
-    const [lightboxState, setLightboxState] = useState<{
-      images: string[];
-      index: number;
-    } | null>(null);
+    const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
     const [showShareDialog, setShowShareDialog] = useState(false);
     // A phone opens the message's menu by a long press on it as well as by
     // its 「⋯」; one menu, so both open the same sheet.
@@ -617,11 +614,12 @@ export const MessageBubble = memo(
 
     const overlays = (
       <>
-        {lightboxState && (
+        {lightboxIndex !== null && (
           <ImageLightbox
-            images={lightboxState.images}
-            initialIndex={lightboxState.index}
-            onClose={() => setLightboxState(null)}
+            images={allImageSrcs}
+            names={images.map((img) => img.name)}
+            initialIndex={lightboxIndex}
+            onClose={() => setLightboxIndex(null)}
           />
         )}
         {showShareDialog && (
@@ -646,9 +644,7 @@ export const MessageBubble = memo(
             <button
               key={i}
               type="button"
-              onClick={() =>
-                setLightboxState({ images: allImageSrcs, index: i })
-              }
+              onClick={() => setLightboxIndex(i)}
               className="cursor-zoom-in overflow-hidden rounded-xl ring-1 ring-surface-border transition-shadow hover:ring-foreground/25"
             >
               <img

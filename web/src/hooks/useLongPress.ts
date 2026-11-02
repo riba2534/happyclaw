@@ -12,7 +12,11 @@ const CLICK_WINDOW_MS = 600;
  * HomeSurface). Moving more than 8px or a cancelled pointer (the page
  * started scrolling) calls it off. After it fires, the click the release
  * would make is swallowed, and so is the native context menu or text
- * callout; a mouse keeps its right click.
+ * callout; a mouse keeps its right click. A press on an image marked
+ * `data-native-image-menu` (which turns its callout on, globals.css) is left
+ * to the system image menu (Save Image) and starts nothing, as does one in an
+ * overlay the element's children portal out. Other images are pressed like
+ * the rest of the element.
  */
 export function useLongPress(
   onLongPress: () => void,
@@ -61,7 +65,13 @@ export function useLongPress(
     onPointerDown(event) {
       cancel();
       firedRef.current = false;
-      touchRef.current = event.pointerType !== 'mouse';
+      const target = event.target as Element;
+      touchRef.current =
+        event.pointerType !== 'mouse' &&
+        // React passes up the presses in a portal it renders (the image
+        // viewer, a sheet): they are not on this element.
+        event.currentTarget.contains(target) &&
+        !target.closest('[data-native-image-menu]');
       if (!touchRef.current || !event.isPrimary) return;
       // iOS shows its callout and selection on a held finger otherwise.
       const style = (event.currentTarget as HTMLElement).style;

@@ -155,6 +155,12 @@ Web UI 约定：
   浮层；行和页面的操作菜单用 `ResponsiveMenu`（手机为 ActionSheet），只在 Tooltip 里的
   信息用 `InfoTip`；按钮在手机上自带 44px 命中区，输入框不小于 16px（`variant="code"`
   关闭自动大写与纠错）。键盘遮挡只读 `--keyboard-inset` / `--vvh`（`useVisualViewport`）。
+- 安装成 PWA 后 body 关闭了 `-webkit-touch-callout`，iOS 长按图片的系统菜单（存储图像）
+  按图片开启：灯箱大图只在 1× 时开启，文件面板预览图用 `touch-callout-default`，Markdown
+  图片带 `data-native-image-menu`（同时开启 callout），消息附件缩略图不开（低清 data URL，
+  保存交给灯箱）。`useLongPress` 只把带 `data-native-image-menu` 的图片和从 portal 冒泡上来
+  的按压让给系统，其他图片照常触发长按。灯箱的保存在 iOS 上于图片加载后预取文件，并在点击
+  里同步调用 `navigator.share`（被拒时改为下载）；其他平台直接下载。
 - 快捷键在 `lib/shortcuts.ts` 注册并用 `Shortcut` 渲染键帽；动画用 `motion` 的 `m.*`，
   经 `MotionProvider` 懒加载并遵循减少动态效果设置。流式回复的贴底跟随（每批一次的
   WAAPI 位移补偿）和逐词淡入（CSS keyframes）是逐帧、逐词的热路径，不走 `m.*`，
@@ -193,7 +199,8 @@ Web UI 约定：
 - 每个会话一条执行通道，序列化键为 `folder#<会话id>`；工作区本身没有执行通道，Web 发送、
   `/clear`、`/fresh`、`/sw` 和终端不带会话时被拒（`session_required`），什么也不存。会话一律
   受计费闸门约束，用户级容器并发上限按每个活跃会话的 Runner 计。没有回复的运行错误按退避
-  重试，最后一次失败发 `agent_error`；同一会话连续两次 OOM（137）后自动重置它的上下文。
+  重试，最后一次失败发 `agent_error`；同一会话连续两次 OOM（137）后自动重置它的上下文；Container 模式配置了
+  `CONTAINER_MEMORY_LIMIT` 时改为停止重试并提示超出内存上限，不清上下文。
   重启后会话续用 SDK 会话并收到「服务已重启」提示。终端按会话打开（`terminal_*` 的
   `chatJid` 是会话地址）。
 - 同一序列化键内的消息保持顺序。
@@ -551,12 +558,16 @@ data/
 ├── memory/
 ├── skills/{userId}/
 ├── builtin-skills/
+├── cache/office-preview/
 ├── mcp-servers/{userId}/
 ├── plugins/
 ├── agent-profile-runtime/
 ├── env/
 └── extra/
 ```
+
+`data/cache/office-preview/` 是 Office 预览的 PDF 缓存：按源文件内容的 sha256 命名、跨用户
+共享，总量受 `OFFICE_PREVIEW_CACHE_MAX_MB` 限制，可随时删除。
 
 主要数据库当前 Schema 版本以 `src/db.ts` 的 `CURRENT_SCHEMA_VERSION` 为准。
 不要在文档中复制版本号；迁移必须同时具备备份、前向升级和拒绝降级保护。
@@ -624,19 +635,24 @@ Web 持久设置 > 环境变量 > 代码默认值
 
 常用环境变量：
 
-| 变量                                 | 默认值                            | 说明                               |
-| ------------------------------------ | --------------------------------- | ---------------------------------- |
-| `WEB_PORT`                           | `3000`                            | HTTP、WebSocket 端口               |
-| `WEB_SESSION_SECRET`                 | 自动生成并持久化                  | Cookie 签名                        |
-| `CONTAINER_IMAGE`                    | `riba2534/happyclaw-agent:latest` | GitHub Actions 发布的 Runner 镜像  |
-| `CONTAINER_TIMEOUT`                  | `1800000`                         | Runner 无输出看门狗                |
-| `IDLE_TIMEOUT`                       | `1800000`                         | 暖 Runner 空闲时间                 |
-| `STUCK_RUNNER_FORCE_RESTART_MINUTES` | `10`                              | IPC 债务强制恢复上限（4–120 分钟） |
-| `MAX_CONCURRENT_CONTAINERS`          | `20`                              | Docker 并发                        |
-| `MAX_FILE_SIZE_MB`                   | `50`                              | Web/IM 入站文件上限                |
-| `CORS_ALLOWED_ORIGINS`               | 仅 localhost                      | WebSocket Origin 白名单            |
-| `TRUST_PROXY`                        | `false`                           | 是否信任反向代理来源头             |
-| `TZ`                                 | 系统时区                          | 调度时区；无效值回退并告警         |
+| 变量                                 | 默认值                            | 说明                                                                  |
+| ------------------------------------ | --------------------------------- | --------------------------------------------------------------------- |
+| `WEB_PORT`                           | `3000`                            | HTTP、WebSocket 端口                                                  |
+| `WEB_SESSION_SECRET`                 | 自动生成并持久化                  | Cookie 签名                                                           |
+| `CONTAINER_IMAGE`                    | `riba2534/happyclaw-agent:latest` | GitHub Actions 发布的 Runner 镜像                                     |
+| `CONTAINER_TIMEOUT`                  | `1800000`                         | Runner 无输出看门狗                                                   |
+| `IDLE_TIMEOUT`                       | `1800000`                         | 暖 Runner 空闲时间                                                    |
+| `STUCK_RUNNER_FORCE_RESTART_MINUTES` | `10`                              | IPC 债务强制恢复上限（4–120 分钟）                                    |
+| `MAX_CONCURRENT_CONTAINERS`          | `20`                              | Docker 并发                                                           |
+| `CONTAINER_MEMORY_LIMIT`             | 不限制                            | 单个容器内存上限，须带单位，同设 swap                                 |
+| `MAX_FILE_SIZE_MB`                   | `50`                              | Web/IM 入站文件上限                                                   |
+| `CORS_ALLOWED_ORIGINS`               | 仅 localhost                      | WebSocket Origin 白名单                                               |
+| `TRUST_PROXY`                        | `false`                           | 是否信任反向代理来源头                                                |
+| `TZ`                                 | 系统时区                          | 调度时区；无效值回退并告警                                            |
+| `OFFICE_PREVIEW_STIRLING_URL`        | 未设置                            | Office 预览转换服务（Stirling-PDF 兼容），设置后优先使用              |
+| `OFFICE_PREVIEW_SOFFICE_BIN`         | 未设置                            | 本机 soffice 绝对路径；只有显式设置才启用，在宿主机以服务身份解析文档 |
+
+其余 `OFFICE_PREVIEW_*`（密钥文件、大小、超时、缓存上限）见 `DEPLOYMENT.md`。
 
 Provider 和渠道账号应优先通过 Web 配置。Legacy `/api/config/user-im/*` 只用于兼容，
 新功能统一使用 `/api/channel-accounts`。

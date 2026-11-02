@@ -1030,11 +1030,16 @@ export const MessageInput = memo(function MessageInput({
         />
       )}
       {/* Same column as the message list (max-w-3xl + px-6) so the
-          composer edges line up with message content. */}
+          composer edges line up with message content. The centred hero is
+          the exception: it belongs to the heading/starter column, so it
+          keeps that width even in compact mode. */}
       <div
         ref={dockColumnRef}
+        data-composer-column
         className={
-          isCompact ? 'mx-auto px-4' : 'mx-auto max-w-3xl px-4 lg:px-6'
+          isCompact && !centered
+            ? 'mx-auto px-4'
+            : 'mx-auto max-w-3xl px-4 lg:px-6'
         }
       >
         <UploadProgress />

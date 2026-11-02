@@ -1,0 +1,163 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { afterAll, beforeEach, describe, expect, test, vi } from 'vitest';
+
+const tmpDir = fs.mkdtempSync(
+  path.join(os.tmpdir(), 'happyclaw-preview-cache-'),
+);
+const groupsDir = path.join(tmpDir, 'groups');
+const workspaceDir = path.join(groupsDir, 'preview-workspace');
+
+const dbMocks = vi.hoisted(() => ({ getRegisteredGroup: vi.fn() }));
+
+vi.mock('../src/config.js', async (importOriginal) => {
+  const real = (await importOriginal()) as Record<string, unknown>;
+  return {
+    ...real,
+    DATA_DIR: tmpDir,
+    GROUPS_DIR: groupsDir,
+    STORE_DIR: path.join(tmpDir, 'db'),
+  };
+});
+
+vi.mock('../src/logger.js', () => ({
+  logger: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
+}));
+
+vi.mock('../src/middleware/auth.ts', () => ({
+  authMiddleware: async (c: any, next: any) => {
+    c.set('user', {
+      id: 'member-user',
+      username: 'member-user',
+      role: 'member',
+      status: 'active',
+      permissions: [],
+    });
+    return next();
+  },
+}));
+
+vi.mock('../src/db.js', () => ({
+  getRegisteredGroup: dbMocks.getRegisteredGroup,
+}));
+
+vi.mock('../src/web-context.js', () => ({
+  canAccessGroup: () => true,
+  isHostExecutionGroup: () => false,
+  hasHostExecutionPermission: () => true,
+}));
+
+const routes = (await import('../src/routes/files.js')).default;
+
+const encoded = Buffer.from('pic.png').toString('base64url');
+const URL = `http://localhost/web%3Apreview/files/preview/${encoded}`;
+
+beforeEach(() => {
+  fs.rmSync(workspaceDir, { recursive: true, force: true });
+  fs.mkdirSync(workspaceDir, { recursive: true });
+  fs.writeFileSync(path.join(workspaceDir, 'pic.png'), Buffer.alloc(2048, 1));
+  dbMocks.getRegisteredGroup.mockReset();
+  dbMocks.getRegisteredGroup.mockImplementation((jid: string) =>
+    jid === 'web:preview'
+      ? {
+          jid,
+          name: 'Preview workspace',
+          folder: 'preview-workspace',
+          added_at: '2026-10-28T00:00:00.000Z',
+          executionMode: 'container',
+          created_by: 'member-user',
+          is_home: false,
+        }
+      : undefined,
+  );
+});
+
+afterAll(() => {
+  fs.rmSync(tmpDir, { recursive: true, force: true });
+});
+
+describe('GET /:jid/files/preview/:path caching', () => {
+  test('returns cache validators and serves 304 for a matching ETag', async () => {
+    const first = await routes.request(URL);
+    expect(first.status).toBe(200);
+    // Revalidate on every open: a file the Agent just overwrote must show up
+    // at once, not after a freshness window.
+    expect(first.headers.get('Cache-Control')).toBe('private, no-cache');
+    const etag = first.headers.get('ETag');
+    expect(etag).toMatch(/^W\/"/);
+    expect(first.headers.get('Last-Modified')).toBeTruthy();
+    expect((await first.arrayBuffer()).byteLength).toBe(2048);
+
+    const again = await routes.request(URL, {
+      headers: { 'If-None-Match': etag! },
+    });
+    expect(again.status).toBe(304);
+    expect(await again.text()).toBe('');
+    expect(again.headers.get('ETag')).toBe(etag);
+  });
+
+  test.skipIf(process.platform !== 'linux')(
+    'HEAD does not leave the file open',
+    async () => {
+      // Larger than the stream buffers, so the stream cannot just run dry.
+      fs.writeFileSync(
+        path.join(workspaceDir, 'pic.png'),
+        Buffer.alloc(4 * 1024 * 1024, 1),
+      );
+      const res = await routes.request(URL, { method: 'HEAD' });
+      expect(res.status).toBe(200);
+      expect(await res.text()).toBe('');
+      const openUnderWorkspace = () =>
+        fs.readdirSync('/proc/self/fd').filter((fd) => {
+          try {
+            return fs
+              .readlinkSync(`/proc/self/fd/${fd}`)
+              .startsWith(workspaceDir);
+          } catch {
+            return false;
+          }
+        });
+      // The stream opens the file asynchronously: let it settle first.
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      expect(openUnderWorkspace()).toEqual([]);
+    },
+  );
+
+  test('HEAD still answers when middleware outside the module sets headers afterwards', async () => {
+    // As in web.ts: cors wraps the file routes and sets headers after them.
+    const { Hono } = await import('hono');
+    const { cors } = await import('hono/cors');
+    const app = new Hono();
+    app.use('/api/*', cors({ origin: 'http://localhost', credentials: true }));
+    app.route('/api/groups', routes);
+    const route = URL.replace(
+      'http://localhost/',
+      'http://localhost/api/groups/',
+    );
+    const res = await app.request(route, {
+      method: 'HEAD',
+      headers: { Origin: 'http://localhost' },
+    });
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe('');
+    expect(res.headers.get('ETag')).toBeTruthy();
+    expect(res.headers.get('Access-Control-Allow-Origin')).toBe(
+      'http://localhost',
+    );
+  });
+
+  test('a changed file gets a new ETag and a full response', async () => {
+    const etag = (await routes.request(URL)).headers.get('ETag')!;
+    const file = path.join(workspaceDir, 'pic.png');
+    fs.writeFileSync(file, Buffer.alloc(4096, 2));
+    fs.utimesSync(file, new Date(), new Date(Date.now() + 5000));
+
+    const res = await routes.request(URL, {
+      headers: { 'If-None-Match': etag },
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers.get('ETag')).not.toBe(etag);
+    expect((await res.arrayBuffer()).byteLength).toBe(4096);
+  });
+});

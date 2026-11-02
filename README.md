@@ -335,6 +335,7 @@ HappyClaw 优先通过 Web 设置管理配置，不要求用户维护一组庞�
 | `STUCK_RUNNER_FORCE_RESTART_MINUTES` | `10`                              | IPC 债务强制恢复上限（整数分钟，范围 4–120；非法值回退默认）                       |
 | `ADMIN_HOST_ONLY_MODE`               | `false`                           | 管理员工作区与任务强制使用宿主机                                                   |
 | `MAX_CONCURRENT_CONTAINERS`          | `20`                              | 最大并发容器数                                                                     |
+| `CONTAINER_MEMORY_LIMIT`             | 不限制                            | 单个 Agent 容器内存上限，须带单位，如 `3g`；仅 Container 模式，见下文              |
 | `MAX_FILE_SIZE_MB`                   | `50`                              | Web 和 IM 入站文件大小上限                                                         |
 | `CORS_ALLOWED_ORIGINS`               | 仅 localhost                      | 公网部署的 WebSocket Origin 白名单                                                 |
 | `TRUST_PROXY`                        | `false`                           | 位于可信反向代理后时设为 `true`                                                    |
@@ -346,6 +347,8 @@ HappyClaw 优先通过 Web 设置管理配置，不要求用户维护一组庞�
 Provider 与渠道凭据建议只在 Web 设置中填写。它们使用 AES-256-GCM 加密存储，相关 API 只返回是否已配置，不返回密钥明文。
 
 容器代理值（包括 URL 中的用户名和密码）通过权限为 `0600` 的每容器运行时环境文件注入，不会出现在 `docker run` 参数或容器参数调试日志中。macOS 的 Docker Desktop/OrbStack 与 Windows Docker Desktop 会把代理 URL 中的 `localhost`、`127.0.0.1`、`::1` 改写为 `host.docker.internal`。Linux bridge 容器无法访问宿主机仅绑定在回环地址的代理；请将代理绑定到 Docker bridge 可达接口，并在代理变量中使用该接口的 IP 或 DNS 名称，否则容器会在启动前给出错误。
+
+`CONTAINER_MEMORY_LIMIT` 只对 Container 模式生效，Host 模式的 Runner 不受限。写法同 `docker run --memory`，必须带单位（如 `512m`、`1.5g`、`3GiB`），建议不低于 `256m`；纯数字或无法识别的值在启动时告警并按不限制处理。同一个值也设为 `--memory-swap`，容器不额外使用 swap；所有容器合计最多约 `MAX_CONCURRENT_CONTAINERS` × 该值。运行超过上限会被终止并照常重试，同一会话连续两次超限时提示用户本轮超过了内存上限，不会像未设上限时那样自动清空会话上下文。
 
 ### 运行数据
 

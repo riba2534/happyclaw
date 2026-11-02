@@ -8,6 +8,7 @@ import { promisify } from 'util';
 import {
   ASSISTANT_NAME,
   CONTAINER_IMAGE,
+  CONTAINER_MEMORY_LIMIT,
   DATA_DIR,
   GROUPS_DIR,
   STORE_DIR,
@@ -15,6 +16,7 @@ import {
   TIMEZONE,
   isDockerAvailable,
 } from './config.js';
+import { resolveOomLoopAction } from './container-memory-limit.js';
 import { detectImageMimeType } from './image-detector.js';
 import {
   classifyImSendFailure,
@@ -12473,22 +12475,35 @@ async function processAgentConversation(
       );
       return false;
     }
-    // Consecutive Docker OOM kills (exit 137) of one session reset it to break
-    // the death loop. A user stop also ends a container with 137.
+    // Consecutive Docker OOM kills (exit 137) of one session stop the death
+    // loop: by resetting the session, or under an admin memory cap by telling
+    // the user about the cap. A user stop also ends a container with 137.
     if (!queue.isRecentlyStopped(virtualJid) && OOM_EXIT_RE.test(errorDetail)) {
       if (recordSessionOomExit(oomKey) >= OOM_AUTO_RESET_THRESHOLD) {
+        const oomAction = resolveOomLoopAction(
+          effectiveGroup.executionMode || 'container',
+          CONTAINER_MEMORY_LIMIT,
+        );
         logger.warn(
-          { chatJid, agentId },
-          'Consecutive OOM threshold reached, auto-resetting session to break death loop',
+          {
+            chatJid,
+            agentId,
+            memoryLimit: CONTAINER_MEMORY_LIMIT?.dockerValue ?? null,
+          },
+          oomAction.resetContext
+            ? 'Consecutive OOM threshold reached, auto-resetting session to break death loop'
+            : 'Consecutive OOM threshold reached under the container memory cap, stopping retries',
         );
         clearSessionOomExits(oomKey);
-        await clearSessionRuntimeFiles(effectiveGroup.folder, agentId);
-        deleteSession(effectiveGroup.folder, agentId);
+        if (oomAction.resetContext) {
+          await clearSessionRuntimeFiles(effectiveGroup.folder, agentId);
+          deleteSession(effectiveGroup.folder, agentId);
+        }
         await settleAgentDeterministicFailure(
-          'oom-context-reset',
-          'context_reset',
-          '会话文件过大导致内存溢出（OOM），已自动重置会话。之前的对话上下文已清除，请重新描述您的需求。',
-          '会话文件过大导致内存溢出（OOM），已自动重置会话。',
+          oomAction.noticeKey,
+          oomAction.webType,
+          oomAction.text,
+          oomAction.terminalError,
         );
         return false;
       }

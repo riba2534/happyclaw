@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'vitest';
 
 import { deriveContainerProfileImage } from '../src/config.js';
+import { parseContainerMemoryLimit } from '../src/container-memory-limit.js';
 import {
   buildContainerArgs,
   runtimeMcpServersRequireHeadroom,
@@ -44,6 +45,9 @@ describe('container image profiles', () => {
       { mode: 'host-root' },
       { addHostGateway: false },
       'happyclaw-agent:test',
+      // Explicit, so a CONTAINER_MEMORY_LIMIT in the developer's shell does
+      // not leak into the default.
+      null,
     );
     const imageIndex = args.indexOf('happyclaw-agent:test');
     const optionIndex = args.indexOf('--security-opt');
@@ -53,6 +57,23 @@ describe('container image profiles', () => {
     expect(optionIndex).toBeLessThan(imageIndex);
     expect(args.indexOf('--pids-limit')).toBeLessThan(imageIndex);
     expect(args).not.toContain('--memory');
+  });
+
+  test('caps agent memory without extra swap when a limit is configured', () => {
+    const args = buildContainerArgs(
+      [],
+      'happyclaw-test',
+      'UTC',
+      { mode: 'host-root' },
+      { addHostGateway: false },
+      'happyclaw-agent:test',
+      parseContainerMemoryLimit('3g').limit,
+    );
+    expect(args[args.indexOf('--memory') + 1]).toBe('3221225472b');
+    expect(args[args.indexOf('--memory-swap') + 1]).toBe('3221225472b');
+    expect(args.indexOf('--memory')).toBeLessThan(
+      args.indexOf('happyclaw-agent:test'),
+    );
   });
 
   test('places the selected profile image at the end of docker arguments', () => {
