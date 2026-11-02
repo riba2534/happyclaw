@@ -1,5 +1,6 @@
 // @vitest-environment happy-dom
 
+import { readFileSync } from 'node:fs';
 import { act } from 'react';
 import { createPortal } from 'react-dom';
 import { createRoot, type Root } from 'react-dom/client';
@@ -34,6 +35,7 @@ function Row({
     <button type="button" data-row onClick={onClick} {...press}>
       row
       <img data-image alt="" />
+      <img data-native-image-menu alt="" />
       {/* An overlay the row opens, such as the image viewer. */}
       {createPortal(<div data-overlay />, document.body)}
     </button>
@@ -49,6 +51,9 @@ function render() {
   act(() => root!.render(<Row onLongPress={onLongPress} onClick={onClick} />));
   const row = container.querySelector<HTMLElement>('[data-row]')!;
   const image = container.querySelector<HTMLElement>('[data-image]')!;
+  const nativeImage = container.querySelector<HTMLElement>(
+    '[data-native-image-menu]',
+  )!;
   const overlay = document.querySelector<HTMLElement>('[data-overlay]')!;
   const fire = (type: string, init: PointerEventInit = {}, target = row) =>
     act(() => {
@@ -78,6 +83,7 @@ function render() {
   return {
     row,
     image,
+    nativeImage,
     overlay,
     fire,
     contextMenu,
@@ -150,13 +156,29 @@ describe('useLongPress', () => {
     expect(row.style.getPropertyValue('-webkit-touch-callout')).toBe('none');
   });
 
-  test('a press on an image is left to the system image menu', () => {
-    const { row, image, fire, contextMenu, onLongPress } = render();
-    fire('pointerdown', {}, image);
+  test('the marker that leaves a press to the system turns its menu on', () => {
+    // The installed app turns the callout off on <body>.
+    const css = readFileSync('web/src/styles/globals.css', 'utf8');
+    expect(css).toMatch(
+      /\[data-native-image-menu\] \{\s*-webkit-touch-callout: default;/,
+    );
+  });
+
+  test('an image marked for the system image menu is left to it', () => {
+    const { row, nativeImage, fire, contextMenu, onLongPress } = render();
+    fire('pointerdown', {}, nativeImage);
     act(() => vi.advanceTimersByTime(1000));
     expect(onLongPress).not.toHaveBeenCalled();
-    expect(contextMenu(image).defaultPrevented).toBe(false);
+    expect(contextMenu(nativeImage).defaultPrevented).toBe(false);
     expect(row.style.getPropertyValue('-webkit-touch-callout')).toBe('');
+  });
+
+  test('any other image is pressed like the rest of the row', () => {
+    const { image, fire, contextMenu, onLongPress } = render();
+    fire('pointerdown', {}, image);
+    act(() => vi.advanceTimersByTime(400));
+    expect(onLongPress).toHaveBeenCalledTimes(1);
+    expect(contextMenu(image).defaultPrevented).toBe(true);
   });
 
   test('a press in an overlay the row portals out is not on the row', () => {

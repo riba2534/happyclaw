@@ -224,10 +224,12 @@ function MarkdownImage({
         role="button"
         tabIndex={0}
         aria-label={alt ? `放大图片：${alt}` : '放大图片'}
-        className="my-3 h-auto max-w-full touch-callout-default cursor-zoom-in rounded-lg border border-surface-border transition-colors hover:border-foreground/25"
+        className="my-3 h-auto max-w-full cursor-zoom-in rounded-lg border border-surface-border transition-colors hover:border-foreground/25"
         style={{ maxHeight: '400px', objectFit: 'contain' }}
         data-hc-md-image=""
         data-hc-md-name={name}
+        // A long press is the system image menu's, not the reply's menu.
+        data-native-image-menu=""
         onClick={open}
         onKeyDown={(event) => {
           if (event.key === 'Enter' || event.key === ' ') {

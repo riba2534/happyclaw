@@ -5,6 +5,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
 import type { Message } from '../../stores/chat';
+import { findButton } from '../settings/test-helpers';
 import { emulatePointer } from '../ui/overlay-test-utils';
 import {
   PNG,
@@ -268,6 +269,74 @@ describe('a message’s attached images', () => {
       'http://localhost:3000/api/groups/web%3Aw%23agent%3As1/messages/m1/attachments/1/original',
     );
     expect(downloads[1]).toMatch(/^image-\d+\.png$/);
+  });
+});
+
+describe('a long press in a reply on a phone', () => {
+  const reply: Message = {
+    id: 'm2',
+    chat_jid: 'web:w#agent:s1',
+    sender: 'happyclaw-agent',
+    sender_name: 'HappyClaw',
+    content: '结果如下\n\n![图表](output/图表.png)',
+    timestamp: '2026-11-02T00:00:00.000Z',
+    is_from_me: true,
+    source_kind: 'sdk_final',
+  };
+
+  /** Holds a finger on `target`; whether the native menu was blocked. */
+  function hold(target: Element) {
+    vi.useFakeTimers();
+    act(() => {
+      target.dispatchEvent(
+        new PointerEvent('pointerdown', {
+          bubbles: true,
+          pointerId: 1,
+          pointerType: 'touch',
+          isPrimary: true,
+        }),
+      );
+      vi.advanceTimersByTime(600);
+    });
+    vi.useRealTimers();
+    const menu = new MouseEvent('contextmenu', {
+      bubbles: true,
+      cancelable: true,
+    });
+    act(() => {
+      target.dispatchEvent(menu);
+    });
+    return { nativeMenuBlocked: menu.defaultPrevented };
+  }
+
+  const messageMenuOpen = () => !!findButton('复制文本');
+
+  async function mountReply() {
+    emulatePointer('phone');
+    await render(<MessageBubble message={reply} showTime={false} />);
+    return container!.querySelector<HTMLElement>('img[data-hc-md-image]')!;
+  }
+
+  test('on a Markdown image it is the system menu’s, on the text the message’s', async () => {
+    const image = await mountReply();
+    expect(hold(image)).toEqual({ nativeMenuBlocked: false });
+    expect(messageMenuOpen()).toBe(false);
+
+    const text = [...container!.querySelectorAll('p')].find(
+      (p) => p.textContent === '结果如下',
+    )!;
+    expect(hold(text)).toEqual({ nativeMenuBlocked: true });
+    expect(messageMenuOpen()).toBe(true);
+  });
+
+  test('in the viewer opened from the reply it is not the reply’s', async () => {
+    const image = await mountReply();
+    // The viewer is portalled out of the reply, but React passes its events
+    // up to it.
+    await act(async () => image.click());
+    const viewerImage = document.querySelector('[data-hc-zoom-content] img')!;
+    expect(hold(viewerImage)).toEqual({ nativeMenuBlocked: false });
+    expect(messageMenuOpen()).toBe(false);
   });
 });
 
