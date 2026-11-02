@@ -467,31 +467,81 @@ export interface CloseHandlerContext {
   ) => { result: string | null; error: string };
 }
 
-const RUN_LOG_MAX_BYTES = 1024 * 1024;
+/** Upper bound of one persisted run log file. */
+export const RUN_LOG_MAX_BYTES = 1024 * 1024;
+/** Run logs kept per file prefix (`container`, `host`) in a logs directory. */
 const RUN_LOG_RETENTION_PER_TYPE = 20;
-const RUN_LOG_TRUNCATION_MARKER = '\n... run log truncated at 1 MiB ...\n';
+/** Chars of each stream a successful, non-verbose run log keeps. */
+const SUCCESS_LOG_TAIL_CHARS = 4000;
+/** Byte budget held back per stream for its section title and note. */
+const STREAM_SECTION_RESERVE_BYTES = 128;
+/** Stream bytes kept even when the fixed sections alone fill the cap. */
+const MIN_STREAM_BUDGET_BYTES = 64 * 1024;
 
-function writeBoundedRunLog(logFile: string, content: string): void {
-  const contentBuffer = Buffer.from(content, 'utf8');
-  if (contentBuffer.byteLength <= RUN_LOG_MAX_BYTES) {
-    fs.writeFileSync(logFile, contentBuffer);
-    return;
-  }
+/** Longest suffix of `text` within `maxBytes` of UTF-8, on a char boundary. */
+function utf8Tail(text: string, maxBytes: number): string {
+  const bytes = Buffer.from(text, 'utf8');
+  if (bytes.length <= maxBytes) return text;
+  let start = bytes.length - maxBytes;
+  while (start < bytes.length && (bytes[start] & 0xc0) === 0x80) start++;
+  return bytes.subarray(start).toString('utf8');
+}
 
-  const markerBytes = Buffer.byteLength(RUN_LOG_TRUNCATION_MARKER, 'utf8');
-  let prefix = contentBuffer
-    .subarray(0, RUN_LOG_MAX_BYTES - markerBytes)
-    .toString('utf8');
-  while (Buffer.byteLength(prefix, 'utf8') + markerBytes > RUN_LOG_MAX_BYTES) {
-    prefix = prefix.slice(0, -1);
+/** Longest prefix of `text` within `maxBytes` of UTF-8, on a char boundary. */
+function utf8Head(text: string, maxBytes: number): string {
+  const bytes = Buffer.from(text, 'utf8');
+  if (bytes.length <= maxBytes) return text;
+  let end = maxBytes;
+  while (end > 0 && (bytes[end] & 0xc0) === 0x80) end--;
+  return bytes.subarray(0, end).toString('utf8');
+}
+
+/**
+ * The end of a stream for the run log: at most `maxChars` chars and
+ * `maxBytes` of UTF-8 of the retained tail, starting on a line when anything
+ * before it is missing, after a note of how many chars of the full stream are
+ * not shown.
+ */
+function formatStreamTail(
+  retained: string,
+  totalChars: number,
+  maxChars: number,
+  maxBytes: number,
+): { text: string; truncated: boolean } {
+  let tail = utf8Tail(retained.slice(-maxChars), maxBytes);
+  if (
+    tail.length < totalChars &&
+    retained[retained.length - tail.length - 1] !== '\n'
+  ) {
+    const lineBreak = tail.indexOf('\n');
+    if (lineBreak !== -1) tail = tail.slice(lineBreak + 1);
   }
-  fs.writeFileSync(logFile, `${prefix}${RUN_LOG_TRUNCATION_MARKER}`);
+  const dropped = totalChars - tail.length;
+  return dropped > 0
+    ? { text: `... (truncated ${dropped} chars) ...\n${tail}`, truncated: true }
+    : { text: tail, truncated: false };
+}
+
+/**
+ * Last resort when the fixed sections alone overflow the cap: keep the start
+ * and the end of the log.
+ */
+function boundRunLog(content: string): string {
+  const size = Buffer.byteLength(content, 'utf8');
+  if (size <= RUN_LOG_MAX_BYTES) return content;
+  const marker = `\n... (run log of ${size} bytes cut to ${RUN_LOG_MAX_BYTES}) ...\n`;
+  const keep = RUN_LOG_MAX_BYTES - Buffer.byteLength(marker, 'utf8');
+  const headBytes = Math.floor(keep / 2);
+  return (
+    utf8Head(content, headBytes) + marker + utf8Tail(content, keep - headBytes)
+  );
 }
 
 function pruneRunLogs(logsDir: string, filePrefix: string): void {
+  let logFiles: string[];
   try {
     const prefix = `${filePrefix}-`;
-    const logFiles = fs
+    logFiles = fs
       .readdirSync(logsDir, { withFileTypes: true })
       .filter(
         (entry) =>
@@ -500,14 +550,42 @@ function pruneRunLogs(logsDir: string, filePrefix: string): void {
           entry.name.endsWith('.log'),
       )
       .map((entry) => entry.name)
-      .sort((left, right) => right.localeCompare(left));
-
-    for (const oldLog of logFiles.slice(RUN_LOG_RETENTION_PER_TYPE)) {
-      fs.unlinkSync(path.join(logsDir, oldLog));
-    }
+      // Fixed-width ISO timestamps: name order is time order.
+      .sort();
   } catch (err) {
-    // Log pruning is best-effort and must never fail the agent turn.
-    logger.warn({ err, logsDir }, 'Failed to prune old agent run logs');
+    logger.warn({ err, logsDir }, 'Failed to list agent run logs for pruning');
+    return;
+  }
+  for (const oldLog of logFiles.slice(0, -RUN_LOG_RETENTION_PER_TYPE)) {
+    try {
+      fs.unlinkSync(path.join(logsDir, oldLog));
+    } catch (err) {
+      logger.warn({ err, logsDir, oldLog }, 'Failed to prune agent run log');
+    }
+  }
+}
+
+/**
+ * Write a run log and prune old ones. Returns the log path, or null when it
+ * could not be written: this runs in the runner's close callback, where a
+ * throw (full disk, `logs` replaced by a file) would end the whole service.
+ */
+function persistRunLog(
+  ctx: CloseHandlerContext,
+  content: string,
+): string | null {
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const logFile = path.join(ctx.logsDir, `${ctx.filePrefix}-${timestamp}.log`);
+  try {
+    fs.mkdirSync(ctx.logsDir, { recursive: true });
+    fs.writeFileSync(logFile, boundRunLog(content));
+    return logFile;
+  } catch (err) {
+    logger.warn({ err, logFile }, `Failed to write ${ctx.label} run log`);
+    return null;
+  } finally {
+    // Also after a failed write: pruning is what frees a full disk.
+    pruneRunLogs(ctx.logsDir, ctx.filePrefix);
   }
 }
 
@@ -523,11 +601,8 @@ export function handleTimeoutClose(
 ): boolean {
   if (!timedOut) return false;
 
-  const ts = new Date().toISOString().replace(/[:.]/g, '-');
-  fs.mkdirSync(ctx.logsDir, { recursive: true });
-  const timeoutLog = path.join(ctx.logsDir, `${ctx.filePrefix}-${ts}.log`);
-  fs.writeFileSync(
-    timeoutLog,
+  const logFile = persistRunLog(
+    ctx,
     [
       `=== ${ctx.label} Run Log (TIMEOUT) ===`,
       `Timestamp: ${new Date().toISOString()}`,
@@ -537,7 +612,6 @@ export function handleTimeoutClose(
       `Exit Code: ${code}`,
     ].join('\n'),
   );
-  pruneRunLogs(ctx.logsDir, ctx.filePrefix);
 
   logger.error(
     {
@@ -546,6 +620,7 @@ export function handleTimeoutClose(
         ctx.identifier,
       duration,
       code,
+      logFile,
     },
     `${ctx.label} timed out`,
   );
@@ -559,20 +634,21 @@ export function handleTimeoutClose(
 }
 
 /**
- * Write a run log file. Returns the log file path.
+ * Write a run log file. Returns its path, or null when it could not be
+ * written. The header, input summary and diagnostics are always whole; the
+ * stderr and stdout sections keep the end of each stream within the file cap.
  */
 export function writeRunLog(
   ctx: CloseHandlerContext,
   code: number | null,
   duration: number,
-): string {
-  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-  fs.mkdirSync(ctx.logsDir, { recursive: true });
-  const logFile = path.join(ctx.logsDir, `${ctx.filePrefix}-${timestamp}.log`);
+): string | null {
   const isVerbose =
     process.env.LOG_LEVEL === 'debug' || process.env.LOG_LEVEL === 'trace';
+  // Error and verbose runs keep the diagnostics and whole stream tails.
+  const fullDetail = isVerbose || code !== 0;
 
-  const logLines = [
+  const head = [
     `=== ${ctx.label} Run Log ===`,
     `Timestamp: ${new Date().toISOString()}`,
     `Group: ${ctx.groupName}`,
@@ -582,59 +658,62 @@ export function writeRunLog(
     `Stdout Truncated: ${ctx.stdoutState.stdoutTruncated}`,
     `Stderr Truncated: ${ctx.stderrState.stderrTruncated}`,
     ``,
-  ];
-
-  const isError = code !== 0;
-  const { stderr, stderrTruncated, stderrTotalChars } = ctx.stderrState;
-  const { stdout, stdoutTruncated, stdoutTotalChars } = ctx.stdoutState;
-
-  const LOG_TAIL_LIMIT = 4000;
-  // Buffers are already tails; counts are against the full stream.
-  const formatStreamLog = (retained: string, totalChars: number): string => {
-    if (!isVerbose && !isError && retained.length > LOG_TAIL_LIMIT) {
-      return (
-        `... (truncated ${totalChars - LOG_TAIL_LIMIT} chars) ...\n` +
-        retained.slice(-LOG_TAIL_LIMIT)
-      );
-    }
-    const dropped = totalChars - retained.length;
-    return dropped > 0
-      ? `... (truncated ${dropped} chars) ...\n${retained}`
-      : retained;
-  };
-  const stderrLog = formatStreamLog(stderr, stderrTotalChars);
-  const stdoutLog = formatStreamLog(stdout, stdoutTotalChars);
-  logLines.push(
     `=== Input Summary ===`,
     `Prompt length: ${ctx.input.prompt.length} chars`,
     `Session ID: ${ctx.input.sessionId || 'new'}`,
-  );
-  if (ctx.extraSummaryLines) {
-    logLines.push(...ctx.extraSummaryLines);
+    ...(ctx.extraSummaryLines ?? []),
+  ];
+  // Before the streams, so the log ends with stdout: bug reports read the
+  // last lines of the latest log.
+  if (fullDetail && ctx.extraVerboseLines) {
+    head.push(``, ...ctx.extraVerboseLines);
   }
-  logLines.push(
-    ``,
-    `=== Stderr${stderrTruncated ? ' (TRUNCATED)' : ''} ===`,
-    stderrLog,
-    ``,
-    `=== Stdout${stdoutTruncated ? ' (TRUNCATED)' : ''} ===`,
-    stdoutLog,
+  const headText = head.join('\n');
+
+  const { stderr, stderrTotalChars } = ctx.stderrState;
+  const { stdout, stdoutTotalChars } = ctx.stdoutState;
+  const maxChars = fullDetail ? Infinity : SUCCESS_LOG_TAIL_CHARS;
+  const budget = Math.max(
+    MIN_STREAM_BUDGET_BYTES,
+    RUN_LOG_MAX_BYTES -
+      Buffer.byteLength(headText, 'utf8') -
+      2 * STREAM_SECTION_RESERVE_BYTES,
+  );
+  // Half each; a stream that needs less leaves the rest to the other.
+  const stderrBytes = Buffer.byteLength(stderr.slice(-maxChars), 'utf8');
+  const stdoutBytes = Buffer.byteLength(stdout.slice(-maxChars), 'utf8');
+  const stderrBudget = Math.min(
+    stderrBytes,
+    Math.max(Math.floor(budget / 2), budget - stdoutBytes),
+  );
+  const stderrLog = formatStreamTail(
+    stderr,
+    stderrTotalChars,
+    maxChars,
+    stderrBudget,
+  );
+  const stdoutLog = formatStreamTail(
+    stdout,
+    stdoutTotalChars,
+    maxChars,
+    budget - stderrBudget,
   );
 
-  if (isVerbose || isError) {
-    logLines.push(
+  const logFile = persistRunLog(
+    ctx,
+    [
+      headText,
       ``,
-      `=== Additional Diagnostics ===`,
-      `Full runner input omitted from persisted logs.`,
-    );
-    if (ctx.extraVerboseLines) {
-      logLines.push(``, ...ctx.extraVerboseLines);
-    }
+      `=== Stderr${stderrLog.truncated ? ' (TRUNCATED)' : ''} ===`,
+      stderrLog.text,
+      ``,
+      `=== Stdout${stdoutLog.truncated ? ' (TRUNCATED)' : ''} ===`,
+      stdoutLog.text,
+    ].join('\n'),
+  );
+  if (logFile) {
+    logger.debug({ logFile, verbose: isVerbose }, `${ctx.label} log written`);
   }
-
-  writeBoundedRunLog(logFile, logLines.join('\n'));
-  pruneRunLogs(ctx.logsDir, ctx.filePrefix);
-  logger.debug({ logFile, verbose: isVerbose }, `${ctx.label} log written`);
   return logFile;
 }
 
@@ -680,7 +759,7 @@ export function handleNonZeroExit(
   code: number | null,
   signal: NodeJS.Signals | null,
   duration: number,
-  logFile: string,
+  logFile: string | null,
 ): boolean {
   if (code === 0) return false;
 
