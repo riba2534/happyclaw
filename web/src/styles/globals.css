@@ -996,6 +996,12 @@ pre code.language-diff .hljs-deletion {
   -webkit-touch-callout: default;
 }
 
+/* The same for an image inside a long-pressable element: the marker also
+   tells useLongPress to leave the press to the system menu. */
+[data-native-image-menu] {
+  -webkit-touch-callout: default;
+}
+
 /* Bottom padding for content above floating nav — accounts for safe area */
 /* A utility (not a bare class) so responsive overrides such as lg:pb-0 win. */
 @utility pb-nav-safe {
