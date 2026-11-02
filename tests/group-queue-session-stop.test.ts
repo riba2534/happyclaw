@@ -32,6 +32,10 @@ const SNAPSHOT = {
   coveredCursors: [{ timestamp: '2026-11-02T00:00:00.000Z', id: 'in-1' }],
   cursor: { timestamp: '2026-11-02T00:00:00.000Z', id: 'in-1' },
 };
+const OTHER_SNAPSHOT = {
+  coveredCursors: [{ timestamp: '2026-11-02T00:00:05.000Z', id: 'in-2' }],
+  cursor: { timestamp: '2026-11-02T00:00:05.000Z', id: 'in-2' },
+};
 const flush = async () => {
   for (let i = 0; i < 5; i++) await Promise.resolve();
 };
@@ -108,6 +112,84 @@ describe('a stop between failed attempts', () => {
     expect(runs()).toBe(1);
     expect(laterRuns).toBe(1);
     expect(queue.stopArmedRetry(LANE)).toBe(false);
+  });
+
+  /** The failed attempt's retry fires while the owner has no free slot. */
+  async function retryWaitingForSlot(): Promise<{
+    runs: () => number;
+    setSlot: (free: boolean) => void;
+  }> {
+    const runs = await failedOnce();
+    let slot = false;
+    queue.setUserConcurrentLimitChecker(() => ({
+      allowed: slot,
+      userId: 'owner',
+    }));
+    await vi.advanceTimersByTimeAsync(5_000);
+    await flush();
+    expect(runs()).toBe(1);
+    return { runs, setSlot: (free) => (slot = free) };
+  }
+
+  test('a task running ahead of the waiting retry keeps both: nothing is stopped', async () => {
+    const stopped = vi.fn();
+    queue.setOnRetryStopped(stopped);
+    const retry = await retryWaitingForSlot();
+    // A slot frees and a new turn takes it before the queue drains the retry.
+    retry.setSlot(true);
+    let finish!: () => void;
+    queue.enqueueTask(LANE, 'turn-u', async () => {
+      queue.setMessageRetrySnapshot(LANE, OTHER_SNAPSHOT);
+      queue.registerProcess(
+        LANE,
+        { killed: false, kill: () => true } as never,
+        {
+          containerName: null,
+          groupFolder: 'session-stop',
+          agentId: 's1',
+        },
+      );
+      await new Promise<void>((resolve) => (finish = resolve));
+    });
+    await flush();
+    queue.markRunnerQueryIdle(LANE);
+
+    // The warm runner has no query: the stop finds nothing to end.
+    expect(queue.interruptQuery(LANE, undefined, 'stop')).toBe(false);
+    expect(queue.stopArmedRetry(LANE)).toBe(false);
+    expect(stopped).not.toHaveBeenCalled();
+
+    finish();
+    await flush();
+    await vi.advanceTimersByTimeAsync(0);
+    await flush();
+    expect(retry.runs()).toBe(2);
+  });
+
+  test("each retry ended by the stop settles its own attempt's batch", async () => {
+    const stopped = vi.fn();
+    queue.setOnRetryStopped(stopped);
+    const retry = await retryWaitingForSlot();
+    // A new turn runs ahead of the waiting retry and fails too; the slot is
+    // taken again before the queue gets back to the lane.
+    retry.setSlot(true);
+    queue.enqueueTask(LANE, 'turn-u', async () => {
+      retry.setSlot(false);
+      queue.setMessageRetrySnapshot(LANE, OTHER_SNAPSHOT);
+      return false;
+    });
+    await flush();
+
+    expect(queue.interruptQuery(LANE, undefined, 'stop')).toBe(true);
+    expect(stopped.mock.calls).toEqual([
+      [LANE, SNAPSHOT],
+      [LANE, OTHER_SNAPSHOT],
+    ]);
+    retry.setSlot(true);
+    await vi.advanceTimersByTimeAsync(60_000);
+    (queue as unknown as { drainWaiting(): void }).drainWaiting();
+    await flush();
+    expect(retry.runs()).toBe(1);
   });
 
   test('a steer, or a stop of another named query, leaves the retry armed', async () => {
