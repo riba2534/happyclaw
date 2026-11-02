@@ -156,10 +156,11 @@ Web UI 约定：
   信息用 `InfoTip`；按钮在手机上自带 44px 命中区，输入框不小于 16px（`variant="code"`
   关闭自动大写与纠错）。键盘遮挡只读 `--keyboard-inset` / `--vvh`（`useVisualViewport`）。
 - 安装成 PWA 后 body 关闭了 `-webkit-touch-callout`，iOS 长按图片的系统菜单（存储图像）
-  由 `touch-callout-default` 按图片开启：灯箱大图只在 1× 时开启，Markdown 图片和文件面板
-  预览图开启，消息附件缩略图不开（低清 data URL，保存交给灯箱）。`useLongPress` 不处理
-  落在 `img` 上或从 portal 冒泡上来的按压。灯箱的保存在 iOS 上于图片加载后预取文件，并在
-  点击里同步调用 `navigator.share`（被拒时改为下载）；其他平台直接下载。
+  按图片开启：灯箱大图只在 1× 时开启，文件面板预览图用 `touch-callout-default`，Markdown
+  图片带 `data-native-image-menu`（同时开启 callout），消息附件缩略图不开（低清 data URL，
+  保存交给灯箱）。`useLongPress` 只把带 `data-native-image-menu` 的图片和从 portal 冒泡上来
+  的按压让给系统，其他图片照常触发长按。灯箱的保存在 iOS 上于图片加载后预取文件，并在点击
+  里同步调用 `navigator.share`（被拒时改为下载）；其他平台直接下载。
 - 快捷键在 `lib/shortcuts.ts` 注册并用 `Shortcut` 渲染键帽；动画用 `motion` 的 `m.*`，
   经 `MotionProvider` 懒加载并遵循减少动态效果设置。流式回复的贴底跟随（每批一次的
   WAAPI 位移补偿）和逐词淡入（CSS keyframes）是逐帧、逐词的热路径，不走 `m.*`，
