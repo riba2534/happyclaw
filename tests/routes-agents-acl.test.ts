@@ -52,7 +52,7 @@ vi.mock('../src/config.js', async (importOriginal) => {
 });
 
 vi.mock('../src/logger.js', () => ({
-  logger: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
+  logger: { debug: () => {}, info: () => {}, warn: () => {}, error: vi.fn() },
 }));
 
 vi.mock('../src/middleware/auth.ts', () => ({
@@ -78,6 +78,8 @@ const db = await import('../src/db.js');
 const mountService = await import('../src/channel-mount-service.js');
 const webContext = await import('../src/web-context.js');
 const ledger = await import('../src/automation-run-ledger.js');
+const reliability = await import('../src/channel-reliability-store.js');
+const { logger } = await import('../src/logger.js');
 
 const agentRoutes = agentRoutesModule.default;
 
@@ -110,24 +112,19 @@ beforeAll(() => {
 
 let enqueueTask = vi.fn();
 let broadcastNewMessage = vi.fn();
-let stopArmedRetry = vi.fn();
-let cursors: Record<string, { timestamp: string; id: string }> = {};
 
 beforeEach(() => {
   enqueueTask = vi.fn();
   broadcastNewMessage = vi.fn();
-  stopArmedRetry = vi.fn();
-  cursors = {};
   webContext.setWebDeps({
     getRegisteredGroups: () => ({}),
     broadcastAgentStatus: vi.fn(),
     broadcastAgentRemoved: vi.fn(),
     broadcastNewMessage,
-    getLastAgentTimestamp: () => cursors,
+    getLastAgentTimestamp: () => ({}),
     processAgentConversation: vi.fn(async () => {}),
     queue: {
       stopGroup: vi.fn(async () => {}),
-      stopArmedRetry,
       getActiveQueryId: () => null,
       enqueueTask,
     },
@@ -728,14 +725,27 @@ describe('formal sessions API', () => {
           false,
           { sourceJid: input.sourceJid ?? bound, meta: input.meta },
         );
+      /** A turn of session `agentId` for input `inputId` that has not ended. */
+      const openTurn = (agentId: string, inputId: string) =>
+        reliability.createChannelTurnRun({
+          provider: 'telegram',
+          accountId: 'test-account',
+          sourceJid: bound,
+          idempotencyKey: `turn-${agentId}-${inputId}`,
+          agentId,
+          correlationId: inputId,
+        }).run;
       const targetLane = `${GROUP_JID}#agent:${target}`;
-      return { doomed, target, bound, doomedLane, targetLane, store };
+      return { doomed, target, bound, doomedLane, targetLane, store, openTurn };
     }
 
     test('a delete that throws at its last step changes nothing outside the database either', async () => {
-      const { doomed, target, bound, doomedLane, targetLane, store } =
+      const { doomed, target, bound, doomedLane, targetLane, store, openTurn } =
         rebindFixture({ status: 'idle' });
-      store('pending-input');
+      // An open turn of the session covers its first input.
+      store('turn-input', { timestamp: '2026-11-01T10:00:00.000Z' });
+      store('pending-input', { timestamp: '2026-11-01T10:01:00.000Z' });
+      const turn = openTurn(doomed, 'turn-input');
       const sessionDir = path.join(
         tmpDataDir,
         'sessions',
@@ -766,6 +776,7 @@ describe('formal sessions API', () => {
           expect(db.getRegisteredGroup(bound)?.target_agent_id).toBe(doomed);
           expect(db.getMessage(doomedLane, 'pending-input')).not.toBeNull();
           expect(db.getMessage(targetLane, 'pending-input')).toBeNull();
+          expect(reliability.getChannelTurnRun(turn.id)?.status).toBe('queued');
           expect(routerCache[bound].target_agent_id).toBe(doomed);
           expect(fs.existsSync(sessionDir)).toBe(true);
           const deps = webContext.getWebDeps()!;
@@ -782,31 +793,47 @@ describe('formal sessions API', () => {
       }
     });
 
-    test('a failed batch waiting for its retry is settled with the lane, not carried', async () => {
-      const { doomed, target, bound, doomedLane, targetLane, store } =
-        rebindFixture();
-      store('retry-failed', { timestamp: '2026-11-01T10:00:00.000Z' });
-      store('after-retry', { timestamp: '2026-11-01T10:01:00.000Z' });
-      // The runtime settles the failed batch as stopped: the cursor passes it.
-      stopArmedRetry.mockImplementation((lane: string) => {
-        cursors[lane] = {
-          timestamp: '2026-11-01T10:00:00.000Z',
-          id: 'retry-failed',
-        };
+    test('a step after the commit that fails is logged; the carried inputs still arrive', async () => {
+      const { doomed, target, bound, targetLane, store } = rebindFixture();
+      store('carry-me');
+      mountService.injectChannelMountRuntimePort({
+        getRegisteredGroups: () => {
+          throw new Error('router cache unavailable');
+        },
       });
-
-      expect((await rebind(doomed, target)).status).toBe(200);
-      expect(stopArmedRetry).toHaveBeenCalledWith(doomedLane);
+      vi.mocked(logger.error).mockClear();
+      try {
+        expect(await rebind(doomed, target)).toEqual({
+          status: 200,
+          body: { success: true },
+        });
+      } finally {
+        mountService.injectChannelMountRuntimePort(null);
+      }
+      expect(db.getAgent(doomed)).toBeUndefined();
       expect(
-        db
-          .getMessagesSince(targetLane, { timestamp: '', id: '' })
-          .map((m) => m.id),
-      ).toEqual(['after-retry']);
+        broadcastNewMessage.mock.calls.map(([lane, message]) => [
+          lane,
+          message.id,
+        ]),
+      ).toEqual([[targetLane, 'carry-me']]);
+      expect(enqueueTask).toHaveBeenCalledWith(
+        targetLane,
+        expect.stringContaining(`agent-conv:${target}`),
+        expect.any(Function),
+      );
+      expect(logger.error).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sessionId: doomed,
+          step: 'reboundChatsCache',
+        }),
+        'A step after deleting a session failed',
+      );
       db.deleteRegisteredGroup(bound);
     });
 
     test('inputs the session had not taken yet follow the chat to the target', async () => {
-      const { doomed, target, bound, doomedLane, targetLane, store } =
+      const { doomed, target, bound, doomedLane, targetLane, store, openTurn } =
         rebindFixture();
       store('carry-plain');
       store('carry-queued', {
@@ -818,6 +845,8 @@ describe('formal sessions API', () => {
       });
       store('stay-other', { sourceJid: `telegram:${nextChatId()}` });
       store('stay-automation', { meta: { sourceKind: 'automation_prompt' } });
+      // A turn of another session is not this deletion's.
+      const otherTurn = openTurn(target, 'carry-plain');
       const routerCache = { [bound]: db.getRegisteredGroup(bound)! };
       mountService.injectChannelMountRuntimePort({
         getRegisteredGroups: () => routerCache,
@@ -830,6 +859,13 @@ describe('formal sessions API', () => {
       }
       // The router follows the commit.
       expect(routerCache[bound].target_agent_id).toBe(target);
+      expect(reliability.getChannelTurnRun(otherTurn.id)?.status).toBe(
+        'queued',
+      );
+      // A session not running still has its lane stopped (a retry timer goes).
+      expect(webContext.getWebDeps()!.queue.stopGroup).toHaveBeenCalledWith(
+        doomedLane,
+      );
       const carried = db
         .getMessagesSince(targetLane, { timestamp: '', id: '' })
         .map((m) => m.id);

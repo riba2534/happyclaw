@@ -48,7 +48,6 @@ import { sortSessionsForList } from '../session-order.js';
 import type {
   AudienceMode,
   AuthUser,
-  NewMessage,
   RegisteredGroup,
   SubAgent,
 } from '../types.js';
@@ -980,18 +979,20 @@ async function deleteWorkspaceSession(
     // its branch is kept.)
     const plan = planRebind(user, jid, session, rebindTo);
     if ('refusal' in plan) return invalidRebind(plan.refusal);
-    let carried: NewMessage[] = [];
     deleteConversationSession(deletion, () => {
       const applyCache = writeChannelMountUpdates(plan.updates);
-      carried = carryUnprocessedInputs(
-        `${jid}#agent:${session.id}`,
-        `${jid}#agent:${rebindTo}`,
+      const carried = carryUnprocessedInputs(
+        jid,
+        session.id,
+        rebindTo,
         new Set(plan.updates.map(([imJid]) => imJid)),
       );
       refreshAgentLastImJid(rebindTo);
-      return applyCache;
+      return {
+        reboundChatsCache: applyCache,
+        carriedInputs: () => deliverCarriedInputs(jid, rebindTo, carried),
+      };
     });
-    deliverCarriedInputs(jid, rebindTo, carried);
   } finally {
     // The worktree is gone: whatever happened above, the lane's work must
     // not run on without it.
