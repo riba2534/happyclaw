@@ -214,6 +214,8 @@ interface GroupState {
   retryTimer: ReturnType<typeof setTimeout> | null;
   /** Exact task captured by the pending retry timer. */
   retryTask: QueuedTask | null;
+  /** The retry task whose timer fired, until it starts (it may wait for a slot). */
+  queuedRetryTask: QueuedTask | null;
   /** Exact message batch captured by the current runner attempt. */
   messageRetrySnapshot: MessageRetrySnapshot | null;
   /** Physical inputs owned by the current logical query only. Unlike the
@@ -402,6 +404,7 @@ export class GroupQueue {
         retryCount: 0,
         retryTimer: null,
         retryTask: null,
+        queuedRetryTask: null,
         messageRetrySnapshot: null,
         currentQueryCoveredMessageIds: new Set(),
         restarting: false,
@@ -841,13 +844,22 @@ export class GroupQueue {
 
   /**
    * An explicit stop between failed attempts: no query runs to interrupt, so
-   * the stop ends the armed retry and the failed batch does not run again.
-   * Returns false when the lane has no retry armed.
+   * the stop ends the retry — still timed, or fired and waiting for a slot —
+   * and the failed batch does not run again. Other queued tasks stay.
+   * Returns false when the lane has no retry pending.
    */
   stopArmedRetry(groupJid: string): boolean {
     const state = this.groups.get(groupJid);
-    if (!state?.retryTimer) return false;
+    const queuedRetry = state?.queuedRetryTask ?? null;
+    const waiting = !!queuedRetry && state!.pendingTasks.includes(queuedRetry);
+    if (!state || (!state.retryTimer && !waiting)) return false;
     const snapshot = state.messageRetrySnapshot;
+    if (waiting) {
+      state.pendingTasks = state.pendingTasks.filter(
+        (task) => task !== queuedRetry,
+      );
+      if (state.pendingTasks.length === 0) this.waitingGroups.delete(groupJid);
+    }
     this.clearRetryTimer(state);
     logger.info({ groupJid }, 'Explicit stop ended the armed retry');
     try {
@@ -1095,6 +1107,7 @@ export class GroupQueue {
       state.retryTimer = null;
     }
     state.retryTask = null;
+    state.queuedRetryTask = null;
     state.retryCount = 0;
     state.messageRetrySnapshot = null;
   }
@@ -2955,6 +2968,7 @@ export class GroupQueue {
     // A newly-arrived conversation turn supersedes an older pending retry for
     // the same lane. Preserve retryCount until this run succeeds.
     this.cancelRetryTimer(state);
+    if (state.queuedRetryTask === task) state.queuedRetryTask = null;
     // A new run after an ordinary stop owns a fresh lifecycle: its exit must
     // not read as the stop. Mutation markers are cleared on release.
     if (state.stopRequested) {
@@ -3167,7 +3181,9 @@ export class GroupQueue {
       state.retryTimer = null;
       state.retryTask = null;
       if (this.canScheduleRetry(state)) {
-        this.admitTask(groupJid, retryTask);
+        // Set before admission: a free slot starts the task at once.
+        state.queuedRetryTask = retryTask;
+        if (!this.admitTask(groupJid, retryTask)) state.queuedRetryTask = null;
       } else {
         logger.info(
           {

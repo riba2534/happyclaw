@@ -81,6 +81,35 @@ describe('a stop between failed attempts', () => {
     expect(queue.stopArmedRetry(LANE)).toBe(false);
   });
 
+  test('ends a retry that fired and waits for a slot; later queued work stays', async () => {
+    const stopped = vi.fn();
+    queue.setOnRetryStopped(stopped);
+    const runs = await failedOnce();
+    let slot = false;
+    queue.setUserConcurrentLimitChecker(() => ({
+      allowed: slot,
+      userId: 'owner',
+    }));
+    await vi.advanceTimersByTimeAsync(5_000);
+    await flush();
+    // The retry's timer fired; its task waits for the owner's runner slot.
+    expect(runs()).toBe(1);
+    let laterRuns = 0;
+    queue.enqueueTask(LANE, 'later-turn', async () => {
+      laterRuns += 1;
+    });
+
+    expect(queue.interruptQuery(LANE, undefined, 'stop')).toBe(true);
+    expect(stopped).toHaveBeenCalledWith(LANE, SNAPSHOT);
+
+    slot = true;
+    (queue as unknown as { drainWaiting(): void }).drainWaiting();
+    await flush();
+    expect(runs()).toBe(1);
+    expect(laterRuns).toBe(1);
+    expect(queue.stopArmedRetry(LANE)).toBe(false);
+  });
+
   test('a steer, or a stop of another named query, leaves the retry armed', async () => {
     const stopped = vi.fn();
     queue.setOnRetryStopped(stopped);
