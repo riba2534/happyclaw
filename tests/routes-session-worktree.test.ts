@@ -183,6 +183,7 @@ beforeEach(() => {
     queue: {
       getStatus: () => ({ groups: queueGroups }),
       stopGroup,
+      stopArmedRetry: vi.fn(),
       listDescendantJids: () => [],
       pauseGroupsForMutation: () => ({ id: 1 }),
       resumeGroupsAfterMutation: vi.fn(),

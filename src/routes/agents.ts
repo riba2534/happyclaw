@@ -42,7 +42,6 @@ import {
   getChannelAccount,
   getUserPinnedSessions,
   pinSession,
-  runImmediateTransaction,
   unpinSession,
 } from '../db.js';
 import { sortSessionsForList } from '../session-order.js';
@@ -67,7 +66,7 @@ import {
   buildDetachedWorkspaceUpdate,
   buildWorkspaceMountUpdate,
   commitChannelMountUpdate,
-  commitChannelMountUpdates,
+  writeChannelMountUpdates,
   hasRemainingThreadMapMount,
   hasSessionMountConflict,
   hasWorkspaceMountConflict,
@@ -970,30 +969,29 @@ async function deleteWorkspaceSession(
   });
   if ('refusal' in worktreeRelease) return worktreeRelease.refusal;
   try {
+    const deletion = { workspaceJid: jid, group, session };
+    if (!rebindTo) {
+      deleteConversationSession(deletion);
+      return null;
+    }
     // From here on synchronous: the move is checked again against the rows
     // as they are after the awaits, and commits with the deletion or not at
     // all. (A worktree checkout removed above is not restored on a refusal;
     // its branch is kept.)
+    const plan = planRebind(user, jid, session, rebindTo);
+    if ('refusal' in plan) return invalidRebind(plan.refusal);
     let carried: NewMessage[] = [];
-    const refusal = runImmediateTransaction((): string | null => {
-      if (rebindTo) {
-        const plan = planRebind(user, jid, session, rebindTo);
-        if ('refusal' in plan) return plan.refusal;
-        commitChannelMountUpdates(plan.updates);
-        carried = carryUnprocessedInputs(
-          `${jid}#agent:${session.id}`,
-          `${jid}#agent:${rebindTo}`,
-          new Set(plan.updates.map(([imJid]) => imJid)),
-        );
-      }
-      deleteConversationSession({ workspaceJid: jid, group, session });
-      return null;
-    });
-    if (refusal) return invalidRebind(refusal);
-    if (rebindTo) {
+    deleteConversationSession(deletion, () => {
+      const applyCache = writeChannelMountUpdates(plan.updates);
+      carried = carryUnprocessedInputs(
+        `${jid}#agent:${session.id}`,
+        `${jid}#agent:${rebindTo}`,
+        new Set(plan.updates.map(([imJid]) => imJid)),
+      );
       refreshAgentLastImJid(rebindTo);
-      deliverCarriedInputs(jid, rebindTo, carried);
-    }
+      return applyCache;
+    });
+    deliverCarriedInputs(jid, rebindTo, carried);
   } finally {
     // The worktree is gone: whatever happened above, the lane's work must
     // not run on without it.

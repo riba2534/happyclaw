@@ -199,6 +199,8 @@ function laneRows(laneJid: string): NewMessage[] {
   return db.getMessagesSince(laneJid, { timestamp: '', id: '' });
 }
 
+const stopArmedRetry = vi.fn();
+
 /** A conversation session of the team workspace. */
 function createSession(id: string, status: 'idle' | 'completed' = 'idle') {
   db.createAgent({
@@ -232,7 +234,7 @@ beforeAll(() => {
   webContext.setWebDeps({
     broadcastAgentStatus: vi.fn(),
     broadcastAgentRemoved: vi.fn(),
-    queue: { stopGroup: vi.fn(async () => {}) },
+    queue: { stopGroup: vi.fn(async () => {}), stopArmedRetry },
   } as unknown as Parameters<typeof webContext.setWebDeps>[0]);
   installHooks();
 });
@@ -1496,6 +1498,10 @@ describe('after the review on the Mac mini', () => {
         (await accept('om_del_unbind')).workItemId as string,
       )!;
       remove('team-doomed-b');
+      // A retry its lane had armed is settled before the rows go.
+      expect(stopArmedRetry).toHaveBeenCalledWith(
+        `${WORKSPACE}#agent:team-doomed-b`,
+      );
       await new Promise((resolve) => setImmediate(resolve));
       expect(db.getRegisteredGroup(CHAT)?.target_agent_id).toBeUndefined();
       expect(db.getChannelMount(CHAT)).toBeUndefined();
@@ -1593,6 +1599,7 @@ describe('session deletion', () => {
     const item = store.getWorkItem(
       (await accept('om_del')).workItemId as string,
     )!;
+    broadcasts.length = 0;
     const { deleteConversationSession } =
       await import('../src/session-factory.js');
     await deleteConversationSession({
@@ -1604,5 +1611,36 @@ describe('session deletion', () => {
       status: 'ended',
       outcome: 'stopped',
     });
+    expect(broadcasts).toContain(item.id);
+  });
+
+  test('a deletion that rolls back leaves its item open and unannounced', async () => {
+    storeCandidate('om_del_rollback');
+    const item = store.getWorkItem(
+      (await accept('om_del_rollback')).workItemId as string,
+    )!;
+    broadcasts.length = 0;
+    const { deleteConversationSession } =
+      await import('../src/session-factory.js');
+    const ledger = await import('../src/automation-run-ledger.js');
+    // The last write of the deletion fails.
+    ledger.setAutomationRuntimeService({
+      onSessionDeleted: () => {
+        throw new Error('a later step failed');
+      },
+    } as never);
+    try {
+      expect(() =>
+        deleteConversationSession({
+          workspaceJid: WORKSPACE,
+          group: db.getRegisteredGroup(WORKSPACE)!,
+          session: db.getAgent(item.agentId)!,
+        }),
+      ).toThrow('a later step failed');
+    } finally {
+      ledger.setAutomationRuntimeService(null);
+    }
+    expect(store.getWorkItem(item.id)?.status).toBe('open');
+    expect(broadcasts).not.toContain(item.id);
   });
 });
