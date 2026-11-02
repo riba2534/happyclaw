@@ -502,9 +502,19 @@ const fileRoutes = new Hono<{ Variables: Variables }>();
 
 // Hono answers HEAD by running the GET handler and dropping its body without
 // cancelling it; cancel it here so a file stream the handler opened is closed.
+// The response is then swapped for a bodiless copy: middleware outside this
+// module (cors) still sets headers afterwards, which rebuilds the response
+// from its body and throws on a cancelled stream.
 fileRoutes.use('/:jid/files/*', async (c, next) => {
   await next();
-  if (c.req.method === 'HEAD') await c.res.body?.cancel();
+  const res = c.res;
+  if (c.req.method !== 'HEAD' || !res.body) return;
+  await res.body.cancel();
+  c.res = new Response(null, {
+    status: res.status,
+    statusText: res.statusText,
+    headers: res.headers,
+  });
 });
 
 // GET /api/groups/:jid/files?path= - 列出文件

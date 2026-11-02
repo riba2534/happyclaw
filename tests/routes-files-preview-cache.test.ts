@@ -124,6 +124,29 @@ describe('GET /:jid/files/preview/:path caching', () => {
     },
   );
 
+  test('HEAD still answers when middleware outside the module sets headers afterwards', async () => {
+    // As in web.ts: cors wraps the file routes and sets headers after them.
+    const { Hono } = await import('hono');
+    const { cors } = await import('hono/cors');
+    const app = new Hono();
+    app.use('/api/*', cors({ origin: 'http://localhost', credentials: true }));
+    app.route('/api/groups', routes);
+    const route = URL.replace(
+      'http://localhost/',
+      'http://localhost/api/groups/',
+    );
+    const res = await app.request(route, {
+      method: 'HEAD',
+      headers: { Origin: 'http://localhost' },
+    });
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe('');
+    expect(res.headers.get('ETag')).toBeTruthy();
+    expect(res.headers.get('Access-Control-Allow-Origin')).toBe(
+      'http://localhost',
+    );
+  });
+
   test('a changed file gets a new ETag and a full response', async () => {
     const etag = (await routes.request(URL)).headers.get('ETag')!;
     const file = path.join(workspaceDir, 'pic.png');
