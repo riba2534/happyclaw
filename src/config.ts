@@ -38,6 +38,15 @@ export const MAX_FILE_SIZE = MAX_FILE_SIZE_MB * 1024 * 1024;
 export const CONTAINER_IMAGE =
   process.env.CONTAINER_IMAGE || 'riba2534/happyclaw-agent:latest';
 
+// 每个 Agent 容器的内存上限（docker --memory 格式，如 3g、2048m），同时设为
+// --memory-swap，不额外用 swap。未设置或格式非法时不加限制（保持原行为）。
+const _containerMemoryLimit = (process.env.CONTAINER_MEMORY_LIMIT || '').trim();
+export const CONTAINER_MEMORY_LIMIT = /^[1-9]\d*[kmg]?$/i.test(
+  _containerMemoryLimit,
+)
+  ? _containerMemoryLimit
+  : '';
+
 export function deriveContainerProfileImage(
   image: string,
   profile: 'headroom',

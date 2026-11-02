@@ -55,6 +55,23 @@ describe('container image profiles', () => {
     expect(args).not.toContain('--memory');
   });
 
+  test('caps agent memory without extra swap when a limit is configured', () => {
+    const args = buildContainerArgs(
+      [],
+      'happyclaw-test',
+      'UTC',
+      { mode: 'host-root' },
+      { addHostGateway: false },
+      'happyclaw-agent:test',
+      '3g',
+    );
+    expect(args[args.indexOf('--memory') + 1]).toBe('3g');
+    expect(args[args.indexOf('--memory-swap') + 1]).toBe('3g');
+    expect(args.indexOf('--memory')).toBeLessThan(
+      args.indexOf('happyclaw-agent:test'),
+    );
+  });
+
   test('places the selected profile image at the end of docker arguments', () => {
     const args = buildContainerArgs(
       [],
