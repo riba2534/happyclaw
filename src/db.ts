@@ -117,7 +117,7 @@ import {
 } from './work-item-store.js';
 import {
   migrateLegacyMainSessions,
-  forgetOrphanedLegacyMainMappings,
+  forgetOrphanedLegacyMainState,
   relocateLegacyMainSessionDirectories,
   type LegacyMainSessionMigrationReport,
 } from './legacy-main-session-migration.js';
@@ -621,7 +621,11 @@ export function initDatabase(
     /** False leaves session directories alone (the v88 report runs on a copy). */
     relocateLegacySessionDirectories?: boolean;
   } = {},
-): { legacyMainSessions: LegacyMainSessionMigrationReport | null } {
+): {
+  legacyMainSessions: LegacyMainSessionMigrationReport | null;
+  /** v88 mappings and OOM counters forgotten because their session is gone. */
+  forgottenLegacyMainState: { mappings: number; oomCounters: number };
+} {
   const dbPath = path.join(STORE_DIR, 'messages.db');
   assertDatabaseMaintenanceAccess(dbPath);
   fs.mkdirSync(path.dirname(dbPath), { recursive: true });
@@ -2789,15 +2793,22 @@ export function initDatabase(
     'INSERT OR REPLACE INTO router_state (key, value) VALUES (?, ?)',
   ).run('schema_version', String(CURRENT_SCHEMA_VERSION));
 
-  // Every startup, before any Runner: finishes a move a crash interrupted.
-  // Maintenance bootstraps leave the filesystem alone.
+  // Every startup, before any Runner: forgets v88 mappings and OOM counters
+  // of sessions that no longer exist (a database write), then finishes a
+  // directory move a crash interrupted. Maintenance bootstraps
+  // (requireCurrentSchema) do neither; relocateLegacySessionDirectories:
+  // false skips only the move.
+  let forgottenLegacyMainState: { mappings: number; oomCounters: number } = {
+    mappings: 0,
+    oomCounters: 0,
+  };
   if (!options.requireCurrentSchema) {
-    forgetOrphanedLegacyMainMappings(db);
+    forgottenLegacyMainState = forgetOrphanedLegacyMainState(db);
     if (options.relocateLegacySessionDirectories !== false) {
       relocateLegacyMainSessionDirectories(db);
     }
   }
-  return { legacyMainSessions };
+  return { legacyMainSessions, forgottenLegacyMainState };
 }
 
 const LEGACY_ROUTER_CURSOR_BLOBS: ReadonlyArray<

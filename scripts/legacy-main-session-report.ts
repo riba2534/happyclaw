@@ -110,9 +110,8 @@ async function rehearse(inspectFs: boolean): Promise<number> {
   process.env.LOG_LEVEL = 'silent';
   const db = await import('../src/db.js');
   const migration = await import('../src/legacy-main-session-migration.js');
-  const report = db.initDatabase({
-    relocateLegacySessionDirectories: false,
-  }).legacyMainSessions;
+  const { legacyMainSessions: report, forgottenLegacyMainState } =
+    db.initDatabase({ relocateLegacySessionDirectories: false });
   db.closeDatabase();
 
   return withReadOnly(dbPath, (conn) => {
@@ -121,6 +120,9 @@ async function rehearse(inspectFs: boolean): Promise<number> {
       database: dbPath,
       schemaVersionBefore,
       migrated: !!report,
+      // v88 mappings and OOM counters of sessions that no longer exist, which
+      // every startup forgets; the copy has lost them too.
+      forgottenLegacyMainState,
       messagesBefore,
       messagesAfter: countMessages(conn),
       summary: report && {

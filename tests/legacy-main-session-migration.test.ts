@@ -1567,19 +1567,32 @@ describe('v88 legacy main session migration', () => {
     expect(db.getRouterState(`oom_exits:main#${home.sessionId}`)).toBe('2');
     db.closeDatabase();
 
-    // A mapping a workspace deletion left behind before it forgot its own.
+    // What workspace deletions left behind before they forgot their own:
+    // mappings and an OOM counter naming a session that is gone.
     const conn = new Database(databasePath);
-    conn
-      .prepare('INSERT INTO router_state (key, value) VALUES (?, ?)')
-      .run('legacy_main_session:web:deleted-earlier', 'gone-session');
+    const put = conn.prepare(
+      'INSERT INTO router_state (key, value) VALUES (?, ?)',
+    );
+    put.run('legacy_main_session:web:deleted-earlier', 'gone-session');
+    put.run('oom_exits:flow-gone#gone-session', '2');
+    put.run(`legacy_main_session:${WORK}`, 'gone-session');
+    // A mapping naming a session that exists but is not that workspace's.
+    put.run('legacy_main_session:web:reused', home.sessionId);
     conn.close();
-    db.initDatabase();
+    const { forgottenLegacyMainState } = db.initDatabase();
+    expect(forgottenLegacyMainState).toEqual({ mappings: 3, oomCounters: 1 });
+    expect(db.getRouterState('legacy_main_session:web:reused')).toBeUndefined();
     expect(
       db.getRouterState('legacy_main_session:web:deleted-earlier'),
     ).toBeUndefined();
+    expect(
+      db.getRouterState('oom_exits:flow-gone#gone-session'),
+    ).toBeUndefined();
+    expect(db.getRouterState(`legacy_main_session:${WORK}`)).toBeUndefined();
     expect(db.getRouterState(`legacy_main_session:${HOME}`)).toBe(
       home.sessionId,
     );
+    expect(db.getRouterState(`oom_exits:main#${home.sessionId}`)).toBe('2');
     db.closeDatabase();
     const checks = inspect((c) =>
       verify.checkLegacyMainSessionInvariants(c, {
