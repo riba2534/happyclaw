@@ -1259,6 +1259,8 @@ const ProviderPresetIdSchema = z
   .trim()
   .refine((value) => !!getModelPreset(value), { message: '未知的厂商预设' });
 
+const WebFetchPreflightPolicySchema = z.enum(['check', 'skip']);
+
 export const UnifiedProviderCreateSchema = z
   .object({
     name: z.string().min(1).max(64),
@@ -1266,6 +1268,7 @@ export const UnifiedProviderCreateSchema = z
     anthropicBaseUrl: ProviderBaseUrlSchema.optional(),
     anthropicAuthToken: z.string().max(2000).optional(),
     anthropicAuthMode: ProviderAuthModeSchema.optional(),
+    webFetchPreflightPolicy: WebFetchPreflightPolicySchema.optional(),
     anthropicModel: ProviderDefaultModelSchema.optional(),
     models: ProviderModelListSchema.optional(),
     presetId: ProviderPresetIdSchema.optional(),
@@ -1299,6 +1302,7 @@ export const UnifiedProviderPatchSchema = z
     anthropicBaseUrl: ProviderBaseUrlSchema.optional(),
     /** Null goes back to inferring the header style from the token. */
     anthropicAuthMode: ProviderAuthModeSchema.nullable().optional(),
+    webFetchPreflightPolicy: WebFetchPreflightPolicySchema.optional(),
     anthropicModel: ProviderDefaultModelSchema.optional(),
     /** The whole new list; models left out are removed. */
     models: ProviderModelListSchema.optional(),
@@ -1317,6 +1321,7 @@ export const UnifiedProviderPatchSchema = z
       data.name !== undefined ||
       data.anthropicBaseUrl !== undefined ||
       data.anthropicAuthMode !== undefined ||
+      data.webFetchPreflightPolicy !== undefined ||
       data.anthropicModel !== undefined ||
       data.models !== undefined ||
       data.presetId !== undefined ||

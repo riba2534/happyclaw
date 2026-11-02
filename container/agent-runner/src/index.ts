@@ -129,6 +129,7 @@ import {
   type ClaudeRuntimeEnv,
 } from './claude-runtime-env.js';
 import { pinBoundProviderSettings } from './provider-env-pin.js';
+import { webFetchPreflightSettings } from './web-fetch-preflight.js';
 import {
   resolveClaudeProviderRuntime,
   resolveClaudeQueryModelRuntime,
@@ -2967,10 +2968,13 @@ async function runQueryAttempt(
   // The bound connection outranks every settings file the CLI reads (the
   // admin's, the workspace's project and local ones), in host and container
   // mode alike.
-  const flagSettings: Record<string, unknown> = pinBoundProviderSettings({
-    ...process.env,
-    ...claudeRuntimeEnv,
-  });
+  const flagSettings: Record<string, unknown> = {
+    ...pinBoundProviderSettings({
+      ...process.env,
+      ...claudeRuntimeEnv,
+    }),
+    ...webFetchPreflightSettings(containerInput.webFetchPreflightPolicy),
+  };
   const claudeMdExcludes = resolveManagedHostClaudeMdExcludes({
     executionMode: contextAuditBase.executionMode,
     runtimePolicy: containerInput.agentProfile?.runtimePolicy,

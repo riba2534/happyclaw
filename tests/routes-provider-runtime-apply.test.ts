@@ -17,6 +17,8 @@ const tmpDir = fs.mkdtempSync(
   path.join(os.tmpdir(), 'happyclaw-provider-runtime-apply-'),
 );
 
+const auth = vi.hoisted(() => ({ role: 'admin' as 'admin' | 'member' }));
+
 vi.mock('../src/config.js', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   DATA_DIR: tmpDir,
@@ -38,7 +40,7 @@ vi.mock('../src/middleware/auth.ts', async (importOriginal) => {
         id: 'provider-runtime-admin',
         username: 'provider-runtime-admin',
         display_name: 'Provider Runtime Admin',
-        role: 'admin',
+        role: auth.role,
         status: 'active',
         permissions: [],
         must_change_password: false,
@@ -131,6 +133,7 @@ beforeAll(() => {
 });
 
 beforeEach(() => {
+  auth.role = 'admin';
   fs.rmSync(path.join(tmpDir, 'config'), { recursive: true, force: true });
   fs.rmSync(path.join(tmpDir, 'container-env'), {
     recursive: true,
@@ -147,6 +150,228 @@ afterEach(async () => {
 
 afterAll(() => {
   fs.rmSync(tmpDir, { recursive: true, force: true });
+});
+
+describe('connection WebFetch policy API', () => {
+  function bindPolicyQueue() {
+    const folder = unique('webfetch-policy');
+    const jid = `web:${folder}`;
+    const group = registerWorkspace(jid, folder);
+    const queue = {
+      listDescendantJids: () => [],
+      pauseGroupsForMutation: vi.fn(() => ({ id: 9 })),
+      resumeGroupsAfterMutation: vi.fn(),
+      stopGroup: vi.fn(async () => {}),
+      requestProviderRuntimeRefresh: vi.fn(),
+    };
+    const sessionId = unique('preserved-session');
+    const sessions = { [folder]: sessionId };
+    db.setSession(folder, sessionId);
+    bindDeps({ [jid]: group }, queue, sessions);
+    return { folder, sessionId, sessions, queue };
+  }
+
+  function createPolicyProvider() {
+    return runtimeConfig.createProvider({
+      name: unique('policy-connection'),
+      type: 'third_party',
+      anthropicBaseUrl: 'https://webfetch.example.test',
+      anthropicAuthToken: 'test-policy-key',
+      anthropicModel: 'test-model',
+    });
+  }
+
+  test.each(['check', 'skip'] as const)(
+    'saving %s refreshes only the connection after persistence without clearing its session',
+    async (webFetchPreflightPolicy) => {
+      const { folder, sessionId, sessions, queue } = bindPolicyQueue();
+      const target = createPolicyProvider();
+      const other = createPolicyProvider();
+      db.setSessionProviderId(folder, '', target.id);
+      queue.requestProviderRuntimeRefresh.mockImplementation((id: string) => {
+        expect(runtimeConfig.getProviderById(id)!.webFetchPreflightPolicy).toBe(
+          webFetchPreflightPolicy,
+        );
+      });
+      const response = await patchProvider(target.id, {
+        webFetchPreflightPolicy,
+      });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({
+        provider: { id: target.id, webFetchPreflightPolicy },
+        applied: { success: true, persisted: true, stoppedCount: 0 },
+      });
+      const listed = await (
+        await app.request('/api/config/claude/providers')
+      ).json();
+      expect(
+        listed.providers.find((p: { id: string }) => p.id === target.id),
+      ).toMatchObject({
+        webFetchPreflightPolicy,
+      });
+      expect(
+        runtimeConfig.getProviderById(other.id)!.webFetchPreflightPolicy,
+      ).toBe('check');
+      expect(
+        queue.requestProviderRuntimeRefresh,
+      ).toHaveBeenCalledExactlyOnceWith(target.id);
+      expect(queue.pauseGroupsForMutation).not.toHaveBeenCalled();
+      expect(queue.stopGroup).not.toHaveBeenCalled();
+      expect(db.getSession(folder)).toBe(sessionId);
+      expect(sessions[folder]).toBe(sessionId);
+    },
+  );
+
+  test.each(['official', 'third_party'] as const)(
+    'creation persists the policy for %s connections',
+    async (type) => {
+      bindPolicyQueue();
+      const response = await app.request('/api/config/claude/providers', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          name: unique('created-policy'),
+          type,
+          ...(type === 'official'
+            ? { anthropicApiKey: 'test-key' }
+            : {
+                anthropicBaseUrl: 'https://test.example.test',
+                anthropicAuthToken: 'test-key',
+              }),
+          webFetchPreflightPolicy: 'check',
+        }),
+      });
+      expect(response.status).toBe(201);
+      const created = await response.json();
+      expect(created.webFetchPreflightPolicy).toBe('check');
+      expect(
+        runtimeConfig.getProviderById(created.id)!.webFetchPreflightPolicy,
+      ).toBe('check');
+    },
+  );
+
+  test.each([undefined, 'inherit'])(
+    'listing a connection with stored %s returns check without rewriting or refreshing',
+    async (storedPolicy) => {
+      const { queue } = bindPolicyQueue();
+      const target = createPolicyProvider();
+      const file = path.join(tmpDir, 'config', 'claude-provider.json');
+      const stored = JSON.parse(fs.readFileSync(file, 'utf8'));
+      const provider = stored.providers.find(
+        (item: { id: string }) => item.id === target.id,
+      );
+      if (storedPolicy === undefined) {
+        delete provider.webFetchPreflightPolicy;
+      } else {
+        provider.webFetchPreflightPolicy = storedPolicy;
+      }
+      fs.writeFileSync(file, JSON.stringify(stored));
+      const original = fs.readFileSync(file, 'utf8');
+      const response = await app.request('/api/config/claude/providers');
+      expect(response.status).toBe(200);
+      const listed = await response.json();
+      expect(
+        listed.providers.find((item: { id: string }) => item.id === target.id),
+      ).toMatchObject({ webFetchPreflightPolicy: 'check' });
+      expect(fs.readFileSync(file, 'utf8')).toBe(original);
+      expect(queue.requestProviderRuntimeRefresh).not.toHaveBeenCalled();
+    },
+  );
+
+  test('creation rejects the retired inherit policy', async () => {
+    const { queue } = bindPolicyQueue();
+    const response = await app.request('/api/config/claude/providers', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        name: 'Retired policy',
+        type: 'official',
+        anthropicApiKey: 'test-key',
+        webFetchPreflightPolicy: 'inherit',
+      }),
+    });
+    expect(response.status).toBe(400);
+    expect(runtimeConfig.getProviders()).toEqual([]);
+    expect(queue.requestProviderRuntimeRefresh).not.toHaveBeenCalled();
+  });
+
+  test('rejects invalid policies and unauthorized users before saving or refreshing', async () => {
+    const { queue } = bindPolicyQueue();
+    const target = createPolicyProvider();
+    for (const policy of ['inherit', 'disabled', true, null]) {
+      expect(
+        (await patchProvider(target.id, { webFetchPreflightPolicy: policy }))
+          .status,
+      ).toBe(400);
+    }
+    auth.role = 'member';
+    expect(
+      (await patchProvider(target.id, { webFetchPreflightPolicy: 'skip' }))
+        .status,
+    ).toBe(403);
+    expect(
+      runtimeConfig.getProviderById(target.id)!.webFetchPreflightPolicy,
+    ).toBe('check');
+    expect(queue.requestProviderRuntimeRefresh).not.toHaveBeenCalled();
+  });
+
+  test('a persistence failure does not refresh runners or replace the saved value', async () => {
+    const { queue } = bindPolicyQueue();
+    const target = createPolicyProvider();
+    const write = vi.spyOn(fs, 'writeFileSync').mockImplementationOnce(() => {
+      throw new Error('simulated disk failure');
+    });
+    try {
+      expect(
+        (await patchProvider(target.id, { webFetchPreflightPolicy: 'skip' }))
+          .status,
+      ).toBe(400);
+    } finally {
+      write.mockRestore();
+    }
+    expect(
+      runtimeConfig.getProviderById(target.id)!.webFetchPreflightPolicy,
+    ).toBe('check');
+    expect(queue.requestProviderRuntimeRefresh).not.toHaveBeenCalled();
+  });
+
+  test('a refresh failure reports persistence and the same policy can be retried', async () => {
+    const { queue } = bindPolicyQueue();
+    const target = createPolicyProvider();
+    queue.requestProviderRuntimeRefresh.mockImplementationOnce(() => {
+      throw new Error('simulated refresh failure');
+    });
+    const failed = await patchProvider(target.id, {
+      webFetchPreflightPolicy: 'skip',
+    });
+    expect(failed.status).toBe(503);
+    expect(await failed.json()).toMatchObject({
+      provider: { webFetchPreflightPolicy: 'skip' },
+      applied: { success: false, persisted: true },
+    });
+    expect(
+      (await patchProvider(target.id, { webFetchPreflightPolicy: 'skip' }))
+        .status,
+    ).toBe(200);
+    expect(queue.requestProviderRuntimeRefresh).toHaveBeenCalledTimes(2);
+  });
+
+  test('mixed protocol and policy edits keep the existing stop and session invalidation path', async () => {
+    const { folder, queue } = bindPolicyQueue();
+    const target = createPolicyProvider();
+    db.setSessionProviderId(folder, '', target.id);
+    const response = await patchProvider(target.id, {
+      anthropicBaseUrl: 'https://new.example.test',
+      webFetchPreflightPolicy: 'skip',
+    });
+    expect(response.status).toBe(200);
+    expect(queue.stopGroup).toHaveBeenCalled();
+    expect(queue.requestProviderRuntimeRefresh).not.toHaveBeenCalled();
+    expect(db.getSession(folder)).toBeUndefined();
+    expect(
+      runtimeConfig.getProviderById(target.id)!.webFetchPreflightPolicy,
+    ).toBe('skip');
+  });
 });
 
 describe('provider runtime apply is a lossless configuration mutation', () => {

@@ -1381,6 +1381,19 @@ export class GroupQueue {
     return true;
   }
 
+  /** Saved connection policy applies to new inputs; accepted turns finish. */
+  requestProviderRuntimeRefresh(providerId: string): void {
+    for (const [jid, state] of this.groups) {
+      if (
+        state.active &&
+        state.process &&
+        state.selectedProviderId === providerId
+      ) {
+        this.retireRunnerAfterQuery(jid);
+      }
+    }
+  }
+
   /** Close `runnerJid` after its current query; idle runners close now. */
   private closeAfterQuery(
     runnerJid: string,
@@ -1706,7 +1719,10 @@ export class GroupQueue {
     if (
       !state?.active ||
       !state.queryInFlight ||
-      state.queryId !== expectedQueryId
+      state.queryId !== expectedQueryId ||
+      // Once IPC is published this is a real turn, even if asynchronous
+      // prompt preparation still holds the old reservation identity.
+      state.ipcOwedSinceAt !== null
     ) {
       return false;
     }
@@ -1721,6 +1737,9 @@ export class GroupQueue {
     state.announcedQueryId = null;
     state.pendingInterruptQueryId = null;
     state.currentQueryCoveredMessageIds = new Set();
+    // A save may retire this idle runner while prompt expansion holds its
+    // reservation. No result will arrive to close it after release.
+    if (state.closing === 'after_query') this.closeStdin(groupJid);
     if (wasAnnounced) {
       this.announceQueryFinish(
         groupJid,

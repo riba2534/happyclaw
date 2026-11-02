@@ -213,6 +213,14 @@ const POSITIVE_INTEGER_PROVIDER_ENV_KEYS = new Set([
  */
 export type ProviderAuthMode = 'bearer' | 'x-api-key';
 
+export type WebFetchPreflightPolicy = 'check' | 'skip';
+
+function normalizeWebFetchPreflightPolicy(
+  value: unknown,
+): WebFetchPreflightPolicy {
+  return value === 'skip' ? 'skip' : 'check';
+}
+
 /**
  * Reject provider env the runtime would otherwise drop or misread, so the
  * admin sees why instead of a silent "saved". Returns a user-facing message,
@@ -428,6 +436,8 @@ export interface ClaudeProviderConfig {
   claudeCodeOauthToken: string;
   claudeOAuthCredentials: ClaudeOAuthCredentials | null;
   anthropicModel: string;
+  /** The selected connection's policy; an unset policy enables the check. */
+  webFetchPreflightPolicy?: WebFetchPreflightPolicy;
   /**
    * The connection's model list and roles, from which a third-party launch
    * derives its tiers, `[1m]` and compact window (buildClaudeEnvLines).
@@ -617,6 +627,8 @@ interface StoredProviderV4 {
   anthropicBaseUrl: string;
   anthropicModel: string;
   anthropicAuthMode?: ProviderAuthMode;
+  /** Older files may contain inherit; reads normalize it to check. */
+  webFetchPreflightPolicy?: WebFetchPreflightPolicy | 'inherit';
   secrets: EncryptedSecrets;
   customEnv?: Record<string, string>;
   /** ChatGPT/Codex 订阅：最近一次 token 刷新失败（非机密运行态，凭据写入时清除）。 */
@@ -679,6 +691,7 @@ export interface UnifiedProvider {
   anthropicBaseUrl: string;
   anthropicAuthToken: string;
   anthropicAuthMode?: ProviderAuthMode;
+  webFetchPreflightPolicy?: WebFetchPreflightPolicy;
   anthropicModel: string;
   anthropicApiKey: string;
   claudeCodeOauthToken: string;
@@ -711,6 +724,7 @@ export interface UnifiedProviderPublic {
   anthropicModel: string;
   /** null for providers saved before the explicit choice existed. */
   anthropicAuthMode: ProviderAuthMode | null;
+  webFetchPreflightPolicy: WebFetchPreflightPolicy;
   hasAnthropicAuthToken: boolean;
   anthropicAuthTokenMasked: string | null;
   hasAnthropicApiKey: boolean;
@@ -1522,6 +1536,9 @@ function toStoredProviderV4(
     ...(provider.anthropicAuthMode
       ? { anthropicAuthMode: provider.anthropicAuthMode }
       : {}),
+    ...(provider.webFetchPreflightPolicy
+      ? { webFetchPreflightPolicy: provider.webFetchPreflightPolicy }
+      : {}),
     secrets: encryptSecrets(secrets),
     ...(Object.keys(sanitizedEnv).length > 0
       ? { customEnv: sanitizedEnv }
@@ -1667,6 +1684,9 @@ function fromStoredProviderV4(stored: StoredProviderV4): UnifiedProvider {
     type: stored.type,
     anthropicBaseUrl: stored.anthropicBaseUrl || '',
     anthropicAuthToken: secrets.anthropicAuthToken || '',
+    webFetchPreflightPolicy: normalizeWebFetchPreflightPolicy(
+      stored.webFetchPreflightPolicy,
+    ),
     ...(normalizeProviderAuthMode(stored.anthropicAuthMode)
       ? {
           anthropicAuthMode: normalizeProviderAuthMode(
@@ -2511,6 +2531,7 @@ export function createProvider(input: {
   anthropicBaseUrl?: string;
   anthropicAuthToken?: string;
   anthropicAuthMode?: ProviderAuthMode;
+  webFetchPreflightPolicy?: WebFetchPreflightPolicy;
   anthropicModel?: string;
   anthropicApiKey?: string;
   claudeCodeOauthToken?: string;
@@ -2544,6 +2565,9 @@ export function createProvider(input: {
     id: crypto.randomBytes(8).toString('hex'),
     name: normalizeProfileName(input.name),
     type: input.type,
+    webFetchPreflightPolicy: normalizeWebFetchPreflightPolicy(
+      input.webFetchPreflightPolicy,
+    ),
     anthropicBaseUrl: input.anthropicBaseUrl
       ? normalizeBaseUrl(input.anthropicBaseUrl)
       : '',
@@ -2603,6 +2627,7 @@ export function updateProvider(
     anthropicBaseUrl?: string;
     /** Null forgets the style, so it is inferred from the token again. */
     anthropicAuthMode?: ProviderAuthMode | null;
+    webFetchPreflightPolicy?: WebFetchPreflightPolicy;
     anthropicModel?: string;
     customEnv?: Record<string, string>;
     models?: ProviderModelEntry[];
@@ -2634,6 +2659,9 @@ export function updateProvider(
       : {}),
     ...(patch.anthropicAuthMode !== undefined
       ? { anthropicAuthMode: patch.anthropicAuthMode ?? undefined }
+      : {}),
+    ...(patch.webFetchPreflightPolicy !== undefined
+      ? { webFetchPreflightPolicy: patch.webFetchPreflightPolicy }
       : {}),
     anthropicModel,
     ...(patch.customEnv !== undefined
@@ -3064,6 +3092,9 @@ export function providerToConfig(
     claudeCodeOauthToken: provider.claudeCodeOauthToken,
     claudeOAuthCredentials: provider.claudeOAuthCredentials,
     anthropicModel: provider.anthropicModel,
+    webFetchPreflightPolicy: normalizeWebFetchPreflightPolicy(
+      provider.webFetchPreflightPolicy,
+    ),
     ...(provider.models ? { models: provider.models } : {}),
     ...(provider.roles ? { roles: provider.roles } : {}),
     updatedAt: provider.updatedAt,
@@ -3081,6 +3112,9 @@ export function toPublicProvider(
     anthropicBaseUrl: provider.anthropicBaseUrl,
     anthropicModel: provider.anthropicModel,
     anthropicAuthMode: provider.anthropicAuthMode ?? null,
+    webFetchPreflightPolicy: normalizeWebFetchPreflightPolicy(
+      provider.webFetchPreflightPolicy,
+    ),
     hasAnthropicAuthToken: !!provider.anthropicAuthToken,
     anthropicAuthTokenMasked: maskSecret(provider.anthropicAuthToken),
     hasAnthropicApiKey: !!provider.anthropicApiKey,

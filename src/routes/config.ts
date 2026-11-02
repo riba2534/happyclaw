@@ -1756,6 +1756,32 @@ configRoutes.patch(
             503,
           );
         }
+        // A policy edit retires only this connection's runners after their
+        // accepted query. Repeat the barrier on a retry even if the value was
+        // already persisted; protocol edits above have already stopped them.
+        if (
+          providerPatch.webFetchPreflightPolicy !== undefined &&
+          !runnerEnvironmentChanged &&
+          !pendingInvalidation
+        ) {
+          try {
+            await deps?.queue?.requestProviderRuntimeRefresh?.(id);
+          } catch (err) {
+            const error = '配置已保存，但运行时刷新失败，请重试保存';
+            logger.warn(
+              { err, providerId: id },
+              'Failed to refresh provider runners',
+            );
+            return c.json(
+              {
+                error,
+                provider: toPublicProvider(mutation.value!),
+                applied: { ...mutation.applied, success: false, error },
+              },
+              503,
+            );
+          }
+        }
         return c.json({
           provider: toPublicProvider(mutation.value!),
           applied: mutation.applied,

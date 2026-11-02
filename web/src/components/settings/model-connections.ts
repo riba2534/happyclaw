@@ -10,7 +10,7 @@ import {
 import { api } from '../../api/client';
 import { formatSessionTime } from '../../lib/session-presentation';
 import { confirmDialog } from '../../stores/confirm';
-import type { UnifiedProviderPublic } from './types';
+import type { ProvidersListResponse, UnifiedProviderPublic } from './types';
 
 /**
  * What the Web knows about a model connection beyond its stored fields: the
@@ -189,18 +189,32 @@ type DiscoverModelsResponse =
       message: string;
     };
 
-/** PATCH a connection's fields; protocol edits stop runners, so allow time. */
+/** Protocol edits stop runners; a WebFetch policy save also verifies persistence. */
 export async function updateConnection(
   id: string,
   patch: Record<string, unknown>,
 ): Promise<UnifiedProviderPublic> {
-  return (
+  const saved = (
     await api.patch<{ provider: UnifiedProviderPublic }>(
       `${PROVIDERS_API}/${encodeURIComponent(id)}`,
       patch,
       120_000,
     )
   ).provider;
+  if (Object.hasOwn(patch, 'webFetchPreflightPolicy')) {
+    const { providers } = await api.get<ProvidersListResponse>(PROVIDERS_API);
+    const persisted = providers.find((provider) => provider.id === id);
+    // Display defaults cannot confirm a write: require the exact saved value.
+    if (
+      !persisted ||
+      persisted.webFetchPreflightPolicy === undefined ||
+      persisted.webFetchPreflightPolicy !== patch.webFetchPreflightPolicy
+    ) {
+      throw new Error('未确认网页抓取设置已保存，请重试');
+    }
+    return persisted;
+  }
+  return saved;
 }
 
 /** Replace an official connection's credential. */

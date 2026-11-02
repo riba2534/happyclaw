@@ -66,6 +66,108 @@ afterAll(() => {
   fs.rmSync(root, { recursive: true, force: true });
 });
 
+describe('connection WebFetch policy storage', () => {
+  test.each(['check', 'skip'] as const)(
+    '%s survives rereads, unrelated edits and credential changes',
+    (webFetchPreflightPolicy) => {
+      const created = createThirdParty({ webFetchPreflightPolicy });
+      runtimeConfig.updateProvider(created.id, { name: 'Renamed connection' });
+      runtimeConfig.updateProviderSecrets(created.id, {
+        anthropicAuthToken: 'replacement-secret',
+      });
+      const reloaded = runtimeConfig.getProviderById(created.id)!;
+      expect(reloaded.webFetchPreflightPolicy).toBe(webFetchPreflightPolicy);
+      expect(runtimeConfig.toPublicProvider(reloaded)).toMatchObject({
+        webFetchPreflightPolicy,
+        hasAnthropicAuthToken: true,
+      });
+      expect(
+        runtimeConfig.providerToConfig(reloaded).webFetchPreflightPolicy,
+      ).toBe(webFetchPreflightPolicy);
+      expect(reloaded.anthropicAuthToken).toBe('replacement-secret');
+      expect(readFile().version).toBe(5);
+    },
+  );
+
+  test('new connections default to an explicit check policy', () => {
+    const created = createThirdParty();
+    expect(readFile().providers[0].webFetchPreflightPolicy).toBe('check');
+    expect(
+      runtimeConfig.toPublicProvider(runtimeConfig.getProviderById(created.id)!)
+        .webFetchPreflightPolicy,
+    ).toBe('check');
+  });
+
+  test.each([undefined, 'inherit', 'unexpected'])(
+    'stored %s is read as check without rewriting the configuration',
+    (storedPolicy) => {
+      const created = createThirdParty();
+      const file = readFile();
+      if (storedPolicy === undefined) {
+        delete file.providers[0].webFetchPreflightPolicy;
+      } else {
+        file.providers[0].webFetchPreflightPolicy = storedPolicy;
+      }
+      writeFile(file);
+      const unchangedFile = fs.readFileSync(configFile, 'utf8');
+      const reloaded = runtimeConfig.getProviderById(created.id)!;
+      expect(reloaded.webFetchPreflightPolicy).toBe('check');
+      expect(
+        runtimeConfig.toPublicProvider(reloaded).webFetchPreflightPolicy,
+      ).toBe('check');
+      expect(
+        runtimeConfig.providerToConfig(reloaded).webFetchPreflightPolicy,
+      ).toBe('check');
+      expect(fs.readFileSync(configFile, 'utf8')).toBe(unchangedFile);
+    },
+  );
+
+  test('returning to check persists the enabled default', () => {
+    const created = createThirdParty({ webFetchPreflightPolicy: 'skip' });
+    expect(readFile().providers[0].webFetchPreflightPolicy).toBe('skip');
+    runtimeConfig.updateProvider(created.id, {
+      webFetchPreflightPolicy: 'check',
+    });
+    expect(readFile().providers[0].webFetchPreflightPolicy).toBe('check');
+    expect(
+      runtimeConfig.toPublicProvider(runtimeConfig.getProviderById(created.id)!)
+        .webFetchPreflightPolicy,
+    ).toBe('check');
+  });
+
+  test('OAuth refresh and duplication keep their connection policy', () => {
+    const official = runtimeConfig.createProvider({
+      name: 'OAuth',
+      type: 'official',
+      webFetchPreflightPolicy: 'check',
+      claudeOAuthCredentials: {
+        accessToken: 'old-access',
+        refreshToken: 'refresh-token',
+        expiresAt: Date.now() + 60_000,
+        scopes: ['user:inference'],
+      },
+    });
+    expect(
+      runtimeConfig.updateProviderOAuthCredentialsIfCurrent(
+        official.id,
+        official.claudeOAuthCredentials!,
+        {
+          ...official.claudeOAuthCredentials!,
+          accessToken: 'renewed-access',
+        },
+      ),
+    ).toBe(true);
+    expect(
+      runtimeConfig.getProviderById(official.id)!.webFetchPreflightPolicy,
+    ).toBe('check');
+    const thirdParty = createThirdParty({ webFetchPreflightPolicy: 'skip' });
+    const duplicate = runtimeConfig.duplicateProvider(thirdParty.id);
+    expect(
+      runtimeConfig.getProviderById(duplicate.id)!.webFetchPreflightPolicy,
+    ).toBe('skip');
+  });
+});
+
 describe('stored model lists', () => {
   test('a connection saved before lists existed offers its one model', () => {
     const created = createThirdParty();
@@ -220,6 +322,7 @@ describe('stored model lists', () => {
     const provider = runtimeConfig.createProvider({
       name: 'ChatGPT',
       type: 'third_party',
+      webFetchPreflightPolicy: 'skip',
       anthropicBaseUrl: CODEX_GATEWAY_BASE_URL_PLACEHOLDER,
       anthropicAuthToken: 'gateway-identifier-123456',
       anthropicModel: 'gpt-5.5',
@@ -238,6 +341,10 @@ describe('stored model lists', () => {
     expect(provider.presetId).toBeUndefined();
     expect(readFile().providers[0]).not.toHaveProperty('models');
     expect(runtimeConfig.toPublicProvider(provider).models).toEqual([]);
+    const reloaded = runtimeConfig.getProviderById(provider.id)!;
+    expect(
+      runtimeConfig.toPublicProvider(reloaded).webFetchPreflightPolicy,
+    ).toBe('skip');
   });
 });
 
