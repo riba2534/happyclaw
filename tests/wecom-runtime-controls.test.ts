@@ -52,9 +52,6 @@ vi.mock('../src/db.js', () => ({
   ),
   storeMessageDirect: vi.fn(),
 }));
-vi.mock('../src/message-notifier.js', () => ({
-  notifyNewImMessage: vi.fn(),
-}));
 vi.mock('../src/logger.js', () => ({
   logger: {
     debug: vi.fn(),
@@ -70,7 +67,6 @@ import {
   sequenceInboundTimestampAfterChatTail,
   storeMessageDirect,
 } from '../src/db.js';
-import { notifyNewImMessage } from '../src/message-notifier.js';
 import { createWeComConnection } from '../src/wecom.js';
 import { followUpHost } from './helpers/follow-up-host.js';
 
@@ -158,14 +154,13 @@ describe('WeCom durable queue, runtime controls and unknown commands', () => {
     expect(opts.onMessagePersisted.mock.calls[0][1]).toMatchObject({
       delivery_status: 'queued',
     });
-    expect(notifyNewImMessage).not.toHaveBeenCalled();
   });
 
   test('with no active run the input starts a turn as before', async () => {
     const host = followUpHost('started');
     const { client } = await connect({ ...host });
     client.emit('message.text', frame({ reqId: 's-1', content: 'now' }));
-    await vi.waitFor(() => expect(notifyNewImMessage).toHaveBeenCalled());
+    await vi.waitFor(() => expect(host.onFollowUpMessage).toHaveBeenCalled());
     expect(host.onFollowUpsChanged).not.toHaveBeenCalled();
   });
 
@@ -233,7 +228,6 @@ describe('WeCom durable queue, runtime controls and unknown commands', () => {
     expect(vi.mocked(storeMessageDirect).mock.calls[0][4]).toBe(
       '/summarize yesterday',
     );
-    expect(notifyNewImMessage).toHaveBeenCalled();
     expect(client.replyStream).not.toHaveBeenCalled();
   });
 

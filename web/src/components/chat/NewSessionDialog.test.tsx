@@ -137,7 +137,14 @@ describe('SharedWorkdirNotice', () => {
           {
             workspace_jid: 'web:dev',
             workspace_name: 'Dev',
-            kind: 'main',
+            kind: 'session',
+            session_id: 's0',
+            session_name: '整理日志',
+          },
+          {
+            workspace_jid: 'web:dev',
+            workspace_name: 'Dev',
+            kind: 'task',
             session_id: null,
             session_name: null,
           },
@@ -154,7 +161,7 @@ describe('SharedWorkdirNotice', () => {
     const text = document.body.textContent ?? '';
     expect(text).toContain('另一个会话正在同一目录中运行，改动可能互相覆盖');
     expect(text).toContain(
-      '主会话、工作区「Other」的会话「修复登录」、1 个其他会话',
+      '会话「整理日志」、自动化、工作区「Other」的会话「修复登录」、1 个其他会话',
     );
   });
 });

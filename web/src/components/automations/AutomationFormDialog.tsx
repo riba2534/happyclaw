@@ -55,6 +55,10 @@ import { useAuthStore } from '../../stores/auth';
 import { useChatStore } from '../../stores/chat';
 import { extractErrorMessage } from '../../utils/error';
 import { sessionJidOf } from '../../lib/session-jid';
+import {
+  listedSessions,
+  sessionDisplayName,
+} from '../../lib/session-presentation';
 
 const PRESETS: SchedulePreset[] = [
   'minutes',
@@ -191,20 +195,14 @@ function AutomationForm({
     if (values.workspaceJid) void loadAgents(values.workspaceJid);
   }, [values.workspaceJid, loadAgents]);
 
+  // The workspace's sessions, in the session lists' order.
   const sessionOptions = useMemo(() => {
     if (!values.workspaceJid) return [];
-    const main = {
-      jid: values.workspaceJid,
-      label: workspace?.is_my_home ? '直接对话' : '主会话',
-    };
-    const sessions = (agents[values.workspaceJid] ?? [])
-      .filter((agent) => agent.kind === 'conversation')
-      .map((agent) => ({
-        jid: sessionJidOf(values.workspaceJid, agent.id),
-        label: agent.name || '新会话',
-      }));
-    return [main, ...sessions];
-  }, [agents, values.workspaceJid, workspace?.is_my_home]);
+    return listedSessions(agents[values.workspaceJid] ?? []).map((agent) => ({
+      jid: sessionJidOf(values.workspaceJid, agent.id),
+      label: sessionDisplayName(agent),
+    }));
+  }, [agents, values.workspaceJid]);
 
   const draft = useMemo(() => draftFromForm(values), [values]);
   const fieldErrors = useMemo(() => {

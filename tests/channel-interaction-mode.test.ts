@@ -33,7 +33,7 @@ const deps = {
 };
 const resolve = (
   sourceJid?: string,
-  kind: 'main' | 'conversation' | 'spawn' = 'main',
+  kind: 'conversation' | 'spawn' = 'conversation',
 ) =>
   resolveSourceInteractionMode(
     {
@@ -48,7 +48,6 @@ const resolve = (
 describe('trusted source mount reply-mode contract', () => {
   test('one research mount overrides Home without changing Web, other mounts, or foreign bindings', () => {
     expect(resolve('feishu:research')).toBe('assistant');
-    expect(resolve('feishu:research', 'conversation')).toBe('assistant');
     expect(resolve('feishu:other')).toBe('proactive');
     expect(resolve('web:home')).toBe('proactive');
     expect(resolve()).toBe('proactive');

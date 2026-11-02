@@ -992,27 +992,17 @@ function generateTurnId(): string {
   return `ipc-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-/**
- * Normalize isMain/isHome/isAdminHome flags for backward compatibility.
- * If the host sends the old `isMain` field, treat it as isHome=true + isAdminHome=true.
- */
+/** Home capabilities belong to every session of the Home workspace. */
 function normalizeHomeFlags(input: ContainerInput): {
   isHome: boolean;
   isAdminHome: boolean;
 } {
-  if (input.isHome !== undefined) {
-    return { isHome: !!input.isHome, isAdminHome: !!input.isAdminHome };
-  }
-  // Legacy: isMain was the only flag
-  const legacy = !!input.isMain;
-  return { isHome: legacy, isAdminHome: legacy };
+  return { isHome: !!input.isHome, isAdminHome: !!input.isAdminHome };
 }
 
-function resolveAgentBuilderEnabled(
-  input: ContainerInput,
-  isHome: boolean,
-): boolean {
-  return input.agentBuilderEnabled ?? (isHome && !input.agentId);
+/** Agent Builder is a host decision for each session; absent means off. */
+function resolveAgentBuilderEnabled(input: ContainerInput): boolean {
+  return input.agentBuilderEnabled === true;
 }
 
 /**
@@ -1266,7 +1256,7 @@ const TRANSCRIPT_UUID_RE =
  * 消息重放给 for-await 消费者，且消息上没有 isReplay 标记（实测 string-prompt
  * 模式下干净会话 resume 会重放上一轮 assistant + result；streaming 模式下
  * 带孤儿后台任务的会话 resume 会合成 init/result 对）。收集旧 transcript
- *（主会话 + subagents，含嵌套子目录）里已有消息的 uuid，for-await 中命中即
+ *（主 Agent 与 subagents 的 transcript，含嵌套子目录）里已有消息的 uuid，for-await 中命中即
  * 跳过——否则重放的旧 assistant 文本会混进 assistantTextTracker 造成回复
  * 重复历史内容。
  * 注意：result 不写入 transcript（CLI 重放时现场合成、uuid 全新），无法用
@@ -2728,11 +2718,7 @@ async function runQueryAttempt(
     }, backgroundProtocolDebtWatchdog.remainingMs(BACKGROUND_PROTOCOL_DEBT_TIMEOUT_MS));
   };
 
-  const { isHome } = normalizeHomeFlags(containerInput);
-  const agentBuilderEnabled = resolveAgentBuilderEnabled(
-    containerInput,
-    isHome,
-  );
+  const agentBuilderEnabled = resolveAgentBuilderEnabled(containerInput);
   const memoryPromptName = 'memory-system.workspace' as const;
   const hasMemoryTools = allowedTools.some(
     (tool) =>
@@ -4704,10 +4690,7 @@ async function main(): Promise<void> {
   let sessionId = containerInput.sessionId;
   latestSessionId = sessionId;
   const { isHome, isAdminHome } = normalizeHomeFlags(containerInput);
-  const agentBuilderEnabled = resolveAgentBuilderEnabled(
-    containerInput,
-    isHome,
-  );
+  const agentBuilderEnabled = resolveAgentBuilderEnabled(containerInput);
 
   // Create in-process SDK MCP server (replaces the stdio subprocess)
   // NOTE: chatJid and currentInputTurnId are mutated in-place by the main loop

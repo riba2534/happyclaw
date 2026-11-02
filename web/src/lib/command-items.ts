@@ -17,7 +17,7 @@ import type { LucideIcon } from 'lucide-react';
 import type { AgentInfo, GroupInfo } from '../types';
 import type { ColorScheme, Theme } from '../hooks/useTheme';
 import { SHORTCUTS } from './shortcuts';
-import { sessionActivityAt } from './session-presentation';
+import { compareSessionsForList } from './session-order';
 import { getAgentProfileDisplayName } from '../utils/agent-product';
 import { compareWorkspaces, type GroupEntry } from '../utils/group-utils';
 
@@ -34,11 +34,13 @@ export type CommandAction =
   | { type: 'logout' }
   | { type: 'theme'; value: Theme }
   | { type: 'scheme'; value: ColorScheme }
+  /** Expand a workspace and enter it, as clicking it in the sidebar does. */
+  | { type: 'openWorkspace'; jid: string; folder: string }
   | {
       type: 'openSession';
       jid: string;
       folder: string;
-      sessionId: string | null;
+      sessionId: string;
     };
 
 export interface CommandItemSpec {
@@ -197,10 +199,9 @@ export function buildCommandGroups(
       keywords: [group.folder, group.name, group.agent_profile_name || ''],
       icon: LayoutGrid,
       action: {
-        type: 'openSession',
+        type: 'openWorkspace',
         jid: group.jid,
         folder: group.folder,
-        sessionId: null,
       },
     }));
 
@@ -210,11 +211,8 @@ export function buildCommandGroups(
         .filter((agent) => agent.kind === 'conversation')
         .map((agent) => ({ jid, group, agent })),
     )
-    .sort(
-      (a, b) =>
-        new Date(sessionActivityAt(b.agent)).getTime() -
-        new Date(sessionActivityAt(a.agent)).getTime(),
-    )
+    // The session lists' order: pinned first, then by recent activity.
+    .sort((a, b) => compareSessionsForList(a.agent, b.agent))
     .slice(0, input.sessionLimit ?? 50)
     .map<CommandItemSpec>(({ jid, group, agent }) => ({
       id: `session:${jid}:${agent.id}`,

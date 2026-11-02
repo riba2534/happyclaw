@@ -242,8 +242,6 @@ export interface ContainerInput {
    * current turn. This value is mutable on a warm runner and must be replaced
    * whenever a new IPC input becomes current. */
   channelContext?: ChannelTurnContext;
-  /** @deprecated Use isHome + isAdminHome instead. Kept for backward compatibility with older host processes. */
-  isMain?: boolean;
   /** Whether this is the user's home container (admin or member). */
   isHome?: boolean;
   /** Whether this is the admin's home container (full privileges). */
@@ -255,8 +253,6 @@ export interface ContainerInput {
   workspaceMemoryMutationSigningSecret?: string;
   /** Public identity paired with the runner-private signing secret. */
   workspaceMemoryRunnerInstanceId?: string;
-  /** Claude session/provider namespace selected by the host runner. */
-  sessionAgentId?: string;
   images?: Array<{ data: string; mimeType?: string }>;
   agentProfile?: {
     id: string;

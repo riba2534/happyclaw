@@ -68,6 +68,8 @@ let glm: ReturnType<typeof runtimeConfig.createProvider>;
 let kimi: ReturnType<typeof runtimeConfig.createProvider>;
 let chatgpt: ReturnType<typeof runtimeConfig.createProvider>;
 let agentId = '';
+/** The session whose label is read; it picked nothing. */
+const SESSION = 'label-session';
 
 beforeAll(() => {
   fs.mkdirSync(path.join(root, 'db'), { recursive: true });
@@ -80,6 +82,21 @@ beforeAll(() => {
     executionMode: 'container',
     created_by: OWNER,
   } as never);
+  db.createAgent({
+    id: SESSION,
+    group_folder: FOLDER,
+    chat_jid: JID,
+    name: 'Conversation',
+    prompt: '',
+    status: 'idle',
+    kind: 'conversation',
+    created_by: OWNER,
+    created_at: new Date().toISOString(),
+    completed_at: null,
+    result_summary: null,
+    last_im_jid: null,
+    spawned_from_jid: null,
+  });
   glm = runtimeConfig.createProvider({
     name: 'GLM',
     type: 'third_party',
@@ -169,7 +186,7 @@ async function labelled(): Promise<{
   effort: string | null;
 }> {
   const res = await groupRoutes.request(
-    `/${encodeURIComponent(JID)}/model-selection`,
+    `/${encodeURIComponent(JID)}/model-selection?agentId=${SESSION}`,
   );
   expect(res.status).toBe(200);
   return (await res.json()).default;
@@ -185,7 +202,7 @@ function launched(): {
   const profile = agentId ? db.getAgentProfile(agentId) : undefined;
   const selection = runner.trySelectPoolProvider(
     FOLDER,
-    null,
+    SESSION,
     profile?.model_config_id,
     profile?.model,
   )!;
@@ -264,7 +281,9 @@ describe('default.model names what an unpicked launch runs', () => {
     // ChatGPT's effort is the gateway's, as its catalog view reports it.
     const chatgptView = (
       await (
-        await groupRoutes.request(`/${encodeURIComponent(JID)}/model-selection`)
+        await groupRoutes.request(
+          `/${encodeURIComponent(JID)}/model-selection?agentId=${SESSION}`,
+        )
       ).json()
     ).options.find((option: { id: string }) => option.id === chatgpt.id).codex;
     expect((await labelled()).effort).toBe(

@@ -29,10 +29,8 @@ export interface WsClientInfo {
 export interface WebDeps {
   queue: GroupQueue;
   getRegisteredGroups: () => Record<string, RegisteredGroup>;
-  sessions: Record<string, string>;
-  getSessions: () => Record<string, string>;
-  processGroupMessages: (chatJid: string) => Promise<boolean>;
-  ensureTerminalContainerStarted: (chatJid: string) => boolean;
+  /** Start a container for a session's terminal (`<workspaceJid>#agent:<id>`). */
+  ensureTerminalContainerStarted: (sessionJid: string) => boolean;
   formatMessages: (messages: NewMessage[]) => string;
   getLastAgentTimestamp: () => Record<string, MessageCursor>;
   setLastAgentTimestamp: (jid: string, cursor: MessageCursor) => void;
@@ -61,7 +59,6 @@ export interface WebDeps {
    * next-pull when an earlier unreceipted message exists. Optional solely for
    * compatibility with focused route-test fixtures. */
   completeOutOfBandMessage?: (jid: string, cursor: MessageCursor) => void;
-  advanceGlobalCursor: (cursor: MessageCursor) => void;
   /**
    * Returns true iff there exists at least one unprocessed (`is_from_me=0`)
    * message strictly **before** `candidate` in the lexicographic
@@ -127,7 +124,7 @@ export interface WebDeps {
   ) => WhatsAppConnectionState;
   /** Hard logout: clears WhatsApp auth state on disk so next enable starts fresh. */
   logoutUserWhatsApp?: (userId: string, accountId?: string) => Promise<void>;
-  processAgentConversation?: (
+  processAgentConversation: (
     chatJid: string,
     agentId: string,
   ) => Promise<void | boolean>;
@@ -165,25 +162,24 @@ export interface WebDeps {
    * imHealthCheckFailCounts.
    */
   removeImGroupRecord?: (jid: string, reason: string) => void;
+  /** A Web input joined a session's warm runner: bind its turn and rotate
+   * the session's held streaming card. */
   updateReplyRoute?: (
     folder: string,
+    runtimeAgentId: string,
     sourceJid: string | null,
-    inputTurnId?: string,
-    inputCursor?: { timestamp: string; id: string },
-    inputChatJid?: string,
-    runtimeAgentId?: string,
+    receipt?: IpcDeliveryReceipt,
   ) => void;
   /** Acquire the immutable Turn/Card/Outbox fence before an IPC file becomes
    * visible to the SDK runner. Returning false rejects the warm injection. */
   preAdmitReplyRoute?: (
     folder: string,
+    runtimeAgentId: string,
     sourceJid: string | null,
     receipt: IpcDeliveryReceipt | undefined,
-    runtimeAgentId?: string,
   ) => IpcPrePublishAdmission | false;
-  /** 用户消息注入运行中 Sub-Agent 时，先把该 agent 挂起中的流式卡片定稿轮换。
-   * key 为 virtualChatJid（`web:{folder}#agent:{id}`）。主会话路径无需调用
-   * ——updateReplyRoute 触发的 route updater 已内置同样的收口。 */
+  /** 用户消息注入运行中的会话时，先把该会话挂起中的流式卡片定稿轮换。
+   * key 为会话 JID（`<workspaceJid>#agent:<id>`）。 */
   finalizeHeldCard?: (key: string) => void;
   handleSpawnCommand?: (
     chatJid: string,

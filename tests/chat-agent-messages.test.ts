@@ -99,23 +99,15 @@ function resetChatStore(): void {
       ...initialState,
       groups: {},
       currentGroup: null,
-      messages: {},
-      waiting: {},
       activeRuns: {},
-      hasMore: {},
       loading: false,
       error: null,
-      streaming: {},
       thinkingCache: {},
       thinkingDurationCache: {},
-      pendingThinking: {},
-      pendingThinkingDuration: {},
       clearing: {},
       agents: {},
       agentStreaming: {},
       activeAgentTab: {},
-      sdkTasks: {},
-      sdkTaskAliases: {},
       agentMessages: {},
       agentWaiting: {},
       agentHasMore: {},
@@ -276,10 +268,6 @@ describe('deleteMessage', () => {
     apiGetMock.mockRejectedValue(new Error('offline'));
 
     useChatStore.setState({
-      messages: {
-        [jid]: [target, sameIdElsewhere],
-        'web:other': [sameIdElsewhere],
-      },
       agentMessages: {
         [agentId]: [older, target],
         'other-agent': [sameIdElsewhere],
@@ -307,10 +295,6 @@ describe('deleteMessage', () => {
       .deleteMessage(virtualJid, duplicateId);
 
     expect(deleted).toBe(true);
-    expect(useChatStore.getState().messages[jid]).toEqual([sameIdElsewhere]);
-    expect(useChatStore.getState().messages['web:other']).toEqual([
-      sameIdElsewhere,
-    ]);
     expect(useChatStore.getState().agentMessages[agentId]).toEqual([older]);
     expect(useChatStore.getState().agentMessages['other-agent']).toEqual([
       sameIdElsewhere,
@@ -347,16 +331,16 @@ describe('deleteMessage', () => {
   });
 
   it('applies a remote deletion without issuing a second DELETE request', async () => {
-    const jid = 'web:remote-delete';
+    const jid = 'web:remote-delete#agent:s1';
     const target = {
       ...message('remote-message', '2026-08-20T11:00:00.000Z'),
       chat_jid: jid,
     };
-    useChatStore.setState({ messages: { [jid]: [target] } });
+    useChatStore.setState({ agentMessages: { s1: [target] } });
 
     await useChatStore.getState().handleMessageDeleted(jid, target.id);
 
-    expect(useChatStore.getState().messages[jid]).toEqual([]);
+    expect(useChatStore.getState().agentMessages.s1).toEqual([]);
     expect(apiDeleteMock).not.toHaveBeenCalled();
   });
 });
@@ -444,18 +428,20 @@ describe('exact Web run state sequences', () => {
 
   it('replaces A streaming with B snapshot after reconnect', () => {
     const jid = 'web:reconnect';
+    const sid = 's1';
+    const rjid = `${jid}#agent:${sid}`;
     useChatStore.setState({
       activeRuns: {
-        [jid]: {
-          chatJid: jid,
+        [rjid]: {
+          chatJid: rjid,
           runId: 'run-a',
           startedAt: '2026-07-25T00:00:00.000Z',
           phase: 'running',
         },
       },
-      waiting: { [jid]: true },
-      streaming: {
-        [jid]: {
+      agentWaiting: { [sid]: true },
+      agentStreaming: {
+        [sid]: {
           partialText: 'A stale partial',
           thinkingText: '',
           isThinking: false,
@@ -471,14 +457,14 @@ describe('exact Web run state sequences', () => {
 
     useChatStore.getState().handleActiveRunSnapshot([
       {
-        chatJid: jid,
+        chatJid: rjid,
         runId: 'run-b',
         startedAt: '2026-07-25T00:01:00.000Z',
         phase: 'running',
       },
     ]);
-    expect(useChatStore.getState().streaming[jid]).toBeUndefined();
-    expect(useChatStore.getState().activeRuns[jid]?.runId).toBe('run-b');
+    expect(useChatStore.getState().agentStreaming[sid]).toBeUndefined();
+    expect(useChatStore.getState().activeRuns[rjid]?.runId).toBe('run-b');
 
     useChatStore.getState().handleStreamSnapshot(
       jid,
@@ -488,20 +474,22 @@ describe('exact Web run state sequences', () => {
         recentEvents: [],
         systemStatus: null,
       },
-      undefined,
+      sid,
       'run-b',
     );
 
-    expect(useChatStore.getState().streaming[jid]?.partialText).toBe(
+    expect(useChatStore.getState().agentStreaming[sid]?.partialText).toBe(
       'B canonical partial',
     );
   });
 
   it('does not restore waiting for proactive sdk_send_message on a warm idle runner', async () => {
     const jid = 'web:proactive-idle';
+    const sid = 's1';
+    const rjid = `${jid}#agent:${sid}`;
     const proactiveUtterance: Message = {
       id: 'utterance-1',
-      chat_jid: jid,
+      chat_jid: rjid,
       sender: 'happyclaw-agent',
       sender_name: 'HappyClaw',
       content: '我先告诉你当前进度。',
@@ -510,10 +498,10 @@ describe('exact Web run state sequences', () => {
       source_kind: 'sdk_send_message',
     };
     useChatStore.setState({
-      messages: { [jid]: [proactiveUtterance] },
-      waiting: { [jid]: true },
-      streaming: {
-        [jid]: {
+      agentMessages: { [sid]: [proactiveUtterance] },
+      agentWaiting: { [sid]: true },
+      agentStreaming: {
+        [sid]: {
           partialText: 'stale',
           thinkingText: '',
           isThinking: false,
@@ -531,7 +519,7 @@ describe('exact Web run state sequences', () => {
         return {
           groups: [
             {
-              jid,
+              jid: rjid,
               active: true,
               pendingMessages: false,
               queryInFlight: false,
@@ -545,8 +533,8 @@ describe('exact Web run state sequences', () => {
 
     await useChatStore.getState().restoreActiveState();
 
-    expect(useChatStore.getState().waiting[jid]).toBeUndefined();
-    expect(useChatStore.getState().streaming[jid]).toBeUndefined();
+    expect(useChatStore.getState().agentWaiting[sid]).toBeUndefined();
+    expect(useChatStore.getState().agentStreaming[sid]).toBeUndefined();
   });
 
   it('never stale-recovers an exact active run', () => {
@@ -599,10 +587,12 @@ describe('exact Web run state sequences', () => {
 
   it('treats each proactive utterance as unread without finalizing its active run', () => {
     const jid = 'web:proactive-live';
+    const sid = 's1';
+    const rjid = `${jid}#agent:${sid}`;
     const runId = 'run-proactive-live';
     const utterance = {
       id: 'utterance-live-1',
-      chat_jid: jid,
+      chat_jid: rjid,
       sender: 'happyclaw-agent',
       sender_name: 'HappyClaw',
       content: '官方资料已经查完，我还在核对第三方实测。',
@@ -621,16 +611,18 @@ describe('exact Web run state sequences', () => {
         },
       },
       activeRuns: {
-        [jid]: {
-          chatJid: jid,
+        [rjid]: {
+          chatJid: rjid,
           runId,
           startedAt: '2026-07-25T00:00:00.000Z',
           phase: 'running',
         },
       },
-      waiting: { [jid]: true },
-      streaming: {
-        [jid]: {
+      // Its history is loaded: announced messages join it.
+      agentMessages: { [sid]: [] },
+      agentWaiting: { [sid]: true },
+      agentStreaming: {
+        [sid]: {
           partialText: '',
           thinkingText: '',
           isThinking: false,
@@ -644,15 +636,15 @@ describe('exact Web run state sequences', () => {
       },
     });
 
-    useChatStore.getState().handleWsNewMessage(jid, utterance);
+    useChatStore.getState().handleWsNewMessage(jid, utterance, sid);
 
     let state = useChatStore.getState();
-    expect(state.messages[jid]).toEqual([
+    expect(state.agentMessages[sid]).toEqual([
       expect.objectContaining({ id: utterance.id }),
     ]);
     expect(state.unreadReplies[jid]).toBe(1);
-    expect(state.waiting[jid]).toBe(true);
-    expect(state.streaming[jid]?.systemStatus).toBe('requesting');
+    expect(state.agentWaiting[sid]).toBe(true);
+    expect(state.agentStreaming[sid]?.systemStatus).toBe('requesting');
     expect(notifyIfHiddenMock).toHaveBeenCalledWith(
       '主动调研',
       utterance.content,
@@ -660,15 +652,15 @@ describe('exact Web run state sequences', () => {
     expect(showNotificationPromptToastMock).not.toHaveBeenCalled();
 
     // A duplicate WebSocket frame must not create another unread/notification.
-    useChatStore.getState().handleWsNewMessage(jid, utterance);
+    useChatStore.getState().handleWsNewMessage(jid, utterance, sid);
     state = useChatStore.getState();
     expect(state.unreadReplies[jid]).toBe(1);
     expect(notifyIfHiddenMock).toHaveBeenCalledTimes(1);
 
-    useChatStore.getState().handleRunFinished(jid, runId);
+    useChatStore.getState().handleRunFinished(rjid, runId);
     state = useChatStore.getState();
-    expect(state.waiting[jid]).toBe(false);
-    expect(state.streaming[jid]).toBeUndefined();
+    expect(state.agentWaiting[sid]).toBe(false);
+    expect(state.agentStreaming[sid]).toBeUndefined();
   });
 
   it('marks a proactive conversation message unread outside its active tab', () => {
@@ -676,7 +668,7 @@ describe('exact Web run state sequences', () => {
     const agentId = 'agent-proactive';
     useChatStore.setState({
       currentGroup: jid,
-      activeAgentTab: { [jid]: null },
+      activeAgentTab: {},
       agentWaiting: { [agentId]: true },
       agents: {
         [jid]: [
@@ -729,10 +721,17 @@ describe('exact Web run state sequences', () => {
     expect(state.unreadReplies[jid]).toBeUndefined();
 
     useChatStore.setState({ unreadReplies: { [jid]: 1 } });
+    useChatStore.getState().setActiveAgentTab(jid, 'agent-other');
+    state = useChatStore.getState();
+    expect(state.activeAgentTab[jid]).toBe('agent-other');
+    expect(state.unreadReplies[jid]).toBeUndefined();
+
+    // Closing the session (none open) is no visit.
+    useChatStore.setState({ unreadReplies: { [jid]: 1 } });
     useChatStore.getState().setActiveAgentTab(jid, null);
     state = useChatStore.getState();
-    expect(state.activeAgentTab[jid]).toBeNull();
-    expect(state.unreadReplies[jid]).toBeUndefined();
+    expect(state.activeAgentTab[jid]).toBeUndefined();
+    expect(state.unreadReplies[jid]).toBe(1);
   });
 
   it('does not clear unread when mirroring a background workspace tab', () => {
@@ -776,6 +775,7 @@ describe('held Workflow acknowledgements', () => {
   it('keeps a conversation Agent Workflow card live after the held sdk_final', () => {
     const jid = 'web:main';
     const agentId = 'agent-1';
+    useChatStore.setState({ agentMessages: { [agentId]: [] } });
 
     useChatStore.getState().handleWsNewMessage(
       jid,
@@ -799,29 +799,6 @@ describe('held Workflow acknowledgements', () => {
       state.agentStreaming[agentId].taskStates.wkk0k70oj.workflowRun,
     ).toMatchObject({ status: 'running', phases: runningWorkflow.phases });
     expect(state.agentMessages[agentId][0].workflow_runs).toBeUndefined();
-  });
-
-  it('keeps the main-conversation Workflow card live after the held sdk_final', () => {
-    const jid = 'web:main';
-
-    useChatStore.getState().handleWsNewMessage(jid, {
-      id: 'held-main-reply',
-      chat_jid: jid,
-      sender: 'happyclaw-agent',
-      sender_name: 'HappyClaw',
-      content: '工作流已启动',
-      timestamp: '2026-07-21T15:32:53.000Z',
-      is_from_me: true,
-      source_kind: 'sdk_final',
-      workflow_runs: [runningWorkflow],
-    });
-
-    const state = useChatStore.getState();
-    expect(state.waiting[jid]).toBe(true);
-    expect(state.streaming[jid].taskStates.wkk0k70oj.workflowRun).toMatchObject(
-      { status: 'running', phases: runningWorkflow.phases },
-    );
-    expect(state.messages[jid][0].workflow_runs).toBeUndefined();
   });
 });
 
@@ -862,32 +839,22 @@ describe('SDK task terminal status and sticky API retry', () => {
     taskStates: {},
   };
 
-  it('finalizes stopped and aborted task_updated so they leave running counts', () => {
+  it('marks stopped and aborted task_updated tasks as ended', () => {
     const jid = 'web:main';
+    const sid = 's1';
+    const rjid = `${jid}#agent:${sid}`;
     const runId = 'run-terminal-tasks';
     useChatStore.setState({
       activeRuns: {
-        [jid]: {
-          chatJid: jid,
+        [rjid]: {
+          chatJid: rjid,
           runId,
           startedAt: '2026-07-25T00:00:00.000Z',
           phase: 'running',
         },
       },
-      waiting: { [jid]: true },
-      streaming: { [jid]: { ...baseStreaming } },
-      sdkTasks: {
-        'task-stopped': {
-          chatJid: jid,
-          description: 'stopped task',
-          status: 'running',
-        },
-        'task-aborted': {
-          chatJid: jid,
-          description: 'aborted task',
-          status: 'running',
-        },
-      },
+      agentWaiting: { [sid]: true },
+      agentStreaming: { [sid]: { ...baseStreaming } },
     });
 
     useChatStore.getState().handleStreamEvent(
@@ -898,7 +865,7 @@ describe('SDK task terminal status and sticky API retry', () => {
         taskId: 'task-stopped',
         taskPatch: { status: 'stopped' },
       },
-      undefined,
+      sid,
       runId,
     );
     useChatStore.getState().handleStreamEvent(
@@ -909,39 +876,36 @@ describe('SDK task terminal status and sticky API retry', () => {
         taskId: 'task-aborted',
         taskPatch: { status: 'aborted' },
       },
-      undefined,
+      sid,
       runId,
     );
 
     const state = useChatStore.getState();
-    expect(state.sdkTasks['task-stopped']?.status).toBe('error');
-    expect(state.sdkTasks['task-aborted']?.status).toBe('error');
-    expect(state.streaming[jid]?.taskStates['task-stopped']?.status).toBe(
+    expect(state.agentStreaming[sid]?.taskStates['task-stopped']?.status).toBe(
       'error',
     );
-    expect(state.streaming[jid]?.taskStates['task-aborted']?.status).toBe(
+    expect(state.agentStreaming[sid]?.taskStates['task-aborted']?.status).toBe(
       'error',
     );
-    expect(
-      Object.values(state.sdkTasks).filter((task) => task.status === 'running'),
-    ).toHaveLength(0);
   });
 
   it('clears sticky API retry status when generation resumes', () => {
     const jid = 'web:main';
+    const sid = 's1';
+    const rjid = `${jid}#agent:${sid}`;
     const runId = 'run-retry-clear';
     useChatStore.setState({
       activeRuns: {
-        [jid]: {
-          chatJid: jid,
+        [rjid]: {
+          chatJid: rjid,
           runId,
           startedAt: '2026-07-25T00:00:00.000Z',
           phase: 'running',
         },
       },
-      waiting: { [jid]: true },
-      streaming: {
-        [jid]: {
+      agentWaiting: { [sid]: true },
+      agentStreaming: {
+        [sid]: {
           ...baseStreaming,
           systemStatus: 'API 重试中 (1/3)，2s 后重试',
         },
@@ -954,30 +918,36 @@ describe('SDK task terminal status and sticky API retry', () => {
         eventType: 'text_delta',
         text: 'hello',
       },
-      undefined,
+      sid,
       runId,
     );
     flushRaf();
 
-    expect(useChatStore.getState().streaming[jid]?.systemStatus).toBeNull();
-    expect(useChatStore.getState().streaming[jid]?.partialText).toBe('hello');
+    expect(
+      useChatStore.getState().agentStreaming[sid]?.systemStatus,
+    ).toBeNull();
+    expect(useChatStore.getState().agentStreaming[sid]?.partialText).toBe(
+      'hello',
+    );
   });
 
   it('clears sticky API retry status on tool_use_start without waiting for rAF', () => {
     const jid = 'web:main';
+    const sid = 's1';
+    const rjid = `${jid}#agent:${sid}`;
     const runId = 'run-retry-tool';
     useChatStore.setState({
       activeRuns: {
-        [jid]: {
-          chatJid: jid,
+        [rjid]: {
+          chatJid: rjid,
           runId,
           startedAt: '2026-07-25T00:00:00.000Z',
           phase: 'running',
         },
       },
-      waiting: { [jid]: true },
-      streaming: {
-        [jid]: {
+      agentWaiting: { [sid]: true },
+      agentStreaming: {
+        [sid]: {
           ...baseStreaming,
           systemStatus: 'API retry in progress (2/5)',
         },
@@ -991,28 +961,32 @@ describe('SDK task terminal status and sticky API retry', () => {
         toolName: 'Read',
         toolUseId: 'tool-1',
       },
-      undefined,
+      sid,
       runId,
     );
 
-    expect(useChatStore.getState().streaming[jid]?.systemStatus).toBeNull();
+    expect(
+      useChatStore.getState().agentStreaming[sid]?.systemStatus,
+    ).toBeNull();
   });
 
   it('does not clear unrelated system status on text_delta', () => {
     const jid = 'web:main';
+    const sid = 's1';
+    const rjid = `${jid}#agent:${sid}`;
     const runId = 'run-keep-status';
     useChatStore.setState({
       activeRuns: {
-        [jid]: {
-          chatJid: jid,
+        [rjid]: {
+          chatJid: rjid,
           runId,
           startedAt: '2026-07-25T00:00:00.000Z',
           phase: 'running',
         },
       },
-      waiting: { [jid]: true },
-      streaming: {
-        [jid]: {
+      agentWaiting: { [sid]: true },
+      agentStreaming: {
+        [sid]: {
           ...baseStreaming,
           systemStatus: '正在整理上下文…',
         },
@@ -1025,15 +999,15 @@ describe('SDK task terminal status and sticky API retry', () => {
         eventType: 'text_delta',
         text: 'still compacting context note',
       },
-      undefined,
+      sid,
       runId,
     );
     flushRaf();
 
-    expect(useChatStore.getState().streaming[jid]?.systemStatus).toBe(
+    expect(useChatStore.getState().agentStreaming[sid]?.systemStatus).toBe(
       '正在整理上下文…',
     );
-    expect(useChatStore.getState().streaming[jid]?.partialText).toBe(
+    expect(useChatStore.getState().agentStreaming[sid]?.partialText).toBe(
       'still compacting context note',
     );
   });
@@ -1042,6 +1016,7 @@ describe('SDK task terminal status and sticky API retry', () => {
 describe('API retry status event ordering and task isolation', () => {
   const callbacks: FrameRequestCallback[] = [];
   const jid = 'web:review';
+  const SESSION = 'review-session';
   const runId = 'review-run';
   const retry = 'API 重试中 (2/3)，10s 后重试';
   beforeEach(() => {
@@ -1059,8 +1034,8 @@ describe('API retry status event ordering and task isolation', () => {
   function flush() {
     for (const cb of callbacks.splice(0)) cb(0);
   }
-  function initialize(agentId?: string) {
-    const runtimeJid = agentId ? `${jid}#agent:${agentId}` : jid;
+  function initialize(agentId: string) {
+    const runtimeJid = `${jid}#agent:${agentId}`;
     const streaming = {
       partialText: '',
       thinkingText: '',
@@ -1081,15 +1056,8 @@ describe('API retry status event ordering and task isolation', () => {
           phase: 'running',
         },
       },
-      ...(agentId
-        ? {
-            agentWaiting: { [agentId]: true },
-            agentStreaming: { [agentId]: streaming },
-          }
-        : {
-            waiting: { [jid]: true },
-            streaming: { [jid]: streaming },
-          }),
+      agentWaiting: { [agentId]: true },
+      agentStreaming: { [agentId]: streaming },
     });
   }
   const emit = (
@@ -1098,29 +1066,23 @@ describe('API retry status event ordering and task isolation', () => {
     >[1],
     agentId?: string,
   ) => useChatStore.getState().handleStreamEvent(jid, event, agentId, runId);
-  for (const agentId of [undefined, 'review-agent']) {
-    it(`preserves a newer retry while flushing older text in ${agentId || 'main'}`, () => {
+  for (const agentId of ['review-agent']) {
+    it(`preserves a newer retry while flushing older text in ${agentId}`, () => {
       initialize(agentId);
       emit({ eventType: 'text_delta', text: 'text before retry' }, agentId);
       emit({ eventType: 'status', statusText: retry }, agentId);
-      const state = () =>
-        agentId
-          ? useChatStore.getState().agentStreaming[agentId]
-          : useChatStore.getState().streaming[jid];
+      const state = () => useChatStore.getState().agentStreaming[agentId];
       expect(state().systemStatus).toBe(retry);
       flush();
       expect(state().partialText).toBe('text before retry');
       expect(state().systemStatus).toBe(retry);
     });
 
-    it(`clears retry on real recovery before rAF in ${agentId || 'main'}`, () => {
+    it(`clears retry on real recovery before rAF in ${agentId}`, () => {
       initialize(agentId);
       emit({ eventType: 'status', statusText: retry }, agentId);
       emit({ eventType: 'thinking_delta', text: 'resumed thinking' }, agentId);
-      const state = () =>
-        agentId
-          ? useChatStore.getState().agentStreaming[agentId]
-          : useChatStore.getState().streaming[jid];
+      const state = () => useChatStore.getState().agentStreaming[agentId];
       expect(state().systemStatus).toBeNull();
       emit({ eventType: 'status', statusText: retry }, agentId);
       flush();
@@ -1131,7 +1093,7 @@ describe('API retry status event ordering and task isolation', () => {
       flush();
     });
 
-    it(`ignores empty deltas and stale runs in ${agentId || 'main'}`, () => {
+    it(`ignores empty deltas and stale runs in ${agentId}`, () => {
       initialize(agentId);
       emit({ eventType: 'status', statusText: retry }, agentId);
       emit({ eventType: 'text_delta', text: '' }, agentId);
@@ -1145,9 +1107,7 @@ describe('API retry status event ordering and task isolation', () => {
           'previous-run',
         );
       flush();
-      const state = agentId
-        ? useChatStore.getState().agentStreaming[agentId]
-        : useChatStore.getState().streaming[jid];
+      const state = useChatStore.getState().agentStreaming[agentId];
       expect(state.systemStatus).toBe(retry);
       expect(state.partialText).toBe('');
     });
@@ -1158,57 +1118,66 @@ describe('API retry status event ordering and task isolation', () => {
     'tool_use_start',
   ] as const) {
     it(`preserves the parent's retry when a child emits ${eventType}`, () => {
-      initialize();
-      useChatStore.setState({
-        sdkTasks: {
-          'review-task': {
-            chatJid: jid,
-            description: 'background task',
-            status: 'running',
-            isTeammate: true,
-          },
+      initialize(SESSION);
+      emit({ eventType: 'status', statusText: retry }, SESSION);
+      emit(
+        {
+          eventType,
+          parentToolUseId: 'review-task',
+          text: 'child output',
+          toolUseId: 'child-tool',
+          toolName: 'Read',
         },
-      });
-      emit({ eventType: 'status', statusText: retry });
-      emit({
-        eventType,
-        parentToolUseId: 'review-task',
-        text: 'child output',
-        toolUseId: 'child-tool',
-        toolName: 'Read',
-      });
+        SESSION,
+      );
       flush();
-      expect(useChatStore.getState().streaming[jid].systemStatus).toBe(retry);
+      expect(useChatStore.getState().agentStreaming[SESSION].systemStatus).toBe(
+        retry,
+      );
     });
   }
   it('preserves ordinary progress mentioning a retry filename', () => {
-    initialize();
+    initialize(SESSION);
     const statusText = '正在检查 retry.ts 的并发行为';
-    emit({
-      eventType: 'status',
-      statusText,
-      agentScope: 'system',
-      isSynthetic: true,
-      displayLevel: 'primary',
-    });
-    expect(useChatStore.getState().streaming[jid].systemStatus).toBe(
+    emit(
+      {
+        eventType: 'status',
+        statusText,
+        agentScope: 'system',
+        isSynthetic: true,
+        displayLevel: 'primary',
+      },
+      SESSION,
+    );
+    expect(useChatStore.getState().agentStreaming[SESSION].systemStatus).toBe(
       statusText,
     );
-    emit({
-      eventType: 'tool_use_start',
-      toolName: 'Read',
-      toolUseId: 'read-file',
-    });
-    expect(useChatStore.getState().streaming[jid].systemStatus).toBe(
+    emit(
+      {
+        eventType: 'tool_use_start',
+        toolName: 'Read',
+        toolUseId: 'read-file',
+      },
+      SESSION,
+    );
+    expect(useChatStore.getState().agentStreaming[SESSION].systemStatus).toBe(
       statusText,
     );
   });
 
   it('clears a runner retry banner with unavailable SDK counters', () => {
-    initialize();
-    emit({ eventType: 'status', statusText: 'API 重试中 (?/?)，0s 后重试' });
-    emit({ eventType: 'text_delta', text: 'recovered' });
-    expect(useChatStore.getState().streaming[jid].systemStatus).toBeNull();
+    initialize(SESSION);
+    emit(
+      { eventType: 'status', statusText: 'API 重试中 (?/?)，0s 后重试' },
+      SESSION,
+    );
+    expect(useChatStore.getState().agentStreaming[SESSION].systemStatus).toBe(
+      'API 重试中 (?/?)，0s 后重试',
+    );
+    emit({ eventType: 'text_delta', text: 'recovered' }, SESSION);
+    expect(
+      useChatStore.getState().agentStreaming[SESSION].systemStatus,
+    ).toBeNull();
     flush();
   });
 });
@@ -1277,10 +1246,8 @@ describe('canonical usage ownership', () => {
     );
   }
   function replies(owner = agentId, workspace = jid): Message[] {
-    const rows = owner
-      ? useChatStore.getState().agentMessages[owner] || []
-      : useChatStore.getState().messages[workspace] || [];
-    const runtimeJid = owner ? `${workspace}#agent:${owner}` : workspace;
+    const rows = useChatStore.getState().agentMessages[owner] || [];
+    const runtimeJid = `${workspace}#agent:${owner}`;
     return rows.filter((row) => row.chat_jid === runtimeJid);
   }
   function receive(
@@ -1289,6 +1256,10 @@ describe('canonical usage ownership', () => {
     workspace = jid,
     overrides = {},
   ): void {
+    // The session's history is loaded: announced messages join it.
+    useChatStore.setState((s) => ({
+      agentMessages: { [owner]: [], ...s.agentMessages },
+    }));
     useChatStore
       .getState()
       .handleWsNewMessage(
@@ -1312,7 +1283,7 @@ describe('canonical usage ownership', () => {
   });
   afterEach(() => vi.restoreAllMocks());
 
-  for (const owner of [agentId, '']) {
+  for (const owner of [agentId]) {
     it(`updates the warm ${owner ? 'Agent' : 'main'} final using its canonical delivery ID`, () => {
       activate(owner);
       receive('input-a', owner);
@@ -1353,7 +1324,7 @@ describe('canonical usage ownership', () => {
       expect(replies(owner)[1].token_usage).toBeUndefined();
     });
   }
-  for (const owner of [agentId, '']) {
+  for (const owner of [agentId]) {
     const scope = owner ? 'Agent' : 'main';
     function snapshot(
       count: number,
@@ -1438,10 +1409,10 @@ describe('canonical usage ownership', () => {
     activate();
     emit('shared-id');
     receive('shared-id', 'other-agent');
-    receive('shared-id', '', jid);
+    receive('shared-id', 'third-agent', jid);
     receive('shared-id', agentId, 'web:other');
     expect(replies('other-agent')[0].token_usage).toBeUndefined();
-    expect(replies('')[0].token_usage).toBeUndefined();
+    expect(replies('third-agent')[0].token_usage).toBeUndefined();
     expect(replies(agentId, 'web:other')[0].token_usage).toBeUndefined();
     receive('shared-id');
     expect(JSON.parse(replies()[0].token_usage!)).toEqual(usage);
@@ -1506,7 +1477,7 @@ describe('canonical usage ownership', () => {
     expect(JSON.parse(replies()[1].token_usage!)).toEqual(usage);
   });
   for (const reset of ['context_reset', 'context_fresh_window']) {
-    for (const owner of [agentId, '']) {
+    for (const owner of [agentId]) {
       it(`clears only the ${owner ? 'Agent' : 'main'} cache on a remote ${reset} divider`, () => {
         activate(owner);
         activate('other-agent');
@@ -1561,10 +1532,10 @@ describe('canonical usage ownership', () => {
   for (const action of ['clearHistory', 'deleteFlow'] as const) {
     it(`clears all workspace pending usage after ${action}`, async () => {
       activate();
-      activate('');
+      activate('second-agent');
       activate(agentId, 'web:other');
       emit('input-a');
-      emit('input-main', '');
+      emit('input-second', 'second-agent');
       emit('input-other', agentId, 'web:other');
       await useChatStore.getState()[action](jid);
       const pending = Object.values(

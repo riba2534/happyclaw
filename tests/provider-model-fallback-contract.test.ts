@@ -133,14 +133,9 @@ describe('provider fallback source contracts', () => {
     expect(main).not.toContain(
       'Provider failure result suppressed from user (silent switch)',
     );
-    expect(main.match(/Provider failure surfaced to user/g)).toHaveLength(2);
-    expect(main).toContain('result.providerFailureTerminal !== true');
+    expect(main.match(/Provider failure surfaced to user/g)).toHaveLength(1);
     expect(main).toContain('output.providerFailureTerminal !== true');
-    expect(main).toContain('rollbackIdleMainCardReservation(');
     expect(main).toContain('rollbackIdleAgentCardReservation(');
-    expect(main).toMatch(
-      /!publishesFrameworkAnswer\(interactionMode\)\s*&&\s*!result\.providerFailure/,
-    );
     expect(main).toMatch(
       /!publishesFrameworkAnswer\(interactionMode\)\s*&&\s*!output\.providerFailure/,
     );

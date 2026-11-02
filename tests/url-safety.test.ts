@@ -1,8 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import {
-  isPrivateHostname,
-  validateSafeHttpsUrl,
-} from '../src/url-safety.js';
+import { isPrivateHostname, validateSafeHttpsUrl } from '../src/url-safety.js';
 
 describe('isPrivateHostname', () => {
   describe('IPv4 private ranges', () => {
@@ -55,7 +52,11 @@ describe('isPrivateHostname', () => {
     test.each([
       ['::ffff:127.0.0.1', true, 'IPv4-mapped dotted form, loopback'],
       ['::ffff:7f00:1', true, 'IPv4-mapped hex form, loopback (R3 fix)'],
-      ['::ffff:a9fe:a9fe', true, 'IPv4-mapped hex form, AWS metadata 169.254.169.254 (R3 fix)'],
+      [
+        '::ffff:a9fe:a9fe',
+        true,
+        'IPv4-mapped hex form, AWS metadata 169.254.169.254 (R3 fix)',
+      ],
       ['::ffff:0a00:1', true, 'IPv4-mapped hex form, 10.0.0.1 (R3 fix)'],
       ['::ffff:c0a8:1', true, 'IPv4-mapped hex form, 192.168.0.1'],
       ['::ffff:8.8.8.8', false, 'IPv4-mapped public IP'],
@@ -72,7 +73,11 @@ describe('isPrivateHostname', () => {
   describe('localhost variants', () => {
     test.each([
       ['localhost', true],
-      ['localhost.', true, 'trailing-dot FQDN (R3 fix: previously bypassed endsWith check)'],
+      [
+        'localhost.',
+        true,
+        'trailing-dot FQDN (R3 fix: previously bypassed endsWith check)',
+      ],
       ['foo.localhost', true],
       ['foo.localhost.', true, 'trailing-dot subdomain'],
       ['', true, 'empty fail-closed'],
@@ -98,7 +103,9 @@ describe('validateSafeHttpsUrl', () => {
   });
 
   test('accepts http:// when allowHttp=true', () => {
-    expect(validateSafeHttpsUrl('http://example.com/', { allowHttp: true })).toBeNull();
+    expect(
+      validateSafeHttpsUrl('http://example.com/', { allowHttp: true }),
+    ).toBeNull();
   });
 
   test('rejects javascript: and data: URLs (not parseable as http(s))', () => {
@@ -119,12 +126,16 @@ describe('validateSafeHttpsUrl', () => {
     expect(validateSafeHttpsUrl('https://localhost/')).toMatch(/private/);
     expect(validateSafeHttpsUrl('https://127.0.0.1/')).toMatch(/private/);
     expect(validateSafeHttpsUrl('https://[::1]/')).toMatch(/private/);
-    expect(validateSafeHttpsUrl('https://169.254.169.254/latest/meta-data/')).toMatch(/private/);
+    expect(
+      validateSafeHttpsUrl('https://169.254.169.254/latest/meta-data/'),
+    ).toMatch(/private/);
   });
 
   test('rejects HTTPS to IPv4-mapped hex IPv6 (R3 fix)', () => {
     // new URL('https://[::ffff:169.254.169.254]/').hostname === '[::ffff:a9fe:a9fe]'
-    expect(validateSafeHttpsUrl('https://[::ffff:a9fe:a9fe]/')).toMatch(/private/);
+    expect(validateSafeHttpsUrl('https://[::ffff:a9fe:a9fe]/')).toMatch(
+      /private/,
+    );
   });
 
   test('rejects HTTPS to 6to4 with private IPv4 (R3 fix)', () => {
@@ -147,7 +158,9 @@ describe('validateSafeHttpsUrl', () => {
   });
 
   test('accepts public HTTPS URLs', () => {
-    expect(validateSafeHttpsUrl('https://github.com/owner/repo.git')).toBeNull();
+    expect(
+      validateSafeHttpsUrl('https://github.com/owner/repo.git'),
+    ).toBeNull();
     expect(validateSafeHttpsUrl('https://npm.example.com/pkg.tgz')).toBeNull();
   });
 });

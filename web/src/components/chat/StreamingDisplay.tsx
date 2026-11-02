@@ -44,6 +44,7 @@ import {
 } from '../../lib/stream-steps';
 import { streamingMarkdownInterval } from '../../lib/streaming-interval';
 import { cn } from '@/lib/utils';
+import { sessionJidOf } from '../../lib/session-jid';
 
 /**
  * The narration before a tool call streams like an answer: the process folds
@@ -369,7 +370,8 @@ interface StreamingDisplayProps {
   groupJid: string;
   isWaiting: boolean;
   senderName?: string;
-  agentId?: string;
+  /** The session (or /spawn agent) whose reply this is. */
+  agentId: string;
   agentAvatarUrl?: string | null;
   agentAvatarEmoji?: string | null;
   agentAvatarColor?: string | null;
@@ -394,28 +396,13 @@ export function StreamingDisplay({
 }: StreamingDisplayProps) {
   // A settled card belongs to a finished run: nothing about it is waiting.
   const isWaiting = settled ? false : isWaitingProp;
-  const mainStreaming = useChatStore((s) =>
-    settled ? undefined : s.streaming[groupJid],
+  const runtimeJid = sessionJidOf(groupJid, agentId);
+  const streaming = useChatStore((s) =>
+    settled ? s.settledStreaming[runtimeJid] : s.agentStreaming[agentId],
   );
-  const agentStreamingState = useChatStore((s) =>
-    agentId && !settled ? s.agentStreaming[agentId] : undefined,
+  const runtimeAgentKind = useChatStore(
+    (s) => s.agents[groupJid]?.find((agent) => agent.id === agentId)?.kind,
   );
-  const settledState = useChatStore((s) =>
-    settled
-      ? s.settledStreaming[agentId ? `${groupJid}#agent:${agentId}` : groupJid]
-      : undefined,
-  );
-  const runtimeAgentKind = useChatStore((s) =>
-    agentId
-      ? s.agents[groupJid]?.find((agent) => agent.id === agentId)?.kind
-      : undefined,
-  );
-  const runtimeJid = agentId ? `${groupJid}#agent:${agentId}` : groupJid;
-  const streaming = settled
-    ? settledState
-    : agentId
-      ? agentStreamingState
-      : mainStreaming;
   const stopping = useChatStore(
     (s) => !settled && !!s.stopRequests[runtimeJid],
   );
@@ -426,8 +413,7 @@ export function StreamingDisplay({
   );
   const turnAnswered = runTurnAnswered(answered, streaming);
   // Fire-and-forget spawn Agents retain Assistant streaming semantics even in
-  // a proactive Workspace. The Workspace contract applies to main and
-  // conversation Agent loops.
+  // a proactive Workspace. The Workspace contract applies to session loops.
   const effectiveInteractionMode =
     runtimeAgentKind === 'spawn' ? 'assistant' : interactionMode;
   const showPartialText = shouldShowStreamingPartialText(
@@ -479,9 +465,7 @@ export function StreamingDisplay({
     const interval = window.setInterval(() => {
       const state = useChatStore.getState();
       const hasActiveRun = !!state.activeRuns[runtimeJid];
-      const hasStreamData = agentId
-        ? !!state.agentStreaming[agentId]
-        : !!state.streaming[groupJid];
+      const hasStreamData = !!state.agentStreaming[agentId];
       if (
         !shouldRecoverStaleWaiting({
           elapsedMs: Date.now() - lastStreamActivityRef.current,
@@ -492,24 +476,17 @@ export function StreamingDisplay({
         return;
       }
 
-      if (agentId) {
-        useChatStore.setState((current) => {
-          // Re-check under the state mutation so a concurrent run_started
-          // cannot be cleared by this stale interval tick.
-          if (current.activeRuns[runtimeJid]) return current;
-          const nextStreaming = { ...current.agentStreaming };
-          delete nextStreaming[agentId];
-          return {
-            agentWaiting: { ...current.agentWaiting, [agentId]: false },
-            agentStreaming: nextStreaming,
-          };
-        });
-      } else {
-        // clearStreaming also preserves any useful completed thinking state.
-        if (!useChatStore.getState().activeRuns[runtimeJid]) {
-          useChatStore.getState().clearStreaming(groupJid);
-        }
-      }
+      useChatStore.setState((current) => {
+        // Re-check under the state mutation so a concurrent run_started
+        // cannot be cleared by this stale interval tick.
+        if (current.activeRuns[runtimeJid]) return current;
+        const nextStreaming = { ...current.agentStreaming };
+        delete nextStreaming[agentId];
+        return {
+          agentWaiting: { ...current.agentWaiting, [agentId]: false },
+          agentStreaming: nextStreaming,
+        };
+      });
     }, 10_000);
 
     return () => window.clearInterval(interval);
@@ -520,9 +497,7 @@ export function StreamingDisplay({
   useEffect(() => {
     if (resetGroupRef.current === groupJid) return;
     resetGroupRef.current = groupJid;
-    const current = agentId
-      ? useChatStore.getState().agentStreaming[agentId]
-      : useChatStore.getState().streaming[groupJid];
+    const current = useChatStore.getState().agentStreaming[agentId];
     setThinkingExpanded(initialThinkingExpanded(current));
     userToggledThinkingRef.current = false;
   }, [agentId, groupJid]);

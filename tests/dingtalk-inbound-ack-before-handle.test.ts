@@ -43,10 +43,6 @@ vi.mock('../src/db.js', () => ({
   storeMessageDirect: vi.fn(),
 }));
 
-vi.mock('../src/message-notifier.js', () => ({
-  notifyNewImMessage: vi.fn(),
-}));
-
 vi.mock('../src/logger.js', () => ({
   logger: {
     debug: vi.fn(),
@@ -57,7 +53,6 @@ vi.mock('../src/logger.js', () => ({
 }));
 
 import { storeMessageDirect } from '../src/db.js';
-import { notifyNewImMessage } from '../src/message-notifier.js';
 import {
   createDingTalkConnection,
   type DingTalkConnectOpts,
@@ -316,10 +311,7 @@ describe('DingTalk inbound Stream ACK must not precede handle', () => {
     expect(client.socketCallBackResponse).not.toHaveBeenCalled();
   });
 
-  test('post-persist notification failures do not replay durable messages', async () => {
-    vi.mocked(notifyNewImMessage).mockImplementationOnce(() => {
-      throw new Error('wake signal unavailable');
-    });
+  test('post-persist observer failures do not replay durable messages', async () => {
     const onMessagePersisted = vi.fn(() => {
       throw new Error('observer unavailable');
     });

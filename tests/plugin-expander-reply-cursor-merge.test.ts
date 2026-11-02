@@ -224,10 +224,7 @@ interface CursorPair {
   lastCommittedCursor: Record<string, MessageCursor>;
 }
 
-function isCursorAfter(
-  candidate: MessageCursor,
-  base: MessageCursor,
-): boolean {
+function isCursorAfter(candidate: MessageCursor, base: MessageCursor): boolean {
   if (candidate.timestamp > base.timestamp) return true;
   if (candidate.timestamp < base.timestamp) return false;
   return candidate.id > base.id;

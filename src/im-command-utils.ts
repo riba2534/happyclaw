@@ -14,6 +14,7 @@ export interface AgentInfo {
 }
 
 export interface WorkspaceInfo {
+  jid: string;
   folder: string;
   name: string;
   agents: AgentInfo[];
@@ -59,13 +60,13 @@ export function formatContextMessages(
 // ─── List Formatting ────────────────────────────────────────────
 
 /**
- * Format workspace list with current-position markers.
+ * Format the workspace list, each workspace's sessions in the given order,
+ * marking the workspace and session this chat is bound to.
  */
 export function formatWorkspaceList(
   workspaces: WorkspaceInfo[],
-  currentFolder: string,
+  currentFolder: string | null,
   currentAgentId: string | null,
-  currentOnMain = true,
 ): string {
   if (workspaces.length === 0) return '没有可用的工作区';
 
@@ -76,9 +77,7 @@ export function formatWorkspaceList(
     const marker = isCurrent ? ' ▶' : '';
     lines.push(`${marker} ${ws.name} (${ws.folder})`);
 
-    const mainMarker = isCurrent && currentOnMain ? ' ← 当前' : '';
-    lines.push(`  · 主会话${mainMarker}`);
-
+    if (ws.agents.length === 0) lines.push('  · 暂无会话');
     for (const agent of ws.agents) {
       const agentMarker =
         isCurrent && currentAgentId === agent.id ? ' ← 当前' : '';
@@ -99,7 +98,10 @@ export function formatWorkspaceList(
 
 export interface LocationInfo {
   locationLine: string;
-  folder: string;
+  /** Folder of the bound workspace; null when the chat is not bound. */
+  folder: string | null;
+  /** Lane of the bound session; null for a topic container or no binding. */
+  sessionJid: string | null;
   replyPolicy: string | null;
 }
 
@@ -107,7 +109,7 @@ export interface BoundChatTarget {
   baseChatJid: string;
   targetChatJid: string;
   folder: string;
-  agentId: string | null;
+  agentId: string;
   locationLine: string;
 }
 
@@ -116,6 +118,7 @@ export interface RegisteredGroupLike {
   name: string;
   target_agent_id?: string | null;
   target_main_jid?: string | null;
+  binding_mode?: string | null;
   reply_policy?: string | null;
 }
 
@@ -124,95 +127,85 @@ export interface AgentLike {
   chat_jid: string;
 }
 
+export const UNBOUND_LOCATION = '未绑定';
+
 /**
- * Resolve location info from a registered group.
+ * Where a chat is bound, for `/status`, `/where` and `/list`: one session, a
+ * workspace whose topics each have their own session, or nothing.
  * Pure function — all state access goes through callbacks.
  */
 export function resolveLocationInfo(
   group: RegisteredGroupLike,
   getRegisteredGroup: (jid: string) => RegisteredGroupLike | undefined,
   getAgent: (id: string) => AgentLike | undefined,
-  findGroupNameByFolder: (folder: string) => string,
+  resolveWorkspaceJid: (jid: string) => string | null = (jid) => jid,
 ): LocationInfo {
-  let locationLine: string;
-  let folder: string;
-
+  const replyPolicy = group.reply_policy || 'source_only';
   if (group.target_agent_id) {
-    const agent = getAgent(group.target_agent_id);
-    const parent = agent ? getRegisteredGroup(agent.chat_jid) : undefined;
-    const workspaceName = parent?.name || parent?.folder || group.folder;
-    locationLine = `${workspaceName} / ${agent?.name || group.target_agent_id}`;
-    folder = parent?.folder || group.folder;
-  } else if (group.target_main_jid) {
-    const target = getRegisteredGroup(group.target_main_jid);
-    locationLine = `${target?.name || group.target_main_jid} / 主会话`;
-    folder = target?.folder || group.folder;
-  } else {
-    const folderName = findGroupNameByFolder(group.folder);
-    locationLine = `${folderName} / 主会话`;
-    folder = group.folder;
+    const target = resolveSessionTarget(
+      group.target_agent_id,
+      getRegisteredGroup,
+      getAgent,
+    );
+    if (target) {
+      return {
+        locationLine: target.locationLine,
+        folder: target.folder,
+        sessionJid: target.targetChatJid,
+        replyPolicy,
+      };
+    }
+  } else if (group.target_main_jid && group.binding_mode === 'thread_map') {
+    const workspaceJid = resolveWorkspaceJid(group.target_main_jid);
+    const workspace = workspaceJid ? getRegisteredGroup(workspaceJid) : null;
+    if (workspace) {
+      return {
+        locationLine: `${workspace.name || workspace.folder}（每个话题一个会话）`,
+        folder: workspace.folder,
+        sessionJid: null,
+        replyPolicy,
+      };
+    }
   }
-
-  const replyPolicy =
-    group.target_main_jid || group.target_agent_id
-      ? group.reply_policy || 'source_only'
-      : null;
-
-  return { locationLine, folder, replyPolicy };
+  return {
+    locationLine: UNBOUND_LOCATION,
+    folder: null,
+    sessionJid: null,
+    replyPolicy: null,
+  };
 }
 
 /**
- * Resolve the real chat target for IM slash commands.
- *
- * Non-main workspaces use random web JIDs (`web:<uuid>`), so commands must not
- * reconstruct targets from `folder`. They need the actual bound workspace JID.
+ * The session an IM slash command acts on: the one session the chat is
+ * bound to, or null when it is bound to none (unbound, a topic container's
+ * workspace binding, or a stale target). Never falls back to anything else.
  */
 export function resolveBoundChatTarget(
-  sourceChatJid: string,
   group: RegisteredGroupLike,
   getRegisteredGroup: (jid: string) => RegisteredGroupLike | undefined,
   getAgent: (id: string) => AgentLike | undefined,
-  findGroupNameByFolder: (folder: string) => string,
-  resolveWorkspaceJid?: (jid: string) => string | null,
 ): BoundChatTarget | null {
-  if (group.target_agent_id) {
-    const agent = getAgent(group.target_agent_id);
-    if (!agent?.chat_jid) return null;
-    const parent = getRegisteredGroup(agent.chat_jid);
-    if (!parent) return null;
-    const workspaceName =
-      parent.name || findGroupNameByFolder(parent.folder || group.folder);
-    const baseChatJid = agent.chat_jid;
-    return {
-      baseChatJid,
-      targetChatJid: `${baseChatJid}#agent:${group.target_agent_id}`,
-      folder: parent.folder,
-      agentId: group.target_agent_id,
-      locationLine: `${workspaceName} / ${agent.name || group.target_agent_id}`,
-    };
-  }
+  return group.target_agent_id
+    ? resolveSessionTarget(group.target_agent_id, getRegisteredGroup, getAgent)
+    : null;
+}
 
-  if (group.target_main_jid) {
-    const baseChatJid =
-      resolveWorkspaceJid?.(group.target_main_jid) ?? group.target_main_jid;
-    const target = getRegisteredGroup(baseChatJid);
-    if (!target) return null;
-    return {
-      baseChatJid,
-      targetChatJid: baseChatJid,
-      folder: target.folder,
-      agentId: null,
-      locationLine: `${target.name || baseChatJid} / 主会话`,
-    };
-  }
-
-  const workspaceName = findGroupNameByFolder(group.folder);
+/** A session and its workspace as a command target, or null when either is gone. */
+export function resolveSessionTarget(
+  agentId: string,
+  getRegisteredGroup: (jid: string) => RegisteredGroupLike | undefined,
+  getAgent: (id: string) => AgentLike | undefined,
+): BoundChatTarget | null {
+  const agent = getAgent(agentId);
+  if (!agent?.chat_jid) return null;
+  const parent = getRegisteredGroup(agent.chat_jid);
+  if (!parent) return null;
   return {
-    baseChatJid: sourceChatJid,
-    targetChatJid: sourceChatJid,
-    folder: group.folder,
-    agentId: null,
-    locationLine: `${workspaceName} / 主会话`,
+    baseChatJid: agent.chat_jid,
+    targetChatJid: `${agent.chat_jid}#agent:${agentId}`,
+    folder: parent.folder,
+    agentId,
+    locationLine: `${parent.name || parent.folder} / ${agent.name || agentId}`,
   };
 }
 

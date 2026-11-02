@@ -97,6 +97,8 @@ const { runHostAgent } = await import('../src/container-runner.js');
 
 const FOLDER = 'host-oauth-writeback';
 const SIBLING = 'host-oauth-sibling';
+const SESSION = 'session-1';
+const SIBLING_SESSION = 'sibling-session';
 const DATA_DIR = path.join(SHARED_TMP, 'data');
 const original = {
   accessToken: 'host-access-original',
@@ -167,8 +169,8 @@ async function runOnce(): Promise<unknown> {
       {
         prompt: 'hello',
         groupFolder: FOLDER,
-        chatJid: `web:${FOLDER}`,
-        isMain: true,
+        chatJid: `web:${FOLDER}#agent:${SESSION}`,
+        agentId: SESSION,
       },
       () => {},
     );
@@ -177,10 +179,14 @@ async function runOnce(): Promise<unknown> {
   }
 }
 
-function sessionCredentials(folder: string): unknown {
+function sessionClaudeDir(folder: string, agentId: string): string {
+  return path.join(DATA_DIR, 'sessions', folder, 'agents', agentId, '.claude');
+}
+
+function sessionCredentials(folder: string, agentId: string): unknown {
   return JSON.parse(
     fs.readFileSync(
-      path.join(DATA_DIR, 'sessions', folder, '.claude', '.credentials.json'),
+      path.join(sessionClaudeDir(folder, agentId), '.credentials.json'),
       'utf8',
     ),
   ).claudeAiOauth;
@@ -212,15 +218,15 @@ describe.skipIf(process.platform === 'darwin')(
         enabled: true,
         claudeOAuthCredentials: original,
       });
-      const siblingDir = path.join(DATA_DIR, 'sessions', SIBLING, '.claude');
+      const siblingDir = sessionClaudeDir(SIBLING, SIBLING_SESSION);
       fs.mkdirSync(siblingDir, { recursive: true });
       runtimeConfig.writeCredentialsFile(
         siblingDir,
         runtimeConfig.providerToConfig(provider),
       );
-      db.setSessionProviderId(SIBLING, null, provider.id);
+      db.setSessionProviderId(SIBLING, SIBLING_SESSION, provider.id);
       // The conversation runs on the provider: nothing runs unbound.
-      db.setSessionModelSelection(FOLDER, null, provider.id, 'test');
+      db.setSessionModelSelection(FOLDER, SESSION, provider.id, 'test');
 
       process.env.HAPPYCLAW_TEST_ROTATED_OAUTH = JSON.stringify(rotated);
       const first = await runOnce();
@@ -229,14 +235,14 @@ describe.skipIf(process.platform === 'darwin')(
       expect(
         runtimeConfig.getProviderById(provider.id)?.claudeOAuthCredentials,
       ).toEqual(rotated);
-      expect(sessionCredentials(SIBLING)).toEqual(rotated);
+      expect(sessionCredentials(SIBLING, SIBLING_SESSION)).toEqual(rotated);
 
       delete process.env.HAPPYCLAW_TEST_ROTATED_OAUTH;
       const second = await runOnce();
       expect(second, JSON.stringify(second)).toMatchObject({
         status: 'success',
       });
-      expect(sessionCredentials(FOLDER)).toEqual(rotated);
+      expect(sessionCredentials(FOLDER, SESSION)).toEqual(rotated);
     });
   },
 );

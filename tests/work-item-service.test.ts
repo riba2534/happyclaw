@@ -87,13 +87,17 @@ function installHooks(): void {
   });
 }
 
+/** The workspace session the group is bound to, and another one. */
+const BOUND_SESSION = 'team-bound-session';
+const OTHER_SESSION = 'team-other-session';
+
 function setGroup(jid: string, extra: Record<string, unknown> = {}): void {
   db.setRegisteredGroup(jid, {
     name: '研发群',
     folder: FOLDER,
     added_at: new Date().toISOString(),
     created_by: OWNER,
-    target_main_jid: WORKSPACE,
+    target_agent_id: BOUND_SESSION,
     feishu_chat_mode: 'group',
     owner_im_id: 'ou_owner',
     sender_allowlist: ['ou_listed'],
@@ -195,6 +199,25 @@ function laneRows(laneJid: string): NewMessage[] {
   return db.getMessagesSince(laneJid, { timestamp: '', id: '' });
 }
 
+/** A conversation session of the team workspace. */
+function createSession(id: string, status: 'idle' | 'completed' = 'idle') {
+  db.createAgent({
+    id,
+    group_folder: FOLDER,
+    chat_jid: WORKSPACE,
+    name: id,
+    prompt: '',
+    status,
+    kind: 'conversation',
+    created_by: OWNER,
+    created_at: new Date().toISOString(),
+    completed_at: null,
+    result_summary: null,
+    last_im_jid: null,
+    spawned_from_jid: null,
+  });
+}
+
 beforeAll(() => {
   db.initDatabase();
   db.setRegisteredGroup(WORKSPACE, {
@@ -204,6 +227,7 @@ beforeAll(() => {
     executionMode: 'container',
     created_by: OWNER,
   });
+  for (const id of [BOUND_SESSION, OTHER_SESSION]) createSession(id);
   setGroup(CHAT);
   webContext.setWebDeps({
     broadcastAgentStatus: vi.fn(),
@@ -246,9 +270,33 @@ describe('team mount settings', () => {
     ]);
   });
 
+  test('a group bound to any session of the workspace can run it; an unbound one cannot', async () => {
+    const other = 'feishu:oc_other';
+    setGroup(other, { target_agent_id: OTHER_SESSION });
+    expect(service.teamMountIneligibility(other, WORKSPACE)).toBeNull();
+    expect(
+      service
+        .listTeamMountViews(WORKSPACE)
+        .find((view) => view.channelJid === other),
+    ).toMatchObject({ eligible: true, ineligibleReason: null });
+    // A single-session mount without its session (never written after v88).
+    expect(
+      service.teamMountIneligibility(other, WORKSPACE, {
+        ...db.getChannelMount(other)!,
+        session_id: null,
+      }),
+    ).toBe('群需要绑定到工作区的会话');
+    db.deleteRegisteredGroup(other);
+  });
+
   test('a topic group or a private chat cannot run team mode', async () => {
     const topic = 'feishu:oc_topic';
-    setGroup(topic, { feishu_chat_mode: 'topic' });
+    setGroup(topic, {
+      feishu_chat_mode: 'topic',
+      target_agent_id: undefined,
+      target_main_jid: WORKSPACE,
+      binding_mode: 'thread_map',
+    });
     expect(service.teamMountIneligibility(topic, WORKSPACE)).toMatch(/普通群/);
     await expect(
       service.saveTeamMountSettings(
@@ -1390,6 +1438,77 @@ describe('after the review on the Mac mini', () => {
     await enable();
   });
 
+  test('rebinding the group to another session of the workspace keeps team mode', async () => {
+    storeCandidate('om_rebind_session');
+    const item = store.getWorkItem(
+      (await accept('om_rebind_session')).workItemId as string,
+    )!;
+    db.setChannelMountChangeListener(service.reconcileTeamGroup);
+    try {
+      setGroup(CHAT, { target_agent_id: OTHER_SESSION });
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(service.resolveTeamGroup(CHAT)).not.toBeNull();
+      expect(store.getWorkItem(item.id)?.status).toBe('open');
+    } finally {
+      db.setChannelMountChangeListener(null);
+      setGroup(CHAT);
+    }
+  });
+
+  test('deleting the session the group is bound to ends team mode there; a rebind keeps it', async () => {
+    const { deleteConversationSession } =
+      await import('../src/session-factory.js');
+    const mounts = await import('../src/channel-mount-service.js');
+    const remove = (id: string) =>
+      deleteConversationSession({
+        workspaceJid: WORKSPACE,
+        group: db.getRegisteredGroup(WORKSPACE)!,
+        session: db.getAgent(id)!,
+      });
+    db.setChannelMountChangeListener(service.reconcileTeamGroup);
+    try {
+      // Rebound first, as DELETE ?rebind_to does: the items keep running.
+      createSession('team-doomed-a', 'completed');
+      setGroup(CHAT, { target_agent_id: 'team-doomed-a' });
+      storeCandidate('om_del_rebind');
+      const kept = store.getWorkItem(
+        (await accept('om_del_rebind')).workItemId as string,
+      )!;
+      mounts.commitChannelMountUpdates([
+        [
+          CHAT,
+          mounts.buildSessionMountUpdate(
+            db.getRegisteredGroup(CHAT)!,
+            OTHER_SESSION,
+          ),
+        ],
+      ]);
+      remove('team-doomed-a');
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(service.resolveTeamGroup(CHAT)).not.toBeNull();
+      expect(store.getWorkItem(kept.id)?.status).toBe('open');
+
+      // Deleted without a rebind: the group is unbound and its items stop.
+      createSession('team-doomed-b', 'completed');
+      setGroup(CHAT, { target_agent_id: 'team-doomed-b' });
+      storeCandidate('om_del_unbind');
+      const stopped = store.getWorkItem(
+        (await accept('om_del_unbind')).workItemId as string,
+      )!;
+      remove('team-doomed-b');
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(db.getRegisteredGroup(CHAT)?.target_agent_id).toBeUndefined();
+      expect(db.getChannelMount(CHAT)).toBeUndefined();
+      expect(store.getWorkItem(stopped.id)).toMatchObject({
+        status: 'ended',
+        outcome: 'stopped',
+      });
+    } finally {
+      db.setChannelMountChangeListener(null);
+      setGroup(CHAT);
+    }
+  });
+
   test('a binding change reconciles the group', async () => {
     storeCandidate('om_rebind');
     const item = store.getWorkItem(
@@ -1474,6 +1593,7 @@ describe('session deletion', () => {
     const item = store.getWorkItem(
       (await accept('om_del')).workItemId as string,
     )!;
+    broadcasts.length = 0;
     const { deleteConversationSession } =
       await import('../src/session-factory.js');
     await deleteConversationSession({
@@ -1485,5 +1605,36 @@ describe('session deletion', () => {
       status: 'ended',
       outcome: 'stopped',
     });
+    expect(broadcasts).toContain(item.id);
+  });
+
+  test('a deletion that rolls back leaves its item open and unannounced', async () => {
+    storeCandidate('om_del_rollback');
+    const item = store.getWorkItem(
+      (await accept('om_del_rollback')).workItemId as string,
+    )!;
+    broadcasts.length = 0;
+    const { deleteConversationSession } =
+      await import('../src/session-factory.js');
+    const ledger = await import('../src/automation-run-ledger.js');
+    // The last write of the deletion fails.
+    ledger.setAutomationRuntimeService({
+      onSessionDeleted: () => {
+        throw new Error('a later step failed');
+      },
+    } as never);
+    try {
+      expect(() =>
+        deleteConversationSession({
+          workspaceJid: WORKSPACE,
+          group: db.getRegisteredGroup(WORKSPACE)!,
+          session: db.getAgent(item.agentId)!,
+        }),
+      ).toThrow('a later step failed');
+    } finally {
+      ledger.setAutomationRuntimeService(null);
+    }
+    expect(store.getWorkItem(item.id)?.status).toBe('open');
+    expect(broadcasts).not.toContain(item.id);
   });
 });

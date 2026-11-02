@@ -19,7 +19,7 @@ import {
   scheduleFromForm,
   type ScheduleForm,
 } from '../web/src/lib/automation-presentation';
-import { partitionAutomationSessions } from '../web/src/lib/session-presentation';
+import { sessionListItems } from '../web/src/lib/session-presentation';
 import type { AgentInfo } from '../web/src/types';
 
 function automation(overrides: Partial<Automation> = {}): Automation {
@@ -349,8 +349,12 @@ describe('runs and sessions', () => {
     expect(groupAutomationRuns(runs, 'fresh')).toHaveLength(4);
   });
 
-  test('sessions an automation opened are grouped per automation', () => {
-    const session = (id: string, automationId?: string): AgentInfo =>
+  test('sessions an automation opened fold into one row where its newest one is', () => {
+    const session = (
+      id: string,
+      automationId?: string,
+      pinned = false,
+    ): AgentInfo =>
       ({
         id,
         name: id,
@@ -360,20 +364,33 @@ describe('runs and sessions', () => {
         created_at: '2026-10-30T00:00:00Z',
         automation_id: automationId ?? null,
         automation_name: automationId ? `自动化 ${automationId}` : null,
+        pinned_at: pinned ? '2026-10-30T00:00:00Z' : null,
       }) as AgentInfo;
-    const { groups, others } = partitionAutomationSessions([
+    // Already in list order: pinned first, then by recent activity.
+    const items = sessionListItems([
+      session('p1', 'a1', true),
       session('s1', 'a2'),
       session('s2'),
       session('s3', 'a1'),
       session('s4', 'a2'),
     ]);
     expect(
-      groups.map((g) => [g.automationId, g.name, g.sessions.map((s) => s.id)]),
+      items.map((item) =>
+        item.kind === 'session'
+          ? item.session.id
+          : [
+              item.group.automationId,
+              item.group.name,
+              item.group.sessions.map((s) => s.id),
+            ],
+      ),
     ).toEqual([
+      // A pinned session stays a row of its own.
+      'p1',
       ['a2', '自动化 a2', ['s1', 's4']],
+      's2',
       ['a1', '自动化 a1', ['s3']],
     ]);
-    expect(others.map((s) => s.id)).toEqual(['s2']);
   });
 
   test('bound and persistent automations mark their session', () => {

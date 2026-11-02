@@ -4,7 +4,7 @@
  * transcripts and provider configuration, so the command paths that clear a
  * session stay light.
  */
-type ClearedListener = (groupFolder: string, agentId: string | null) => void;
+type ClearedListener = (groupFolder: string, agentId: string) => void;
 const clearedListeners = new Set<ClearedListener>();
 
 /** Called whenever a conversation's context is cleared (the Web is told). */
@@ -18,7 +18,7 @@ export function onConversationContextCleared(
 /** A /clear, /fresh or session reset emptied this conversation's context. */
 export function notifyConversationContextCleared(
   groupFolder: string,
-  agentId: string | null,
+  agentId: string,
 ): void {
   for (const listener of clearedListeners) listener(groupFolder, agentId);
 }

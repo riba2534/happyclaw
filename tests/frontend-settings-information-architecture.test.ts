@@ -250,7 +250,7 @@ describe('settings information architecture', () => {
     expect(agentRoutes).not.toContain('setRegisteredGroup(imJid, updated)');
   });
 
-  test('exposes main-session binding and complete mobile workspace actions', () => {
+  test('exposes session binding and complete mobile workspace actions', () => {
     const sessions = [
       'web/src/components/chat/SessionSidebar.tsx',
       'web/src/lib/session-presentation.ts',
@@ -266,12 +266,15 @@ describe('settings information architecture', () => {
     );
     const bindingRoute = read('src/routes/config.ts');
 
-    expect(sessions).toContain('? () => onBindSession(null)');
-    expect(chatView).toContain('setBindingAgentId(id ?? MAIN_BINDING)');
+    expect(chatView).toContain(
+      'onBind: (session) => setBindingAgentId(session.id)',
+    );
     expect(chatView).toContain('setBindingAgentId(WORKSPACE_BINDING)');
     expect(chatView).toContain('title="管理工作区话题群绑定"');
     expect(chatView).not.toContain('{!isHome && canModifyWorkspaceConfig && (');
-    expect(chatView).toContain("? 'workspace' : 'session'");
+    expect(chatView).toContain(
+      'agentId={bindingAgentId === WORKSPACE_BINDING ? null : bindingAgentId}',
+    );
     expect(bindingDialog).toContain(
       'resolveBindingTargetType(group) === destination.type',
     );
@@ -282,15 +285,22 @@ describe('settings information architecture', () => {
     expect(bindings).toContain('解除渠道绑定');
     expect(mobileChat).toMatch(/onRename[:=]|onTogglePin[:=]|onDelete[:=]/);
     expect(createWorkspace).toContain('effective_runtime_policy');
-    expect(bindingRoute).toContain(
+    // A workspace binding is a topic thread map; ordinary chats bind sessions.
+    expect(bindingRoute).not.toContain(
       "threadCapable ? 'thread_map' : 'single_session'",
+    );
+    expect(bindingRoute).toMatch(
+      /conversationBindingPolicyError\(\s*getConversationKind\([^)]*\),\s*'workspace',/,
     );
     expect(bindingRoute).not.toContain(
       'ordinary channels must bind to a session',
     );
     const sessionBindingRoute = read('src/routes/agents.ts');
-    expect(sessionBindingRoute).toContain(
+    expect(sessionBindingRoute).not.toContain(
       "threadCapable ? 'thread_map' : 'single_session'",
+    );
+    expect(sessionBindingRoute).toMatch(
+      /conversationBindingPolicyError\(\s*getConversationKind\([^)]*\),\s*'workspace',/,
     );
     const frontendTypes = read('web/src/types.ts');
     expect(frontendTypes).toContain("'native_thread'");

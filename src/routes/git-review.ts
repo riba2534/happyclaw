@@ -15,7 +15,7 @@ import { Hono, type Context } from 'hono';
 
 import { authMiddleware } from '../middleware/auth.js';
 import { canAccessGroup } from '../group-acl.js';
-import { getAgent, getJidsByFolder, getRegisteredGroup } from '../db.js';
+import { getAgent, getRegisteredGroup } from '../db.js';
 import {
   getWebDeps,
   hasHostExecutionPermission,
@@ -41,7 +41,11 @@ import {
 } from '../session-worktree.js';
 import { getSessionWorktree } from '../session-worktree-store.js';
 import { logger } from '../logger.js';
-import { realpathBestEffort } from '../utils.js';
+import {
+  agentIdOfJid,
+  realpathBestEffort,
+  stripVirtualJidSuffix,
+} from '../utils.js';
 
 const gitReviewRoutes = new Hono<{ Variables: Variables }>();
 
@@ -50,7 +54,7 @@ type WorkspaceGroup = RegisteredGroup & { jid: string };
 interface ReviewScope {
   group: WorkspaceGroup;
   authUser: AuthUser;
-  /** Runtime Session id, or null for the main session. */
+  /** Runtime Session id, or null for the workspace root. */
   agentId: string | null;
 }
 
@@ -210,22 +214,11 @@ gitReviewRoutes.get('/:jid/git/worktree-support', authMiddleware, async (c) => {
   });
 });
 
-const AGENT_JID_MARKER = '#agent:';
-
-function workspaceForFolder(folder: string): WorkspaceGroup | undefined {
-  for (const jid of getJidsByFolder(folder)) {
-    if (!jid.startsWith('web:')) continue;
-    const group = getRegisteredGroup(jid);
-    if (group) return group;
-  }
-  return undefined;
-}
-
 /**
  * Sessions with a running turn whose working directory is the caller's.
  * Concurrency is only reported, never limited: different sessions may run
  * at once by design. Peers in workspaces the caller cannot see are counted
- * but not named.
+ * but not named. Every peer is a session (`kind: 'session'`).
  */
 gitReviewRoutes.get('/:jid/workdir/peers', authMiddleware, (c) => {
   c.header('Cache-Control', 'private, no-store');
@@ -240,31 +233,23 @@ gitReviewRoutes.get('/:jid/workdir/peers', authMiddleware, (c) => {
     resolveWorkspaceProjectRoot(scope.group, { agentId: scope.agentId }),
   );
   const principal = { id: scope.authUser.id, role: scope.authUser.role };
-  const seen = new Set<string>();
   const peers: Array<{
     workspace_jid: string;
     workspace_name: string;
-    kind: 'main' | 'session';
-    session_id: string | null;
+    kind: 'session';
+    session_id: string;
     session_name: string | null;
   }> = [];
   let hiddenCount = 0;
   for (const entry of queue.getStatus().groups) {
-    if (!entry.active || !entry.queryInFlight || !entry.groupFolder) continue;
-    const agentMarker = entry.jid.indexOf(AGENT_JID_MARKER);
-    const agentId =
-      agentMarker >= 0
-        ? entry.jid.slice(agentMarker + AGENT_JID_MARKER.length)
-        : null;
-    const kind = agentId ? 'session' : 'main';
-    const workspace = workspaceForFolder(entry.groupFolder);
+    if (!entry.active || !entry.queryInFlight) continue;
+    const agentId = agentIdOfJid(entry.jid);
+    if (!agentId) continue;
+    const workspace = getRegisteredGroup(stripVirtualJidSuffix(entry.jid));
     if (!workspace) continue;
-    if (workspace.folder === scope.group.folder && agentId === scope.agentId) {
+    if (workspace.jid === scope.group.jid && agentId === scope.agentId) {
       continue;
     }
-    const key = `${workspace.jid}\0${agentId}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
     const dir = realpathBestEffort(
       resolveWorkspaceProjectRoot(workspace, { agentId }),
     );
@@ -276,9 +261,9 @@ gitReviewRoutes.get('/:jid/workdir/peers', authMiddleware, (c) => {
     peers.push({
       workspace_jid: workspace.jid,
       workspace_name: workspace.name,
-      kind,
+      kind: 'session',
       session_id: agentId,
-      session_name: agentId ? (getAgent(agentId)?.name ?? null) : null,
+      session_name: getAgent(agentId)?.name ?? null,
     });
   }
   return c.json({ peers, hidden_count: hiddenCount });

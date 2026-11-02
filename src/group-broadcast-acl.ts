@@ -89,12 +89,7 @@ export function getGroupAudience(chatJid: string): GroupAudience | null {
   // that owns the workspace now (checked in SQL together with both accounts'
   // status), so a stale grant never leaks a re-owned workspace. An owner who
   // may no longer hold guests (allowMemberGuests off) shares with nobody.
-  const workspaceJid = resolveAudienceWorkspaceJid(
-    baseChatJid,
-    boundJid,
-    hasBinding,
-    group.folder,
-  );
+  const workspaceJid = resolveAudienceWorkspaceJid(baseChatJid, boundJid);
   if (!workspaceJid) return { ownerId, guestIds: [] };
   const workspace =
     workspaceJid === baseChatJid ? group : getRegisteredGroup(workspaceJid);
@@ -123,20 +118,18 @@ export function listViewingGuestIds(
   return owner && canOwnGuests(owner) ? guestIds : [];
 }
 
+/**
+ * The workspace whose guests may watch a chat: the workspace itself or the
+ * one a chat is bound to. An unbound IM chat reaches no workspace's guests,
+ * whatever folder its row records.
+ */
 function resolveAudienceWorkspaceJid(
   baseChatJid: string,
   boundJid: string | null,
-  hasBinding: boolean,
-  folder: string,
 ): string | null {
   if (boundJid) {
     const base = stripVirtualJidSuffix(boundJid);
     return base.startsWith('web:') ? base : null;
   }
-  if (baseChatJid.startsWith('web:')) return baseChatJid;
-  if (hasBinding) return null;
-  for (const siblingJid of getJidsByFolder(folder)) {
-    if (siblingJid.startsWith('web:')) return siblingJid;
-  }
-  return null;
+  return baseChatJid.startsWith('web:') ? baseChatJid : null;
 }

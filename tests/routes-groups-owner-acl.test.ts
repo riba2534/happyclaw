@@ -218,6 +218,121 @@ describe('PATCH /:jid preserves owner fields on rename (regression)', () => {
   });
 });
 
+describe('GET / workspace activity', () => {
+  test('a workspace is as recent as its most recent session', async () => {
+    const jid = 'web:activity-ws';
+    const folder = 'activity-ws';
+    db.setRegisteredGroup(jid, {
+      name: 'Activity',
+      folder,
+      added_at: '2026-01-01T00:00:00.000Z',
+      executionMode: 'container',
+      created_by: OWNER_ID,
+    } as any);
+    for (const [id, lastActiveAt] of [
+      ['act-quiet', '2026-02-01T00:00:00.000Z'],
+      ['act-busy', '2026-03-01T00:00:00.000Z'],
+    ]) {
+      db.createAgent({
+        id,
+        group_folder: folder,
+        chat_jid: jid,
+        name: id,
+        prompt: '',
+        status: 'idle',
+        kind: 'conversation',
+        created_by: OWNER_ID,
+        created_at: '2026-01-01T00:00:00.000Z',
+        completed_at: null,
+        result_summary: null,
+        last_im_jid: null,
+        spawned_from_jid: null,
+        last_active_at: lastActiveAt,
+      });
+    }
+    const list = async () => {
+      asUser(OWNER_ID, 'member');
+      const res = await groupRoutes.request('/');
+      return (await res.json()).groups[jid];
+    };
+    const emptyJid = 'web:activity-empty';
+    db.setRegisteredGroup(emptyJid, {
+      name: 'Empty',
+      folder: 'activity-empty',
+      added_at: '2026-01-05T00:00:00.000Z',
+      executionMode: 'container',
+      created_by: OWNER_ID,
+    } as any);
+    // Its own chat row is no session and says nothing about activity.
+    db.ensureChatExists(emptyJid);
+    try {
+      // A workspace without a session is as recent as its creation.
+      asUser(OWNER_ID, 'member');
+      const groups = (await (await groupRoutes.request('/')).json()).groups;
+      expect(groups[emptyJid].lastMessageTime).toBe('2026-01-05T00:00:00.000Z');
+      // No message yet: the newest session activity.
+      expect(await list()).toMatchObject({
+        lastMessageTime: '2026-03-01T00:00:00.000Z',
+      });
+      // A message in another session that is newer still.
+      db.ensureChatExists(`${jid}#agent:act-quiet`);
+      db.storeMessageDirect(
+        'act-msg',
+        `${jid}#agent:act-quiet`,
+        OWNER_ID,
+        'Alice',
+        'latest words',
+        '2026-04-01T00:00:00.000Z',
+        false,
+      );
+      expect(await list()).toMatchObject({
+        lastMessage: 'latest words',
+        lastMessageTime: '2026-04-01T00:00:00.000Z',
+      });
+    } finally {
+      db.deleteGroupData(jid, folder);
+      db.deleteGroupData(emptyJid, 'activity-empty');
+    }
+  });
+});
+
+describe('POST /:jid/reset-session names a session', () => {
+  test('without a session it is 400 session_required and stops nothing', async () => {
+    const jid = 'web:reset-needs-session';
+    db.setRegisteredGroup(jid, {
+      name: 'Reset',
+      folder: 'reset-needs-session',
+      added_at: new Date().toISOString(),
+      executionMode: 'container',
+      created_by: OWNER_ID,
+    } as any);
+    const stopGroup = vi.fn(async () => {});
+    webContext.setWebDeps({
+      getRegisteredGroups: () => ({}),
+      queue: { stopGroup },
+    } as unknown as Parameters<typeof webContext.setWebDeps>[0]);
+    try {
+      asUser(OWNER_ID, 'member');
+      const res = await groupRoutes.request(
+        `/${encodeURIComponent(jid)}/reset-session`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({}),
+        },
+      );
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({
+        error: 'Session required',
+        code: 'session_required',
+      });
+      expect(stopGroup).not.toHaveBeenCalled();
+    } finally {
+      db.deleteRegisteredGroup(jid);
+    }
+  });
+});
+
 describe('PATCH /:jid execution mode runtime boundary', () => {
   test('admin host-only mode rejects switching a workspace to Docker', async () => {
     const jid = 'web:host-only-policy';
@@ -267,10 +382,8 @@ describe('PATCH /:jid execution mode runtime boundary', () => {
     db.setSession(folder, 'sdk-session-before-switch');
 
     const stopGroup = vi.fn(async () => {});
-    const sessions = { [folder]: 'sdk-session-before-switch' };
     webContext.setWebDeps({
       getRegisteredGroups: () => webDepsCache,
-      sessions,
       queue: {
         pauseGroupsForMutation: () => ({ id: 1 }),
         resumeGroupsAfterMutation: vi.fn(),
@@ -289,7 +402,6 @@ describe('PATCH /:jid execution mode runtime boundary', () => {
     expect(response.status).toBe(200);
     expect(db.getRegisteredGroup(jid)?.executionMode).toBe('container');
     expect(db.getSession(folder)).toBeUndefined();
-    expect(sessions[folder]).toBeUndefined();
     expect(stopGroup).toHaveBeenCalledTimes(2);
 
     db.deleteGroupData(jid, folder);
@@ -562,13 +674,8 @@ describe('DELETE /:jid mutation pause', () => {
       const cached = webDepsCache[groupJid] as { folder?: string } | undefined;
       return cached?.folder ?? groupJid;
     });
-    let messageRuns = 0;
     let taskRuns = 0;
     let droppedTasks = 0;
-    queue.setProcessMessagesFn(async () => {
-      messageRuns += 1;
-      return true;
-    });
     // Keep an overlapping profile-style mutation token alive after DELETE
     // consumes its own token. This exercises the terminal tombstone window.
     const overlappingToken = queue.pauseGroupsForMutation([jid]);
@@ -607,9 +714,18 @@ describe('DELETE /:jid mutation pause', () => {
       });
       await firstStopEnteredPromise;
 
-      // These model message/task POST handlers that passed their DB/ACL checks
-      // just before DELETE began and enqueue while its synchronous gate is held.
-      queue.enqueueMessageCheck(jid, OWNER_ID);
+      // These model session sends that passed their DB/ACL checks just
+      // before DELETE began and enqueue while its synchronous gate is held.
+      expect(
+        queue.enqueueTask(
+          `${jid}#agent:sent-before-delete`,
+          'sent-before-delete',
+          async () => {
+            taskRuns += 1;
+          },
+          { onDropped: () => (droppedTasks += 1) },
+        ),
+      ).toBe(true);
       expect(
         queue.enqueueTask(
           descendantJid,
@@ -631,9 +747,8 @@ describe('DELETE /:jid mutation pause', () => {
       await new Promise((resolve) => setImmediate(resolve));
       await new Promise((resolve) => setImmediate(resolve));
 
-      expect(messageRuns).toBe(0);
       expect(taskRuns).toBe(0);
-      expect(droppedTasks).toBe(1);
+      expect(droppedTasks).toBe(2);
 
       // This descendant did not exist while the group/cache still provided a
       // folder resolver. A stable base-JID alias must still reject it after
@@ -648,11 +763,10 @@ describe('DELETE /:jid mutation pause', () => {
           { onDropped: () => (droppedTasks += 1) },
         ),
       ).toBe(false);
-      expect(droppedTasks).toBe(2);
+      expect(droppedTasks).toBe(3);
 
       queue.resumeGroupsAfterMutation(overlappingToken);
       await new Promise((resolve) => setImmediate(resolve));
-      expect(messageRuns).toBe(0);
       expect(taskRuns).toBe(0);
       expect(
         queue.enqueueTask(
@@ -664,7 +778,7 @@ describe('DELETE /:jid mutation pause', () => {
           { onDropped: () => (droppedTasks += 1) },
         ),
       ).toBe(false);
-      expect(droppedTasks).toBe(3);
+      expect(droppedTasks).toBe(4);
       expect(queue.getStatus()).toMatchObject({
         activeCount: 0,
         waitingCount: 0,
@@ -1299,7 +1413,8 @@ describe('POST / workspace Agent membership publication lock', () => {
       agent_profile_version: target.version + 1,
     });
     expect(db.getWorkspaceAgentProfileId(body.group.folder)).toBe(target.id);
-    expect(ensureTerminalContainerStarted).toHaveBeenCalledWith(body.jid);
+    // A workspace has no runner of its own to warm.
+    expect(ensureTerminalContainerStarted).not.toHaveBeenCalled();
     db.deleteGroupData(body.jid, body.group.folder);
   });
 

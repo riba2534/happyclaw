@@ -25,6 +25,7 @@ vi.mock('../src/logger.js', () => ({
 }));
 
 const db = await import('../src/db.js');
+const { formerMainSession } = await import('./helpers/legacy-main-session.js');
 
 const now = '2026-08-17T00:00:00.000Z';
 const workspaceJid = 'web:wecom-legacy-ws';
@@ -183,6 +184,9 @@ describe('schema v72 WeCom direct workspace-mount migration', () => {
     expect(db.getRegisteredGroup(dmJid)?.target_agent_id).toBe(
       migratedDm.target_agent_id,
     );
-    expect(db.getRegisteredGroup(groupJid)?.target_main_jid).toBe(workspaceJid);
+    // Groups are not v72's to move; v88 binds them to the former main session.
+    expect(db.getRegisteredGroup(groupJid)?.target_agent_id).toBe(
+      formerMainSession(db, workspaceJid).id,
+    );
   });
 });

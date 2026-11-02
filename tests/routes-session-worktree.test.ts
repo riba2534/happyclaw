@@ -79,6 +79,7 @@ const { createAutomationCore } = await import('../src/automation-service.js');
 const { setAutomationRuntimeService } =
   await import('../src/automation-run-ledger.js');
 const automationHarness = await import('./automation-harness.js');
+const reliability = await import('../src/channel-reliability-store.js');
 
 const ADMIN = 'admin-1';
 const queueGroups: Array<{
@@ -180,9 +181,13 @@ beforeEach(() => {
     broadcastAgentStatus: vi.fn(),
     broadcastAgentRemoved: vi.fn(),
     broadcastNewMessage: vi.fn(),
+    getLastAgentTimestamp: () => ({}),
+    processAgentConversation: vi.fn(async () => {}),
     queue: {
       getStatus: () => ({ groups: queueGroups }),
       stopGroup,
+      getActiveQueryId: () => null,
+      enqueueTask: vi.fn(),
       listDescendantJids: () => [],
       pauseGroupsForMutation: () => ({ id: 1 }),
       resumeGroupsAfterMutation: vi.fn(),
@@ -543,10 +548,27 @@ describe('same-directory peers', () => {
       .id as string;
     const isolated = (await createSession(a.jid, { worktree: true })).body
       .session.id as string;
+    const other = (await createSession(b.jid, { name: 'other' })).body.session
+      .id as string;
     const foreign = seedWorkspace({
       executionMode: 'host',
       customCwd: repo,
       owner: 'admin-2',
+    });
+    db.createAgent({
+      id: `foreign-${foreign.folder}`,
+      group_folder: foreign.folder,
+      chat_jid: foreign.jid,
+      name: 'foreign',
+      prompt: '',
+      status: 'idle',
+      kind: 'conversation',
+      created_by: 'admin-2',
+      created_at: new Date().toISOString(),
+      completed_at: null,
+      result_summary: null,
+      last_im_jid: null,
+      spawned_from_jid: null,
     });
     queueGroups.push(
       {
@@ -555,9 +577,16 @@ describe('same-directory peers', () => {
         queryInFlight: true,
         groupFolder: a.folder,
       },
+      {
+        jid: `${b.jid}#agent:${other}`,
+        active: true,
+        queryInFlight: true,
+        groupFolder: b.folder,
+      },
+      // A lane that is no session is no peer.
       { jid: b.jid, active: true, queryInFlight: true, groupFolder: b.folder },
       {
-        jid: foreign.jid,
+        jid: `${foreign.jid}#agent:foreign-${foreign.folder}`,
         active: true,
         queryInFlight: true,
         groupFolder: foreign.folder,
@@ -571,9 +600,9 @@ describe('same-directory peers', () => {
       },
     );
 
-    const main = await call(gitRoutes, `/${enc(a.jid)}/workdir/peers`);
-    expect(main.body.hidden_count).toBe(1);
-    expect(main.body.peers).toEqual(
+    const root = await call(gitRoutes, `/${enc(a.jid)}/workdir/peers`);
+    expect(root.body.hidden_count).toBe(1);
+    expect(root.body.peers).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           workspace_jid: a.jid,
@@ -581,17 +610,22 @@ describe('same-directory peers', () => {
           session_id: shared,
           session_name: 'shared',
         }),
-        expect.objectContaining({ workspace_jid: b.jid, kind: 'main' }),
+        expect.objectContaining({
+          workspace_jid: b.jid,
+          kind: 'session',
+          session_id: other,
+        }),
       ]),
     );
-    expect(main.body.peers).toHaveLength(2);
+    expect(root.body.peers).toHaveLength(2);
 
     // The running session itself is not its own peer.
     const self = await call(
       gitRoutes,
       `/${enc(a.jid)}/workdir/peers?agentId=${shared}`,
     );
-    expect(self.body.peers.map((p: any) => p.kind).sort()).toEqual(['main']);
+    expect(self.body.peers.map((p: any) => p.session_id)).toEqual([other]);
+    expect(self.body.peers.every((p: any) => p.kind === 'session')).toBe(true);
 
     // A worktree session works elsewhere.
     queueGroups.push({
@@ -695,6 +729,70 @@ describe('deleting worktree sessions', () => {
       ],
     });
     expect(fs.existsSync(path.join(nested, '.git'))).toBe(true);
+  });
+
+  test('moving a chat off a worktree session leaves the batch waiting for its retry behind', async () => {
+    const repo = makeRepo();
+    const { jid } = seedWorkspace({ executionMode: 'host', customCwd: repo });
+    const doomed = (await createSession(jid, { worktree: true })).body.session
+      .id as string;
+    const target = (await createSession(jid, { name: 'target' })).body.session
+      .id as string;
+    const chatJid = `telegram:${9000 + ++seq}`;
+    db.setRegisteredGroup(chatJid, {
+      name: 'Chat',
+      folder: 'chat',
+      added_at: new Date().toISOString(),
+      created_by: ADMIN,
+      target_agent_id: doomed,
+    } as any);
+    const doomedLane = `${jid}#agent:${doomed}`;
+    db.ensureChatExists(doomedLane);
+    const store = (id: string, timestamp: string) =>
+      db.storeMessageDirect(
+        id,
+        doomedLane,
+        'tg:user',
+        'User',
+        `text ${id}`,
+        timestamp,
+        false,
+        { sourceJid: chatJid },
+      );
+    // A batch of two failed; its turn (for the last input) waits for its retry.
+    store('batch-first', '2026-11-01T09:59:00.000Z');
+    store('retry-failed', '2026-11-01T10:00:00.000Z');
+    store('after-retry', '2026-11-01T10:01:00.000Z');
+    const { run } = reliability.createChannelTurnRun({
+      provider: 'telegram',
+      accountId: 'test-account',
+      sourceJid: chatJid,
+      idempotencyKey: `turn-${doomed}`,
+      agentId: doomed,
+      correlationId: 'retry-failed',
+    });
+    const claim = reliability.claimChannelTurnRunById(run.id, 'owner', 60_000)!;
+    expect(
+      reliability.retryChannelTurnRun(claim, {
+        availableAt: '2099-01-01T00:00:00.000Z',
+        error: 'attempt failed',
+      }),
+    ).toBe(true);
+
+    const deleted = await call(
+      agentRoutes,
+      `/${enc(jid)}/sessions/${doomed}?confirm_bindings=true&rebind_to=${target}`,
+      { method: 'DELETE' },
+    );
+    expect(deleted.status).toBe(200);
+    expect(db.getRegisteredGroup(chatJid)?.target_agent_id).toBe(target);
+    expect(
+      db
+        .getMessagesSince(`${jid}#agent:${target}`, { timestamp: '', id: '' })
+        .map((message) => message.id),
+    ).toEqual(['after-retry']);
+    expect(reliability.getChannelTurnRun(run.id)?.status).toBe('cancelled');
+    db.deleteRegisteredGroup(chatJid);
   });
 
   test('a clean worktree goes with the legacy /agents delete', async () => {

@@ -9,18 +9,7 @@ const source = fs.readFileSync(
 );
 
 describe('Host turn settlement ordering', () => {
-  test('main warm IPC receipts commit only after output persistence callback resolves', () => {
-    const start = source.indexOf('// Wrap onOutput to track session ID');
-    const end = source.indexOf('interface SendMessageOutcome');
-    const wrapper = source.slice(start, end);
-    const callbackAt = wrapper.indexOf('await onOutput?.(output);');
-    const receiptAt = wrapper.indexOf('queue.acknowledgeIpcDeliveries(');
-
-    expect(callbackAt).toBeGreaterThanOrEqual(0);
-    expect(receiptAt).toBeGreaterThan(callbackAt);
-  });
-
-  test('conversation-agent warm IPC receipts commit only after its handler resolves', () => {
+  test('warm IPC receipts commit only after the session output handler resolves', () => {
     const start = source.indexOf(
       'const wrappedOnOutput = async (output: ContainerOutput): Promise<void>',
     );
@@ -38,29 +27,16 @@ describe('Host turn settlement ordering', () => {
     );
   });
 
-  test('main callback failures escape instead of leaving an early healthy marker', () => {
-    const start = source.indexOf('output = await runAgent(');
-    const end = source.indexOf('imagesForAgent,', start);
-    const callback = source.slice(start, end);
-
-    expect(callback).toContain("'onOutput callback failed'");
-    expect(callback).toContain('throw err;');
-    expect(callback).not.toContain('healthyCompletedInputTurns.add');
-  });
-
   test('initializes IPC watching before automations and recovery can spawn runners', () => {
     const watcher = source.lastIndexOf('startIpcWatcher();');
     const scheduler = source.lastIndexOf('automationScheduler?.start();');
-    const pendingRecovery = source.lastIndexOf('recoverPendingMessages();');
     const conversationRecovery = source.lastIndexOf(
       'recoverConversationAgents();',
     );
 
     expect(watcher).toBeGreaterThanOrEqual(0);
     expect(watcher).toBeLessThan(scheduler);
-    expect(watcher).toBeLessThan(pendingRecovery);
     expect(watcher).toBeLessThan(conversationRecovery);
-    expect(pendingRecovery).toBeLessThan(scheduler);
     expect(conversationRecovery).toBeLessThan(scheduler);
   });
 });

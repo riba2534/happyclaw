@@ -151,11 +151,7 @@ const callHarness = (page: Page, method: string, ...args: unknown[]) =>
 async function switchTo(page: Page, sessionId: string | null) {
   await callHarness(page, 'switchTo', sessionId);
   const title =
-    sessionId === 'a1'
-      ? '会话 A'
-      : sessionId === 'a2'
-        ? '会话 B'
-        : '输入框测试工作区';
+    sessionId === 'a1' ? '会话 A' : sessionId === 'a2' ? '会话 B' : '会话 M';
   await expect(page.locator('header h2')).toHaveText(title);
 }
 
@@ -255,7 +251,7 @@ test.describe('desktop composer', () => {
     page,
   }) => {
     await openHarness(page);
-    await composer(page).fill('写给主会话的草稿');
+    await composer(page).fill('写给会话 M 的草稿');
     await pasteImage(page, 'main-only.png');
     await expect(
       page.getByRole('button', { name: '预览图片：main-only.png' }),
@@ -273,7 +269,7 @@ test.describe('desktop composer', () => {
     await composer(page).fill('会话 B 的草稿');
 
     await switchTo(page, null);
-    await expect(composer(page)).toHaveText('写给主会话的草稿');
+    await expect(composer(page)).toHaveText('写给会话 M 的草稿');
 
     await switchTo(page, 'a1');
     await expect(composer(page)).toHaveText('会话 A 的草稿');
@@ -293,7 +289,7 @@ test.describe('desktop composer', () => {
       ).composerHarness.drafts(),
     );
     expect(drafts).toEqual({
-      'web:e2e-composer': '写给主会话的草稿',
+      'web:e2e-composer#agent:m0': '写给会话 M 的草稿',
       'web:e2e-composer#agent:a2': '会话 B 的草稿',
     });
   });
@@ -321,7 +317,7 @@ test.describe('desktop composer', () => {
       page.getByRole('button', { name: '预览图片：later.png' }),
     ).toBeVisible();
     expect((await harnessState(page)).sent[0]).toEqual({
-      to: 'main',
+      to: 'm0',
       content: 'first message',
       images: 0,
     });
@@ -349,7 +345,7 @@ test.describe('desktop composer', () => {
     await composer(page).press('Enter');
     await page.waitForTimeout(200);
     expect((await harnessState(page)).sent).toEqual([
-      { to: 'main', content: 'hello main', images: 0 },
+      { to: 'm0', content: 'hello main', images: 0 },
     ]);
   });
 
@@ -366,8 +362,8 @@ test.describe('desktop composer', () => {
     await composer(page).press('Control+Shift+Enter');
     await expect(composer(page)).toHaveText('');
     expect((await harnessState(page)).sent).toEqual([
-      { to: 'main', content: 'narrow window enter', images: 0 },
-      { to: 'main', content: 'change direction', images: 0, mode: 'steer' },
+      { to: 'm0', content: 'narrow window enter', images: 0 },
+      { to: 'm0', content: 'change direction', images: 0, mode: 'steer' },
     ]);
   });
 
@@ -500,7 +496,7 @@ test.describe('desktop composer', () => {
     await page.getByRole('button', { name: '停止当前运行' }).click();
     await expect
       .poll(async () => (await harnessState(page)).stops)
-      .toEqual(['web:e2e-composer']);
+      .toEqual(['web:e2e-composer#agent:m0']);
     const stopCount = async () => (await harnessState(page)).stops.length;
 
     await callHarness(page, 'setRunning', true);
@@ -581,7 +577,7 @@ test.describe('desktop composer', () => {
     await composer(page).press('Enter');
     await expect
       .poll(async () => (await harnessState(page)).sent)
-      .toEqual([{ to: 'main', content: `看看这段日志：${log}`, images: 0 }]);
+      .toEqual([{ to: 'm0', content: `看看这段日志：${log}`, images: 0 }]);
   });
 
   test('clicking a long-paste chip turns it back into editable text', async ({
@@ -724,14 +720,14 @@ test.describe('desktop composer', () => {
   }) => {
     // What the server holds; a push updates it as a finished turn would.
     const server: Record<string, ReturnType<typeof contextUsage>> = {
-      main: contextUsage(null, null),
+      m0: contextUsage(null, null),
       a1: contextUsage(150_000, 200_000),
     };
     await page.route('**/api/groups/*/context-usage*', (route) => {
       const session = new URL(route.request().url()).searchParams.get(
         'agentId',
       );
-      return route.fulfill({ json: server[session ?? 'main'] });
+      return route.fulfill({ json: server[session ?? ''] });
     });
     await page.emulateMedia({ reducedMotion: 'reduce' });
     await page.setViewportSize({ width: 1280, height: 800 });
@@ -758,8 +754,8 @@ test.describe('desktop composer', () => {
       composerBox.y + composerBox.height - (before[0]!.y + before[0]!.height),
     ).toBeLessThanOrEqual(16);
 
-    server.main = contextUsage(120_000, 1_000_000);
-    await callHarness(page, 'pushContextUsage', server.main);
+    server.m0 = contextUsage(120_000, 1_000_000);
+    await callHarness(page, 'pushContextUsage', server.m0);
     await expect(ring).toHaveText('12%');
     expect(await layout()).toEqual(before);
 
@@ -866,7 +862,7 @@ test.describe('desktop composer', () => {
     await page.keyboard.press('Enter');
     await expect
       .poll(async () => (await harnessState(page)).sent)
-      .toEqual([{ to: 'main', content: '/review 看 @"notes.txt"', images: 0 }]);
+      .toEqual([{ to: 'm0', content: '/review 看 @"notes.txt"', images: 0 }]);
   });
 
   test('↑ recalls what was sent here; a draft survives a reload', async ({
@@ -939,7 +935,7 @@ test.describe('touch composer', () => {
               .composerHarness.resets,
         ),
       )
-      .toEqual([{ jid: 'web:e2e-composer', agentId: null }]);
+      .toEqual([{ jid: 'web:e2e-composer', agentId: 'm0' }]);
     // The menu-to-dialog hand-off leaves the page usable.
     await composer(page).click();
     await page.keyboard.type('还能输入');
@@ -951,11 +947,11 @@ test.describe('touch composer', () => {
     await page.keyboard.press('Escape');
     await expect(page.getByRole('dialog', { name: '终端' })).toHaveCount(0);
 
-    // The terminal belongs to the main conversation only.
+    // Every session has its terminal.
     await switchTo(page, 'a1');
     await plus.click();
     await expect(plusAction(page, '清除上下文')).toBeVisible();
-    await expect(plusAction(page, '终端')).toHaveCount(0);
+    await expect(plusAction(page, '终端')).toBeVisible();
     await page.keyboard.press('Escape');
 
     // Wider than 480px the actions are buttons again, in the card the
@@ -1058,7 +1054,7 @@ test.describe('touch composer', () => {
     await composer(page).press('Control+Enter');
     await expect(composer(page)).toHaveText('');
     expect((await harnessState(page)).sent).toEqual([
-      { to: 'main', content: '第一行', images: 0 },
+      { to: 'm0', content: '第一行', images: 0 },
     ]);
   });
 
@@ -1171,7 +1167,8 @@ test.describe('touch composer', () => {
     expect(
       await back.evaluate((element) => getComputedStyle(element).borderRadius),
     ).not.toBe('0px');
-    const title = header.getByRole('heading', { name: '输入框测试工作区' });
+    // A phone's header names the session.
+    const title = header.getByRole('heading', { name: '会话 M' });
     const titleBox = (await title.boundingBox())!;
     const viewport = page.viewportSize()!;
     expect(
@@ -1198,6 +1195,7 @@ test.describe('touch composer', () => {
     await page.getByRole('button', { name: '更多选项' }).click();
     const sheet = page.locator('[data-chat-options-sheet]');
     await expect(sheet.getByRole('button')).toHaveText([
+      '新对话',
       '工作区设置',
       '渠道绑定',
       '从此会话创建自动化…',
@@ -1217,7 +1215,7 @@ test.describe('touch composer', () => {
               .composerHarness.resets,
         ),
       )
-      .toEqual([{ jid: 'web:e2e-composer', agentId: null }]);
+      .toEqual([{ jid: 'web:e2e-composer', agentId: 'm0' }]);
 
     // Dragging the sheet's handle down closes it (once it has slid in).
     await page.getByRole('button', { name: '更多选项' }).click();
@@ -1362,8 +1360,8 @@ test.describe('tablet composer', () => {
     await composer(page).press('Meta+Enter');
     await expect(composer(page)).toHaveText('');
     expect((await harnessState(page)).sent).toEqual([
-      { to: 'main', content: '硬件键盘', images: 0 },
-      { to: 'main', content: '软键盘', images: 0 },
+      { to: 'm0', content: '硬件键盘', images: 0 },
+      { to: 'm0', content: '软键盘', images: 0 },
     ]);
   });
 

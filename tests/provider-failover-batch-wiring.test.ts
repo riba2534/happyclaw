@@ -69,46 +69,6 @@ const selectedMessages = [
 const expectedIds = selectedMessages.map((message) => message.id);
 
 describe('provider failover cold-run batch wiring', () => {
-  test('main passes the whole selected batch and frozen mode to both failover execution paths', () => {
-    const runner = productionFunction('runAgent');
-    const batchParameter = runner.parameters.findIndex(
-      (parameter) =>
-        parameter.name.getText(source) === 'currentBatchMessageIds',
-    );
-    const modeParameter = runner.parameters.findIndex(
-      (parameter) => parameter.name.getText(source) === 'frozenInteractionMode',
-    );
-    expect(batchParameter).toBeGreaterThanOrEqual(0);
-    expect(modeParameter).toBeGreaterThanOrEqual(0);
-    const mainCalls = calls(
-      productionFunction('processGroupMessages'),
-      'runAgent',
-    );
-    expect(mainCalls).toHaveLength(1);
-    const ids = evaluate(mainCalls[0].arguments[batchParameter], {
-      missedMessages: selectedMessages,
-    });
-    expect(ids).toEqual(expectedIds);
-    expect(
-      evaluate(mainCalls[0].arguments[modeParameter], {
-        interactionMode: 'assistant',
-      }),
-    ).toBe('assistant');
-
-    const failoverCalls = calls(runner, 'runAgentWithModelFallback');
-    expect(
-      failoverCalls.map((call) => call.arguments[0].getText(source)).sort(),
-    ).toEqual(['runContainerAgent', 'runHostAgent']);
-    for (const call of failoverCalls) {
-      const forwarded = evaluate(
-        propertyValue(call.arguments[2], 'currentBatchMessageIds'),
-        { currentBatchMessageIds: ids },
-      );
-      expect(forwarded).toBe(ids);
-      expect(forwarded).toEqual(expectedIds);
-    }
-  });
-
   test('conversation agents put the whole selected batch on their shared cold-run input', () => {
     const declarations = collect(
       productionFunction('processAgentConversation'),

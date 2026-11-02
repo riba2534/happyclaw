@@ -40,7 +40,7 @@ import { useGitReview } from './useGitReview';
 
 export interface ReviewPanelProps {
   groupJid: string;
-  /** Runtime Session id; null for the workspace's main session. */
+  /** The open session (its worktree, if it has one); null for the workspace's own checkout. */
   agentId: string | null;
   className?: string;
 }

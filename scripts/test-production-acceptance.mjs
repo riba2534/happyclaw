@@ -46,16 +46,29 @@ async function waitUntil(predicate, timeoutMs = 180_000, pollMs = 200) {
   throw new Error('Acceptance condition timed out');
 }
 
+// Every workspace gets one session the cases address by default; a workspace
+// has no conversation of its own.
+const primarySessions = new Map();
+const sessionOf = (jid, agentId) => agentId ?? primarySessions.get(jid);
+const sessionJidOf = (jid, agentId) =>
+  `${jid}#agent:${sessionOf(jid, agentId)}`;
+
+// A session's run lifecycle and snapshots arrive under its own JID, the
+// rest under the workspace JID with its agentId.
 function scopedEvents(jid, agentId, after) {
+  agentId = sessionOf(jid, agentId);
+  const laneJid = `${jid}#agent:${agentId}`;
   return events
     .slice(after)
     .filter(
       (event) =>
-        event.chatJid === jid && (event.agentId || undefined) === agentId,
+        event.chatJid === laneJid ||
+        (event.chatJid === jid && (event.agentId || undefined) === agentId),
     );
 }
 
 async function turn(jid, prompt, marker, agentId) {
+  agentId = sessionOf(jid, agentId);
   const after = events.length;
   const started = Date.now();
   ws.send(
@@ -153,6 +166,12 @@ async function workspace(mode) {
   ownedWorkspaces.push(created.jid);
   workspaceFolders.set(created.jid, created.group.folder);
   assert.equal(created.group.execution_mode, mode);
+  const { session } = await api(
+    'POST',
+    `/api/groups/${encodeURIComponent(created.jid)}/sessions`,
+    { name: 'Acceptance primary' },
+  );
+  primarySessions.set(created.jid, session.id);
   return created.jid;
 }
 
@@ -189,7 +208,7 @@ function ledgerKey(record) {
   return JSON.stringify([record.eventId, record.model]);
 }
 
-async function ownedMainLedger(jid) {
+async function ownedSessionLedger(jid) {
   const folder = workspaceFolders.get(jid);
   assert(
     ownedWorkspaces.includes(jid) && typeof folder === 'string' && folder,
@@ -205,7 +224,7 @@ async function ownedMainLedger(jid) {
     for (let page = 1; page <= pageCount; page++) {
       const query = new URLSearchParams({
         groupFolder: folder,
-        agentId: '__main__',
+        agentId: sessionOf(jid),
         days: '2',
         pageSize: '500',
         page: String(page),
@@ -232,11 +251,11 @@ async function ownedMainLedger(jid) {
       for (const record of snapshot.records) {
         assert(
           record.groupFolder === folder &&
-            record.agentId === null &&
+            record.agentId === sessionOf(jid) &&
             typeof record.eventId === 'string' &&
             !!record.eventId &&
             typeof record.model === 'string',
-          'Ledger response escaped the owned main scope',
+          'Ledger response escaped the owned session scope',
         );
         const key = ledgerKey(record);
         if (records.has(key)) stable = false;
@@ -265,7 +284,7 @@ async function verifyBackgroundLedger(jid, final, before) {
   let matched = false;
   await waitUntil(
     async () => {
-      const after = await ownedMainLedger(jid);
+      const after = await ownedSessionLedger(jid);
       assert(
         [...before.keys()].every((key) => after.has(key)),
         'Owned ledger lost pre-existing records',
@@ -286,7 +305,7 @@ async function verifyBackgroundLedger(jid, final, before) {
       }
       const history = await api(
         'GET',
-        `/api/groups/${encodeURIComponent(jid)}/messages`,
+        `/api/groups/${encodeURIComponent(jid)}/messages?agentId=${encodeURIComponent(sessionOf(jid))}`,
       );
       const message = history.messages.find(
         (row) =>
@@ -348,7 +367,8 @@ async function run() {
   ws.on('message', (data) => {
     try {
       const event = JSON.parse(data.toString());
-      if (ownedWorkspaces.includes(event.chatJid)) events.push(event);
+      const workspaceJid = String(event.chatJid ?? '').split('#agent:')[0];
+      if (ownedWorkspaces.includes(workspaceJid)) events.push(event);
     } catch {
       /* ignore non-JSON heartbeats */
     }
@@ -405,6 +425,7 @@ async function run() {
       JSON.stringify({
         type: 'send_message',
         chatJid: jid,
+        agentId: sessionOf(jid),
         content:
           'Run Bash sleep 15 in the foreground. Wait until it finishes before replying.',
       }),
@@ -417,7 +438,7 @@ async function run() {
       ),
     );
     const sleepRunner = (await api('GET', '/api/status')).groups.find(
-      (group) => group.jid === jid,
+      (group) => group.jid === sessionJidOf(jid),
     );
     assert(
       sleepRunner?.queryInFlight && sleepRunner.queryId,
@@ -445,13 +466,13 @@ async function run() {
     );
     const interrupted = await api(
       'POST',
-      `/api/groups/${encodeURIComponent(jid)}/interrupt`,
+      `/api/groups/${encodeURIComponent(sessionJidOf(jid))}/interrupt`,
       {},
     );
     assert.equal(interrupted.interrupted, true);
     const followupOutcome = await followup;
     if (!followupOutcome.success) throw followupOutcome.error;
-    // Automation lifecycle: a manual automation bound to the main session.
+    // Automation lifecycle: a manual automation bound to the primary session.
     const automationMarker = `${nonce}_${mode}_AUTOMATION`;
     const { automation } = await api('POST', '/api/automations', {
       workspaceJid: jid,
@@ -459,7 +480,7 @@ async function run() {
       prompt: `Use a tool to write acceptance-automation.txt containing exactly ${automationMarker}, then reply exactly ${automationMarker}.`,
       schedule: { kind: 'manual' },
       sessionMode: 'bound',
-      targetSessionJid: jid,
+      targetSessionJid: sessionJidOf(jid),
     });
     ownedAutomations.push(automation.id);
     const automationRoute = `/api/automations/${encodeURIComponent(automation.id)}`;
@@ -481,7 +502,7 @@ async function run() {
         if (current.status !== 'success') return false;
         assert.equal(
           current.sessionJid,
-          jid,
+          sessionJidOf(jid),
           'Automation run did not reach its bound session',
         );
         assert(
@@ -509,7 +530,7 @@ async function run() {
   cases.push({ marker: `${nonce}_LEGACY_TASKS_GONE`, passed: true });
   const host = ownedWorkspaces[0];
   const bg = `${nonce}_BACKGROUND_DONE`;
-  const backgroundLedgerBefore = await ownedMainLedger(host);
+  const backgroundLedgerBefore = await ownedSessionLedger(host);
   const backgroundAfter = events.length;
   await turn(
     host,

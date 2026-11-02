@@ -212,17 +212,27 @@ export function teamSettingsProblem(draft: TeamSettingsDraft): string | null {
   return null;
 }
 
+/** Whether a chat could carry team mode: a Feishu ordinary group, bound cleanly. */
+export function canCarryTeamMode(group: AvailableImGroup): boolean {
+  return (
+    group.channel_type === 'feishu' &&
+    group.conversation_kind === 'group' &&
+    !hasBindingPolicyMismatch(group)
+  );
+}
+
 /**
- * Whether a binding row can carry team mode: a Feishu ordinary group bound to
- * a workspace's main session. The server still decides eligibility.
+ * The workspace a binding row can turn team mode on in: that of the session
+ * a Feishu ordinary group is bound to (`workspaceOfSession` names it). The
+ * server still decides eligibility.
  */
-export function teamModeWorkspaceOf(group: AvailableImGroup): string | null {
-  if (group.channel_type !== 'feishu' || group.conversation_kind !== 'group')
-    return null;
-  if (hasBindingPolicyMismatch(group)) return null;
-  if (group.bound_session_id ?? group.bound_agent_id) return null;
-  const workspaceJid = group.bound_workspace_jid ?? group.bound_main_jid;
-  return workspaceJid?.startsWith('web:') ? workspaceJid : null;
+export function teamModeWorkspaceOf(
+  group: AvailableImGroup,
+  workspaceOfSession: (sessionId: string) => string | null | undefined,
+): string | null {
+  if (!canCarryTeamMode(group)) return null;
+  const sessionId = group.bound_session_id ?? group.bound_agent_id;
+  return (sessionId && workspaceOfSession(sessionId)) || null;
 }
 
 /** The router and worker sessions team mode opens. */

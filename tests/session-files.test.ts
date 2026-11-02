@@ -35,16 +35,19 @@ function touch(filePath: string, content = '') {
   fs.writeFileSync(filePath, content);
 }
 
+function sessionClaudeDir(folder: string, agentId: string): string {
+  return path.join(tmpRoot, 'sessions', folder, 'agents', agentId, '.claude');
+}
+
 describe('clearSessionFiles', () => {
-  test('removes everything under .claude/ except settings.json', () => {
-    const folder = 'main';
-    const claudeDir = path.join(tmpRoot, 'sessions', folder, '.claude');
+  test('removes everything under the session .claude/ except settings.json', () => {
+    const claudeDir = sessionClaudeDir('ws', 'session-a');
     touch(path.join(claudeDir, 'settings.json'), '{"keep":true}');
     touch(path.join(claudeDir, 'projects', 'foo', '1.jsonl'), 'line');
     touch(path.join(claudeDir, 'debug', 'sdk.txt'), 'debug');
     touch(path.join(claudeDir, 'CLAUDE.md'), '# runtime');
 
-    clearSessionFiles(folder);
+    clearSessionFiles('ws', 'session-a');
 
     expect(fs.existsSync(path.join(claudeDir, 'settings.json'))).toBe(true);
     expect(fs.existsSync(path.join(claudeDir, 'projects'))).toBe(false);
@@ -52,36 +55,26 @@ describe('clearSessionFiles', () => {
     expect(fs.existsSync(path.join(claudeDir, 'CLAUDE.md'))).toBe(false);
   });
 
-  test('agent-scoped clear only affects the given agent subdir', () => {
-    const folder = 'main';
-    const agentId = 'agent-xyz';
-    const mainDir = path.join(tmpRoot, 'sessions', folder, '.claude');
-    const agentDir = path.join(
-      tmpRoot,
-      'sessions',
-      folder,
-      'agents',
-      agentId,
-      '.claude',
-    );
-    touch(path.join(mainDir, 'projects', 'p.jsonl'));
-    touch(path.join(agentDir, 'projects', 'a.jsonl'));
-    touch(path.join(agentDir, 'settings.json'), '{}');
+  test("clearing one session leaves the workspace's other sessions alone", () => {
+    const cleared = sessionClaudeDir('ws', 'session-a');
+    const other = sessionClaudeDir('ws', 'session-b');
+    touch(path.join(other, 'projects', 'p.jsonl'));
+    touch(path.join(cleared, 'projects', 'a.jsonl'));
+    touch(path.join(cleared, 'settings.json'), '{}');
 
-    clearSessionFiles(folder, agentId);
+    clearSessionFiles('ws', 'session-a');
 
-    expect(fs.existsSync(path.join(mainDir, 'projects', 'p.jsonl'))).toBe(true);
-    expect(fs.existsSync(path.join(agentDir, 'projects'))).toBe(false);
-    expect(fs.existsSync(path.join(agentDir, 'settings.json'))).toBe(true);
+    expect(fs.existsSync(path.join(other, 'projects', 'p.jsonl'))).toBe(true);
+    expect(fs.existsSync(path.join(cleared, 'projects'))).toBe(false);
+    expect(fs.existsSync(path.join(cleared, 'settings.json'))).toBe(true);
   });
 
   test('no-op when .claude dir does not exist', () => {
-    expect(() => clearSessionFiles('never-created')).not.toThrow();
+    expect(() => clearSessionFiles('never-created', 'session-a')).not.toThrow();
   });
 
   test('survives a broken symlink inside .claude/', () => {
-    const folder = 'main';
-    const claudeDir = path.join(tmpRoot, 'sessions', folder, '.claude');
+    const claudeDir = sessionClaudeDir('ws', 'session-a');
     fs.mkdirSync(claudeDir, { recursive: true });
     touch(path.join(claudeDir, 'settings.json'));
     fs.symlinkSync(
@@ -92,7 +85,7 @@ describe('clearSessionFiles', () => {
     // Core guarantee: the per-entry try/catch means a problematic symlink
     // does NOT abort the whole reset — settings.json must survive regardless
     // of whether the symlink itself is cleanable on the current platform.
-    expect(() => clearSessionFiles(folder)).not.toThrow();
+    expect(() => clearSessionFiles('ws', 'session-a')).not.toThrow();
     expect(fs.existsSync(path.join(claudeDir, 'settings.json'))).toBe(true);
   });
 });

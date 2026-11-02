@@ -32,7 +32,6 @@ import {
   logAuthEvent,
   deleteWorkspaceSessions,
   deleteSessionsByProviderIdAroundCommit,
-  getSession,
   getRouterState,
   getRouterStateByPrefix,
   setRouterState,
@@ -250,7 +249,9 @@ import {
   hasRemainingThreadMapMount,
   hasSessionMountConflict,
   hasWorkspaceMountConflict,
+  isBindableSession,
   isNativeContextContainer,
+  SESSION_NOT_BINDABLE,
   unbindChannelMount,
 } from '../channel-mount-service.js';
 import { checkImChannelLimit, isBillingEnabled } from '../billing.js';
@@ -480,12 +481,11 @@ function restorePendingProviderRuntimeSafetyBlocks(): void {
   for (const providerId of pendingProviderIds) {
     if (providerId && configuredProviderIds.has(providerId)) continue;
     if (providerId) {
-      const cleanup = deleteSessionsByProviderIdAroundCommit(
+      deleteSessionsByProviderIdAroundCommit(
         providerId,
         undefined,
         () => undefined,
       );
-      syncProviderSessionCaches(cleanup.affectedFolders);
     }
     deleteRouterState(providerInvalidationStateKey(providerId));
     volatilePendingProviderSessionInvalidations.delete(providerId);
@@ -629,18 +629,6 @@ function getProviderSessionCleanupOptions(
   };
 }
 
-function syncProviderSessionCaches(affectedFolders: string[]): void {
-  if (!deps) return;
-  for (const folder of affectedFolders) {
-    const remainingMainSession = getSession(folder);
-    if (remainingMainSession !== undefined) {
-      deps.sessions[folder] = remainingMainSession;
-    } else {
-      delete deps.sessions[folder];
-    }
-  }
-}
-
 /** The models a connection offers once an edit is saved. */
 function providerModelsAfterEdit(
   previous: UnifiedProvider,
@@ -689,7 +677,6 @@ function commitProviderConfigWithSessionInvalidation<T>(
     getProviderSessionCleanupOptions(providerId, invalidation),
     commit,
   );
-  syncProviderSessionCaches(result.affectedFolders);
   return { value: result.value, clearedSessionsCount: result.deletedCount };
 }
 
@@ -3905,10 +3892,6 @@ configRoutes.put(
         }
         for (const folder of sessionResetFolders)
           deleteWorkspaceSessions(folder);
-        if (deps?.sessions) {
-          for (const folder of sessionResetFolders)
-            delete deps.sessions[folder];
-        }
         const value = saveSystemSettings(validation.data);
         return value;
       };
@@ -5739,24 +5722,21 @@ configRoutes.put('/user-im/bindings/:imJid', authMiddleware, async (c) => {
         ? body.target_agent_id.trim()
         : '';
 
-  // Parse once for named sessions, main/workspace binds, and policy-only updates.
+  // Parse once for session binds, topic workspace binds, and policy-only updates.
   const { activationMode, audienceMode } = parseBindingResponsePolicy(
     imJid,
     body,
   );
 
   // Bind to workspace session. Stored in target_agent_id for backward compatibility.
-  if (targetSessionId && targetSessionId !== 'main') {
+  if (targetSessionId) {
     const sessionId = targetSessionId;
     const agent = getAgent(sessionId);
     if (!agent) {
       return c.json({ error: 'Session not found' }, 404);
     }
-    if (agent.kind !== 'conversation') {
-      return c.json(
-        { error: 'Only workspace sessions can bind IM groups' },
-        400,
-      );
+    if (!isBindableSession(agent)) {
+      return c.json(SESSION_NOT_BINDABLE, 400);
     }
     if (!agent.chat_jid.startsWith('web:')) {
       return c.json(
@@ -5802,6 +5782,9 @@ configRoutes.put('/user-im/bindings/:imJid', authMiddleware, async (c) => {
       !freshAgent.chat_jid.startsWith('web:')
     ) {
       return c.json({ error: 'Session not found' }, 404);
+    }
+    if (!isBindableSession(freshAgent)) {
+      return c.json(SESSION_NOT_BINDABLE, 400);
     }
     const freshOwnerGroup = getRegisteredGroup(freshAgent.chat_jid);
     if (
@@ -5875,7 +5858,7 @@ configRoutes.put('/user-im/bindings/:imJid', authMiddleware, async (c) => {
       ? body.owner_im_id.trim()
       : undefined;
 
-  // Bind to workspace main conversation
+  // Bind a native topic group to a workspace (each topic its own session)
   if (typeof body.target_main_jid === 'string' && body.target_main_jid.trim()) {
     const targetMainJid = body.target_main_jid.trim();
     if (!targetMainJid.startsWith('web:')) {
@@ -5913,7 +5896,7 @@ configRoutes.put('/user-im/bindings/:imJid', authMiddleware, async (c) => {
     }
     const bindingPolicyError = conversationBindingPolicyError(
       getConversationKind(imJid, freshImGroup, chatInfo),
-      targetSessionId === 'main' ? 'session' : 'workspace',
+      'workspace',
     );
     if (bindingPolicyError) {
       return c.json({ error: bindingPolicyError }, 400);
@@ -5927,12 +5910,6 @@ configRoutes.put('/user-im/bindings/:imJid', authMiddleware, async (c) => {
     ) {
       return c.json({ error: FEISHU_P2P_MENTION_ACTIVATION_ERROR }, 400);
     }
-    // Compute against freshImGroup, not the pre-await snapshot — see
-    // fetchLiveChatInfo's doc comment.
-    const threadCapable = isNativeContextContainer(imJid, freshImGroup, {
-      ...(chatInfo ?? {}),
-      activation_mode: activationMode ?? freshImGroup.activation_mode,
-    });
     const force = body.force === true;
     const replyPolicy = 'source_only' as const;
     const legacyMainJid = `web:${freshTargetGroup.folder}`;
@@ -5945,17 +5922,12 @@ configRoutes.put('/user-im/bindings/:imJid', authMiddleware, async (c) => {
       return c.json({ error: 'IM group is already bound elsewhere' }, 409);
     }
     const updated: RegisteredGroup = {
-      ...buildWorkspaceMountUpdate(
-        freshImGroup,
-        targetMainJid,
-        threadCapable ? 'thread_map' : 'single_session',
-        {
-          replyPolicy,
-          ...(activationMode !== undefined ? { activationMode } : {}),
-          ...(audienceMode !== undefined ? { audienceMode } : {}),
-          ...(ownerImId !== undefined ? { ownerImId } : {}),
-        },
-      ),
+      ...buildWorkspaceMountUpdate(freshImGroup, targetMainJid, 'thread_map', {
+        replyPolicy,
+        ...(activationMode !== undefined ? { activationMode } : {}),
+        ...(audienceMode !== undefined ? { audienceMode } : {}),
+        ...(ownerImId !== undefined ? { ownerImId } : {}),
+      }),
       feishu_chat_mode: chatInfo?.chat_mode ?? freshImGroup.feishu_chat_mode,
       feishu_group_message_type:
         chatInfo?.group_message_type ?? freshImGroup.feishu_group_message_type,
@@ -5969,13 +5941,13 @@ configRoutes.put('/user-im/bindings/:imJid', authMiddleware, async (c) => {
         freshImGroup.target_main_jid,
         imJid,
         targetMainJid,
-        threadCapable ? 'thread_map' : 'single_session',
+        'thread_map',
       );
     }
-    if (threadCapable) markNativeContextWorkspace(targetMainJid);
+    markNativeContextWorkspace(targetMainJid);
     logger.info(
-      { imJid, targetMainJid, threadCapable, userId: user.id },
-      'IM group bound to workspace (bindings page)',
+      { imJid, targetMainJid, userId: user.id },
+      'IM topic group bound to workspace (bindings page)',
     );
     return c.json({ success: true });
   }
@@ -6018,11 +5990,17 @@ configRoutes.put('/user-im/bindings/:imJid', authMiddleware, async (c) => {
         400,
       );
     }
+    if (candidate.target_main_jid && !threadCapable) {
+      return c.json(
+        { error: 'Workspace bindings only accept native topic groups' },
+        400,
+      );
+    }
     const updated = candidate.target_main_jid
       ? buildWorkspaceMountUpdate(
           candidate,
           candidate.target_main_jid,
-          threadCapable ? 'thread_map' : 'single_session',
+          'thread_map',
           {
             activationMode: candidate.activation_mode,
             audienceMode: candidate.audience_mode,
@@ -6031,10 +6009,7 @@ configRoutes.put('/user-im/bindings/:imJid', authMiddleware, async (c) => {
         )
       : candidate;
     commitChannelMountUpdate(imJid, updated);
-    if (imGroup.binding_mode === 'thread_map' && !threadCapable) {
-      detachThreadMapWorkspaceIfLast(imGroup.target_main_jid, imJid);
-    }
-    if (threadCapable && updated.target_main_jid) {
+    if (updated.target_main_jid) {
       markNativeContextWorkspace(updated.target_main_jid);
     }
     logger.info(

@@ -1,7 +1,7 @@
 // Interaction harness for the chat composer: ChatView over mocked stores with
 // a main conversation and two Web sessions in one workspace. Sends, uploads,
 // stops and queue actions are recorded on `window.composerHarness`.
-//   ?empty=1   the main conversation starts with no messages
+//   ?empty=1   the first session (m0) starts with no messages
 //   ?statusbar=1  the composer alone over a stub list, with a status bar
 //                 that shows while setStatusRunning(true)
 //   ?readonly=1   the user may not change the workspace's configuration
@@ -26,6 +26,8 @@ import type { AgentInfo } from '../../src/types';
 import '../../src/styles/globals.css';
 
 const groupJid = 'web:e2e-composer';
+/** The session the harness opens first (others: a1, a2). */
+const FIRST = 'm0';
 const startsEmpty =
   new URLSearchParams(window.location.search).get('empty') === '1';
 const readOnly =
@@ -99,24 +101,23 @@ const harness = {
   sent: [] as SentRecord[],
   uploads: [] as string[][],
   stops: [] as string[],
-  resets: [] as Array<{ jid: string; agentId: string | null }>,
+  resets: [] as Array<{ jid: string; agentId: string }>,
   /** Times ChatView handed back to the page (ChatPage's list). */
   backs: 0,
   queueActions: [] as Array<{ id: string; action: string; content?: string }>,
   sendDelayMs: 0,
+  /** Open a session; null opens the first one (m0). */
   switchTo: (_id: string | null) => {},
   /** The bare composer's run state (?statusbar=1). */
   setStatusRunning: (_running: boolean) => {},
   /** Mark the visible conversation as running (or idle). */
   setRunning(running: boolean, agentId: string | null = null) {
-    useChatStore.setState((s) =>
-      agentId
-        ? { agentWaiting: { ...s.agentWaiting, [agentId]: running } }
-        : { waiting: { ...s.waiting, [groupJid]: running } },
-    );
+    useChatStore.setState((s) => ({
+      agentWaiting: { ...s.agentWaiting, [agentId ?? FIRST]: running },
+    }));
   },
   setQueue(count: number, agentId: string | null = null, imageOnly = false) {
-    const chatJid = agentId ? `${groupJid}#agent:${agentId}` : groupJid;
+    const chatJid = `${groupJid}#agent:${agentId ?? FIRST}`;
     const items: QueuedFollowUp[] = Array.from({ length: count }, (_, i) => ({
       id: `q${i + 1}`,
       chat_jid: chatJid,
@@ -153,19 +154,19 @@ const harness = {
   pushContextUsage(data: Record<string, unknown>) {
     (wsManager as unknown as { emit(t: string, d: unknown): void }).emit(
       'context_usage',
-      { type: 'context_usage', chatJid: groupJid, ...data },
+      { type: 'context_usage', chatJid: groupJid, agentId: FIRST, ...data },
     );
   },
-  /** Adds a message from this user to the main conversation. */
+  /** Adds a message from this user to the first session. */
   pushMessage(content: string) {
     useChatStore.setState((s) => ({
-      messages: {
-        ...s.messages,
-        [groupJid]: [
-          ...(s.messages[groupJid] ?? []),
+      agentMessages: {
+        ...s.agentMessages,
+        [FIRST]: [
+          ...(s.agentMessages[FIRST] ?? []),
           {
             id: `pushed-${Date.now()}`,
-            chat_jid: groupJid,
+            chat_jid: `${groupJid}#agent:${FIRST}`,
             sender: userId,
             sender_name: '测试用户',
             content,
@@ -211,22 +212,24 @@ useChatStore.setState({
     },
   },
   currentGroup: groupJid,
-  messages: { [groupJid]: startsEmpty ? [] : history(groupJid, 'main') },
-  waiting: {},
-  hasMore: { [groupJid]: false },
-  agents: { [groupJid]: [session('a1', '会话 A'), session('a2', '会话 B')] },
-  activeAgentTab: { [groupJid]: null },
+  agents: {
+    [groupJid]: [
+      session(FIRST, '会话 M'),
+      session('a1', '会话 A'),
+      session('a2', '会话 B'),
+    ],
+  },
+  activeAgentTab: { [groupJid]: FIRST },
   agentMessages: {
+    [FIRST]: startsEmpty ? [] : history(`${groupJid}#agent:${FIRST}`, FIRST),
     a1: history(`${groupJid}#agent:a1`, 'a1'),
     a2: history(`${groupJid}#agent:a2`, 'a2'),
   },
   agentWaiting: {},
   agentHasMore: {},
-  followUps: { [groupJid]: [] },
+  followUps: {},
   drafts: {},
   loading: false,
-  loadMessages: async () => undefined,
-  refreshMessages: async () => undefined,
   restoreActiveState: async () => undefined,
   loadAgents: async () => undefined,
   loadFollowUps: async () => undefined,
@@ -234,18 +237,15 @@ useChatStore.setState({
   hydrateAgentMessages: async () => undefined,
   refreshAgentMessages: async () => undefined,
   markChatRead: () => undefined,
-  sendMessage: async (_jid, content, attachments, mode) =>
-    record({ to: 'main', content, images: attachments?.length ?? 0, mode }),
   sendAgentMessage: async (_jid, agentId, content, attachments, mode) =>
     record({ to: agentId, content, images: attachments?.length ?? 0, mode }),
   interruptQuery: async (jid) => {
     harness.stops.push(jid);
-    const agentId = jid.includes('#agent:') ? jid.split('#agent:')[1] : null;
-    harness.setRunning(false, agentId);
+    harness.setRunning(false, jid.split('#agent:')[1]);
     return true;
   },
   resetSession: async (jid, agentId) => {
-    harness.resets.push({ jid, agentId: agentId ?? null });
+    harness.resets.push({ jid, agentId });
     return true;
   },
   actOnFollowUp: async (_chatJid, id, action, _runId, content) => {
@@ -276,8 +276,7 @@ function SessionSwitcher() {
       setSearchParams(
         (prev) => {
           const next = new URLSearchParams(prev);
-          if (id) next.set('agent', id);
-          else next.delete('agent');
+          next.set('agent', id ?? FIRST);
           return next;
         },
         { replace: true },
@@ -329,7 +328,7 @@ function BareComposer() {
       </div>
       <MessageInput
         groupJid={groupJid}
-        onSend={(content) => record({ to: 'main', content, images: 0 })}
+        onSend={(content) => record({ to: 'composer', content, images: 0 })}
         isRunning={running}
         onStop={() => {
           setRunning(false);
@@ -360,7 +359,7 @@ const askCards = params.get('ask') === '1';
 const bareComposer = params.get('statusbar') === '1' || askCards;
 
 createRoot(document.getElementById('root')!).render(
-  <MemoryRouter initialEntries={['/chat/e2e-composer']}>
+  <MemoryRouter initialEntries={[`/chat/e2e-composer?agent=${FIRST}`]}>
     <SessionSwitcher />
     {/* showToast renders through the app's sonner Toaster. */}
     <Toaster position="top-center" />

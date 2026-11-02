@@ -200,12 +200,12 @@ admin 没有跨 owner bypass。目标 Workspace/item 不存在或授权失败均
 
 Agent Runtime 的 Workspace Memory MCP 还叠加执行上下文策略：
 
-| 执行上下文                                       | 读取 | 创建、更新、忘记                   |
-| ------------------------------------------------ | ---- | ---------------------------------- |
-| 顶层 Main/Runtime Session，批次全部是 owner 输入 | 允许 | 按 Workspace ACL                   |
-| 顶层 Main/Runtime Session，含非 owner 输入       | 允许 | 只能创建/修改/忘记 `proposed` 条目 |
-| 自动化运行的轮次                                 | 允许 | 只能创建/修改/忘记 `proposed` 条目 |
-| Spawn/Task 会话、SDK Task Sub-Agent              | 允许 | 拒绝                               |
+| 执行上下文                                  | 读取 | 创建、更新、忘记                   |
+| ------------------------------------------- | ---- | ---------------------------------- |
+| 顶层 Runtime Session，批次全部是 owner 输入 | 允许 | 按 Workspace ACL                   |
+| 顶层 Runtime Session，含非 owner 输入       | 允许 | 只能创建/修改/忘记 `proposed` 条目 |
+| 自动化运行的轮次                            | 允许 | 只能创建/修改/忘记 `proposed` 条目 |
+| Spawn/Task 会话、SDK Task Sub-Agent         | 允许 | 拒绝                               |
 
 owner 输入的判定在宿主：Web 输入的 sender 等于 owner 用户 id；IM 输入的发送者 IM id
 必须等于该工作区注册中由宿主记录的 owner（claim source 为 `configured`、
@@ -259,18 +259,18 @@ admin。admin 没有跨 owner bypass，不存在与无权限都返回 404。
 写操作统一要求目标工作区 Modify，同时校验 IM Chat 属于同一用户、同一渠道账号，
 并验证会话类型：
 
-| 绑定                  | 允许目标 | 路由                                              |
-| --------------------- | -------- | ------------------------------------------------- |
-| Workspace Mount       | 群聊     | `/api/groups/:jid/im-binding`                     |
-| Runtime Session Mount | 私聊     | `/api/groups/:jid/sessions/:sessionId/im-binding` |
-| `/agents` 兼容 Mount  | 私聊     | `/api/groups/:jid/agents/:agentId/im-binding`     |
+| 绑定                  | 允许目标     | 路由                                              |
+| --------------------- | ------------ | ------------------------------------------------- |
+| Workspace Mount       | 原生话题群   | `/api/groups/:jid/im-binding`                     |
+| Runtime Session Mount | 私聊、普通群 | `/api/groups/:jid/sessions/:sessionId/im-binding` |
+| `/agents` 兼容 Mount  | 私聊、普通群 | `/api/groups/:jid/agents/:agentId/im-binding`     |
 
 附加规则：
 
 - `channel_account_id` 必须属于当前用户。
 - 账号编码在 JID 中时，必须与数据库记录一致。
 - 原生话题容器使用 `thread_map`，不能绑定到一个固定 Session 后吞并所有话题。
-- Unbind 必须原子恢复该 Bot 的默认工作区；无法解析默认目标时保留旧绑定并报错。
+- Unbind 真正移除投递关系，聊天变为未绑定，不恢复默认工作区，也不改投到任何会话。
 
 ## 6. 系统和管理权限
 
@@ -367,8 +367,9 @@ Owner Claim：
 收到私聊时持久化 `feishu_chat_mode=p2p`；否则按持久化的 `feishu_chat_mode` 判断，
 未知时按群聊处理（fail closed）。私聊中的 owner-required 命令在 owner 未知时认领
 发送者；群聊永不自动认领。运行时控制在群聊路由失败时回复目标不存在，只有私聊才由
-绑定解析目标，绝不回退到 Workspace 主会话。`/recall` 在话题群中只读取当前话题的
-Session，缺少话题元数据时拒绝，不回退到 Workspace 主会话。
+绑定解析目标，绝不回退到工作区的其他会话；未绑定的聊天没有目标，`/clear`、`/fresh`、
+`/recall` 回复「本聊天未绑定会话。」且不做任何操作。`/recall` 在话题群中只读取当前话题的
+Session，缺少话题元数据时拒绝，不回退到工作区的其他会话。
 
 不同 Provider 的原生 sender ID namespace 不得混用。例如 QQ C2C 与 Group 使用不同
 ID 空间；owner 比对必须使用渠道适配器传入的规范化 ID。

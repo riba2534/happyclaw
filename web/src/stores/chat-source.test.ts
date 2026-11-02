@@ -6,7 +6,7 @@ describe('chat store source encoding', () => {
     const source = readFileSync(new URL('./chat.ts', import.meta.url));
     expect(source.includes(0)).toBe(false);
     expect(source.toString('utf8')).toContain(
-      "const inFlightKey = `${jid}\\0${beforeSequence ?? before ?? 'first'}`;",
+      'return `${chatJid}\\0${messageId}`;',
     );
   });
 });

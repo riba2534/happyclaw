@@ -138,8 +138,7 @@ export interface AutomationRuntimeDeps {
   }): Promise<void>;
   /**
    * Send a framework notice (result summary, failure, recovery) to an IM
-   * route or, when routeJid is a `web:` session, into that session as a
-   * bot message.
+   * route. Notices are never written into a session.
    */
   sendAutomationNotice(req: {
     automation: Automation;

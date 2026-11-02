@@ -143,26 +143,25 @@ const assistant = (
     ...extra,
   });
 
-/** A session of the conversation with its transcript on disk. */
+/** An SDK session of a conversation with its transcript on disk. */
 function session(
   lines: string[],
   options: { agentId?: string; model?: string } = {},
 ): void {
-  const sessionId = `sdk-${options.agentId ?? 'main'}`;
-  db.setSession(FOLDER, sessionId, options.agentId ?? null);
+  const agentId = options.agentId ?? AGENT;
+  const sessionId = `sdk-${agentId}`;
+  db.setSession(FOLDER, sessionId, agentId);
   if (options.model) {
-    db.setSessionModel(FOLDER, options.agentId ?? null, options.model);
+    db.setSessionModel(FOLDER, agentId, options.model);
   }
-  const claudeDir = options.agentId
-    ? path.join(
-        dataDir,
-        'sessions',
-        FOLDER,
-        'agents',
-        options.agentId,
-        '.claude',
-      )
-    : path.join(dataDir, 'sessions', FOLDER, '.claude');
+  const claudeDir = path.join(
+    dataDir,
+    'sessions',
+    FOLDER,
+    'agents',
+    agentId,
+    '.claude',
+  );
   const projectDir = path.join(claudeDir, 'projects', '-workspace-group');
   fs.mkdirSync(projectDir, { recursive: true });
   fs.writeFileSync(
@@ -193,7 +192,7 @@ const pushed = (client: ReturnType<typeof addClient>) =>
 
 describe('reading how full a context is', () => {
   test('nothing ran: everything is null', async () => {
-    expect(await usage.readSessionContextUsage(FOLDER, null)).toEqual(
+    expect(await usage.readSessionContextUsage(FOLDER, AGENT)).toEqual(
       usage.NO_CONTEXT_USAGE,
     );
   });
@@ -210,7 +209,7 @@ describe('reading how full a context is', () => {
       ],
       { model: 'glm-5.3' },
     );
-    expect(await usage.readSessionContextUsage(FOLDER, null)).toEqual({
+    expect(await usage.readSessionContextUsage(FOLDER, AGENT)).toEqual({
       usedTokens: 31_700,
       // glm-5.3 has a 1M window, but Claude Code is given 200K without [1m].
       contextWindow: 200_000,
@@ -222,13 +221,14 @@ describe('reading how full a context is', () => {
 
   test('a [1m] model works with 1M; Claude Code’s own report wins over both', async () => {
     session([assistant('glm-5.3', 100_000, 0, 0)], { model: 'glm-5.3[1m]' });
-    expect(await usage.readSessionContextUsage(FOLDER, null)).toMatchObject({
+    expect(await usage.readSessionContextUsage(FOLDER, AGENT)).toMatchObject({
       contextWindow: 1_000_000,
       percentage: 10,
     });
 
     recordRunContextSnapshot({
       chatJid: JID,
+      agentId: AGENT,
       audit: {
         executionMode: 'container',
         claudeMd: { status: 'loaded' },
@@ -245,13 +245,13 @@ describe('reading how full a context is', () => {
         },
       } as never,
     });
-    expect(await usage.readSessionContextUsage(FOLDER, null)).toMatchObject({
+    expect(await usage.readSessionContextUsage(FOLDER, AGENT)).toMatchObject({
       contextWindow: 800_000,
       percentage: 12.5,
     });
     // Another model's report does not apply.
     session([assistant('kimi-k3', 100_000, 0, 0)], { model: 'kimi-k3' });
-    expect(await usage.readSessionContextUsage(FOLDER, null)).toMatchObject({
+    expect(await usage.readSessionContextUsage(FOLDER, AGENT)).toMatchObject({
       contextWindow: 200_000,
     });
   });
@@ -261,7 +261,7 @@ describe('reading how full a context is', () => {
       assistant('glm-5.3', 1_200, 30_000, 500),
       JSON.stringify({ type: 'system', subtype: 'compact_boundary' }),
     ]);
-    expect(await usage.readSessionContextUsage(FOLDER, null)).toEqual(
+    expect(await usage.readSessionContextUsage(FOLDER, AGENT)).toEqual(
       usage.NO_CONTEXT_USAGE,
     );
   });
@@ -275,7 +275,7 @@ describe('reading how full a context is', () => {
       assistant('glm-5.3', 2_000, 0, 0),
       ...Array.from({ length: 6 }, () => toolResult),
     ]);
-    expect(await usage.readSessionContextUsage(FOLDER, null)).toMatchObject({
+    expect(await usage.readSessionContextUsage(FOLDER, AGENT)).toMatchObject({
       usedTokens: 2_000,
     });
   });
@@ -283,7 +283,7 @@ describe('reading how full a context is', () => {
 
 describe('the window when Claude Code has not reported one', () => {
   function bound(provider: { id: string }) {
-    db.setSessionProviderId(FOLDER, null, provider.id);
+    db.setSessionProviderId(FOLDER, AGENT, provider.id);
   }
 
   test('an official connection: the declared window, else 1M for a [1m] name, else 200K', async () => {
@@ -297,7 +297,7 @@ describe('the window when Claude Code has not reported one', () => {
       anthropicModel: 'opus',
     });
     bound(official);
-    expect(await usage.readSessionContextUsage(FOLDER, null)).toMatchObject({
+    expect(await usage.readSessionContextUsage(FOLDER, AGENT)).toMatchObject({
       contextWindow: 200_000,
       percentage: 75,
     });
@@ -306,7 +306,7 @@ describe('the window when Claude Code has not reported one', () => {
       model: 'opus[1m]',
     });
     bound(official);
-    expect(await usage.readSessionContextUsage(FOLDER, null)).toMatchObject({
+    expect(await usage.readSessionContextUsage(FOLDER, AGENT)).toMatchObject({
       contextWindow: 1_000_000,
       percentage: 15,
     });
@@ -324,7 +324,7 @@ describe('the window when Claude Code has not reported one', () => {
         models: [{ id: 'glm-5.3', contextWindow: 500_000 }],
       }),
     );
-    expect(await usage.readSessionContextUsage(FOLDER, null)).toMatchObject({
+    expect(await usage.readSessionContextUsage(FOLDER, AGENT)).toMatchObject({
       contextWindow: 500_000,
       percentage: 20,
     });
@@ -333,13 +333,13 @@ describe('the window when Claude Code has not reported one', () => {
   test('a prompt past the window takes the larger window, and never reads past 100%', async () => {
     // glm-5.3 is given 200K behind an endpoint, but a 300K prompt fit.
     session([assistant('glm-5.3', 300_000, 0, 0)], { model: 'glm-5.3' });
-    expect(await usage.readSessionContextUsage(FOLDER, null)).toMatchObject({
+    expect(await usage.readSessionContextUsage(FOLDER, AGENT)).toMatchObject({
       contextWindow: 1_000_000,
       percentage: 30,
     });
     // A model of unknown size: the ring is full, not past it.
     session([assistant('relay-x', 450_000, 0, 0)], { model: 'relay-x' });
-    expect(await usage.readSessionContextUsage(FOLDER, null)).toMatchObject({
+    expect(await usage.readSessionContextUsage(FOLDER, AGENT)).toMatchObject({
       usedTokens: 450_000,
       contextWindow: 200_000,
       percentage: 100,
@@ -348,8 +348,8 @@ describe('the window when Claude Code has not reported one', () => {
 
   test('a session cleared while its transcript was read reads empty', async () => {
     session([assistant('glm-5.3', 1_000, 0, 0)]);
-    const pending = usage.readSessionContextUsage(FOLDER, null);
-    db.deleteSession(FOLDER);
+    const pending = usage.readSessionContextUsage(FOLDER, AGENT);
+    db.deleteSession(FOLDER, AGENT);
     expect(await pending).toEqual(usage.NO_CONTEXT_USAGE);
   });
 });
@@ -362,22 +362,21 @@ describe('GET /:jid/context-usage', () => {
     return { status: res.status, body: await res.json() };
   };
 
-  test("reads the main conversation's and a side conversation's own", async () => {
-    session([assistant('glm-5.3', 1_000, 0, 0)]);
-    session([assistant('kimi-k3', 3_000, 0, 0)], { agentId: AGENT });
-    expect(await get()).toMatchObject({
-      status: 200,
-      body: { usedTokens: 1_000, model: 'glm-5.3' },
-    });
+  test("reads the session's own", async () => {
+    session([assistant('kimi-k3', 3_000, 0, 0)]);
     expect(await get(`?agentId=${AGENT}`)).toMatchObject({
       status: 200,
       body: { usedTokens: 3_000, model: 'kimi-k3' },
+    });
+    expect(await get()).toEqual({
+      status: 400,
+      body: { error: 'Session required', code: 'session_required' },
     });
   });
 
   test('hides another account’s workspace', async () => {
     harness.userId = 'ctx-other';
-    expect((await get()).status).toBe(404);
+    expect((await get(`?agentId=${AGENT}`)).status).toBe(404);
   });
 });
 
@@ -386,11 +385,12 @@ describe('the push to the Web', () => {
     session([assistant('glm-5.3', 1_000, 0, 0)]);
     const owner = addClient(OWNER);
     const other = addClient('ctx-other');
-    await broadcastContextUsage(FOLDER, null);
+    await broadcastContextUsage(FOLDER, AGENT);
     expect(pushed(owner)).toEqual([
       {
         type: 'context_usage',
         chatJid: JID,
+        agentId: AGENT,
         usedTokens: 1_000,
         contextWindow: 200_000,
         percentage: 0.5,
@@ -399,27 +399,30 @@ describe('the push to the Web', () => {
       },
     ]);
     expect(pushed(other)).toEqual([]);
-
-    await broadcastContextUsage(FOLDER, AGENT);
-    expect(pushed(owner).at(-1)).toMatchObject({
-      agentId: AGENT,
-      usedTokens: null,
-    });
   });
 
   test('a cleared conversation reads empty until its next turn', async () => {
     session([assistant('glm-5.3', 1_000, 0, 0)]);
     const owner = addClient(OWNER);
-    await executeSessionReset(JID, FOLDER, {
-      queue: { stopGroup: async () => {} },
-      sessions: {},
-      broadcast: () => {},
-      setLastAgentTimestamp: () => {},
-    });
+    await executeSessionReset(
+      JID,
+      FOLDER,
+      {
+        queue: { stopGroup: async () => {} },
+        broadcast: () => {},
+        setLastAgentTimestamp: () => {},
+      },
+      AGENT,
+    );
     expect(pushed(owner)).toEqual([
-      { type: 'context_usage', chatJid: JID, ...usage.NO_CONTEXT_USAGE },
+      {
+        type: 'context_usage',
+        chatJid: JID,
+        agentId: AGENT,
+        ...usage.NO_CONTEXT_USAGE,
+      },
     ]);
-    expect(await usage.readSessionContextUsage(FOLDER, null)).toEqual(
+    expect(await usage.readSessionContextUsage(FOLDER, AGENT)).toEqual(
       usage.NO_CONTEXT_USAGE,
     );
   });

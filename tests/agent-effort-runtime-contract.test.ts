@@ -43,7 +43,7 @@ describe('Agent effort runtime contracts', () => {
     const host = read('src/container-runner.ts');
     expect(
       host.match(
-        /input = prepareLaunchInput\(input, (?:hostPoolResult|poolResult), sessionAgentId\);/g,
+        /input = prepareLaunchInput\(input, (?:hostPoolResult|poolResult)\);/g,
       ),
     ).toHaveLength(2);
     expect(read('container/agent-runner/src/index.ts')).toContain(

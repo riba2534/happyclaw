@@ -14,6 +14,7 @@ import { useConnectionStatus } from '../../hooks/useConnectionStatus';
 import { useReplyRate } from '../../hooks/useReplyRate';
 import { useRunElapsed } from '../../hooks/useRunElapsed';
 import { useThrottledValue } from '../../hooks/useThrottledValue';
+import { sessionJidOf } from '../../lib/session-jid';
 import { useAfterDelay } from '../../hooks/useTick';
 import {
   latestProgress,
@@ -54,13 +55,11 @@ export const RunStatusBar = memo(function RunStatusBar({
   agentId,
 }: {
   groupJid: string;
-  agentId?: string | null;
+  agentId: string;
 }) {
-  const runtimeJid = agentId ? `${groupJid}#agent:${agentId}` : groupJid;
-  const running = useChatStore((s) =>
-    agentId
-      ? !!s.agentWaiting[agentId] || isLiveStream(s.agentStreaming[agentId])
-      : !!s.waiting[groupJid],
+  const runtimeJid = sessionJidOf(groupJid, agentId);
+  const running = useChatStore(
+    (s) => !!s.agentWaiting[agentId] || isLiveStream(s.agentStreaming[agentId]),
   );
   const stopping = useChatStore((s) => !!s.stopRequests[runtimeJid]);
   const proactive = useChatStore((s) => isProactiveRuntime(s, runtimeJid));
@@ -95,7 +94,7 @@ export const RunStatusBar = memo(function RunStatusBar({
   );
   const stillGoing = useAfterDelay(running && quiet, QUIET_DELAY_MS);
   const elapsed = useRunElapsed(runtimeJid);
-  const rate = useReplyRate(groupJid, agentId ?? undefined);
+  const rate = useReplyRate(agentId);
   const offline = useConnectionStatus() === 'offline';
   const busyOnly = (proactive && hidden) || quiet;
   const label = offline

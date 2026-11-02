@@ -42,7 +42,6 @@ import {
   MAX_FILE_SIZE,
   FileTooLargeError,
 } from './im-downloader.js';
-import { notifyNewImMessage } from './message-notifier.js';
 import { detectImageMimeType } from './image-detector.js';
 import { resolveJidByMessageId } from './feishu-streaming-card.js';
 import { buildPostMdFallback } from './feishu-message-format.js';
@@ -217,7 +216,7 @@ export interface ConnectOptions {
   ) => Promise<string | null>;
   /** 根据 chatJid 解析群组 folder，用于下载文件/图片到工作区 */
   resolveGroupFolder?: (chatJid: string) => string | undefined;
-  /** 将 IM chatJid 解析为绑定目标 JID（conversation agent 或工作区主对话） */
+  /** 将 IM chatJid 解析为绑定的会话（话题群为该话题的会话） */
   resolveEffectiveChatJid?: (
     chatJid: string,
     messageMeta?: FeishuMessageMeta,
@@ -3715,7 +3714,7 @@ export function createFeishuConnection(
                       targetJid,
                       senderImId: senderOpenId,
                       // Lets the host resolve a private chat's own Session
-                      // and never fall back to the main session for groups.
+                      // and never fall back to another session for groups.
                       ...(normalizedChatType
                         ? { chatType: normalizedChatType }
                         : {}),
@@ -3729,7 +3728,7 @@ export function createFeishuConnection(
                       senderImId: senderOpenId,
                       notes: runtimeControl.notes,
                       // Lets the host resolve a private chat's own Session
-                      // and never fall back to the main session for groups.
+                      // and never fall back to another session for groups.
                       ...(normalizedChatType
                         ? { chatType: normalizedChatType }
                         : {}),
@@ -3742,7 +3741,7 @@ export function createFeishuConnection(
                       targetJid,
                       senderImId: senderOpenId,
                       // Lets the host resolve a private chat's own Session
-                      // and never fall back to the main session for groups.
+                      // and never fall back to another session for groups.
                       ...(normalizedChatType
                         ? { chatType: normalizedChatType }
                         : {}),
@@ -4881,8 +4880,6 @@ export function createFeishuConnection(
         completeClaimedInbound(claim, payload);
         return 'done';
       }
-      notifyNewImMessage();
-
       if (agentRouting && agentRouting.agentId) {
         onAgentMessage?.(chatJid, agentRouting.agentId);
         logger.info(
@@ -4895,18 +4892,6 @@ export function createFeishuConnection(
             source,
           },
           'Feishu message routed to conversation agent',
-        );
-      } else if (agentRouting) {
-        // Routed to workspace main conversation (no agentId)
-        logger.info(
-          {
-            chatJid,
-            effectiveJid: targetJid,
-            sender: resolvedSenderName,
-            messageId,
-            source,
-          },
-          'Feishu message routed to workspace main conversation',
         );
       } else {
         logger.info(

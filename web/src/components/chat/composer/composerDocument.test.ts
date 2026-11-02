@@ -193,8 +193,8 @@ describe('sentMessageHistory', () => {
 
   it("lists this user's messages newest first, repeats once", () => {
     const state = {
-      messages: {
-        'web:g1': [
+      agentMessages: {
+        a1: [
           message('一'),
           message('二'),
           message('二'),
@@ -203,28 +203,34 @@ describe('sentMessageHistory', () => {
           message('context_reset', { sender: '__system__' }),
           message('  '),
         ],
+        a2: [message('会话')],
       },
-      agentMessages: { a1: [message('会话')] },
     };
-    expect(sentMessageHistory(state, 'web:g1', 'u1')).toEqual(['二', '一']);
     expect(sentMessageHistory(state, 'web:g1#agent:a1', 'u1')).toEqual([
+      '二',
+      '一',
+    ]);
+    expect(sentMessageHistory(state, 'web:g1#agent:a2', 'u1')).toEqual([
       '会话',
     ]);
+    // A workspace key names no conversation.
+    expect(sentMessageHistory(state, 'web:g1', 'u1')).toEqual([]);
   });
 
   it('recalls the text of a message, not the uploaded-file announcement', () => {
     const state = {
-      messages: {
-        'web:g1': [
+      agentMessages: {
+        a1: [
           message(
             '[我上传了以下文件到工作区，请查看并使用]\n- a.pdf\n\n总结一下',
           ),
           message('[我上传了以下文件到工作区，请查看并使用]\n- b.pdf'),
         ],
       },
-      agentMessages: {},
     };
-    expect(sentMessageHistory(state, 'web:g1', 'u1')).toEqual(['总结一下']);
+    expect(sentMessageHistory(state, 'web:g1#agent:a1', 'u1')).toEqual([
+      '总结一下',
+    ]);
   });
 });
 

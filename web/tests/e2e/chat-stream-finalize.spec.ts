@@ -7,6 +7,9 @@ import { expect, test, type Page } from '@playwright/test';
 const HARNESS_PATH = '/tests/e2e/chat-scroll-harness.html';
 const JID = 'web:e2e-scroll';
 const OTHER_JID = 'web:e2e-scroll-other';
+/** The harness workspace's session, which streams. */
+const SESSION = 'scroll-session';
+const SESSION_JID = `${JID}#agent:${SESSION}`;
 
 declare global {
   interface Window {
@@ -68,9 +71,14 @@ async function streamEvent(
   chatJid = JID,
 ) {
   await page.evaluate(
-    ({ runId, event, chatJid }) =>
-      window.__chatScroll.wsEmit('stream_event', { chatJid, runId, event }),
-    { runId, event, chatJid },
+    ({ runId, event, chatJid, agentId }) =>
+      window.__chatScroll.wsEmit('stream_event', {
+        chatJid,
+        agentId,
+        runId,
+        event,
+      }),
+    { runId, event, chatJid, agentId: SESSION },
   );
 }
 
@@ -225,9 +233,10 @@ async function endRun(page: Page, runId: string) {
 function finalFrame(runId: string) {
   return {
     chatJid: JID,
+    agentId: SESSION,
     message: {
       id: `final-${runId}`,
-      chat_jid: JID,
+      chat_jid: SESSION_JID,
       sender: 'happyclaw-agent',
       sender_name: '测试智能体',
       content: REPLY,
@@ -591,7 +600,7 @@ test('a reconnect snapshot never cuts the reply this tab already shows', async (
           turnId: 'turn-1',
         },
       }),
-    { chatJid: JID, tail: opening.slice(-4000) },
+    { chatJid: SESSION_JID, tail: opening.slice(-4000) },
   );
   await page.waitForTimeout(300);
   await expect(block.getByText(/^Kubernetes 调度入门/)).toBeVisible();
@@ -610,7 +619,7 @@ test('a reconnect snapshot never cuts the reply this tab already shows', async (
           turnId: 'turn-1',
         },
       }),
-    { chatJid: JID, full: `${opening}\n\n断线期间的新段落。` },
+    { chatJid: SESSION_JID, full: `${opening}\n\n断线期间的新段落。` },
   );
   await expect(block.getByText('断线期间的新段落。')).toBeVisible();
   await expect(block.getByText(/^Kubernetes 调度入门/)).toBeVisible();

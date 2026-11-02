@@ -6,7 +6,6 @@ import crypto from 'crypto';
 import {
   clearSessionChannelOwner,
   deleteSession,
-  getJidsByFolder,
   storeMessageDirect,
   ensureChatExists,
   getMessageCursor,
@@ -21,7 +20,6 @@ import type { NewMessage, MessageCursor } from './types.js';
 
 export interface CommandDeps {
   queue: { stopGroup(jid: string, opts?: { force?: boolean }): Promise<void> };
-  sessions: Record<string, string>;
   broadcast: (jid: string, msg: NewMessage & { is_from_me: boolean }) => void;
   setLastAgentTimestamp: (jid: string, cursor: MessageCursor) => void;
 }
@@ -34,7 +32,7 @@ export interface SessionResetOptions {
 }
 
 export interface FreshWindowResetOptions {
-  agentId?: string;
+  agentId: string;
   handoff?: string;
 }
 
@@ -107,16 +105,6 @@ function broadcastSystemMessage(
   });
 }
 
-function resetTargetJids(
-  folder: string,
-  targetJid: string,
-  agentId: string | undefined,
-): string[] {
-  if (agentId) return [targetJid];
-  const siblingJids = getJidsByFolder(folder);
-  return siblingJids.length > 0 ? siblingJids : [targetJid];
-}
-
 function cursorForStoredMessage(
   jid: string,
   messageId: string,
@@ -136,68 +124,49 @@ export async function executeSessionReset(
   baseChatJid: string,
   folder: string,
   deps: CommandDeps,
-  agentId?: string,
+  agentId: string,
   opts?: SessionResetOptions,
 ): Promise<void> {
-  const targetJid = agentId ? `${baseChatJid}#agent:${agentId}` : baseChatJid;
+  const targetJid = `${baseChatJid}#agent:${agentId}`;
   const mode: SessionResetMode = opts?.mode === 'fresh' ? 'fresh' : 'clear';
   const dividerContent =
     mode === 'fresh' ? 'context_fresh_window' : 'context_reset';
   // The reset skips every input of the session, so their automation runs
   // end now, before the runner stops.
-  cancelAutomationRunsOfLanes(
-    resetTargetJids(folder, targetJid, agentId),
-    mode,
-  );
+  cancelAutomationRunsOfLanes([targetJid], mode);
 
-  if (agentId) {
-    // Agent-specific reset: only stop the agent's virtual JID process
-    await deps.queue.stopGroup(targetJid, { force: true });
-  } else {
-    // Main session reset: stop all processes for this folder
-    const siblingJids = getJidsByFolder(folder);
-    await Promise.all(
-      siblingJids.map((j) => deps.queue.stopGroup(j, { force: true })),
-    );
-  }
+  // 1. Stop only this session's runner.
+  await deps.queue.stopGroup(targetJid, { force: true });
 
   // 2. Clear .claude/ session files (preserve settings.json)
   clearSessionFiles(folder, agentId);
 
-  // 3. Delete session from DB (+ in-memory cache for main session)
+  // 3. Delete the SDK session
   deleteSession(folder, agentId);
   clearSessionChannelOwner(folder, agentId);
-  if (!agentId) {
-    delete deps.sessions[folder];
-  }
-  notifyConversationContextCleared(folder, agentId ?? null);
+  notifyConversationContextCleared(folder, agentId);
 
-  // 4. Insert a divider on every JID whose cursor we will advance. Reusing
-  //    one message id across sibling chats leaves those cursors at sequence 0
-  //    and the next turn re-ingests the whole inbound history.
-  const resetJids = resetTargetJids(folder, targetJid, agentId);
+  // 4. Insert a divider and advance the session's cursor past it.
   const dividerDate = new Date();
   const timestamp = dividerDate.toISOString();
-  for (const jid of resetJids) {
-    const dividerMessageId = storeSystemMessage(
-      jid,
-      dividerContent,
-      timestamp,
-      true,
-    );
-    broadcastSystemMessage(
-      deps,
-      jid,
-      dividerMessageId,
-      dividerContent,
-      timestamp,
-      true,
-    );
-    deps.setLastAgentTimestamp(
-      jid,
-      cursorForStoredMessage(jid, dividerMessageId, timestamp),
-    );
-  }
+  const dividerMessageId = storeSystemMessage(
+    targetJid,
+    dividerContent,
+    timestamp,
+    true,
+  );
+  broadcastSystemMessage(
+    deps,
+    targetJid,
+    dividerMessageId,
+    dividerContent,
+    timestamp,
+    true,
+  );
+  deps.setLastAgentTimestamp(
+    targetJid,
+    cursorForStoredMessage(targetJid, dividerMessageId, timestamp),
+  );
 
   // 5. Fresh-window only: store the handoff AFTER the cursor so the next
   //    agent turn receives it as new input. is_from_me=false is required
@@ -205,22 +174,20 @@ export async function executeSessionReset(
   const handoff = opts?.handoff?.trim();
   if (mode === 'fresh' && handoff) {
     const handoffTimestamp = new Date(dividerDate.getTime() + 1).toISOString();
-    for (const jid of resetJids) {
-      const handoffMessageId = storeSystemMessage(
-        jid,
-        handoff,
-        handoffTimestamp,
-        false,
-      );
-      broadcastSystemMessage(
-        deps,
-        jid,
-        handoffMessageId,
-        handoff,
-        handoffTimestamp,
-        false,
-      );
-    }
+    const handoffMessageId = storeSystemMessage(
+      targetJid,
+      handoff,
+      handoffTimestamp,
+      false,
+    );
+    broadcastSystemMessage(
+      deps,
+      targetJid,
+      handoffMessageId,
+      handoff,
+      handoffTimestamp,
+      false,
+    );
   }
 
   logger.info(
@@ -235,10 +202,10 @@ export async function executeFreshWindowReset(
   baseChatJid: string,
   folder: string,
   deps: CommandDeps,
-  opts?: FreshWindowResetOptions,
+  opts: FreshWindowResetOptions,
 ): Promise<void> {
-  await executeSessionReset(baseChatJid, folder, deps, opts?.agentId, {
+  await executeSessionReset(baseChatJid, folder, deps, opts.agentId, {
     mode: 'fresh',
-    handoff: opts?.handoff,
+    handoff: opts.handoff,
   });
 }

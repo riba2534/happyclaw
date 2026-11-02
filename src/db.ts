@@ -115,6 +115,12 @@ import {
   deleteWorkspaceWorkItems,
   initWorkItemStore,
 } from './work-item-store.js';
+import {
+  migrateLegacyMainSessions,
+  relocateLegacyMainSessionDirectories,
+  type LegacyMainSessionMigrationReport,
+} from './legacy-main-session-migration.js';
+import { LEGACY_MAIN_SESSION_KEY_PREFIX } from './legacy-main-session-checks.js';
 import { keyPrefixRange } from './sql-key-prefix.js';
 import {
   clearAgentSessionHistoryReinjections,
@@ -609,8 +615,12 @@ const FK_CHECK_CLEAN_AT_KEY = 'foreign_key_check_clean_at';
 const FK_CHECK_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
 export function initDatabase(
-  options: { requireCurrentSchema?: boolean } = {},
-): void {
+  options: {
+    requireCurrentSchema?: boolean;
+    /** False leaves session directories alone (the v88 report runs on a copy). */
+    relocateLegacySessionDirectories?: boolean;
+  } = {},
+): { legacyMainSessions: LegacyMainSessionMigrationReport | null } {
   const dbPath = path.join(STORE_DIR, 'messages.db');
   assertDatabaseMaintenanceAccess(dbPath);
   fs.mkdirSync(path.dirname(dbPath), { recursive: true });
@@ -994,6 +1004,18 @@ export function initDatabase(
       pinned_at TEXT NOT NULL,
       PRIMARY KEY (user_id, jid)
     );
+  `);
+
+  // User pinned sessions (per-user session pinning inside a workspace)
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS user_pinned_sessions (
+      user_id TEXT NOT NULL,
+      agent_id TEXT NOT NULL,
+      pinned_at TEXT NOT NULL,
+      PRIMARY KEY (user_id, agent_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_user_pinned_sessions_agent
+      ON user_pinned_sessions(agent_id);
   `);
 
   initSessionWorktreeStore(db);
@@ -2752,9 +2774,29 @@ export function initDatabase(
     })();
   }
 
+  // v87 -> v88: each workspace's implicit main session becomes an ordinary
+  // conversation session (legacy-main-session-migration.ts). Last, so every
+  // table it moves state between exists and the binding projections above
+  // have been rebuilt.
+  const legacyMainSessions =
+    rawSchemaVersionBeforeInit === null ||
+    Number(rawSchemaVersionBeforeInit) < 88
+      ? migrateLegacyMainSessions(db)
+      : null;
+
   prepareCached(
     'INSERT OR REPLACE INTO router_state (key, value) VALUES (?, ?)',
   ).run('schema_version', String(CURRENT_SCHEMA_VERSION));
+
+  // Every startup, before any Runner: finishes a move a crash interrupted.
+  // Maintenance bootstraps leave the filesystem alone.
+  if (
+    !options.requireCurrentSchema &&
+    options.relocateLegacySessionDirectories !== false
+  ) {
+    relocateLegacyMainSessionDirectories(db);
+  }
+  return { legacyMainSessions };
 }
 
 const LEGACY_ROUTER_CURSOR_BLOBS: ReadonlyArray<
@@ -9866,6 +9908,9 @@ export function deleteGroupData(
     // 4. 删除注册信息
     prepareCached('DELETE FROM registered_groups WHERE jid = ?').run(jid);
     // 5. 删除会话与 workspace-owned agents
+    prepareCached(
+      'DELETE FROM user_pinned_sessions WHERE agent_id IN (SELECT id FROM agents WHERE group_folder = ? OR chat_jid = ?)',
+    ).run(folder, jid);
     prepareCached('DELETE FROM sessions WHERE group_folder = ?').run(folder);
     prepareCached(
       'DELETE FROM session_model_selections WHERE group_folder = ?',
@@ -9919,6 +9964,32 @@ export function unpinGroup(userId: string, jid: string): void {
   prepareCached(
     'DELETE FROM user_pinned_groups WHERE user_id = ? AND jid = ?',
   ).run(userId, jid);
+}
+
+// --- User pinned sessions ---
+
+/** The sessions a user pinned, as agent id → pinned_at. */
+export function getUserPinnedSessions(userId: string): Record<string, string> {
+  const rows = prepareCached(
+    'SELECT agent_id, pinned_at FROM user_pinned_sessions WHERE user_id = ?',
+  ).all(userId) as Array<{ agent_id: string; pinned_at: string }>;
+  const result: Record<string, string> = {};
+  for (const row of rows) result[row.agent_id] = row.pinned_at;
+  return result;
+}
+
+export function pinSession(userId: string, agentId: string): string {
+  const pinned_at = new Date().toISOString();
+  prepareCached(
+    'INSERT OR REPLACE INTO user_pinned_sessions (user_id, agent_id, pinned_at) VALUES (?, ?, ?)',
+  ).run(userId, agentId, pinned_at);
+  return pinned_at;
+}
+
+export function unpinSession(userId: string, agentId: string): void {
+  prepareCached(
+    'DELETE FROM user_pinned_sessions WHERE user_id = ? AND agent_id = ?',
+  ).run(userId, agentId);
 }
 
 // --- Web API accessors ---
@@ -10970,6 +11041,11 @@ export function deleteGuestUser(guestUserId: string): void {
         guestUserId,
       );
     }
+    if (tableExists('user_pinned_sessions')) {
+      prepareCached('DELETE FROM user_pinned_sessions WHERE user_id = ?').run(
+        guestUserId,
+      );
+    }
     deleteUser(guestUserId);
   })();
 }
@@ -11722,6 +11798,17 @@ export function deleteAgent(id: string): void {
       'DELETE FROM usage_limit_waits WHERE substr(scope_key, -length(@suffix)) = @suffix',
     ).run({ suffix: `#agent:${id}` });
     clearAgentSessionHistoryReinjections(id);
+    prepareCached('DELETE FROM user_pinned_sessions WHERE agent_id = ?').run(
+      id,
+    );
+    // The session's v88 mapping and OOM counter (`oom_exits:<folder>#<id>`).
+    prepareCached(
+      'DELETE FROM router_state WHERE key >= @from AND key < @to AND value = @id',
+    ).run({ ...keyPrefixRange(LEGACY_MAIN_SESSION_KEY_PREFIX), id });
+    prepareCached(
+      `DELETE FROM router_state WHERE key >= @from AND key < @to
+         AND substr(key, -length(@suffix)) = @suffix`,
+    ).run({ ...keyPrefixRange('oom_exits:'), suffix: `#${id}` });
     // A product Session can own an SDK runtime resume row and channel mounts;
     // clear all three projections together so direct DB callers cannot leave
     // routable ghosts behind.
@@ -11791,6 +11878,27 @@ function mapAgentRow(row: Record<string, unknown>): SubAgent {
     automation_id:
       typeof row.automation_id === 'string' ? row.automation_id : null,
   };
+}
+
+/** The conversation sessions of several workspaces at once, by workspace JID. */
+export function listConversationAgentsByJids(
+  chatJids: string[],
+): Map<string, SubAgent[]> {
+  const result = new Map<string, SubAgent[]>();
+  if (chatJids.length === 0) return result;
+  const rows = prepareCached(
+    `SELECT * FROM agents
+     WHERE kind = 'conversation'
+       AND chat_jid IN (SELECT value FROM json_each(?))
+     ORDER BY created_at DESC`,
+  ).all(JSON.stringify(chatJids)) as Array<Record<string, unknown>>;
+  for (const row of rows) {
+    const agent = mapAgentRow(row);
+    const list = result.get(agent.chat_jid);
+    if (list) list.push(agent);
+    else result.set(agent.chat_jid, [agent]);
+  }
+  return result;
 }
 
 export function deleteMessagesForChatJid(chatJid: string): void {

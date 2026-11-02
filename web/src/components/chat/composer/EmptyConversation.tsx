@@ -29,7 +29,7 @@ export function EmptyConversationHeading({
   sessionLabel,
   ...look
 }: AgentLook & {
-  /** Name of a session with its own context; absent for the main one. */
+  /** The session's name; absent while it has none (named on first send). */
   sessionLabel?: string;
 }) {
   const appearance = useAuthStore((state) => state.appearance);
@@ -53,8 +53,8 @@ export function EmptyConversationHeading({
       <h2 className="mt-3 text-display-sm text-foreground">今天想做什么？</h2>
       <p className="mt-1.5 text-body text-muted-foreground">
         {sessionLabel
-          ? `“${sessionLabel}”使用独立上下文，与 ${identity.name} 对话`
-          : `与 ${identity.name} 对话`}
+          ? `在“${sessionLabel}”中与 ${identity.name} 对话`
+          : `与 ${identity.name} 开始新对话，发送后自动命名`}
       </p>
     </div>
   );

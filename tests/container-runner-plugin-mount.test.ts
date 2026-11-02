@@ -69,6 +69,7 @@ const { CONTAINER_PLUGINS_PATH } = utils;
 const { getUserRuntimeRoot, getUserPluginRuntimeDir } = materializer;
 
 const USER = 'alice';
+const SESSION = 'session-1';
 
 function seedCatalogSnapshot(opts: {
   marketplace: string;
@@ -171,9 +172,8 @@ describe('buildVolumeMounts — container proxy secret boundary', () => {
     const mounts = buildVolumeMounts(
       fakeGroup('proxy-secret', USER) as any,
       false,
+      SESSION,
       false,
-      undefined,
-      undefined,
       undefined,
       undefined,
       undefined,
@@ -224,6 +224,7 @@ describe('buildVolumeMounts — Claude Code plugins runtime mount', () => {
     const mounts = buildVolumeMounts(
       fakeGroup('grp-x', USER) as any,
       false,
+      SESSION,
       true,
     );
 
@@ -249,6 +250,7 @@ describe('buildVolumeMounts — Claude Code plugins runtime mount', () => {
     const mounts = buildVolumeMounts(
       fakeGroup('grp-x', USER) as any,
       false,
+      SESSION,
       true,
     );
     const pluginMount = mounts.find(
@@ -294,10 +296,9 @@ describe('buildVolumeMounts — Claude triad inheritance', () => {
     const mounts = buildVolumeMounts(
       fakeGroup('admin-workspace', 'admin') as any,
       false,
+      SESSION,
       true,
-      undefined,
       'main',
-      undefined,
       undefined,
       {
         id: 'host-context-agent',
@@ -345,6 +346,8 @@ describe('buildVolumeMounts — Claude triad inheritance', () => {
           tmpDataDir,
           'sessions',
           'admin-workspace',
+          'agents',
+          SESSION,
           '.claude',
           'settings.json',
         ),
@@ -399,10 +402,9 @@ describe('buildVolumeMounts — Claude triad inheritance', () => {
     const inheritedMounts = buildVolumeMounts(
       group,
       false,
+      SESSION,
       true,
-      undefined,
       'main',
-      undefined,
       undefined,
       profile('host_claude'),
     );
@@ -415,6 +417,8 @@ describe('buildVolumeMounts — Claude triad inheritance', () => {
       tmpDataDir,
       'sessions',
       group.folder,
+      'agents',
+      SESSION,
       '.claude',
       'settings.json',
     );
@@ -427,10 +431,9 @@ describe('buildVolumeMounts — Claude triad inheritance', () => {
     const managedMounts = buildVolumeMounts(
       group,
       false,
+      SESSION,
       true,
-      undefined,
       'main',
-      undefined,
       undefined,
       profile('managed'),
     );
@@ -463,8 +466,8 @@ describe('buildVolumeMounts — Claude triad inheritance', () => {
     const mounts = buildVolumeMounts(
       fakeGroup('alice-home', 'alice') as any,
       false,
+      SESSION,
       true,
-      undefined,
       'alice-home',
     );
 
@@ -490,8 +493,8 @@ describe('buildVolumeMounts — Claude triad inheritance', () => {
     const mounts = buildVolumeMounts(
       fakeGroup('admin-workspace', 'admin') as any,
       false,
+      SESSION,
       true,
-      undefined,
       'main',
     );
 
@@ -519,9 +522,8 @@ describe('buildVolumeMounts — AgentProfile runtime policy', () => {
     const mounts = buildVolumeMounts(
       fakeGroup('grp-policy-tools', USER) as any,
       false,
+      SESSION,
       true,
-      undefined,
-      undefined,
       undefined,
       undefined,
       {
@@ -561,9 +563,8 @@ describe('buildVolumeMounts — AgentProfile runtime policy', () => {
     const mounts = buildVolumeMounts(
       fakeGroup('grp-policy-skills', USER) as any,
       false,
+      SESSION,
       true,
-      undefined,
-      undefined,
       undefined,
       undefined,
       {
@@ -608,6 +609,8 @@ describe('buildVolumeMounts — AgentProfile runtime policy', () => {
       tmpDataDir,
       'sessions',
       folder,
+      'agents',
+      SESSION,
       '.claude',
     );
     fs.mkdirSync(path.join(sessionClaudeDir, 'skills', 'ghost'), {
@@ -621,6 +624,7 @@ describe('buildVolumeMounts — AgentProfile runtime policy', () => {
     const mounts = buildVolumeMounts(
       fakeGroup(folder, USER) as any,
       false,
+      SESSION,
       true,
     );
 
@@ -666,9 +670,8 @@ describe('buildVolumeMounts — AgentProfile runtime policy', () => {
     const v1Mounts = buildVolumeMounts(
       fakeGroup('grp-policy-skills-v1', USER) as any,
       false,
+      SESSION,
       true,
-      undefined,
-      undefined,
       undefined,
       undefined,
       profile(1),
@@ -676,9 +679,8 @@ describe('buildVolumeMounts — AgentProfile runtime policy', () => {
     const v2Mounts = buildVolumeMounts(
       fakeGroup('grp-policy-skills-v2', USER) as any,
       false,
+      SESSION,
       true,
-      undefined,
-      undefined,
       undefined,
       undefined,
       profile(2),
@@ -721,9 +723,8 @@ describe('buildVolumeMounts — AgentProfile runtime policy', () => {
     buildVolumeMounts(
       fakeGroup('grp-policy-skill-before-delete', USER) as any,
       false,
+      SESSION,
       true,
-      undefined,
-      undefined,
       undefined,
       undefined,
       profile,
@@ -734,9 +735,8 @@ describe('buildVolumeMounts — AgentProfile runtime policy', () => {
       buildVolumeMounts(
         fakeGroup('grp-policy-skill-after-delete', USER) as any,
         false,
+        SESSION,
         true,
-        undefined,
-        undefined,
         undefined,
         undefined,
         profile,
@@ -784,9 +784,8 @@ describe('buildVolumeMounts — AgentProfile runtime policy', () => {
     const mounts = buildVolumeMounts(
       fakeGroup('grp-policy-mcp', USER) as any,
       false,
+      SESSION,
       true,
-      undefined,
-      undefined,
       undefined,
       undefined,
       {
@@ -807,6 +806,8 @@ describe('buildVolumeMounts — AgentProfile runtime policy', () => {
       tmpDataDir,
       'sessions',
       'grp-policy-mcp',
+      'agents',
+      SESSION,
       '.claude',
       'settings.json',
     );
@@ -889,9 +890,8 @@ describe('buildVolumeMounts — AgentProfile runtime policy', () => {
     const mounts = buildVolumeMounts(
       group,
       false,
+      SESSION,
       true,
-      undefined,
-      undefined,
       undefined,
       undefined,
       {
@@ -936,6 +936,8 @@ describe('buildVolumeMounts — AgentProfile runtime policy', () => {
           tmpDataDir,
           'sessions',
           group.folder,
+          'agents',
+          SESSION,
           '.claude',
           'settings.json',
         ),
@@ -994,9 +996,8 @@ describe('buildVolumeMounts — AgentProfile runtime policy', () => {
     buildVolumeMounts(
       fakeGroup('grp-policy-mcp-before-disable', USER) as any,
       false,
+      SESSION,
       true,
-      undefined,
-      undefined,
       undefined,
       undefined,
       profile,
@@ -1014,9 +1015,8 @@ describe('buildVolumeMounts — AgentProfile runtime policy', () => {
       buildVolumeMounts(
         fakeGroup('grp-policy-mcp-after-disable', USER) as any,
         false,
+        SESSION,
         true,
-        undefined,
-        undefined,
         undefined,
         undefined,
         profile,

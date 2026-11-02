@@ -17,7 +17,9 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 const SHARED_TMP =
   process.env.HAPPYCLAW_TEST_DATA_DIR ??
   (() => {
-    const d = fs.mkdtempSync(path.join(os.tmpdir(), 'happyclaw-routes-plugins-'));
+    const d = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'happyclaw-routes-plugins-'),
+    );
     process.env.HAPPYCLAW_TEST_DATA_DIR = d;
     return d;
   })();
@@ -181,9 +183,7 @@ describe('GET /api/plugins', () => {
     const mp = body.marketplaces[0];
     expect(mp.name).toBe('mp1');
     expect(mp.plugins).toHaveLength(2);
-    const byId = Object.fromEntries(
-      mp.plugins.map((p: any) => [p.fullId, p]),
-    );
+    const byId = Object.fromEntries(mp.plugins.map((p: any) => [p.fullId, p]));
     expect(byId['codex@mp1']).toMatchObject({
       name: 'codex',
       enabled: false,

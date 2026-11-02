@@ -933,7 +933,13 @@ export function FilePanel({ groupJid, onClose }: FilePanelProps) {
   // Preview / Editor state — only one overlay can be open at a time
   const [preview, setPreview] = useState<PreviewState>(null);
 
-  const isStreaming = useChatStore((s) => !!s.streaming[groupJid]);
+  // Any of the workspace's sessions at work may be writing files. Few
+  // sessions stream at once: look those up, not every session's row.
+  const isStreaming = useChatStore((s) =>
+    Object.keys(s.agentStreaming).some((id) =>
+      s.agents[groupJid]?.some((agent) => agent.id === id),
+    ),
+  );
   // Read-only viewers (guests) browse, preview and download only.
   const readOnly = useIsGuest();
   const canOpenLocalFolder = useAuthStore(

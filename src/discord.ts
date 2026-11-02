@@ -31,7 +31,6 @@ import type {
   TextBasedChannel,
 } from 'discord.js';
 import { storeChatMetadata, storeMessageDirect, updateChatName } from './db.js';
-import { notifyNewImMessage } from './message-notifier.js';
 import { logger } from './logger.js';
 import {
   saveDownloadedFile,
@@ -955,8 +954,6 @@ export function createDiscordConnection(
           return;
         }
 
-        notifyNewImMessage();
-
         if (agentRouting?.agentId) {
           opts.onAgentMessage?.(jid, agentRouting.agentId);
           logger.info(
@@ -1068,7 +1065,7 @@ export function createDiscordConnection(
           // Register HappyClaw slash commands as Discord Application Commands
           try {
             await readyClient.application.commands.set([
-              { name: 'clear', description: '清除当前对话的会话上下文' },
+              { name: 'clear', description: '清除绑定会话的上下文' },
               { name: 'list', description: '查看所有工作区和对话列表' },
               { name: 'status', description: '查看当前工作区/对话状态' },
               { name: 'recall', description: '总结最近的对话内容' },

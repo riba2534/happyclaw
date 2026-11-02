@@ -56,9 +56,11 @@ const { useChatStore, mergeMessagesChronologically, MAX_STEPS_CACHE_CHARS } =
 const initialState = useChatStore.getState();
 
 const JID = 'web:trace';
+const SESSION = 'session-1';
+const SESSION_JID = `${JID}#agent:${SESSION}`;
 const message = (id = 'm1', over: Partial<Message> = {}): Message => ({
   id,
-  chat_jid: JID,
+  chat_jid: SESSION_JID,
   sender: 'happyclaw-agent',
   sender_name: 'HappyClaw',
   content: '最终答案。',
@@ -102,7 +104,7 @@ beforeEach(() => {
     {
       ...initialState,
       groups: {},
-      messages: { [JID]: [] },
+      agentMessages: { [SESSION]: [] },
       thinkingCache: {},
       thinkingDurationCache: {},
       traceCache: {},
@@ -125,7 +127,7 @@ describe('loading the reasoning and trace the server kept', () => {
     const loaded = await useChatStore.getState().loadTurnTrace(message());
     expect(loaded).toBe(true);
     expect(apiGetMock).toHaveBeenCalledWith(
-      `/api/groups/${encodeURIComponent(JID)}/turn-traces/turn-1`,
+      `/api/groups/${encodeURIComponent(SESSION_JID)}/turn-traces/turn-1`,
     );
     const state = useChatStore.getState();
     expect(state.thinkingCache.m1).toBe('**确认范围**\n\n先看目录。');
@@ -722,7 +724,17 @@ describe('the ordered steps the server kept', () => {
     const cached = { steps: [toolStep('a', 'Read')], dropped: 0 };
     const seed = () =>
       useChatStore.setState({
-        messages: { [JID]: [message('gone')], 'web:other': [message('kept')] },
+        agents: {
+          [JID]: [
+            { id: SESSION, kind: 'conversation' } as unknown as AgentInfo,
+          ],
+        },
+        agentMessages: {
+          [SESSION]: [message('gone')],
+          'session-other': [
+            message('kept', { chat_jid: 'web:other#agent:session-other' }),
+          ],
+        },
         stepsCache: { gone: cached, kept: cached, orphan: cached },
       });
 
@@ -760,14 +772,17 @@ describe('what the caches hold when the level of the process changes', () => {
     // Apart from the groups: changing a workspace's view lets go of its
     // caches, and these are the ones read at the view it has now.
     useChatStore.setState({
-      messages: {
-        [JID]: [message('m1')],
-        [OTHER]: [message('o1', { chat_jid: OTHER })],
-      },
       agents: {
-        [JID]: [{ id: 's1', kind: 'conversation' } as unknown as AgentInfo],
+        [JID]: [
+          { id: SESSION, kind: 'conversation' },
+          { id: 's1', kind: 'conversation' },
+        ] as unknown as AgentInfo[],
       },
       agentMessages: {
+        [SESSION]: [message('m1')],
+        'other-session': [
+          message('o1', { chat_jid: `${OTHER}#agent:other-session` }),
+        ],
         s1: [message('a1', { chat_jid: `${JID}#agent:s1` })],
       },
       thinkingCache: { m1: '想', a1: '想', o1: '想' },
@@ -895,14 +910,17 @@ describe('what the caches hold when another tab or page changes the level', () =
     // Apart from the groups: changing a workspace's view lets go of its
     // caches, and these are the ones read at the view it has now.
     useChatStore.setState({
-      messages: {
-        [JID]: [message('m1')],
-        [OTHER]: [message('o1', { chat_jid: OTHER })],
-      },
       agents: {
-        [JID]: [{ id: 's1', kind: 'conversation' } as unknown as AgentInfo],
+        [JID]: [
+          { id: SESSION, kind: 'conversation' },
+          { id: 's1', kind: 'conversation' },
+        ] as unknown as AgentInfo[],
       },
       agentMessages: {
+        [SESSION]: [message('m1')],
+        'other-session': [
+          message('o1', { chat_jid: `${OTHER}#agent:other-session` }),
+        ],
         s1: [message('a1', { chat_jid: `${JID}#agent:s1` })],
       },
       thinkingCache: { m1: '想', a1: '想', o1: '想' },
@@ -1003,7 +1021,7 @@ describe('what the caches hold when another tab or page changes the level', () =
   it('has nothing to let go of the first time the workspaces load', async () => {
     useChatStore.setState({
       groups: {},
-      messages: { [JID]: [message('m1')] },
+      agentMessages: { [SESSION]: [message('m1')] },
       stepsCache: { m1: held },
     });
     await loadGroupsAs({ process_visibility: 'hidden' });
@@ -1062,9 +1080,12 @@ describe('what the steps cache may hold in all', () => {
     useChatStore.setState({
       stepsCache: held(...ids),
       currentGroup: JID,
-      messages: {
-        [JID]: [message('old-0'), message('old-1')],
-        'web:elsewhere': [message('old-2', { chat_jid: 'web:elsewhere' })],
+      activeAgentTab: { [JID]: SESSION },
+      agentMessages: {
+        [SESSION]: [message('old-0'), message('old-1')],
+        elsewhere: [
+          message('old-2', { chat_jid: 'web:elsewhere#agent:elsewhere' }),
+        ],
       },
     });
     apiGetMock.mockResolvedValueOnce(turn(chars));
@@ -1083,7 +1104,7 @@ describe('what the steps cache may hold in all', () => {
       stepsCache: held(...ids),
       currentGroup: JID,
       activeAgentTab: { [JID]: 's1' },
-      messages: { [JID]: [] },
+      agentMessages: { [SESSION]: [] },
       agentMessages: {
         s1: [message('old-0', { chat_jid: `${JID}#agent:s1` })],
       },
@@ -1100,7 +1121,7 @@ describe('what the steps cache may hold in all', () => {
     useChatStore.setState({
       stepsCache: held(...ids),
       currentGroup: JID,
-      messages: { [JID]: ids.map((id) => message(id)) },
+      agentMessages: { [SESSION]: ids.map((id) => message(id)) },
     });
     apiGetMock.mockResolvedValueOnce(turn(chars));
     await useChatStore.getState().loadTurnTrace(message('new'));
@@ -1219,7 +1240,7 @@ describe('a turn trace that is answered after the view of its workspace changed'
   beforeEach(() => {
     viewIs({ process_visibility: 'hidden' });
     // The reply is on screen: a change of view lets go of what is held for it.
-    useChatStore.setState({ messages: { [JID]: [message()] } });
+    useChatStore.setState({ agentMessages: { [SESSION]: [message()] } });
   });
 
   it('does not mark the reply empty when the level is raised after it was asked for (404)', async () => {
@@ -1471,36 +1492,46 @@ describe('a turn trace that is answered after the view of its workspace changed'
 
 describe('has_trace on a message', () => {
   it('is kept from a message the WebSocket delivers', () => {
-    useChatStore.getState().handleWsNewMessage(JID, {
-      id: 'ws-1',
-      chat_jid: JID,
-      sender: 'happyclaw-agent',
-      sender_name: 'HappyClaw',
-      content: '终稿',
-      timestamp: '2026-10-10T00:00:00.000Z',
-      is_from_me: true,
-      source_kind: 'sdk_final',
-      turn_id: 'turn-ws',
-      has_trace: true,
-    });
-    const [stored] = useChatStore.getState().messages[JID];
+    useChatStore.getState().handleWsNewMessage(
+      JID,
+      {
+        id: 'ws-1',
+        chat_jid: SESSION_JID,
+        sender: 'happyclaw-agent',
+        sender_name: 'HappyClaw',
+        content: '终稿',
+        timestamp: '2026-10-10T00:00:00.000Z',
+        is_from_me: true,
+        source_kind: 'sdk_final',
+        turn_id: 'turn-ws',
+        has_trace: true,
+      },
+      SESSION,
+    );
+    const [stored] = useChatStore.getState().agentMessages[SESSION];
     expect(stored).toMatchObject({ id: 'ws-1', turn_id: 'turn-ws' });
     expect(stored.has_trace).toBe(true);
   });
 
   it('is left out when the server did not say so', () => {
-    useChatStore.getState().handleWsNewMessage(JID, {
-      id: 'ws-2',
-      chat_jid: JID,
-      sender: 'happyclaw-agent',
-      sender_name: 'HappyClaw',
-      content: '没有轨迹的回复',
-      timestamp: '2026-10-10T00:00:00.000Z',
-      is_from_me: true,
-      source_kind: 'sdk_final',
-      turn_id: 'turn-ws-2',
-    });
-    expect(useChatStore.getState().messages[JID][0].has_trace).toBeUndefined();
+    useChatStore.getState().handleWsNewMessage(
+      JID,
+      {
+        id: 'ws-2',
+        chat_jid: SESSION_JID,
+        sender: 'happyclaw-agent',
+        sender_name: 'HappyClaw',
+        content: '没有轨迹的回复',
+        timestamp: '2026-10-10T00:00:00.000Z',
+        is_from_me: true,
+        source_kind: 'sdk_final',
+        turn_id: 'turn-ws-2',
+      },
+      SESSION,
+    );
+    expect(
+      useChatStore.getState().agentMessages[SESSION][0].has_trace,
+    ).toBeUndefined();
   });
 
   it('reaches the stored message when the server adds it later', () => {

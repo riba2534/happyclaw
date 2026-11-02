@@ -61,7 +61,6 @@ const workspaceRoutes = (await import('../src/routes/workspaces.js')).default;
 const OWNER_ID = 'interaction-owner';
 const STRANGER_ID = 'interaction-stranger';
 const registeredGroups: Record<string, any> = {};
-const sessions: Record<string, string> = {};
 const stopGroup = vi.fn(async () => {});
 const queue = {
   pauseGroupsForMutation: vi.fn(() => ({ id: 1 })),
@@ -98,7 +97,6 @@ beforeAll(() => {
   createUser(STRANGER_ID);
   webContext.setWebDeps({
     queue,
-    sessions,
     getRegisteredGroups: () => registeredGroups,
     ensureTerminalContainerStarted: vi.fn(() => true),
   } as unknown as Parameters<typeof webContext.setWebDeps>[0]);
@@ -191,7 +189,6 @@ describe('workspace interaction_mode API', () => {
     registeredGroups[jid] = db.getRegisteredGroup(jid);
     db.assignWorkspaceAgentProfile(folder, profile.id, 'assistant');
     db.setSession(folder, 'sdk-session-before-proactive');
-    sessions[folder] = 'sdk-session-before-proactive';
 
     stopGroup.mockImplementationOnce(async () => {
       expect(db.getWorkspaceInteractionMode(folder)).toBe('assistant');
@@ -215,7 +212,6 @@ describe('workspace interaction_mode API', () => {
     expect(stopGroup).toHaveBeenCalledTimes(2);
     expect(db.getWorkspaceInteractionMode(folder)).toBe('proactive');
     expect(db.getSession(folder)).toBeUndefined();
-    expect(sessions[folder]).toBeUndefined();
   });
 
   test('non-owner cannot change mode and AgentProfile switch preserves it', async () => {

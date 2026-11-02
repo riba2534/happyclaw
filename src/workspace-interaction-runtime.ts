@@ -1,7 +1,7 @@
 import type { InteractionMode, ProcessVisibility } from './types.js';
 import type { StreamEvent } from './stream-event.types.js';
 
-export type PublicAgentKind = 'main' | 'conversation' | 'spawn';
+export type PublicAgentKind = 'conversation' | 'spawn';
 
 /**
  * Workspace interaction mode applies only to public, user-facing Agent loops.
@@ -398,17 +398,6 @@ export function projectProgressForWeb(
       },
     ],
   };
-}
-
-/**
- * Whether the Web is told about sub-agent task lifecycle (agent_status) so its
- * Task tabs match the task events it receives.
- */
-export function shouldBroadcastTaskAgentStatus(
-  mode: InteractionMode,
-  visibility: ProcessVisibility,
-): boolean {
-  return mode === 'assistant' || visibility !== 'hidden';
 }
 
 /** How a proactive turn that sent progress ended without a reply. */

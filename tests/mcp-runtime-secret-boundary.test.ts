@@ -81,8 +81,18 @@ function group(folder: string, ownerId: string) {
   };
 }
 
+const SESSION = 'session-1';
+
 function settingsPath(folder: string): string {
-  return path.join(TEST_ROOT, 'sessions', folder, '.claude', 'settings.json');
+  return path.join(
+    TEST_ROOT,
+    'sessions',
+    folder,
+    'agents',
+    SESSION,
+    '.claude',
+    'settings.json',
+  );
 }
 
 function seedStores(ownerId: string): void {
@@ -188,13 +198,13 @@ describe('managed MCP runtime secret boundary', () => {
       'agent-a',
       'account-b',
     );
-    const botAMain = getContainerRuntimeEnvDir(
+    const botAOtherAgent = getContainerRuntimeEnvDir(
       'workspace',
-      undefined,
+      'agent-b',
       'account-a',
     );
 
-    expect(new Set([botAAgent, botBAgent, botAMain]).size).toBe(3);
+    expect(new Set([botAAgent, botBAgent, botAOtherAgent]).size).toBe(3);
     expect(botAAgent).toContain(
       path.join('channel-accounts', 'account-a', 'agents', 'agent-a'),
     );
@@ -205,7 +215,7 @@ describe('managed MCP runtime secret boundary', () => {
 
   test('rejects unsafe workspace folders before building env paths', () => {
     expect(() =>
-      getContainerRuntimeEnvDir('../workspace', undefined, 'account-a'),
+      getContainerRuntimeEnvDir('../workspace', 'agent-a', 'account-a'),
     ).toThrow(/Invalid group folder/);
   });
 
@@ -229,6 +239,7 @@ describe('managed MCP runtime secret boundary', () => {
     const mounts = buildVolumeMounts(
       group('member-workspace', ownerId) as any,
       false,
+      SESSION,
     );
     expect(mounts.map((mount) => mount.containerPath)).not.toContain(
       '/workspace/global',
@@ -286,7 +297,7 @@ describe('managed MCP runtime secret boundary', () => {
     ownerRoles.set(ownerId, 'admin');
     seedStores(ownerId);
 
-    buildVolumeMounts(group('admin-workspace', ownerId) as any, false);
+    buildVolumeMounts(group('admin-workspace', ownerId) as any, false, SESSION);
 
     const settings = JSON.parse(
       fs.readFileSync(settingsPath('admin-workspace'), 'utf8'),
@@ -313,9 +324,8 @@ describe('managed MCP runtime secret boundary', () => {
       buildVolumeMounts(
         group('custom-member-workspace', ownerId) as any,
         false,
+        SESSION,
         true,
-        undefined,
-        undefined,
         undefined,
         undefined,
         {

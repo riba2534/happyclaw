@@ -33,32 +33,54 @@ describe('redactInlineSecrets', () => {
 
   describe('key=value patterns', () => {
     test('redacts api_key= / api-key= / x-api-key=', () => {
-      expect(redactInlineSecrets('api_key=mysecret123')).toMatch(/\[REDACTED\]/);
-      expect(redactInlineSecrets('api-key=mysecret123')).toMatch(/\[REDACTED\]/);
+      expect(redactInlineSecrets('api_key=mysecret123')).toMatch(
+        /\[REDACTED\]/,
+      );
+      expect(redactInlineSecrets('api-key=mysecret123')).toMatch(
+        /\[REDACTED\]/,
+      );
       expect(redactInlineSecrets('x-api-key=foo')).toMatch(/\[REDACTED\]/);
     });
 
     test('redacts authorization= / cookie= / password= / token=', () => {
-      expect(redactInlineSecrets('authorization=Bearer xyz')).toMatch(/\[REDACTED\]/);
+      expect(redactInlineSecrets('authorization=Bearer xyz')).toMatch(
+        /\[REDACTED\]/,
+      );
       expect(redactInlineSecrets('cookie=sid=abc123')).toMatch(/\[REDACTED\]/);
       expect(redactInlineSecrets('password=hunter2')).toMatch(/\[REDACTED\]/);
       expect(redactInlineSecrets('token=mysecret123')).toMatch(/\[REDACTED\]/);
     });
 
     test('redacts GH_TOKEN / NPM_TOKEN / AUTH_TOKEN suffix forms (R3 fix)', () => {
-      expect(redactInlineSecrets('GH_TOKEN=ghp_abcdefghij')).toMatch(/\[REDACTED\]/);
-      expect(redactInlineSecrets('NPM_TOKEN=npm_xxxxxxxxxx')).toMatch(/\[REDACTED\]/);
-      expect(redactInlineSecrets('AUTH_TOKEN=secretvalue')).toMatch(/\[REDACTED\]/);
-      expect(redactInlineSecrets('access_token=foo123')).toMatch(/\[REDACTED\]/);
-      expect(redactInlineSecrets('refresh_token=bar123')).toMatch(/\[REDACTED\]/);
+      expect(redactInlineSecrets('GH_TOKEN=ghp_abcdefghij')).toMatch(
+        /\[REDACTED\]/,
+      );
+      expect(redactInlineSecrets('NPM_TOKEN=npm_xxxxxxxxxx')).toMatch(
+        /\[REDACTED\]/,
+      );
+      expect(redactInlineSecrets('AUTH_TOKEN=secretvalue')).toMatch(
+        /\[REDACTED\]/,
+      );
+      expect(redactInlineSecrets('access_token=foo123')).toMatch(
+        /\[REDACTED\]/,
+      );
+      expect(redactInlineSecrets('refresh_token=bar123')).toMatch(
+        /\[REDACTED\]/,
+      );
     });
   });
 
   describe('CLI argument forms (R3 fix)', () => {
     test('redacts --token <value> / --api-key <value>', () => {
-      expect(redactInlineSecrets('curl --token mysecret123 https://api.example.com')).toMatch(/--token \[REDACTED\]/);
-      expect(redactInlineSecrets('--api-key abc123abc')).toMatch(/--api-key \[REDACTED\]/);
-      expect(redactInlineSecrets('--password hunter2')).toMatch(/--password \[REDACTED\]/);
+      expect(
+        redactInlineSecrets('curl --token mysecret123 https://api.example.com'),
+      ).toMatch(/--token \[REDACTED\]/);
+      expect(redactInlineSecrets('--api-key abc123abc')).toMatch(
+        /--api-key \[REDACTED\]/,
+      );
+      expect(redactInlineSecrets('--password hunter2')).toMatch(
+        /--password \[REDACTED\]/,
+      );
     });
   });
 
@@ -69,19 +91,28 @@ describe('redactInlineSecrets', () => {
       ['ghp_1234567890abcdefghij1234567890', 'GitHub classic PAT'],
       ['gho_1234567890abcdefghij1234567890', 'GitHub OAuth'],
       ['ghs_1234567890abcdefghij1234567890', 'GitHub server-to-server'],
-      ['github_pat_11ABCDEFGHIJ_thisisaveryLongTokenStringHere', 'GitHub fine-grained PAT (R3 fix)'],
+      [
+        'github_pat_11ABCDEFGHIJ_thisisaveryLongTokenStringHere',
+        'GitHub fine-grained PAT (R3 fix)',
+      ],
       ['glpat-xxxxxxxxxxxxxxxxxxxx', 'GitLab PAT (R3 fix)'],
       ['xoxb-1234567890-abcde-fghij', 'Slack bot token'],
       ['xoxe-1234567890-abcde-fghij', 'Slack new format (R3 fix)'],
       ['AKIAIOSFODNN7EXAMPLE', 'AWS access key'],
       ['ASIAIOSFODNN7EXAMPLE', 'AWS temporary credentials (R3 fix)'],
-      ['AIzaSyD9HPxxxxxxxxxxxxxxxxxxxxxxxxxxx_X', 'Google API key (R3 fix, 35 chars after AIza)'],
+      [
+        'AIzaSyD9HPxxxxxxxxxxxxxxxxxxxxxxxxxxx_X',
+        'Google API key (R3 fix, 35 chars after AIza)',
+      ],
       // Stripe / SendGrid live-key shapes — split via concat so GitHub
       // secret-scanning push protection doesn't false-positive on test fixtures.
       ['sk_li' + 've_51ABCxxxxxxxxxxxxxxxxxxxx', 'Stripe live (R3 fix)'],
       ['sk_te' + 'st_51ABCxxxxxxxxxxxxxxxxxxxx', 'Stripe test'],
       ['SG' + '.abcdefghijklmnop.xxxxxxxxxxxxxxxx', 'SendGrid (R3 fix)'],
-      ['npm_abcdefghijklmnopqrstuvwxyz0123456789ab', 'npm publish token (R3 fix)'],
+      [
+        'npm_abcdefghijklmnopqrstuvwxyz0123456789ab',
+        'npm publish token (R3 fix)',
+      ],
     ])('redacts %s (%s)', (token) => {
       const input = `running with token ${token} now`;
       const out = redactInlineSecrets(input);
@@ -92,13 +123,15 @@ describe('redactInlineSecrets', () => {
 
   describe('PEM private keys (R3 fix)', () => {
     test('redacts entire PEM block', () => {
-      const pem = '-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA...\n-----END RSA PRIVATE KEY-----';
+      const pem =
+        '-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA...\n-----END RSA PRIVATE KEY-----';
       const out = redactInlineSecrets(pem);
       expect(out).toBe('[REDACTED PRIVATE KEY]');
     });
 
     test('redacts ED25519 / EC keys too', () => {
-      const pem = '-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjE=\n-----END OPENSSH PRIVATE KEY-----';
+      const pem =
+        '-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjE=\n-----END OPENSSH PRIVATE KEY-----';
       expect(redactInlineSecrets(pem)).toBe('[REDACTED PRIVATE KEY]');
     });
   });
@@ -130,12 +163,16 @@ describe('redactInlineSecrets', () => {
   describe('preserves benign content', () => {
     test('unchanged for plain text', () => {
       expect(redactInlineSecrets('hello world')).toBe('hello world');
-      expect(redactInlineSecrets('echo "good morning"')).toBe('echo "good morning"');
+      expect(redactInlineSecrets('echo "good morning"')).toBe(
+        'echo "good morning"',
+      );
     });
 
     test('does not over-match generic words', () => {
       expect(redactInlineSecrets('let me login')).toBe('let me login');
-      expect(redactInlineSecrets('password documentation')).toBe('password documentation');
+      expect(redactInlineSecrets('password documentation')).toBe(
+        'password documentation',
+      );
     });
   });
 });
@@ -143,7 +180,8 @@ describe('redactInlineSecrets', () => {
 describe('summarizeToolInput (integrates redactInlineSecrets)', () => {
   test('redacts in command field', () => {
     const out = summarizeToolInput({
-      command: 'curl -H "Authorization: Bearer eyJhbGc.eyJzdWI.SflKxw" https://api',
+      command:
+        'curl -H "Authorization: Bearer eyJhbGc.eyJzdWI.SflKxw" https://api',
     });
     expect(out).toMatch(/\[REDACTED\]/);
     expect(out).not.toMatch(/eyJ.+SflKxw/);

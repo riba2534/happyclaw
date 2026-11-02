@@ -22,10 +22,7 @@ import { canAccessGroup } from './group-acl.js';
 import type { Automation, AutomationRun } from './automation.js';
 import type { RegisteredGroup, UserRole } from './types.js';
 import { stripVirtualJidSuffix } from './utils.js';
-import {
-  hasBoundWorkspaceReference,
-  resolveBoundWorkspaceJid,
-} from './workspace-attribution.js';
+import { resolveBoundWorkspaceJid } from './workspace-attribution.js';
 
 export const GUEST_READ_ONLY_ERROR = 'Guest accounts are read-only';
 
@@ -72,8 +69,9 @@ export function isGuestHiddenWorkspacePath(relativePath: string): boolean {
 
 /**
  * Resolve the `web:` workspace a group row belongs to: the row itself for a
- * workspace, the bound workspace for a bound IM chat, the folder's workspace
- * for an unbound legacy IM chat. A stale binding resolves to nothing.
+ * workspace or one of its sessions, the bound workspace for a bound IM chat.
+ * An unbound or stale-bound IM chat belongs to no workspace a guest can view,
+ * whatever folder its row records.
  */
 export function resolveViewWorkspace(group: GroupWithJid): GroupWithJid | null {
   const jid = stripVirtualJidSuffix(group.jid);
@@ -82,25 +80,16 @@ export function resolveViewWorkspace(group: GroupWithJid): GroupWithJid | null {
     const base = getRegisteredGroup(jid);
     return base ? { ...base, jid } : null;
   }
-  const deps = {
+  const bound = resolveBoundWorkspaceJid(jid, {
     getRegisteredGroup,
     getAgent,
     getJidsByFolder,
     getChannelMount,
-  };
-  const bound = resolveBoundWorkspaceJid(jid, deps);
-  if (bound) {
-    const base = stripVirtualJidSuffix(bound);
-    const row = getRegisteredGroup(base);
-    return row && base.startsWith('web:') ? { ...row, jid: base } : null;
-  }
-  if (hasBoundWorkspaceReference(jid, deps)) return null;
-  for (const sibling of getJidsByFolder(group.folder)) {
-    if (!sibling.startsWith('web:')) continue;
-    const row = getRegisteredGroup(sibling);
-    if (row) return { ...row, jid: sibling };
-  }
-  return null;
+  });
+  if (!bound) return null;
+  const base = stripVirtualJidSuffix(bound);
+  const row = getRegisteredGroup(base);
+  return row && base.startsWith('web:') ? { ...row, jid: base } : null;
 }
 
 /**

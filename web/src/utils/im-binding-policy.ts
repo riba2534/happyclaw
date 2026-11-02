@@ -1,7 +1,18 @@
 import type { AvailableImGroup } from '../types';
 import { getImChannelCapabilities } from '../constants/im-capabilities';
+import { apiErrorBody } from './error';
 
 /** Binding destination is independent of audience and mention activation. */
+/**
+ * What a bind refused with `session_not_bindable` says; null for any other
+ * failure.
+ */
+export function notBindableMessage(err: unknown): string | null {
+  return apiErrorBody(err)?.code === 'session_not_bindable'
+    ? '这个会话不能绑定聊天：团队、自动化和话题会话由 HappyClaw 自己使用，请选择普通会话。'
+    : null;
+}
+
 export function resolveBindingTargetType(
   group: AvailableImGroup,
 ): 'workspace' | 'session' | null {
@@ -28,10 +39,12 @@ export function hasBindingPolicyMismatch(group: AvailableImGroup): boolean {
   const target = resolveBindingTargetType(group);
   if (!target) return true;
   if (target === 'workspace') return hasSession;
-  // A non-topic mount without an explicit session id represents the main
-  // session in the legacy API. A thread-map mount is never a session bind.
+  // Private chats and ordinary groups bind to a session: a mount of one on a
+  // workspace alone, or a thread-map mount, is left from before.
   return (
-    group.routing_mode === 'thread_map' || group.binding_mode === 'thread_map'
+    !hasSession ||
+    group.routing_mode === 'thread_map' ||
+    group.binding_mode === 'thread_map'
   );
 }
 
@@ -60,9 +73,7 @@ export function isBoundToImDestination(
     group.conversation_kind === 'topic' ||
     group.routing_mode === 'thread_map' ||
     group.binding_mode === 'thread_map';
-  return destination.type === 'workspace'
-    ? workspaceMount
-    : destination.sessionId === 'main' && !workspaceMount;
+  return destination.type === 'workspace' && workspaceMount;
 }
 
 export function buildImBindingRequest(

@@ -275,8 +275,8 @@ describe('runHostAgent success-path browser cleanup', () => {
         {
           prompt: 'browse https://example.com',
           groupFolder: FOLDER,
-          chatJid: `web:${FOLDER}`,
-          isMain: true,
+          chatJid: `web:${FOLDER}#agent:session-1`,
+          agentId: 'session-1',
         },
         () => {},
       );

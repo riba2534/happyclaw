@@ -66,6 +66,8 @@ const { useChatStore } = await import('../web/src/stores/chat');
 const initialState = useChatStore.getState();
 
 const JID = 'web:timeline';
+const SESSION = 'session-1';
+const SESSION_JID = `${JID}#agent:${SESSION}`;
 const RUN = 'run-1';
 
 const rafCallbacks: FrameRequestCallback[] = [];
@@ -78,17 +80,12 @@ function reset(): void {
     {
       ...initialState,
       groups: {},
-      messages: { [JID]: [] },
-      waiting: {},
       activeRuns: {},
-      streaming: {},
       thinkingCache: {},
       thinkingDurationCache: {},
       traceCache: {},
       stopRequests: {},
       settledStreaming: {},
-      pendingThinking: {},
-      pendingThinkingDuration: {},
       clearing: {},
       agents: {},
       agentStreaming: {},
@@ -102,7 +99,7 @@ function reset(): void {
   );
 }
 
-function emit(event: StreamEvent, agentId?: string): void {
+function emit(event: StreamEvent, agentId: string = SESSION): void {
   useChatStore.getState().handleStreamEvent(JID, event, agentId, RUN);
 }
 
@@ -121,7 +118,7 @@ function tool(id: string, name = 'Read', summary?: string): void {
   });
 }
 
-const live = () => useChatStore.getState().streaming[JID]!;
+const live = () => useChatStore.getState().agentStreaming[SESSION]!;
 
 function setWorkspace(
   mode: 'assistant' | 'proactive',
@@ -151,7 +148,7 @@ beforeEach(() => {
     rafCallbacks[id - 1] = () => {};
   });
   reset();
-  useChatStore.getState().handleRunStarted(JID, RUN);
+  useChatStore.getState().handleRunStarted(SESSION_JID, RUN);
 });
 
 afterEach(() => {
@@ -568,8 +565,8 @@ describe('steps', () => {
     delta('thinking_delta', '想。');
     tool('t1');
     delta('text_delta', '答案。');
-    useChatStore.getState().handleRunFinished(JID, RUN);
-    const settled = useChatStore.getState().settledStreaming[JID]!;
+    useChatStore.getState().handleRunFinished(SESSION_JID, RUN);
+    const settled = useChatStore.getState().settledStreaming[SESSION_JID]!;
     expect(settled.steps!.every((s) => s.status !== 'running')).toBe(true);
     expect(settled.steps!.map((s) => s.kind)).toEqual([
       'thinking',
@@ -582,7 +579,7 @@ describe('steps', () => {
     delta('text_delta', '先说一句。');
     tool('t1', 'Bash');
     emit({ eventType: 'status', statusText: 'interrupted' });
-    const frozen = useChatStore.getState().streaming[JID]!;
+    const frozen = useChatStore.getState().agentStreaming[SESSION]!;
     expect(frozen.interrupted).toBe(true);
     const bash = frozen.steps!.find((s) => s.toolUseId === 't1')!;
     expect(bash).toMatchObject({ status: 'error', resultPreview: '已停止' });
@@ -592,7 +589,7 @@ describe('steps', () => {
 describe('what a finished reply keeps', () => {
   const finalMessage = (id: string): Message => ({
     id,
-    chat_jid: JID,
+    chat_jid: SESSION_JID,
     sender: 'happyclaw-agent',
     sender_name: 'HappyClaw',
     content: '最终答案。',
@@ -611,9 +608,11 @@ describe('what a finished reply keeps', () => {
       turnId: 'turn-1',
     });
     delta('text_delta', '最终答案。');
-    useChatStore.getState().handleRunFinished(JID, RUN);
-    expect(useChatStore.getState().settledStreaming[JID]).toBeDefined();
-    useChatStore.getState().handleWsNewMessage(JID, finalMessage('final-1'));
+    useChatStore.getState().handleRunFinished(SESSION_JID, RUN);
+    expect(useChatStore.getState().settledStreaming[SESSION_JID]).toBeDefined();
+    useChatStore
+      .getState()
+      .handleWsNewMessage(JID, finalMessage('final-1'), SESSION);
     const state = useChatStore.getState();
     expect(state.thinkingCache['final-1']).toBeUndefined();
     expect(state.thinkingDurationCache['final-1']).toBe(6400);
@@ -622,15 +621,17 @@ describe('what a finished reply keeps', () => {
   it('settles a reply that only reasoned silently', () => {
     emit({ eventType: 'thinking_start' });
     emit({ eventType: 'thinking_end', thinkingDurationMs: 3000 });
-    useChatStore.getState().handleRunFinished(JID, RUN);
-    expect(useChatStore.getState().settledStreaming[JID]).toBeDefined();
+    useChatStore.getState().handleRunFinished(SESSION_JID, RUN);
+    expect(useChatStore.getState().settledStreaming[SESSION_JID]).toBeDefined();
   });
 
   it('does not settle a run with nothing to carry over', () => {
     tool('t1');
     emit({ eventType: 'tool_use_end', toolUseId: 't1' });
-    useChatStore.getState().handleRunFinished(JID, RUN);
-    expect(useChatStore.getState().settledStreaming[JID]).toBeUndefined();
+    useChatStore.getState().handleRunFinished(SESSION_JID, RUN);
+    expect(
+      useChatStore.getState().settledStreaming[SESSION_JID],
+    ).toBeUndefined();
   });
 });
 
@@ -640,7 +641,7 @@ describe('a proactive workspace', () => {
   });
 
   function start(): void {
-    useChatStore.getState().handleRunStarted(JID, RUN);
+    useChatStore.getState().handleRunStarted(SESSION_JID, RUN);
   }
 
   it('never takes model text, at any level', () => {
@@ -655,9 +656,9 @@ describe('a proactive workspace', () => {
         text: '子 Agent 的话',
         parentToolUseId: 'task-1',
       });
-      expect(useChatStore.getState().streaming[JID]?.partialText ?? '').toBe(
-        '',
-      );
+      expect(
+        useChatStore.getState().agentStreaming[SESSION]?.partialText ?? '',
+      ).toBe('');
     }
   });
 
@@ -670,7 +671,8 @@ describe('a proactive workspace', () => {
       emit({ eventType: 'thinking_end', thinkingDurationMs: 1500 });
       emit({ eventType: 'commentary', text: '先查一下记忆。' });
       tool('t1', 'Read', 'memory.md');
-      const steps = useChatStore.getState().streaming[JID]?.steps ?? [];
+      const steps =
+        useChatStore.getState().agentStreaming[SESSION]?.steps ?? [];
       const notes = steps.filter((step) => step.kind === 'text');
       if (level === 'full') {
         expect(notes).toHaveLength(1);
@@ -689,9 +691,9 @@ describe('a proactive workspace', () => {
         expect(notes, level).toHaveLength(0);
       }
       // Never the reply: no partial text, so no card for it.
-      expect(useChatStore.getState().streaming[JID]?.partialText ?? '').toBe(
-        '',
-      );
+      expect(
+        useChatStore.getState().agentStreaming[SESSION]?.partialText ?? '',
+      ).toBe('');
     }
   });
 
@@ -717,7 +719,9 @@ describe('a proactive workspace', () => {
       agentScope: 'subagent',
       parentToolUseId: 'task-1',
     });
-    expect(useChatStore.getState().streaming[JID]?.steps ?? []).toEqual([]);
+    expect(
+      useChatStore.getState().agentStreaming[SESSION]?.steps ?? [],
+    ).toEqual([]);
   });
 
   it('shows only the spinner when the process is hidden', () => {
@@ -926,8 +930,8 @@ describe('a proactive workspace', () => {
       start();
       say('say-1');
       // A later run reusing the id for another tool is not the speech tool.
-      useChatStore.getState().handleRunFinished(JID, RUN);
-      useChatStore.getState().handleRunStarted(JID, 'run-2');
+      useChatStore.getState().handleRunFinished(SESSION_JID, RUN);
+      useChatStore.getState().handleRunStarted(SESSION_JID, 'run-2');
       useChatStore.getState().handleStreamEvent(
         JID,
         {
@@ -935,7 +939,7 @@ describe('a proactive workspace', () => {
           toolName: 'Bash',
           toolUseId: 'say-1',
         },
-        undefined,
+        SESSION,
         'run-2',
       );
       expect(live().steps!.map((s) => s.toolName)).toEqual(['Bash']);
@@ -952,7 +956,7 @@ describe('a proactive workspace', () => {
     start();
     emit(notice);
     expect(
-      JSON.stringify(useChatStore.getState().streaming[JID] ?? {}),
+      JSON.stringify(useChatStore.getState().agentStreaming[SESSION] ?? {}),
     ).not.toContain('Context compacted');
 
     for (const level of ['activity', 'full'] as const) {
@@ -974,7 +978,7 @@ describe('a proactive workspace', () => {
       emit({ eventType: 'notification', text: '通知' });
       emit({ eventType: 'init' });
       expect(
-        JSON.stringify(useChatStore.getState().streaming[JID] ?? {}),
+        JSON.stringify(useChatStore.getState().agentStreaming[SESSION] ?? {}),
       ).not.toContain('通知');
     }
   });
@@ -983,7 +987,9 @@ describe('a proactive workspace', () => {
     setWorkspace('proactive', undefined);
     start();
     tool('t1');
-    expect(useChatStore.getState().streaming[JID]?.steps ?? []).toEqual([]);
+    expect(
+      useChatStore.getState().agentStreaming[SESSION]?.steps ?? [],
+    ).toEqual([]);
   });
 
   it('keeps the Assistant contract for a spawn agent in its workspace', () => {
@@ -1013,8 +1019,10 @@ describe('a proactive workspace', () => {
     start();
     emit({ eventType: 'thinking_start' });
     delta('thinking_delta', '想了很多。');
-    useChatStore.getState().handleRunFinished(JID, RUN);
-    expect(useChatStore.getState().settledStreaming[JID]).toBeUndefined();
+    useChatStore.getState().handleRunFinished(SESSION_JID, RUN);
+    expect(
+      useChatStore.getState().settledStreaming[SESSION_JID],
+    ).toBeUndefined();
   });
 
   it('does not touch an Assistant workspace', () => {
@@ -1066,9 +1074,7 @@ describe('a reconnect snapshot', () => {
     }) as StreamSnapshotData;
 
   it('rebuilds a plausible order for a tab that has no steps', () => {
-    useChatStore
-      .getState()
-      .handleStreamSnapshot(JID, snapshot(), undefined, RUN);
+    useChatStore.getState().handleStreamSnapshot(JID, snapshot(), SESSION, RUN);
     const state = live();
     expect(state.steps!.map((s) => `${s.kind}:${s.status}`)).toEqual([
       'thinking:done',
@@ -1096,7 +1102,7 @@ describe('a reconnect snapshot', () => {
           },
         ],
       }),
-      undefined,
+      SESSION,
       RUN,
     );
     expect(live().activeTools[0]).toMatchObject({
@@ -1145,10 +1151,8 @@ describe('a reconnect snapshot', () => {
     const restore = (level: 'hidden' | 'activity' | 'full') => {
       reset();
       setWorkspace('proactive', level);
-      useChatStore.getState().handleRunStarted(JID, RUN);
-      useChatStore
-        .getState()
-        .handleStreamSnapshot(JID, leaky(), undefined, RUN);
+      useChatStore.getState().handleRunStarted(SESSION_JID, RUN);
+      useChatStore.getState().handleStreamSnapshot(JID, leaky(), SESSION, RUN);
       return live();
     };
 
@@ -1195,7 +1199,7 @@ describe('a reconnect snapshot', () => {
     it('leaves the speech tool out and follows its call to the end', () => {
       reset();
       setWorkspace('proactive', 'activity');
-      useChatStore.getState().handleRunStarted(JID, RUN);
+      useChatStore.getState().handleRunStarted(SESSION_JID, RUN);
       const row = (title: string, toolUseId: string) => ({
         id: `${title}-${toolUseId}`,
         timestamp: 1,
@@ -1225,7 +1229,7 @@ describe('a reconnect snapshot', () => {
             row(`工具 ${SPEECH_TOOL_NAME}`, 'say-1'),
           ],
         }),
-        undefined,
+        SESSION,
         RUN,
       );
       expect(live().activeTools.map((t) => t.toolName)).toEqual(['Bash']);
@@ -1248,10 +1252,8 @@ describe('a reconnect snapshot', () => {
     it('leaves an Assistant workspace snapshot whole', () => {
       reset();
       setWorkspace('assistant', 'hidden');
-      useChatStore.getState().handleRunStarted(JID, RUN);
-      useChatStore
-        .getState()
-        .handleStreamSnapshot(JID, leaky(), undefined, RUN);
+      useChatStore.getState().handleRunStarted(SESSION_JID, RUN);
+      useChatStore.getState().handleStreamSnapshot(JID, leaky(), SESSION, RUN);
       expect(live().partialText).toBe('没发出去的回复');
       expect(live().recentEvents).toHaveLength(1);
       expect(live().taskStates['task-1'].textTail).toBe('子 Agent 的话');
@@ -1267,9 +1269,7 @@ describe('a reconnect snapshot', () => {
     });
     delta('text_delta', '正在回答');
     const before = live().steps;
-    useChatStore
-      .getState()
-      .handleStreamSnapshot(JID, snapshot(), undefined, RUN);
+    useChatStore.getState().handleStreamSnapshot(JID, snapshot(), SESSION, RUN);
     expect(live().steps).toBe(before);
   });
 });
@@ -1282,7 +1282,7 @@ describe('changing the process visibility', () => {
 
   it('drops the narration of a run in flight when the level is lowered', async () => {
     setWorkspace('proactive', 'full');
-    useChatStore.getState().handleRunStarted(JID, RUN);
+    useChatStore.getState().handleRunStarted(SESSION_JID, RUN);
     emit({ eventType: 'commentary', text: '先看看。' });
     tool('t1', 'Read');
     expect(live().steps!.some((step) => step.commentary)).toBe(true);
@@ -1340,7 +1340,7 @@ describe('changing the process visibility', () => {
 
   it('drops what a lowered level hides from a turn that is running', async () => {
     setWorkspace('proactive', 'full');
-    useChatStore.getState().handleRunStarted(JID, RUN);
+    useChatStore.getState().handleRunStarted(SESSION_JID, RUN);
     emit({ eventType: 'thinking_start' });
     delta('thinking_delta', '**检查**\n\n不该再显示的思考。');
     tool('t1', 'Bash', 'npm test');
@@ -1359,7 +1359,7 @@ describe('changing the process visibility', () => {
 
   it('does not touch an Assistant workspace turn', async () => {
     setWorkspace('assistant', 'full');
-    useChatStore.getState().handleRunStarted(JID, RUN);
+    useChatStore.getState().handleRunStarted(SESSION_JID, RUN);
     delta('thinking_delta', '助手的思考。');
     await useChatStore.getState().updateProcessVisibility(JID, 'hidden');
     expect(live().thinkingText).toBe('助手的思考。');

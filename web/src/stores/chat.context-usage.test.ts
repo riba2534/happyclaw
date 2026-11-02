@@ -69,17 +69,17 @@ describe('context usage', () => {
     useChatStore.setState({ contextUsage: {} });
   });
 
-  it('loads the main conversation and a session under their own keys', async () => {
+  it('loads each session under its own key', async () => {
     apiGetMock.mockResolvedValueOnce(usage(20_000));
     apiGetMock.mockResolvedValueOnce(usage(90_000));
-    await useChatStore.getState().loadContextUsage('web:g1', null);
+    await useChatStore.getState().loadContextUsage('web:g1', 'a0');
     await useChatStore.getState().loadContextUsage('web:g1', 'a1');
 
     expect(apiGetMock.mock.calls.map(([path]) => path)).toEqual([
-      '/api/groups/web%3Ag1/context-usage',
+      '/api/groups/web%3Ag1/context-usage?agentId=a0',
       '/api/groups/web%3Ag1/context-usage?agentId=a1',
     ]);
-    expect(stored()['web:g1']?.usedTokens).toBe(20_000);
+    expect(stored()['web:g1#agent:a0']?.usedTokens).toBe(20_000);
     expect(stored()['web:g1#agent:a1']?.usedTokens).toBe(90_000);
   });
 
@@ -91,8 +91,8 @@ describe('context usage', () => {
       model: null,
       updatedAt: null,
     });
-    await useChatStore.getState().loadContextUsage('web:g1');
-    expect(stored()).toEqual({ 'web:g1': null });
+    await useChatStore.getState().loadContextUsage('web:g1', 'a1');
+    expect(stored()).toEqual({ 'web:g1#agent:a1': null });
   });
 
   it('a push replaces the value; a reply that started before it does not', async () => {
@@ -102,8 +102,8 @@ describe('context usage', () => {
         answer = resolve;
       }),
     );
-    const loading = useChatStore.getState().loadContextUsage('web:g1');
-    useChatStore.getState().setContextUsage('web:g1', null, {
+    const loading = useChatStore.getState().loadContextUsage('web:g1', 'a1');
+    useChatStore.getState().setContextUsage('web:g1', 'a1', {
       ...usage(60_000),
       // Other fields of the WS frame are dropped.
       ...{ type: 'context_usage', chatJid: 'web:g1', model: 'opus' },
@@ -111,18 +111,18 @@ describe('context usage', () => {
     answer(usage(20_000));
     await loading;
 
-    expect(stored()['web:g1']).toEqual(usage(60_000));
+    expect(stored()['web:g1#agent:a1']).toEqual(usage(60_000));
   });
 
   it('a reset or a context divider from anywhere empties it until the next turn', async () => {
-    useChatStore.getState().setContextUsage('web:g1', null, usage(60_000));
+    useChatStore.getState().setContextUsage('web:g1', 'a0', usage(60_000));
     useChatStore.getState().setContextUsage('web:g1', 'a1', usage(80_000));
 
     apiPostMock.mockResolvedValueOnce({ success: true, dividerMessageId: 'd' });
     apiGetMock.mockResolvedValue({ messages: [], hasMore: false });
     await useChatStore.getState().resetSession('web:g1', 'a1');
     expect(stored()['web:g1#agent:a1']).toBeNull();
-    expect(stored()['web:g1']?.usedTokens).toBe(60_000);
+    expect(stored()['web:g1#agent:a0']?.usedTokens).toBe(60_000);
 
     // /clear from IM, or /fresh by the agent: the divider comes over WS.
     useChatStore.getState().setContextUsage('web:g1', 'a1', usage(80_000));
@@ -130,10 +130,10 @@ describe('context usage', () => {
       .getState()
       .handleWsNewMessage('web:g1', divider('context_fresh_window'), 'a1');
     expect(stored()['web:g1#agent:a1']).toBeNull();
-    expect(stored()['web:g1']?.usedTokens).toBe(60_000);
+    expect(stored()['web:g1#agent:a0']?.usedTokens).toBe(60_000);
     useChatStore
       .getState()
-      .handleWsNewMessage('web:g1', divider('context_reset'));
-    expect(stored()['web:g1']).toBeNull();
+      .handleWsNewMessage('web:g1', divider('context_reset'), 'a0');
+    expect(stored()['web:g1#agent:a0']).toBeNull();
   });
 });

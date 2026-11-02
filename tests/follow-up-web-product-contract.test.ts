@@ -45,7 +45,7 @@ describe('Codex-style Web follow-up product contract', () => {
     const store = read('web/src/stores/chat.ts');
 
     expect(chatView).not.toMatch(/activeAgent\?\.status === 'running'/);
-    expect(chatView).toMatch(/isRunning=\{currentContextWaiting\}/);
+    expect(chatView).toMatch(/isRunning=\{activeAgentWaiting\}/);
     // Session lists downgrade warm-but-idle runners via the shared helper.
     expect(chatView).toContain('buildConversationSessions(');
     expect(sessionPresentation).toMatch(/status: 'idle' as const/);

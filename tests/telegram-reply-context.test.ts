@@ -34,7 +34,6 @@ vi.mock('../src/db.js', () => ({
   storeMessageDirect: inbound.storeMessageDirect,
   updateChatName: vi.fn(),
 }));
-vi.mock('../src/message-notifier.js', () => ({ notifyNewImMessage: vi.fn() }));
 vi.mock('../src/logger.js', () => ({
   logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));

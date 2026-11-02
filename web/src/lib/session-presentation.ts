@@ -1,18 +1,55 @@
 import type { AgentInfo } from '../types';
 import { getPresentedMessageContent } from './message-presentation';
+import { sessionActivityAt, sortSessionsForList } from './session-order';
+
+export { sessionActivityAt };
+
+/** A session's name as lists and titles show it. */
+export function sessionDisplayName(session: Pick<AgentInfo, 'name'>): string {
+  return session.name || '新会话';
+}
+
+/** Sessions the host uses itself: a chat can never be bound to one. */
+const UNBINDABLE_SOURCES: ReadonlySet<string> = new Set([
+  'team_router',
+  'work_item',
+  'automation',
+  'native_thread',
+  'feishu_thread',
+]);
+
+/**
+ * Whether a chat can be bound to the session: a conversation, not a team
+ * lane, an automation run or a native topic's own session (the server's
+ * rule for every bind and for a deleted session's rebind).
+ */
+export function isBindableSession(
+  session: Pick<AgentInfo, 'kind' | 'source_kind'>,
+): boolean {
+  return (
+    session.kind === 'conversation' &&
+    !(session.source_kind && UNBINDABLE_SOURCES.has(session.source_kind))
+  );
+}
+
+/** A workspace's sessions a chat can be bound to, in list order. */
+export function bindableSessions<T extends AgentInfo>(
+  agents: readonly T[],
+): T[] {
+  return listedSessions(agents).filter(isBindableSession);
+}
+
+/** A workspace's conversations in the session lists' order (pinned first). */
+export function listedSessions<T extends AgentInfo>(agents: readonly T[]): T[] {
+  return sortSessionsForList(
+    agents.filter((agent) => agent.kind === 'conversation'),
+  );
+}
 
 // Presentation helpers shared by the desktop sidebar session tree and the
 // mobile session list.
 
 const RECENT_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
-
-export function sessionActivityAt(session: AgentInfo): string {
-  return (
-    session.last_active_at ||
-    session.latest_message?.timestamp ||
-    session.created_at
-  );
-}
 
 function timestampMs(value: string): number | null {
   const parsed = new Date(value).getTime();
@@ -47,7 +84,7 @@ export function formatSessionTime(value: string): string {
 }
 
 /** A message's content as one line of list preview. */
-export function previewText(content: string | null | undefined): string {
+function previewText(content: string | null | undefined): string {
   return getPresentedMessageContent({
     content: content || '',
     source_kind: null,
@@ -92,53 +129,53 @@ export interface AutomationSessionGroup {
   sessions: AgentInfo[];
 }
 
+/** A row of a session list: a session, or one automation's sessions. */
+export type SessionListItem =
+  | { kind: 'session'; session: AgentInfo }
+  | { kind: 'automation'; group: AutomationSessionGroup };
+
 /**
- * Sessions an automation opened, grouped per automation in the order of
- * their newest session; the rest keep their order.
+ * A list's rows from its ordered sessions. The sessions an automation opened
+ * fold into one row, placed where its most recent one would be; a pinned
+ * session stays a row of its own, with the other pinned ones on top.
  */
-export function partitionAutomationSessions(sessions: AgentInfo[]): {
-  groups: AutomationSessionGroup[];
-  others: AgentInfo[];
-} {
+export function sessionListItems(sessions: AgentInfo[]): SessionListItem[] {
+  const items: SessionListItem[] = [];
   const groups = new Map<string, AutomationSessionGroup>();
-  const others: AgentInfo[] = [];
   for (const session of sessions) {
     const id = session.automation_id;
-    if (!id) {
-      others.push(session);
+    if (!id || session.pinned_at) {
+      items.push({ kind: 'session', session });
       continue;
     }
     const group = groups.get(id);
-    if (group) group.sessions.push(session);
-    else
-      groups.set(id, {
-        automationId: id,
-        name: session.automation_name || session.name,
-        sessions: [session],
-      });
+    if (group) {
+      group.sessions.push(session);
+      continue;
+    }
+    const created: AutomationSessionGroup = {
+      automationId: id,
+      name: session.automation_name || session.name,
+      sessions: [session],
+    };
+    groups.set(id, created);
+    items.push({ kind: 'automation', group: created });
   }
-  return { groups: [...groups.values()], others };
+  return items;
 }
 
 /**
- * Conversation sessions newest-first. A session whose runner is still warm
- * but has no active query is shown as idle, matching what the user can act on.
+ * A workspace's sessions in list order (pinned first, then by activity). A
+ * session whose runner is still warm but has no active query is shown as
+ * idle, matching what the user can act on.
  */
 export function buildConversationSessions(
   agents: AgentInfo[],
   isQueryActive: (agentId: string) => boolean,
 ): AgentInfo[] {
-  // Parse each timestamp once; sorting hundreds of sessions parsed two dates
-  // per comparison.
-  return agents
-    .filter((a) => a.kind === 'conversation')
-    .map((agent) => ({
-      agent:
-        agent.status === 'running' && !isQueryActive(agent.id)
-          ? { ...agent, status: 'idle' as const }
-          : agent,
-      at: new Date(sessionActivityAt(agent)).getTime(),
-    }))
-    .sort((a, b) => b.at - a.at)
-    .map(({ agent }) => agent);
+  return listedSessions(agents).map((agent) =>
+    agent.status === 'running' && !isQueryActive(agent.id)
+      ? { ...agent, status: 'idle' as const }
+      : agent,
+  );
 }

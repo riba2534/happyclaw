@@ -159,8 +159,8 @@ export function teamMountIneligibility(
   if (resolveChannelConversationKind(channelJid, chat ?? {}) !== 'group') {
     return '团队模式只支持飞书普通群（不支持私聊和话题群）';
   }
-  if (mount.routing_mode !== 'single_session' || mount.session_id) {
-    return '群需要绑定到工作区的主会话';
+  if (mount.routing_mode !== 'single_session' || !mount.session_id) {
+    return '群需要绑定到工作区的会话';
   }
   return null;
 }
@@ -419,7 +419,6 @@ function deliverFollowupCopy(
 export function listTeamMountViews(workspaceJid: string): TeamMountView[] {
   return listChannelMountsByWorkspace(workspaceJid)
     .filter((mount) => getChannelType(mount.channel_jid) === 'feishu')
-    .filter((mount) => !mount.session_id)
     .map((mount) => {
       const team = getTeamMount(mount.channel_jid);
       const ineligibleReason = teamMountIneligibility(
@@ -1447,11 +1446,15 @@ async function acceptCandidate(
     // Another process won the insert: its session does the work.
     const orphan = getAgent(agentId);
     if (orphan) {
-      await deleteConversationSession({
-        workspaceJid: context.workspaceJid,
-        group: context.workspace,
-        session: orphan,
-      }).catch(() => undefined);
+      try {
+        deleteConversationSession({
+          workspaceJid: context.workspaceJid,
+          group: context.workspace,
+          session: orphan,
+        });
+      } catch {
+        /* the orphan stays; nothing routes to it */
+      }
     }
     return routed(candidate, 'accept', item.id);
   }
@@ -2100,12 +2103,15 @@ export async function handleWorkIpc(
  * A deleted session leaves no live team state behind: its work item ends
  * stopped (nothing can run it any more), and a deleted router stops routing
  * until the group's settings are saved again (which creates a new one).
+ * Writes rows only; returns the Web update, to send once the caller's
+ * transaction commits.
  */
-export function onTeamSessionDeleted(agentId: string): void {
+export function onTeamSessionDeleted(agentId: string): () => void {
   const item = getWorkItemByAgent(agentId);
-  if (item && item.status === 'open') {
-    broadcast(stopItem(item, 'session_deleted', false));
-  }
+  const stopped =
+    item && item.status === 'open'
+      ? stopItem(item, 'session_deleted', false)
+      : null;
   const team = getTeamMountByRouter(agentId);
   if (team) {
     storeTeamMountSettings({
@@ -2117,6 +2123,9 @@ export function onTeamSessionDeleted(agentId: string): void {
       now: now(),
     });
   }
+  return () => {
+    if (stopped) broadcast(stopped);
+  };
 }
 
 /** Open work items of a group, for `/status`. */

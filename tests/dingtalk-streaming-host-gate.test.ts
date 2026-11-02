@@ -827,45 +827,6 @@ describe('DingTalk terminal-pending mutation fence', () => {
 });
 
 describe('DingTalk production host wiring', () => {
-  test('main reserves active card delivery before static send and then finalizes', () => {
-    const main = fs.readFileSync('src/index.ts', 'utf8');
-    const branch = main.slice(
-      main.indexOf('let streamingCardHandledIM = false;'),
-      main.indexOf('// Only reset idle timer on actual results'),
-    );
-    const gate = branch.indexOf('outputStreamingSession?.isActive()');
-    const staticDelivery = branch.indexOf(
-      'const replySendOutcome = await sendMessageWithOutcome',
-    );
-    const finalization = branch.indexOf(
-      'await finalizeChannelCardAfterDelivery(',
-    );
-    const postFinalizationStatic = branch.indexOf(
-      'postFinalizationStaticDelivered = await sendImWithRetry(',
-    );
-
-    expect(gate).toBeGreaterThanOrEqual(0);
-    expect(staticDelivery).toBeGreaterThan(gate);
-    expect(finalization).toBeGreaterThan(staticDelivery);
-    expect(postFinalizationStatic).toBeGreaterThan(finalization);
-    expect(branch).toContain(
-      'pendingStreamingCardCompletion = outputStreamingSession',
-    );
-    expect(branch).toContain('await persistUncertainStreamingDelivery({');
-    expect(branch).toMatch(
-      /classifyImSendFailure\(cardFinalization\.error\) !==\s+'uncertain'/,
-    );
-    // A refused final card body never showed the reply: static fallback is
-    // allowed even though the card itself was visible.
-    expect(branch).toMatch(
-      /refusedCardStaticText = pendingStreamingCardCompleted\s+\?\s+undefined\s+:\s+feishuCardStaticFallbackText\(cardFinalization\.error\)/,
-    );
-    expect(branch).toContain(
-      'const cardBodyRejected = refusedCardStaticText !== undefined;',
-    );
-    expect(branch).toContain('sendToIM: directImReply && !skipImSend');
-  });
-
   test('conversation Agent finalizes before its exact static fallback gate', () => {
     const main = fs.readFileSync('src/index.ts', 'utf8');
     const agentStart = main.indexOf('async function processAgentConversation(');

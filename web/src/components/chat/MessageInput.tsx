@@ -112,8 +112,7 @@ interface MessageInputProps {
   groupJid?: string;
   /**
    * Conversation the draft and pending attachments belong to: the session
-   * chat jid (`${groupJid}#agent:${id}`), or the workspace jid for the main
-   * conversation. Defaults to `groupJid`.
+   * chat jid (`${groupJid}#agent:${id}`). Defaults to `groupJid`.
    */
   draftKey?: string;
   disabled?: boolean;

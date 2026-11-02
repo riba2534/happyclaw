@@ -230,7 +230,8 @@ describe('POST /api/groups additional_mounts persistence', () => {
         readonly: true,
       },
     ]);
-    expect(ensureTerminalContainerStarted).toHaveBeenCalledWith(body.jid);
+    // A workspace has no runner of its own to warm.
+    expect(ensureTerminalContainerStarted).not.toHaveBeenCalled();
   });
 
   test('keeps ordinary container workspace creation backward compatible', async () => {

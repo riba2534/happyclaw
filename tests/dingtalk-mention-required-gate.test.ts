@@ -43,10 +43,6 @@ vi.mock('../src/db.js', () => ({
   storeMessageDirect: vi.fn(),
 }));
 
-vi.mock('../src/message-notifier.js', () => ({
-  notifyNewImMessage: vi.fn(),
-}));
-
 vi.mock('../src/logger.js', () => ({
   logger: {
     debug: vi.fn(),

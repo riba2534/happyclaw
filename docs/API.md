@@ -123,7 +123,7 @@ active 的 admin 可以为自己创建只读访客（`role=guest`），并授权
 - `GET|PUT /api/groups/:jid/model-selection`，聊天输入框的会话级模型与推理档位选择
 - `GET /api/groups/:jid/context-usage`，会话当前的上下文占用（输入框旁的圆环）
 - `POST /api/groups/:jid/clear-history`，重建工作区内容：永久清除聊天、
-  Runtime Session、子对话、`data/groups/{folder}` 工作目录、会话 worktree 目录及
+  Runtime Session、`data/groups/{folder}` 工作目录、会话 worktree 目录及
   Workspace Memory（含版本历史和 Home Owner Profile）；自动化保留，重建期间暂停，
   排队或运行中的运行记为已终止，绑定已删会话的自动化保持暂停；保留工作区外壳、
   `data/extra/`、自动化运行历史、worktree 分支和宿主机模式的自定义工作目录
@@ -146,8 +146,9 @@ active 的 admin 可以为自己创建只读访客（`role=guest`），并授权
 工作区或会话取消等待。来源是 IM 的输入在开始等待时收到一条说明（同一输入只发一次）。
 自动化的输入与其他输入一样留在队列里等待，运行保持 `queued`。
 
-`model-selection` 以 `agentId`（GET 查询参数、PUT 请求体）区分 Runtime Session，
-缺省表示主会话。GET 返回当前选择、默认值的解析来源和全部已保存模型配置（不含凭据）；
+`model-selection` 以 `agentId`（GET 查询参数、PUT 请求体）指定 Runtime Session，必填，
+缺失时 400 `{ "code": "session_required" }`；`context-usage`、`messages`、`reset-session`
+同样必须带会话。GET 返回当前选择、默认值的解析来源和全部已保存模型配置（不含凭据）；
 `default.source` 按与运行时相同的函数解析，取值 `agent`（智能体自己的绑定）、
 `workspace_env`（工作区自带 Provider 环境变量）、`owner_main`（工作区所有者的主智能体）、
 `system_main`（系统主 HappyClaw：最早创建的 admin 的主智能体）、`none`；未设置的一步
@@ -434,8 +435,8 @@ HTTP 状态为 409；请求不会停止现有 Runner，也不会修改绑定。
 路径必须位于目标工作区允许范围内；系统目录、路径穿越和不安全符号链接会被拒绝。
 
 文件根与该会话运行时的工作目录一致：宿主机模式的自定义目录、否则
-`data/groups/{folder}`。以上接口都接受查询参数 `agentId`（Runtime Session ID，`main`
-或缺省为主会话）；会话有独立 worktree 时以 worktree 为根。`agentId` 不属于该工作区时
+`data/groups/{folder}`。以上接口都接受查询参数 `agentId`（Runtime Session ID）；缺省时以
+工作区目录为根，会话有独立 worktree 时以 worktree 为根。`agentId` 不属于该工作区时
 返回 404。
 
 ## 代码改动与会话 worktree
@@ -516,9 +517,9 @@ hook）。HappyClaw 本身不访问网络，但 LFS 或 partial clone 仓库在 
 "not_git_repo" | "repo_has_no_commits", "message": "…"}`。
 
 `workdir/peers` 列出与该会话共用工作目录、且正在运行一轮的其他会话（同工作区未用
-worktree 的会话、主会话，或自定义目录相同的其他工作区），只提示不限制：
-`{"peers": [{"workspace_jid": "web:…", "workspace_name": "Repo", "kind": "main" |
-"session" | "task", "session_id": null, "session_name": null}], "hidden_count": 0}`；
+worktree 的会话，或自定义目录相同的其他工作区的会话），只提示不限制：
+`{"peers": [{"workspace_jid": "web:…", "workspace_name": "Repo", "kind": "session",
+"session_id": "…", "session_name": "…"}], "hidden_count": 0}`；
 调用者看不到的工作区只计入 `hidden_count`。
 
 ## Runtime Session 与渠道绑定
@@ -543,6 +544,20 @@ worktree 的会话、主会话，或自定义目录相同的其他工作区）�
 - `GET /api/groups/:jid/im-groups`
 - `PUT /api/groups/:jid/im-binding`
 - `DELETE /api/groups/:jid/im-binding/:imJid`
+
+工作区没有主会话：列表只返回真实会话，每行带当前用户的置顶时间 `pinned_at`（未置顶为
+`null`），按「置顶的在前，再按最近活跃」排序（`shared/session-order.ts`）。
+
+- `PATCH /api/groups/:jid/sessions/:sessionId` 接受 `{ "pinned": true | false }`，返回
+  `{ "success": true, "pinned_at": … }`；置顶按用户记录，访客不能置顶。
+- `DELETE` 可删除任何会话，包括原生话题会话。会话绑定了私聊/普通群、原生话题或自动化时
+  先返回 409 `{ "code": "session_has_bindings", "linked_im_groups": [{jid, name}],
+"thread_bindings": [{jid, name, context_id}], "automations": [{id, name}] }`（三个数组
+  总是存在）；带 `confirm_bindings=true` 重发才删除。可选 `rebind_to=<同工作区另一会话 id>`
+  在同一事务里先把私聊/普通群绑定改到该会话；非法时 400 `invalid_rebind_target`。原生话题
+  绑定随会话删除，该话题下一条消息新建会话；绑定该会话的自动化暂停。有 worktree 时另走
+  worktree 的 409 确认。
+- `GET /api/groups/:jid/agents` 的 spawn 行带 `spawned_from_jid`（发起它的会话地址）。
 
 约束：
 
@@ -593,13 +608,12 @@ worktree 的会话、主会话，或自定义目录相同的其他工作区）�
   记录的空目录，有内容的目录不动。
 
 - 工作区绑定只接受原生话题群（飞书话题群或 Telegram Forum）。
-- Runtime Session 绑定接受私聊和普通群，`sessionId=main` 表示该 Workspace 的主会话。
+- Runtime Session 绑定接受私聊和普通群，必须指定具体会话；`sessionId=main` 不再有特殊含义（404）。
 - 话题群使用 `thread_map`，每个原生话题映射独立 Session；普通群的 @ 策略不改变绑定层级。
 - `DELETE` 绑定会真正解除路由，不恢复默认工作区或自动创建会话。
 - 每条输入的回复回到实际来源渠道；Web 输入不会自动镜像到已绑定 IM。
-- 绑定管理 `PUT /api/config/user-im/bindings/:imJid` 使用
-  `{target_session_id: "main", target_main_jid: "web:..."}` 选择主会话；
-  仅指定 `target_main_jid` 表示话题群的 Workspace 绑定。
+- 绑定管理 `PUT /api/config/user-im/bindings/:imJid` 用 `target_session_id` 选择会话；
+  仅指定 `target_main_jid` 表示话题群的 Workspace 绑定（只接受原生话题群）。
 - 请求必须携带或解析出正确的 `channel_account_id`，不能跨机器人账号绑定。
 
 ## Agent Profiles
@@ -621,8 +635,7 @@ worktree 的会话、主会话，或自定义目录相同的其他工作区）�
 （`source`、`model_config_id`、`model_config_name`、`model`、`effort`、`connection_missing`）
 说明运行实际用的连接与模型。请求体可带未保存的 `model_config_id`、`model`，与未保存
 的 `runtime_policy` 一样按它们计算；绑定的连接已删除时 `connection_missing` 为 true。
-`source` 按固定顺序取 `session`（会话手选，仅指定 `workspace_jid` 时看该
-工作区主会话）、`agent`（智能体绑定）、`workspace_env`、`owner_main`（所有者的主智能体）、
+`source` 按固定顺序取 `session`（会话手选；智能体预览不针对具体会话，不取这一步）、`agent`（智能体绑定）、`workspace_env`、`owner_main`（所有者的主智能体）、
 `system_main`（系统主 HappyClaw）或 `none`。`GET /api/agent-profiles` 另返回
 `model_configs[]`（每个连接 `{ id, name, type, model, usable, models }`，`models` 形状同
 `model-selection`）和 `inherited_model`（`owner_main`、`system_main` 各为

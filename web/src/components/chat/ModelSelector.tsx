@@ -555,8 +555,8 @@ function keepFocusThatMovedOn(event: Event) {
 
 interface ModelSelectorProps {
   groupJid: string;
-  /** Runtime Session id; null addresses the main conversation. */
-  agentId: string | null;
+  /** The session whose model this picks. */
+  agentId: string;
   canChange: boolean;
 }
 
@@ -596,7 +596,7 @@ export function ModelSelector({
   // older selection back over the saved one.
   const saves = useRef(0);
   const basePath = `/api/groups/${encodeURIComponent(groupJid)}/model-selection`;
-  const query = agentId ? `?agentId=${encodeURIComponent(agentId)}` : '';
+  const query = `?agentId=${encodeURIComponent(agentId)}`;
 
   const load = useCallback(async () => {
     try {

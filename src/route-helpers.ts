@@ -15,12 +15,14 @@ export type RouteContext = Context<{ Variables: Variables }>;
 export interface RouteRefusal {
   message: string;
   status: ContentfulStatusCode;
+  /** Machine-readable reason, answered as `code` when present. */
+  code?: string;
 }
 
 /**
  * Wrap handlers: `resolve` supplies what each handler needs or answers on its
- * own (a missing service, a refused caller), a refusal becomes `{ error }`
- * with its status, anything else is logged and answers 500.
+ * own (a missing service, a refused caller), a refusal becomes `{ error,
+ * code? }` with its status, anything else is logged and answers 500.
  */
 export function errorBoundary<T>(options: {
   resolve: (c: RouteContext) => T | Response;
@@ -36,8 +38,15 @@ export function errorBoundary<T>(options: {
       try {
         return await handler(c, resolved);
       } catch (error) {
-        if (options.isRefusal(error))
-          return c.json({ error: error.message }, error.status);
+        if (options.isRefusal(error)) {
+          return c.json(
+            {
+              error: error.message,
+              ...(error.code ? { code: error.code } : {}),
+            },
+            error.status,
+          );
+        }
         logger.error({ err: error, path: c.req.path }, options.failureLog);
         return c.json({ error: '操作失败，请稍后重试' }, 500);
       }

@@ -299,17 +299,20 @@ describe('IpcWatcherManager runtime namespaces', () => {
 });
 
 describe('resolveScopedIpcRoots', () => {
-  test('returns only the requested roots, main first, without duplicates', () => {
+  test('returns only the requested session roots, without duplicates', () => {
     const roots = resolveScopedIpcRoots('/ipc/ws', [
       { agentId: 'agent-1' },
-      {},
+      { agentId: 'agent-2' },
       { agentId: 'agent-1' },
     ]);
     expect(roots).toEqual([
-      { path: '/ipc/ws', agentId: null },
       {
         path: path.join('/ipc/ws', 'agents', 'agent-1'),
         agentId: 'agent-1',
+      },
+      {
+        path: path.join('/ipc/ws', 'agents', 'agent-2'),
+        agentId: 'agent-2',
       },
     ]);
   });

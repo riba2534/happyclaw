@@ -144,7 +144,6 @@ const db = vi.hoisted(() => ({
   updateChatName: vi.fn(),
 }));
 vi.mock('../src/db.js', () => db);
-vi.mock('../src/message-notifier.js', () => ({ notifyNewImMessage: vi.fn() }));
 vi.mock('../src/logger.js', () => ({
   logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));

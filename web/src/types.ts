@@ -15,7 +15,7 @@ export interface GroupInfo {
   added_at: string;
   interaction_mode: InteractionMode;
   process_visibility?: ProcessVisibility;
-  kind?: 'home' | 'main' | 'feishu' | 'web';
+  kind?: 'home' | 'feishu' | 'web';
   is_home?: boolean;
   is_my_home?: boolean;
   can_modify?: boolean;
@@ -23,7 +23,7 @@ export interface GroupInfo {
   read_only?: boolean;
   editable?: boolean;
   deletable?: boolean;
-  lastMessage?: string;
+  /** Latest activity of any of the workspace's sessions. */
   lastMessageTime?: string;
   execution_mode?: 'container' | 'host';
   custom_cwd?: string;
@@ -422,6 +422,8 @@ export interface AgentInfo {
     /** Team mode: the session that routes a group, and a work item's worker. */
     | 'team_router'
     | 'work_item'
+    /** A workspace's conversation from before sessions were all alike. */
+    | 'legacy_main'
     | null;
   /** Sessions an automation opened (fresh / persistent runs). */
   automation_id?: string | null;
@@ -437,6 +439,10 @@ export interface AgentInfo {
     | null;
   title_generating?: boolean;
   last_active_at?: string | null;
+  /** When the current user pinned it; null when not pinned. */
+  pinned_at?: string | null;
+  /** A /spawn agent: the session runtime JID that started it. */
+  spawned_from_jid?: string | null;
   latest_message?: { content: string; timestamp: string } | null;
   /** The session's own git worktree (Host workspaces only), if it has one. */
   worktree?: SessionWorktreeInfo | null;
@@ -516,6 +522,5 @@ export interface WorkspaceDeleteImpact {
   has_channel_bindings: boolean;
   channel_binding_count: number;
   bound_sessions: WorkspaceDeleteBindingSession[];
-  bound_main_im_groups: WorkspaceDeleteBindingGroup[];
   bound_thread_contexts: WorkspaceDeleteThreadContext[];
 }

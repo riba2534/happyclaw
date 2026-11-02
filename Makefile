@@ -1,7 +1,7 @@
 .PHONY: dev dev-backend dev-web build build-backend build-web start \
        typecheck typecheck-backend typecheck-web typecheck-agent-runner \
        format format-check install install-host-tools clean reset-init update-sdk ensure-latest-sdk sync-types \
-       backup restore leftover-direct-mounts help _ensure-docker-image docker-pull logs status stop \
+       backup restore help _ensure-docker-image docker-pull logs status stop \
        _check-sync _ensure-builtin-skills _build-web-if-stale _build-ar-if-stale _build-backend-if-stale
 
 # ─── Runtime ────────────────────────────────────────────────
@@ -295,9 +295,6 @@ backup: ## 备份运行时数据到 happyclaw-backup-{date}.tar.gz
 	mv "$$TMP_FILE" "$$FILE"; \
 	chmod 600 "$$FILE"; \
 	echo "✅ 备份完成：$$FILE ($$(du -sh "$$FILE" | cut -f1))"
-
-leftover-direct-mounts: ## 诊断仍挂在 workspace main 上的可判定私聊（默认 dry-run；APPLY=1 才修复并重置隔离代）
-	$(RUN) tsx scripts/repair-leftover-direct-mounts.ts $(if $(filter 1 yes true,$(APPLY)),--apply,)
 
 restore: ## 从 happyclaw-backup-*.tar.gz 恢复数据（用法：make restore 或 make restore FILE=xxx.tar.gz）
 	@set -eu; \

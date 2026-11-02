@@ -2,49 +2,43 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import {
   ArrowLeft,
-  Link,
   Loader2,
   MessageSquare,
   MoreHorizontal,
-  Pencil,
+  Pin,
   Plus,
-  Trash2,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { IconButton } from '@/components/common/IconButton';
 import { SearchInput } from '@/components/common/SearchInput';
+import {
+  ResponsiveMenu,
+  type MenuAction,
+} from '@/components/common/ResponsiveMenu';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu';
 import type { AgentInfo, SessionWorktreeInfo } from '../../types';
 import { WorktreeBranchTag } from './WorktreeBranchTag';
 import {
   buildSessionMeta,
-  isNativeManagedSession,
   isRecentSession,
   messagePreview,
+  sessionDisplayName,
 } from '../../lib/session-presentation';
 
 interface SessionSidebarProps {
+  /** The workspace's sessions, in list order. */
   sessions: AgentInfo[];
   activeSessionId: string | null;
   canModify?: boolean;
   isTopicWorkspace?: boolean;
   title?: string;
-  mainLabel?: string;
-  mainMeta?: string;
   onClose?: () => void;
-  onSelectSession: (id: string | null) => void;
+  onSelectSession: (id: string) => void;
   onCreateSession?: () => void;
   isCreatingSession?: boolean;
-  onRenameSession?: (id: string, name: string) => void;
-  onDeleteSession: (id: string) => void;
-  onBindSession?: (id: string | null) => void;
+  /** A row's ⋯ actions, the same as the sidebar tree's. */
+  menuFor: (session: AgentInfo) => MenuAction[][] | undefined;
 }
 
 export function SessionSidebar({
@@ -53,15 +47,11 @@ export function SessionSidebar({
   canModify = false,
   isTopicWorkspace = false,
   title,
-  mainLabel = '当前对话',
-  mainMeta = '当前工作上下文',
   onClose,
   onSelectSession,
   onCreateSession,
   isCreatingSession = false,
-  onRenameSession,
-  onDeleteSession,
-  onBindSession,
+  menuFor,
 }: SessionSidebarProps) {
   const [query, setQuery] = useState('');
   const [scope, setScope] = useState<'all' | 'recent'>('all');
@@ -87,7 +77,7 @@ export function SessionSidebar({
   // source of sessions, and may coexist with manually-created Web sessions.
   const sessionNoun = '会话';
   const createSessionLabel = isTopicWorkspace ? '新建 Web 会话' : '新建会话';
-  const totalCount = sessions.length + 1;
+  const totalCount = sessions.length;
   const sessionVirtualizer = useVirtualizer({
     count: visibleSessions.length,
     getScrollElement: () => scrollParentRef.current,
@@ -174,20 +164,10 @@ export function SessionSidebar({
       </div>
 
       <div ref={scrollParentRef} className="flex-1 overflow-y-auto px-2 py-2">
-        <SessionRow
-          name={mainLabel}
-          meta={mainMeta}
-          active={activeSessionId === null}
-          isMain
-          canModify={canModify}
-          onSelect={() => onSelectSession(null)}
-          onBind={onBindSession ? () => onBindSession(null) : undefined}
-        />
-
         {visibleSessions.length === 0 ? (
           <div className="px-3 py-8 text-center text-caption text-muted-foreground">
             {sessions.length === 0
-              ? `暂无其他${sessionNoun}`
+              ? `暂无${sessionNoun}`
               : `没有匹配的${sessionNoun}`}
             {(query || scope !== 'all') && (
               <Button
@@ -205,12 +185,11 @@ export function SessionSidebar({
           </div>
         ) : (
           <div
-            className="relative mt-1 w-full"
+            className="relative w-full"
             style={{ height: sessionVirtualizer.getTotalSize() }}
           >
             {sessionVirtualizer.getVirtualItems().map((virtualRow) => {
               const session = visibleSessions[virtualRow.index];
-              const nativeManaged = isNativeManagedSession(session);
               return (
                 <div
                   key={session.id}
@@ -218,31 +197,16 @@ export function SessionSidebar({
                   style={{ transform: `translateY(${virtualRow.start}px)` }}
                 >
                   <SessionRow
-                    name={session.name}
+                    name={sessionDisplayName(session)}
                     meta={buildSessionMeta(session)}
                     active={activeSessionId === session.id}
                     running={session.status === 'running'}
                     titleGenerating={session.title_generating}
+                    pinned={!!session.pinned_at}
                     linkedCount={session.linked_im_groups?.length ?? 0}
                     worktree={session.worktree}
-                    canModify={canModify}
-                    readonlyTitle={nativeManaged}
                     onSelect={() => onSelectSession(session.id)}
-                    onBind={
-                      onBindSession && !nativeManaged
-                        ? () => onBindSession(session.id)
-                        : undefined
-                    }
-                    onRename={
-                      onRenameSession && !nativeManaged
-                        ? () => onRenameSession(session.id, session.name)
-                        : undefined
-                    }
-                    onDelete={
-                      nativeManaged
-                        ? undefined
-                        : () => onDeleteSession(session.id)
-                    }
+                    menu={menuFor(session)}
                   />
                 </div>
               );
@@ -283,38 +247,26 @@ function SessionRow({
   name,
   meta,
   active,
-  isMain = false,
   running = false,
   titleGenerating = false,
+  pinned = false,
   linkedCount = 0,
   worktree,
-  canModify,
-  readonlyTitle = false,
   onSelect,
-  onBind,
-  onRename,
-  onDelete,
+  menu,
 }: {
   name: string;
   meta: string;
   active: boolean;
-  isMain?: boolean;
   running?: boolean;
   titleGenerating?: boolean;
+  pinned?: boolean;
   linkedCount?: number;
   worktree?: SessionWorktreeInfo | null;
-  canModify: boolean;
-  readonlyTitle?: boolean;
   onSelect: () => void;
-  onBind?: () => void;
-  onRename?: () => void;
-  onDelete?: () => void;
+  menu?: MenuAction[][];
 }) {
-  const showMenu =
-    canModify &&
-    (onBind ||
-      (!isMain && !readonlyTitle && onRename) ||
-      (!isMain && onDelete));
+  const showMenu = !!menu?.some((group) => group.length > 0);
 
   return (
     <div
@@ -345,10 +297,16 @@ function SessionRow({
           />
         )}
         <span className="min-w-0 flex-1">
-          <span
-            className={cn('block truncate text-body', active && 'font-medium')}
-          >
-            {name}
+          <span className="flex min-w-0 items-center gap-1">
+            <span className={cn('truncate text-body', active && 'font-medium')}>
+              {name}
+            </span>
+            {pinned && (
+              <Pin
+                className="size-3 shrink-0 text-faint-foreground"
+                aria-label="已置顶"
+              />
+            )}
           </span>
           <span className="mt-0.5 flex min-w-0 items-center gap-1.5 text-caption text-muted-foreground">
             {worktree && (
@@ -364,8 +322,10 @@ function SessionRow({
       </button>
 
       {showMenu && (
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
+        <ResponsiveMenu
+          title={`${name}的更多操作`}
+          groups={menu!}
+          trigger={
             <IconButton
               label={`${name}的更多操作`}
               icon={<MoreHorizontal className="size-3.5" />}
@@ -373,28 +333,8 @@ function SessionRow({
               onClick={(event) => event.stopPropagation()}
               className="mr-1 text-muted-foreground pointer-coarse:size-9 sm:opacity-0 sm:group-focus-within:opacity-100 sm:group-hover:opacity-100 sm:data-[state=open]:opacity-100"
             />
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="w-36">
-            {onBind && (
-              <DropdownMenuItem onClick={onBind}>
-                <Link className="h-4 w-4" />
-                会话绑定
-              </DropdownMenuItem>
-            )}
-            {!isMain && !readonlyTitle && onRename && (
-              <DropdownMenuItem onClick={onRename}>
-                <Pencil className="h-4 w-4" />
-                重命名
-              </DropdownMenuItem>
-            )}
-            {!isMain && onDelete && (
-              <DropdownMenuItem variant="destructive" onClick={onDelete}>
-                <Trash2 className="h-4 w-4" />
-                删除
-              </DropdownMenuItem>
-            )}
-          </DropdownMenuContent>
-        </DropdownMenu>
+          }
+        />
       )}
     </div>
   );

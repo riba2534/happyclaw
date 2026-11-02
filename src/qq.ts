@@ -19,7 +19,6 @@ import {
   storeMessageDirect,
   updateChatName,
 } from './db.js';
-import { notifyNewImMessage } from './message-notifier.js';
 import { logger } from './logger.js';
 import { saveDownloadedFile } from './im-downloader.js';
 import { downloadHttpsBuffer } from './im-media-download.js';
@@ -2263,8 +2262,6 @@ export function createQQConnection(config: QQConnectionConfig): QQConnection {
           return;
         }
 
-        notifyNewImMessage();
-
         if (agentRouting?.agentId) {
           opts.onAgentMessage?.(jid, agentRouting.agentId);
           logger.info(
@@ -2538,8 +2535,6 @@ export function createQQConnection(config: QQConnectionConfig): QQConnection {
           );
           return;
         }
-
-        notifyNewImMessage();
 
         if (agentRouting?.agentId) {
           opts.onAgentMessage?.(jid, agentRouting.agentId);

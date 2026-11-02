@@ -13,7 +13,7 @@
 // opens another workspace (web:e2e-scroll-other) mid-stream.
 import { useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, useNavigate } from 'react-router-dom';
 import { ChatView } from '../../src/components/chat/ChatView';
 import { MotionProvider } from '../../src/lib/motion';
 import { wsManager } from '../../src/api/ws';
@@ -34,6 +34,13 @@ const slowImage = params.get('slowImage') === '1';
 const olderPages = params.get('hasMore') === '1' ? 3 : 0;
 const groupJid = 'web:e2e-scroll';
 const otherJid = 'web:e2e-scroll-other';
+/** Each workspace's session the harness shows. */
+const sessionOf: Record<string, string> = {
+  [groupJid]: 'scroll-session',
+  [otherJid]: 'scroll-other-session',
+};
+const sessionId = sessionOf[groupJid];
+const sessionJid = `${groupJid}#agent:${sessionId}`;
 const userId = 'scroll-user';
 
 const user: UserPublic = {
@@ -68,7 +75,7 @@ function makeMessage(index: number, page: number): Message {
   const id = `p${page}-m${index}`;
   return {
     id,
-    chat_jid: groupJid,
+    chat_jid: sessionJid,
     sender: fromAgent ? 'happyclaw-agent' : userId,
     sender_name: fromAgent ? '测试智能体' : '滚动测试',
     content: fromAgent
@@ -123,11 +130,11 @@ let streamedSentences = 0;
 
 function appendStreamText(text: string) {
   useChatStore.setState((s) => {
-    const current = s.streaming[groupJid] ?? emptyStream;
+    const current = s.agentStreaming[sessionId] ?? emptyStream;
     return {
-      streaming: {
-        ...s.streaming,
-        [groupJid]: { ...current, partialText: current.partialText + text },
+      agentStreaming: {
+        ...s.agentStreaming,
+        [sessionId]: { ...current, partialText: current.partialText + text },
       },
     };
   });
@@ -144,10 +151,10 @@ const state = {
       data,
     );
   },
-  runStarted(runId: string, jid = groupJid) {
+  runStarted(runId: string, jid = sessionJid) {
     useChatStore.getState().handleRunStarted(jid, runId);
   },
-  runFinished(runId: string, jid = groupJid) {
+  runFinished(runId: string, jid = sessionJid) {
     useChatStore.getState().handleRunFinished(jid, runId);
   },
   /** Opens another workspace (unmounting this ChatView) or comes back. */
@@ -157,13 +164,13 @@ const state = {
   /** Appends an agent reply, or a system row (e.g. `agent_error:…`). */
   pushMessage(content: string, sender = 'happyclaw-agent') {
     useChatStore.setState((s) => ({
-      messages: {
-        ...s.messages,
-        [groupJid]: [
-          ...(s.messages[groupJid] ?? []),
+      agentMessages: {
+        ...s.agentMessages,
+        [sessionId]: [
+          ...(s.agentMessages[sessionId] ?? []),
           {
             id: `new-${sequence++}`,
-            chat_jid: groupJid,
+            chat_jid: sessionJid,
             sender,
             sender_name: '测试智能体',
             content,
@@ -180,19 +187,19 @@ const state = {
     if (streamTimer !== null) window.clearInterval(streamTimer);
     streamedSentences = 0;
     useChatStore.setState((s) => ({
-      waiting: { ...s.waiting, [groupJid]: true },
+      agentWaiting: { ...s.agentWaiting, [sessionId]: true },
       activeRuns: {
         ...s.activeRuns,
-        [groupJid]: {
-          chatJid: groupJid,
+        [sessionJid]: {
+          chatJid: sessionJid,
           runId: 'e2e-run',
           startedAt: new Date().toISOString(),
           phase: 'running',
         },
       },
-      streaming: {
-        ...s.streaming,
-        [groupJid]: { ...emptyStream, partialText: initialText },
+      agentStreaming: {
+        ...s.agentStreaming,
+        [sessionId]: { ...emptyStream, partialText: initialText },
       },
     }));
     if (intervalMs <= 0) return;
@@ -208,24 +215,24 @@ const state = {
     if (streamTimer !== null) window.clearInterval(streamTimer);
     streamTimer = null;
     useChatStore.setState((s) => {
-      const text = s.streaming[groupJid]?.partialText ?? '';
-      const streaming = { ...s.streaming };
-      delete streaming[groupJid];
+      const text = s.agentStreaming[sessionId]?.partialText ?? '';
+      const agentStreaming = { ...s.agentStreaming };
+      delete agentStreaming[sessionId];
       const activeRuns = { ...s.activeRuns };
-      delete activeRuns[groupJid];
+      delete activeRuns[sessionJid];
       return {
-        waiting: { ...s.waiting, [groupJid]: false },
+        agentWaiting: { ...s.agentWaiting, [sessionId]: false },
         activeRuns,
-        streaming,
-        messages:
+        agentStreaming,
+        agentMessages:
           finalize && text
             ? {
-                ...s.messages,
-                [groupJid]: [
-                  ...(s.messages[groupJid] ?? []),
+                ...s.agentMessages,
+                [sessionId]: [
+                  ...(s.agentMessages[sessionId] ?? []),
                   {
                     id: `final-${sequence++}`,
-                    chat_jid: groupJid,
+                    chat_jid: sessionJid,
                     sender: 'happyclaw-agent',
                     sender_name: '测试智能体',
                     content: text,
@@ -236,7 +243,7 @@ const state = {
                   } as Message,
                 ],
               }
-            : s.messages,
+            : s.agentMessages,
       };
     });
   },
@@ -271,24 +278,40 @@ useChatStore.setState({
     },
   },
   currentGroup: groupJid,
-  messages: late
-    ? { [otherJid]: page(9, 4) }
-    : { [groupJid]: firstPage(), [otherJid]: page(9, 4) },
-  waiting: {},
-  hasMore: { [groupJid]: olderPages > 0, [otherJid]: false },
-  agents: { [groupJid]: [], [otherJid]: [] },
-  activeAgentTab: { [groupJid]: null, [otherJid]: null },
-  agentMessages: {},
+  agentMessages: late
+    ? { [sessionOf[otherJid]]: page(9, 4) }
+    : { [sessionId]: firstPage(), [sessionOf[otherJid]]: page(9, 4) },
+  agentHasMore: { [sessionId]: olderPages > 0, [sessionOf[otherJid]]: false },
+  agents: Object.fromEntries(
+    [groupJid, otherJid].map((jid) => [
+      jid,
+      [
+        {
+          id: sessionOf[jid],
+          name: '滚动测试会话',
+          prompt: '',
+          status: 'idle' as const,
+          kind: 'conversation' as const,
+          created_at: '2026-01-01T00:00:00.000Z',
+        },
+      ],
+    ]),
+  ),
+  activeAgentTab: { [groupJid]: sessionId },
   agentWaiting: {},
-  agentHasMore: {},
-  followUps: { [groupJid]: [], [otherJid]: [] },
+  followUps: {},
   loading: false,
-  loadMessages: async (jid: string, loadMore?: boolean) => {
+  hydrateAgentMessages: async () => undefined,
+  loadAgentMessages: async (
+    _jid: string,
+    agentId: string,
+    loadMore?: boolean,
+  ) => {
     if (!loadMore) {
       if (!late) return;
       await new Promise((resolve) => setTimeout(resolve, 400));
       useChatStore.setState((s) => ({
-        messages: { ...s.messages, [jid]: firstPage() },
+        agentMessages: { ...s.agentMessages, [agentId]: firstPage() },
       }));
       return;
     }
@@ -297,14 +320,17 @@ useChatStore.setState({
     loadedOlderPages += 1;
     const older = page(loadedOlderPages, 30);
     useChatStore.setState((s) => ({
-      messages: {
-        ...s.messages,
-        [jid]: [...older, ...(s.messages[jid] ?? [])],
+      agentMessages: {
+        ...s.agentMessages,
+        [agentId]: [...older, ...(s.agentMessages[agentId] ?? [])],
       },
-      hasMore: { ...s.hasMore, [jid]: loadedOlderPages < olderPages },
+      agentHasMore: {
+        ...s.agentHasMore,
+        [agentId]: loadedOlderPages < olderPages,
+      },
     }));
   },
-  refreshMessages: async () => undefined,
+  refreshAgentMessages: async () => undefined,
   restoreActiveState: async () => undefined,
   loadAgents: async () => undefined,
   loadFollowUps: async () => undefined,
@@ -323,9 +349,11 @@ useFileStore.setState({
 /** The app shell's part: global stream subscriptions and the open workspace. */
 function HarnessRoot() {
   useGlobalStreamSubscriptions();
+  const navigate = useNavigate();
   const [jid, setJid] = useState(groupJid);
   switchView = (next) => {
     useChatStore.setState({ currentGroup: next });
+    navigate(`/chat/e2e-scroll?agent=${sessionOf[next]}`, { replace: true });
     setJid(next);
   };
   return <ChatView key={jid} groupJid={jid} />;
@@ -334,7 +362,7 @@ function HarnessRoot() {
 // As AppLayout does: without it a changed headline stays at its first frame.
 createRoot(document.getElementById('root')!).render(
   <MotionProvider>
-    <MemoryRouter initialEntries={['/chat/e2e-scroll']}>
+    <MemoryRouter initialEntries={[`/chat/e2e-scroll?agent=${sessionId}`]}>
       <main className="h-[100dvh] overflow-hidden bg-background">
         <HarnessRoot />
       </main>

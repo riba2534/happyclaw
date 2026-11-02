@@ -92,6 +92,8 @@ const OWNER_ID = 'alice';
 const OUTSIDER_ID = 'charlie';
 const GROUP_JID = 'web:messages-acl-group';
 const GROUP_FOLDER = 'messages-acl-group';
+const SESSION_ID = '00000000-0000-4000-8000-0000000000a1';
+const SESSION_JID = `${GROUP_JID}#agent:${SESSION_ID}`;
 
 // Record queue.stopGroup calls so the owner path can assert a real reset.
 const stopGroupCalls: Array<{ jid: string; opts?: { force?: boolean } }> = [];
@@ -125,10 +127,8 @@ const testDeps = {
     },
     getActiveQueryId: () => activeQueryId,
   },
-  getSessions: () => ({}) as Record<string, string>,
   setLastAgentTimestamp: () => {},
   getRegisteredGroups: () => registeredGroupsCache,
-  advanceGlobalCursor: () => {},
   promoteFollowUp: (
     chatJid: string,
     messageId: string,
@@ -166,6 +166,23 @@ function seedTestGroup(): void {
     created_by: OWNER_ID,
     is_home: false,
   } as any);
+  if (!db.getAgent(SESSION_ID)) {
+    db.createAgent({
+      id: SESSION_ID,
+      group_folder: GROUP_FOLDER,
+      chat_jid: GROUP_JID,
+      name: 'Session',
+      prompt: '',
+      status: 'idle',
+      kind: 'conversation',
+      created_by: OWNER_ID,
+      created_at: new Date().toISOString(),
+      completed_at: null,
+      result_summary: null,
+      last_im_jid: null,
+      spawned_from_jid: null,
+    });
+  }
 }
 
 function asUser(userId: string, role: 'admin' | 'member' = 'member'): void {
@@ -249,10 +266,10 @@ describe('GET /api/groups/:jid/messages — stable sequence cursor', () => {
     asUser(OWNER_ID);
     const timestamp = '2026-08-31T00:00:00.000Z';
     for (let index = 0; index < 52; index++) {
-      db.ensureChatExists(GROUP_JID);
+      db.ensureChatExists(SESSION_JID);
       db.storeMessageDirect(
         `same-ts-${String(51 - index).padStart(2, '0')}`,
-        GROUP_JID,
+        SESSION_JID,
         OWNER_ID,
         'Alice',
         `message ${index}`,
@@ -262,7 +279,7 @@ describe('GET /api/groups/:jid/messages — stable sequence cursor', () => {
     }
 
     const firstResponse = await app.request(
-      `/api/groups/${encodeURIComponent(GROUP_JID)}/messages?limit=20`,
+      `/api/groups/${encodeURIComponent(GROUP_JID)}/messages?agentId=${SESSION_ID}&limit=20`,
     );
     expect(firstResponse.status).toBe(200);
     const first = (await firstResponse.json()) as {
@@ -274,7 +291,7 @@ describe('GET /api/groups/:jid/messages — stable sequence cursor', () => {
 
     const boundary = first.messages.at(-1)!.ingest_sequence;
     const secondResponse = await app.request(
-      `/api/groups/${encodeURIComponent(GROUP_JID)}/messages?limit=20&beforeSequence=${boundary}`,
+      `/api/groups/${encodeURIComponent(GROUP_JID)}/messages?agentId=${SESSION_ID}&limit=20&beforeSequence=${boundary}`,
     );
     const second = (await secondResponse.json()) as typeof first;
     expect(second.messages).toHaveLength(20);
@@ -287,7 +304,7 @@ describe('GET /api/groups/:jid/messages — stable sequence cursor', () => {
     const newestSequence = first.messages[0].ingest_sequence;
     db.storeMessageDirect(
       'late-old-provider-clock',
-      GROUP_JID,
+      SESSION_JID,
       OWNER_ID,
       'Alice',
       'late arrival',
@@ -295,12 +312,67 @@ describe('GET /api/groups/:jid/messages — stable sequence cursor', () => {
       false,
     );
     const pollResponse = await app.request(
-      `/api/groups/${encodeURIComponent(GROUP_JID)}/messages?limit=20&afterSequence=${newestSequence}`,
+      `/api/groups/${encodeURIComponent(GROUP_JID)}/messages?agentId=${SESSION_ID}&limit=20&afterSequence=${newestSequence}`,
     );
     const poll = (await pollResponse.json()) as typeof first;
     expect(poll.messages.map((message) => message.id)).toEqual([
       'late-old-provider-clock',
     ]);
+  });
+
+  test('a workspace has no history of its own: no session is 400 session_required', async () => {
+    seedTestGroup();
+    asUser(OWNER_ID);
+    db.ensureChatExists(GROUP_JID);
+    db.storeMessageDirect(
+      'workspace-level',
+      GROUP_JID,
+      OWNER_ID,
+      'Alice',
+      'pre-v88 workspace message',
+      '2026-08-31T00:00:00.000Z',
+      false,
+    );
+    const res = await app.request(
+      `/api/groups/${encodeURIComponent(GROUP_JID)}/messages`,
+    );
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: 'Session required',
+      code: 'session_required',
+    });
+  });
+});
+
+describe('POST /api/messages — every input names a session', () => {
+  test('a workspace JID without agentId is refused and nothing is stored', async () => {
+    seedTestGroup();
+    asUser(OWNER_ID);
+    const before = db.getMessagesPage(GROUP_JID, undefined, 50).length;
+    for (const content of ['hello', '/clear', '/fresh notes']) {
+      const { status, body } = await postMessage({
+        chatJid: GROUP_JID,
+        content,
+      });
+      expect(status, content).toBe(400);
+      expect(body, content).toEqual({
+        error: 'Session required',
+        code: 'session_required',
+      });
+    }
+    expect(db.getMessagesPage(GROUP_JID, undefined, 50)).toHaveLength(before);
+    expect(stopGroupCalls).toHaveLength(0);
+  });
+
+  test('an agentId of another workspace is not found', async () => {
+    seedTestGroup();
+    asUser(OWNER_ID);
+    const { status } = await postMessage({
+      chatJid: 'web:messages-acl-other',
+      agentId: SESSION_ID,
+      content: 'hello',
+    });
+    expect(status).toBe(404);
   });
 });
 
@@ -310,6 +382,7 @@ describe('POST /api/messages — /clear interception ACL', () => {
     asUser(OUTSIDER_ID);
     const { status, body } = await postMessage({
       chatJid: GROUP_JID,
+      agentId: SESSION_ID,
       content: '/clear',
     });
     expect(status).toBe(403);
@@ -322,15 +395,17 @@ describe('POST /api/messages — /clear interception ACL', () => {
     asUser(OWNER_ID);
     const { status, body } = await postMessage({
       chatJid: GROUP_JID,
+      agentId: SESSION_ID,
       content: '/clear',
     });
     expect(status).toBe(200);
     expect(body.cleared).toBe(true);
-    // executeSessionReset stopped the folder's sibling containers …
-    expect(stopGroupCalls.length).toBeGreaterThan(0);
-    expect(stopGroupCalls.every((c) => c.opts?.force === true)).toBe(true);
-    // … and wrote a context_reset divider into the chat history.
-    const msgs = db.getMessagesPage(GROUP_JID, undefined, 10) as Array<{
+    // executeSessionReset stopped only the session's runner …
+    expect(stopGroupCalls).toEqual([
+      { jid: SESSION_JID, opts: { force: true } },
+    ]);
+    // … and wrote a context_reset divider into the session's history.
+    const msgs = db.getMessagesPage(SESSION_JID, undefined, 10) as Array<{
       content: string;
     }>;
     expect(msgs.some((m) => m.content === 'context_reset')).toBe(true);
@@ -341,6 +416,7 @@ describe('POST /api/messages — /clear interception ACL', () => {
     asUser(OWNER_ID);
     const { status, body } = await postMessage({
       chatJid: GROUP_JID,
+      agentId: SESSION_ID,
       content: '  /clear  ',
     });
     expect(status).toBe(200);
@@ -356,6 +432,7 @@ describe('POST /api/messages — active-run steering', () => {
 
     const { status, body } = await postMessage({
       chatJid: GROUP_JID,
+      agentId: SESSION_ID,
       content: '先回答这条高优先级消息',
       followUpBehavior: 'steer',
     });
@@ -365,24 +442,24 @@ describe('POST /api/messages — active-run steering', () => {
       disposition: 'steered',
       runId: 'run-active',
     });
-    const cursor = db.getMessageCursor(GROUP_JID, body.messageId);
+    const cursor = db.getMessageCursor(SESSION_JID, body.messageId);
     expect(body.ingestSequence).toBe(cursor?.sequence);
     expect(body.ingestSequence).toBeGreaterThan(0);
     expect(promoteFollowUpCalls).toEqual([
       {
-        chatJid: GROUP_JID,
+        chatJid: SESSION_JID,
         messageId: body.messageId,
         expectedRunId: 'run-active',
       },
     ]);
-    expect(db.getQueuedFollowUp(GROUP_JID, body.messageId)).toMatchObject({
+    expect(db.getQueuedFollowUp(SESSION_JID, body.messageId)).toMatchObject({
       delivery_mode: 'steer',
       delivery_status: 'queued',
       delivery_run_id: 'run-active',
     });
     expect(
       db
-        .getMessagesSince(GROUP_JID, { timestamp: '', id: '' })
+        .getMessagesSince(SESSION_JID, { timestamp: '', id: '' })
         .some((message: { id: string }) => message.id === body.messageId),
     ).toBe(false);
   });
@@ -394,6 +471,7 @@ describe('POST /api/messages — active-run steering', () => {
 
     const queued = await postMessage({
       chatJid: GROUP_JID,
+      agentId: SESSION_ID,
       content: '先排队，稍后点发送',
       followUpBehavior: 'queue',
     });
@@ -406,25 +484,26 @@ describe('POST /api/messages — active-run steering', () => {
     activeQueryId = 'run-current';
     const direct = await postMessage({
       chatJid: GROUP_JID,
+      agentId: SESSION_ID,
       content: '直接引导',
       followUpBehavior: 'steer',
     });
     expect(direct.status).toBe(200);
 
     const sendNow = await postFollowUpAction(queued.body.messageId, {
-      chatJid: GROUP_JID,
+      chatJid: SESSION_JID,
       action: 'steer',
       expectedRunId: 'run-original',
     });
     expect(sendNow.status).toBe(200);
     expect(promoteFollowUpCalls).toEqual([
       {
-        chatJid: GROUP_JID,
+        chatJid: SESSION_JID,
         messageId: direct.body.messageId,
         expectedRunId: 'run-current',
       },
       {
-        chatJid: GROUP_JID,
+        chatJid: SESSION_JID,
         messageId: queued.body.messageId,
         expectedRunId: 'run-current',
       },

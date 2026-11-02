@@ -55,9 +55,6 @@ vi.mock('../src/db.js', () => ({
   ),
   storeMessageDirect: vi.fn(),
 }));
-vi.mock('../src/message-notifier.js', () => ({
-  notifyNewImMessage: vi.fn(),
-}));
 vi.mock('../src/logger.js', () => ({
   logger: {
     debug: vi.fn(),
@@ -73,7 +70,6 @@ import {
   sequenceInboundTimestampAfterChatTail,
   storeMessageDirect,
 } from '../src/db.js';
-import { notifyNewImMessage } from '../src/message-notifier.js';
 import { createWeComConnection, splitWeComMarkdown } from '../src/wecom.js';
 import { classifyImSendFailure } from '../src/im-send-retry-policy.js';
 import {
@@ -392,7 +388,6 @@ describe('WeCom connection security and delivery', () => {
     expect(unauthorized.opts.resolveEffectiveChatJid).not.toHaveBeenCalled();
     expect(storeMessageDirect).not.toHaveBeenCalled();
     expect(unauthorized.opts.onMessagePersisted).not.toHaveBeenCalled();
-    expect(notifyNewImMessage).not.toHaveBeenCalled();
 
     await unauthorized.connection.disconnect();
     vi.clearAllMocks();
@@ -464,14 +459,12 @@ describe('WeCom connection security and delivery', () => {
     await vi.waitFor(() => expect(storeMessageDirect).toHaveBeenCalledTimes(1));
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(connected.opts.onMessagePersisted).not.toHaveBeenCalled();
-    expect(notifyNewImMessage).not.toHaveBeenCalled();
 
     connected.client.emit('message.text', retry);
     await vi.waitFor(() => expect(storeMessageDirect).toHaveBeenCalledTimes(2));
     await vi.waitFor(() =>
       expect(connected.opts.onMessagePersisted).toHaveBeenCalledTimes(1),
     );
-    expect(notifyNewImMessage).toHaveBeenCalledTimes(1);
     expect(connected.opts.onNewChat).toHaveBeenCalledTimes(1);
     const firstId = vi.mocked(storeMessageDirect).mock.calls[0][0];
     const retryId = vi.mocked(storeMessageDirect).mock.calls[1][0];
@@ -500,13 +493,11 @@ describe('WeCom connection security and delivery', () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(storeMessageDirect).toHaveBeenCalledTimes(1);
     expect(connected.opts.onMessagePersisted).toHaveBeenCalledTimes(1);
-    expect(notifyNewImMessage).toHaveBeenCalledTimes(1);
 
     connected.client.emit('message.text', retry);
     await vi.waitFor(() => expect(onAgentMessage).toHaveBeenCalledTimes(2));
     expect(storeMessageDirect).toHaveBeenCalledTimes(1);
     expect(connected.opts.onMessagePersisted).toHaveBeenCalledTimes(1);
-    expect(notifyNewImMessage).toHaveBeenCalledTimes(1);
   });
 
   test('sequences same-second messages and reuses the committed timestamp on staged retry', async () => {

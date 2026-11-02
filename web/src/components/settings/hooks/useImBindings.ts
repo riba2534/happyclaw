@@ -2,8 +2,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../../../api/client';
 import { useChatStore } from '../../../stores/chat';
 import type { AvailableImGroup, AgentInfo } from '../../../types';
-import { buildImBindingRequest } from '../../../utils/im-binding-policy';
+import {
+  buildImBindingRequest,
+  notBindableMessage,
+} from '../../../utils/im-binding-policy';
 import { getAgentProfileDisplayName } from '../../../utils/agent-product';
+import { bindableSessions } from '../../../lib/session-presentation';
 
 export interface BindingTarget {
   type: 'workspace' | 'session';
@@ -14,11 +18,6 @@ export interface BindingTarget {
   sessionId?: string;
   sessionName?: string;
 }
-
-type WorkspaceSessionInfo = Omit<AgentInfo, 'kind'> & {
-  kind: AgentInfo['kind'] | 'main';
-  is_main?: boolean;
-};
 
 export function useImBindings() {
   const [bindings, setBindings] = useState<AvailableImGroup[]>([]);
@@ -97,22 +96,20 @@ export function useImBindings() {
 
       const sessionPromises = webGroups.map(async ([jid, group]) => {
         try {
-          const data = await api.get<{ sessions: WorkspaceSessionInfo[] }>(
+          const data = await api.get<{ sessions: AgentInfo[] }>(
             `/api/groups/${encodeURIComponent(jid)}/sessions`,
           );
-          return data.sessions
-            .filter((a) => a.kind === 'conversation' || a.kind === 'main')
-            .map((a) => ({
-              type: 'session' as const,
-              groupJid: jid,
-              groupName: group.name,
-              agentProfileId: group.agent_profile_id,
-              agentProfileName: getAgentProfileDisplayName(
-                group.agent_profile_name,
-              ),
-              sessionId: a.id,
-              sessionName: a.name,
-            }));
+          return bindableSessions(data.sessions).map((a) => ({
+            type: 'session' as const,
+            groupJid: jid,
+            groupName: group.name,
+            agentProfileId: group.agent_profile_id,
+            agentProfileName: getAgentProfileDisplayName(
+              group.agent_profile_name,
+            ),
+            sessionId: a.id,
+            sessionName: a.name,
+          }));
         } catch {
           return [];
         }
@@ -194,7 +191,9 @@ export function useImBindings() {
         await loadBindings();
         return null;
       } catch (err) {
-        const msg = err instanceof Error ? err.message : '操作失败，请重试';
+        const msg =
+          notBindableMessage(err) ??
+          (err instanceof Error ? err.message : '操作失败，请重试');
         setError(msg);
         return msg;
       }
@@ -219,7 +218,9 @@ export function useImBindings() {
         await loadBindings();
         return null;
       } catch (err) {
-        const message = err instanceof Error ? err.message : '绑定失败';
+        const message =
+          notBindableMessage(err) ??
+          (err instanceof Error ? err.message : '绑定失败');
         setError(message);
         return message;
       }

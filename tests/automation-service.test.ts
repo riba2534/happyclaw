@@ -30,7 +30,8 @@ vi.mock('../src/logger.js', () => ({
 
 const db = await import('../src/db.js');
 const store = await import('../src/automation-store.js');
-const { createAutomationCore } = await import('../src/automation-service.js');
+const { createAutomationCore, AutomationTargetNotSessionError } =
+  await import('../src/automation-service.js');
 const { AutomationError } = await import('../src/automation-contract.js');
 const harness = await import('./automation-harness.js');
 
@@ -40,6 +41,8 @@ import type { AutomationEngine } from '../src/automation-scheduler.js';
 const WS = 'web:svc';
 const HOST_WS = 'web:svc-host';
 const OTHER_WS = 'web:svc-other';
+/** A session of WS other than the topic one. */
+const BOUND = `${WS}#agent:bound`;
 const OWNER = 'alice';
 const STRANGER = 'mallory';
 
@@ -65,7 +68,7 @@ const ownerTurn: AutomationActor = {
 const memberTurn: AutomationActor = {
   kind: 'other_turn',
   workspaceJid: WS,
-  sessionJid: WS,
+  sessionJid: BOUND,
 };
 
 beforeAll(() => {
@@ -94,7 +97,7 @@ function setup(
     allowsHostCommands: (jid) => jid === HOST_WS,
     ...overrides,
   });
-  for (const jid of [WS, `${WS}#agent:topic`, HOST_WS, OTHER_WS])
+  for (const jid of [BOUND, `${WS}#agent:topic`, HOST_WS, OTHER_WS])
     runtime.sessions.add(jid);
   const core = createAutomationCore(runtime.deps, { now: clock.now });
   return {
@@ -213,6 +216,47 @@ describe('Web permissions', () => {
       400,
       '不属于',
     );
+  });
+
+  test('a bound target must be a session, never the workspace itself', async () => {
+    const { service, runtime } = setup();
+    // Even when the runtime would accept it as a lane.
+    runtime.sessions.add(WS);
+    for (const attempt of [
+      () =>
+        service.create(alice, {
+          workspaceJid: WS,
+          ...harness.draft({ sessionMode: 'bound' }),
+          targetSessionJid: WS,
+        }),
+      () => {
+        const a = service.create(alice, {
+          workspaceJid: WS,
+          ...harness.draft({ sessionMode: 'bound' }),
+          targetSessionJid: BOUND,
+        });
+        return service.update(alice, a.id, a.revision, {
+          targetSessionJid: WS,
+        });
+      },
+    ]) {
+      await expectError(attempt, 400, '具体的会话');
+      let caught: unknown;
+      try {
+        attempt();
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught).toBeInstanceOf(AutomationTargetNotSessionError);
+      expect(
+        (caught as InstanceType<typeof AutomationTargetNotSessionError>).code,
+      ).toBe('automation_target_not_session');
+    }
+    expect(
+      service
+        .list(alice)
+        .filter((automation) => automation.targetSessionJid === WS),
+    ).toEqual([]);
   });
 
   test('stale revisions are refused', async () => {
@@ -458,7 +502,7 @@ describe('deletion and sessions', () => {
     const a = service.create(alice, {
       workspaceJid: WS,
       ...harness.draft({ sessionMode: 'bound' }),
-      targetSessionJid: WS,
+      targetSessionJid: BOUND,
     });
     await service.delete(alice, a.id, 'delete');
     expect(runtime.deleted).toEqual([]);
@@ -588,7 +632,7 @@ describe('session and route changes', () => {
     const renamed = service.update(alice, a.id, a.revision, { name: '新名' });
     expect(renamed.deliveryRouteJid).toBe('feishu:oc_x#thread:omt_1');
     const moved = service.update(alice, a.id, renamed.revision, {
-      targetSessionJid: WS,
+      targetSessionJid: BOUND,
     });
     expect(moved.deliveryRouteJid).toBeNull();
     const fresh = service.create(ownerTurn, {
@@ -647,7 +691,7 @@ describe('session and route changes', () => {
         sessionMode: 'bound',
         schedule: { kind: 'manual' },
       }),
-      targetSessionJid: WS,
+      targetSessionJid: BOUND,
     });
     const q = await service.runNow(alice, queued.id);
     const r = await service.runNow(alice, running.id);

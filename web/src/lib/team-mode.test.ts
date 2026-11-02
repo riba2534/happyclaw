@@ -104,19 +104,53 @@ describe('settings', () => {
       jid: 'feishu:oc_1',
       channel_type: 'feishu',
       conversation_kind: 'group',
-      bound_agent_id: null,
-      bound_main_jid: 'web:alpha',
+      bound_agent_id: 's1',
+      bound_session_id: 's1',
+      bound_main_jid: null,
       ...overrides,
     }) as AvailableImGroup;
+  const workspaceOf = (sessionId: string) =>
+    sessionId === 's1' ? 'web:alpha' : null;
 
-  test('only a Feishu ordinary group on a main session offers team mode', () => {
-    expect(teamModeWorkspaceOf(group({}))).toBe('web:alpha');
-    expect(teamModeWorkspaceOf(group({ conversation_kind: 'topic' }))).toBe(
-      null,
-    );
-    expect(teamModeWorkspaceOf(group({ channel_type: 'telegram' }))).toBe(null);
-    expect(teamModeWorkspaceOf(group({ bound_session_id: 's1' }))).toBe(null);
-    expect(teamModeWorkspaceOf(group({ bound_main_jid: null }))).toBe(null);
+  test('a Feishu ordinary group bound to a session offers team mode in its workspace', () => {
+    expect(teamModeWorkspaceOf(group({}), workspaceOf)).toBe('web:alpha');
+    // The session id the server names the binding by is the one that counts.
+    expect(
+      teamModeWorkspaceOf(
+        group({ bound_agent_id: null, bound_session_id: 's1' }),
+        workspaceOf,
+      ),
+    ).toBe('web:alpha');
+    expect(
+      teamModeWorkspaceOf(group({ conversation_kind: 'topic' }), workspaceOf),
+    ).toBe(null);
+    expect(
+      teamModeWorkspaceOf(group({ channel_type: 'telegram' }), workspaceOf),
+    ).toBe(null);
+    // Not bound, or bound to a session whose workspace is unknown.
+    expect(
+      teamModeWorkspaceOf(
+        group({ bound_agent_id: null, bound_session_id: null }),
+        workspaceOf,
+      ),
+    ).toBe(null);
+    expect(
+      teamModeWorkspaceOf(
+        group({ bound_agent_id: 's9', bound_session_id: 's9' }),
+        workspaceOf,
+      ),
+    ).toBe(null);
+    // A group mounted on a workspace alone is left from before: no team mode.
+    expect(
+      teamModeWorkspaceOf(
+        group({
+          bound_agent_id: null,
+          bound_session_id: null,
+          bound_main_jid: 'web:alpha',
+        }),
+        workspaceOf,
+      ),
+    ).toBe(null);
   });
 
   test('rules need a name and an instruction', () => {

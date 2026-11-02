@@ -80,8 +80,7 @@ HappyClaw 使用统一的 `智能体 → Workspace → Runtime Session` 层级�
 智能体（身份、提示词、Skills、MCP）
 └── Workspace（项目目录、执行模式、环境变量、渠道挂载）
     ├── Workspace Memory（跨 Session 的事实、决策、经验、待跟进）
-    ├── Main Session（工作区主会话）
-    ├── Runtime Session（独立对话或渠道原生话题）
+    ├── Runtime Session（独立对话或渠道原生话题，彼此平等，没有主会话）
     └── Automation（自动化，每次运行都是某个会话里的一轮）
 ```
 
@@ -93,7 +92,7 @@ HappyClaw 使用统一的 `智能体 → Workspace → Runtime Session` 层级�
   onboarding lease，后续新 Session 或服务重启不会重复表演。清空称呼也不会重置
   onboarding。
 - **智能体** 保存长期身份和能力策略。主 HappyClaw 智能体始终存在，也可以创建代码审查、研究、运维等自定义智能体。
-- **对话式智能体构建器** 在主 HappyClaw 名下的所有 Workspace 主会话与普通 Runtime Session 中生效，允许用户多轮讨论需求、保存并预览智能体草稿，并在后续人类消息逐字回复一次性确认口令后创建或更新智能体；自动化运行与 Sub-Agent 不能代替用户发布。
+- **对话式智能体构建器** 在主 HappyClaw 名下所有 Workspace 的 Runtime Session 中生效，允许用户多轮讨论需求、保存并预览智能体草稿，并在后续人类消息逐字回复一次性确认口令后创建或更新智能体；自动化运行与 Sub-Agent 不能代替用户发布。
 - **Home Workspace** 是不可删除的系统工作区，并永久归属内置 HappyClaw。
 - **自定义 Agent** 创建后没有隐式 Workspace、Session 或 Memory；用户需要显式
   新建 Workspace 或迁移一个非 Home Workspace，避免继承 HappyClaw 上下文。
@@ -172,7 +171,7 @@ URL 与 Headers、选择作用域，并在指定智能体的最终生效能力�
 
 渠道账号的凭据和扫码会话按用户、账号隔离。绑定规则为：
 
-1. 私聊和普通群绑定到工作区内的指定 Session，也可以选择主会话。
+1. 私聊和普通群绑定到工作区内的指定 Session；IM 里 `/bind <工作区>` 会新建一个 Session 并绑定。
 2. 飞书话题群、Telegram Forum 绑定到 Workspace，每个原生话题映射独立 Session。
 3. 未绑定或已经解绑的渠道保持静默；默认工作区和历史话题记录不会恢复绑定。
 
@@ -358,7 +357,7 @@ data/
 ├── config/            # 加密配置、密钥与系统设置
 ├── groups/            # 工作区目录和项目文件
 ├── memory/            # 旧版文件记忆，仅供离线迁移/归档
-├── sessions/          # 主会话与 Runtime Session 的 Claude 数据
+├── sessions/          # 每个 Runtime Session 的 Claude 数据
 ├── ipc/               # Runner 输入、工具请求和回执
 ├── skills/            # 用户 Skills
 ├── builtin-skills/    # 固定版本内置 Skills 清单
@@ -556,26 +555,6 @@ Claude Code，并把实际版本写入
 <summary><strong>如何修改服务端口？</strong></summary>
 
 生产模式运行 `WEB_PORT=8080 make start`。开发模式需要同时设置后端端口和 Vite 的 API/WebSocket 代理目标。
-
-</details>
-
-<details>
-<summary><strong>如何检查旧版本遗留的私聊挂载？</strong></summary>
-
-两类旧安装可能需要此工具：一是 #666 之前的受支持版本曾把 WhatsApp `@c.us`
-及 device `@c.us` 私聊留在 workspace main；二是曾在 #659 的 WhatsApp LID 分类
-修复之前单独部署或 cherry-pick #655/schema v73 的非正式安装。升级到当前版本后运行
-`make leftover-direct-mounts`。诊断严格只读，并且只接受当前 schema；发现残留或
-存在无法自动判定的 WhatsApp alias 路由冲突时以退出码 2 返回。为保证读取完整且绝不
-创建 SQLite sidecar，诊断前也必须先干净停止 HappyClaw。
-
-修复前还必须停止 launchd/systemd 等进程守护，然后运行
-`make leftover-direct-mounts APPLY=1`。修复会把可判定私聊迁到独立
-`channel_direct` session，并永久清除受污染 workspace main 的模型恢复资格和
-SDK/runtime session；不会创建备份，也不能安全撤销。工具若无法确认数据库无人占用，
-会拒绝执行。如果同一 WhatsApp canonical 用户的多个 alias 指向不同 owner、workspace
-或 session，工具会 fail closed；请按诊断输出人工解绑冲突 alias 后重试，不会自动猜测
-应保留哪条路由。
 
 </details>
 

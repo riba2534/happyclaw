@@ -25,12 +25,8 @@ vi.mock('../src/logger.js', () => ({
 }));
 
 const db = await import('../src/db.js');
-const {
-  attachDefaultChannelAccountMount,
-  buildWorkspaceMountUpdate,
-  ensureDirectChannelSessionMount,
-  restoreDefaultChannelMount,
-} = await import('../src/channel-mount-service.js');
+const { attachDefaultChannelAccountMount, buildSessionMountUpdate } =
+  await import('../src/channel-mount-service.js');
 
 const now = '2026-08-20T00:00:00.000Z';
 const workspaceJid = 'web:whatsapp-cus-ws';
@@ -103,96 +99,42 @@ describe.sequential('WhatsApp @c.us DM / group channel-account mounts', () => {
     expect(onCreated).not.toHaveBeenCalled();
   });
 
-  test('explicit @c.us and group sessions keep their legacy owner records separate', () => {
-    const dm = ensureDirectChannelSessionMount({
-      sourceJid: cusDmJid,
-      group: chatGroup('Official WhatsApp business', {
+  test('an explicit bind of the @c.us DM and the group gives each its own session', () => {
+    for (const [sourceJid, sessionId] of [
+      [cusDmJid, 'wa-dm-session'],
+      [groupJid, 'wa-group-session'],
+    ] as const) {
+      db.createAgent({
+        id: sessionId,
+        group_folder: 'whatsapp-cus-ws',
+        chat_jid: workspaceJid,
+        name: sessionId,
+        prompt: '',
+        status: 'idle',
+        kind: 'conversation',
+        created_by: 'owner-a',
+        created_at: now,
+        completed_at: null,
+        result_summary: null,
+        last_im_jid: sourceJid,
+        spawned_from_jid: null,
+      });
+      const bound = buildSessionMountUpdate(
+        chatGroup(sessionId, { channel_account_id: 'bot-a' }),
+        sessionId,
+      );
+      expect(bound.target_main_jid).toBeUndefined();
+      db.setRegisteredGroup(sourceJid, bound);
+      expect(db.getChannelMount(sourceJid)).toMatchObject({
         channel_account_id: 'bot-a',
-      }),
-      workspaceJid,
-      userId: 'owner-a',
-      mountOptions: { replyPolicy: 'source_only' },
-    });
-    expect(dm.channel_account_id).toBe('bot-a');
-    expect(dm.target_main_jid).toBeUndefined();
-    expect(dm.target_agent_id).toBeTruthy();
-    db.setRegisteredGroup(cusDmJid, dm);
-
-    const group = buildWorkspaceMountUpdate(
-      chatGroup('Family group', { channel_account_id: 'bot-a' }),
-      workspaceJid,
-      'single_session',
-      { replyPolicy: 'source_only' },
-    );
-    expect(group).toMatchObject({
-      channel_account_id: 'bot-a',
-      target_main_jid: workspaceJid,
-    });
-    db.setRegisteredGroup(groupJid, group);
-
-    const groupOwner = db.setSessionChannelOwnerOnce(
-      'whatsapp-cus-ws',
-      null,
-      groupJid,
-    );
-    const dmOwner = db.setSessionChannelOwnerOnce(
-      'whatsapp-cus-ws',
-      dm.target_agent_id,
-      cusDmJid,
-    );
-    expect(groupOwner).toBe(groupJid);
-    expect(dmOwner).toBe(cusDmJid);
-    expect(
-      db.setSessionChannelOwnerOnce('whatsapp-cus-ws', null, cusDmJid),
-    ).toBe(groupJid);
-    expect(
-      db.setSessionChannelOwnerOnce(
-        'whatsapp-cus-ws',
-        dm.target_agent_id,
-        groupJid,
-      ),
-    ).toBe(cusDmJid);
+        workspace_jid: workspaceJid,
+        session_id: sessionId,
+        routing_mode: 'single_session',
+      });
+    }
   });
 
-  test('explicit legacy repair remounts leftover @c.us DMs onto a session', () => {
-    const restoreJid = 'whatsapp:15551234567@c.us#account:bot-a';
-    db.setRegisteredGroup(
-      restoreJid,
-      chatGroup('Legacy PN @c.us', {
-        channel_account_id: 'bot-a',
-        target_main_jid: workspaceJid,
-      }),
-    );
-    db.clearSessionChannelOwner('whatsapp-cus-ws', null);
-    expect(
-      db.setSessionChannelOwnerOnce('whatsapp-cus-ws', null, restoreJid),
-    ).toBe(restoreJid);
-    const restored = restoreDefaultChannelMount(
-      restoreJid,
-      db.getRegisteredGroup(restoreJid)!,
-      'owner-a',
-    );
-    expect(restored.status).toBe('resolved');
-    if (restored.status !== 'resolved') return;
-    expect(restored.updated.target_main_jid).toBeUndefined();
-    expect(restored.updated.target_agent_id).toBeTruthy();
-    expect(db.getAgent(restored.updated.target_agent_id!)?.source_kind).toBe(
-      'channel_direct',
-    );
-    expect(db.getSessionChannelOwner('whatsapp-cus-ws')).toBeUndefined();
-  });
-
-  test('explicit alias binding reuses a session, while alias discovery stays unbound', () => {
-    const existing = ensureDirectChannelSessionMount({
-      sourceJid: cusDmJid,
-      group: chatGroup('Explicit official business session', {
-        channel_account_id: 'bot-a',
-      }),
-      workspaceJid,
-      userId: 'owner-a',
-    });
-    db.setRegisteredGroup(cusDmJid, existing);
-    expect(existing.target_agent_id).toBeTruthy();
+  test('discovering the canonical alias of a bound @c.us DM leaves it unbound', () => {
     const canonicalJid = 'whatsapp:16505361212@s.whatsapp.net#account:bot-a';
     const sessionsBefore = db.listAgentsByJid(workspaceJid);
     const discovered = attachDefaultChannelAccountMount({
@@ -208,21 +150,5 @@ describe.sequential('WhatsApp @c.us DM / group channel-account mounts', () => {
     db.setRegisteredGroup(canonicalJid, discovered);
     expect(db.getChannelMount(canonicalJid)).toBeUndefined();
     expect(db.listAgentsByJid(workspaceJid)).toEqual(sessionsBefore);
-
-    const canonical = ensureDirectChannelSessionMount({
-      sourceJid: canonicalJid,
-      group: discovered,
-      workspaceJid,
-      userId: 'owner-a',
-      mountOptions: { replyPolicy: 'source_only' },
-    });
-    db.setRegisteredGroup(canonicalJid, canonical);
-    expect(canonical.target_agent_id).toBe(existing.target_agent_id);
-    expect(db.getChannelMount(canonicalJid)?.session_id).toBe(
-      existing.target_agent_id,
-    );
-    expect(db.listAgentsByJid(workspaceJid).map((agent) => agent.id)).toEqual(
-      sessionsBefore.map((agent) => agent.id),
-    );
   });
 });

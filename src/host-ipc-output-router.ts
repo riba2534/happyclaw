@@ -57,20 +57,15 @@ export interface HostIpcOutputRouteInput {
  */
 export function resolveHostIpcLogicalChatJid(input: {
   sourceChatJid: string;
-  agentId?: string | null;
+  agentId: string;
   agentChatJid?: string | null;
-  /** Immutable logical base captured when the input turn was admitted. */
-  runtimeChatJid?: string | null;
   resolveWorkspaceJid?: (chatJid: string) => string | null;
 }): string {
   const baseChatJid =
-    input.runtimeChatJid ||
+    input.agentChatJid ||
     input.resolveWorkspaceJid?.(input.sourceChatJid) ||
     input.sourceChatJid;
-  if (input.agentId) {
-    return `${input.agentChatJid || baseChatJid}#agent:${input.agentId}`;
-  }
-  return baseChatJid;
+  return `${baseChatJid}#agent:${input.agentId}`;
 }
 
 export type HostIpcOutputRoute =
