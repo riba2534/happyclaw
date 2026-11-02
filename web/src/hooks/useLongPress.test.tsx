@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 
 import { act } from 'react';
+import { createPortal } from 'react-dom';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, describe, expect, test, vi } from 'vitest';
 
@@ -32,6 +33,9 @@ function Row({
   return (
     <button type="button" data-row onClick={onClick} {...press}>
       row
+      <img data-image alt="" />
+      {/* An overlay the row opens, such as the image viewer. */}
+      {createPortal(<div data-overlay />, document.body)}
     </button>
   );
 }
@@ -44,9 +48,11 @@ function render() {
   root = createRoot(container);
   act(() => root!.render(<Row onLongPress={onLongPress} onClick={onClick} />));
   const row = container.querySelector<HTMLElement>('[data-row]')!;
-  const fire = (type: string, init: PointerEventInit = {}) =>
+  const image = container.querySelector<HTMLElement>('[data-image]')!;
+  const overlay = document.querySelector<HTMLElement>('[data-overlay]')!;
+  const fire = (type: string, init: PointerEventInit = {}, target = row) =>
     act(() => {
-      row.dispatchEvent(
+      target.dispatchEvent(
         new PointerEvent(type, {
           bubbles: true,
           pointerId: 1,
@@ -58,18 +64,27 @@ function render() {
         }),
       );
     });
-  const contextMenu = () => {
+  const contextMenu = (target = row) => {
     const event = new MouseEvent('contextmenu', {
       bubbles: true,
       cancelable: true,
     });
     act(() => {
-      row.dispatchEvent(event);
+      target.dispatchEvent(event);
     });
     return event;
   };
   const click = () => act(() => row.click());
-  return { row, fire, contextMenu, click, onLongPress, onClick };
+  return {
+    row,
+    image,
+    overlay,
+    fire,
+    contextMenu,
+    click,
+    onLongPress,
+    onClick,
+  };
 }
 
 describe('useLongPress', () => {
@@ -133,6 +148,23 @@ describe('useLongPress', () => {
     fire('pointerdown');
     expect(contextMenu().defaultPrevented).toBe(true);
     expect(row.style.getPropertyValue('-webkit-touch-callout')).toBe('none');
+  });
+
+  test('a press on an image is left to the system image menu', () => {
+    const { row, image, fire, contextMenu, onLongPress } = render();
+    fire('pointerdown', {}, image);
+    act(() => vi.advanceTimersByTime(1000));
+    expect(onLongPress).not.toHaveBeenCalled();
+    expect(contextMenu(image).defaultPrevented).toBe(false);
+    expect(row.style.getPropertyValue('-webkit-touch-callout')).toBe('');
+  });
+
+  test('a press in an overlay the row portals out is not on the row', () => {
+    const { overlay, fire, contextMenu, onLongPress } = render();
+    fire('pointerdown', {}, overlay);
+    act(() => vi.advanceTimersByTime(1000));
+    expect(onLongPress).not.toHaveBeenCalled();
+    expect(contextMenu(overlay).defaultPrevented).toBe(false);
   });
 
   test('a mouse neither long-presses nor loses its right click', () => {
