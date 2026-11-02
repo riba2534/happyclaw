@@ -199,8 +199,6 @@ function laneRows(laneJid: string): NewMessage[] {
   return db.getMessagesSince(laneJid, { timestamp: '', id: '' });
 }
 
-const stopArmedRetry = vi.fn();
-
 /** A conversation session of the team workspace. */
 function createSession(id: string, status: 'idle' | 'completed' = 'idle') {
   db.createAgent({
@@ -234,7 +232,7 @@ beforeAll(() => {
   webContext.setWebDeps({
     broadcastAgentStatus: vi.fn(),
     broadcastAgentRemoved: vi.fn(),
-    queue: { stopGroup: vi.fn(async () => {}), stopArmedRetry },
+    queue: { stopGroup: vi.fn(async () => {}) },
   } as unknown as Parameters<typeof webContext.setWebDeps>[0]);
   installHooks();
 });
@@ -1498,10 +1496,6 @@ describe('after the review on the Mac mini', () => {
         (await accept('om_del_unbind')).workItemId as string,
       )!;
       remove('team-doomed-b');
-      // A retry its lane had armed is settled before the rows go.
-      expect(stopArmedRetry).toHaveBeenCalledWith(
-        `${WORKSPACE}#agent:team-doomed-b`,
-      );
       await new Promise((resolve) => setImmediate(resolve));
       expect(db.getRegisteredGroup(CHAT)?.target_agent_id).toBeUndefined();
       expect(db.getChannelMount(CHAT)).toBeUndefined();

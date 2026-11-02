@@ -79,6 +79,7 @@ const { createAutomationCore } = await import('../src/automation-service.js');
 const { setAutomationRuntimeService } =
   await import('../src/automation-run-ledger.js');
 const automationHarness = await import('./automation-harness.js');
+const reliability = await import('../src/channel-reliability-store.js');
 
 const ADMIN = 'admin-1';
 const queueGroups: Array<{
@@ -180,10 +181,13 @@ beforeEach(() => {
     broadcastAgentStatus: vi.fn(),
     broadcastAgentRemoved: vi.fn(),
     broadcastNewMessage: vi.fn(),
+    getLastAgentTimestamp: () => ({}),
+    processAgentConversation: vi.fn(async () => {}),
     queue: {
       getStatus: () => ({ groups: queueGroups }),
       stopGroup,
-      stopArmedRetry: vi.fn(),
+      getActiveQueryId: () => null,
+      enqueueTask: vi.fn(),
       listDescendantJids: () => [],
       pauseGroupsForMutation: () => ({ id: 1 }),
       resumeGroupsAfterMutation: vi.fn(),
@@ -725,6 +729,70 @@ describe('deleting worktree sessions', () => {
       ],
     });
     expect(fs.existsSync(path.join(nested, '.git'))).toBe(true);
+  });
+
+  test('moving a chat off a worktree session leaves the batch waiting for its retry behind', async () => {
+    const repo = makeRepo();
+    const { jid } = seedWorkspace({ executionMode: 'host', customCwd: repo });
+    const doomed = (await createSession(jid, { worktree: true })).body.session
+      .id as string;
+    const target = (await createSession(jid, { name: 'target' })).body.session
+      .id as string;
+    const chatJid = `telegram:${9000 + ++seq}`;
+    db.setRegisteredGroup(chatJid, {
+      name: 'Chat',
+      folder: 'chat',
+      added_at: new Date().toISOString(),
+      created_by: ADMIN,
+      target_agent_id: doomed,
+    } as any);
+    const doomedLane = `${jid}#agent:${doomed}`;
+    db.ensureChatExists(doomedLane);
+    const store = (id: string, timestamp: string) =>
+      db.storeMessageDirect(
+        id,
+        doomedLane,
+        'tg:user',
+        'User',
+        `text ${id}`,
+        timestamp,
+        false,
+        { sourceJid: chatJid },
+      );
+    // A batch of two failed; its turn (for the last input) waits for its retry.
+    store('batch-first', '2026-11-01T09:59:00.000Z');
+    store('retry-failed', '2026-11-01T10:00:00.000Z');
+    store('after-retry', '2026-11-01T10:01:00.000Z');
+    const { run } = reliability.createChannelTurnRun({
+      provider: 'telegram',
+      accountId: 'test-account',
+      sourceJid: chatJid,
+      idempotencyKey: `turn-${doomed}`,
+      agentId: doomed,
+      correlationId: 'retry-failed',
+    });
+    const claim = reliability.claimChannelTurnRunById(run.id, 'owner', 60_000)!;
+    expect(
+      reliability.retryChannelTurnRun(claim, {
+        availableAt: '2099-01-01T00:00:00.000Z',
+        error: 'attempt failed',
+      }),
+    ).toBe(true);
+
+    const deleted = await call(
+      agentRoutes,
+      `/${enc(jid)}/sessions/${doomed}?confirm_bindings=true&rebind_to=${target}`,
+      { method: 'DELETE' },
+    );
+    expect(deleted.status).toBe(200);
+    expect(db.getRegisteredGroup(chatJid)?.target_agent_id).toBe(target);
+    expect(
+      db
+        .getMessagesSince(`${jid}#agent:${target}`, { timestamp: '', id: '' })
+        .map((message) => message.id),
+    ).toEqual(['after-retry']);
+    expect(reliability.getChannelTurnRun(run.id)?.status).toBe('cancelled');
+    db.deleteRegisteredGroup(chatJid);
   });
 
   test('a clean worktree goes with the legacy /agents delete', async () => {

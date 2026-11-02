@@ -31,6 +31,10 @@ import {
   storeMessageDirect,
   updateAgentStatus,
 } from './db.js';
+import {
+  cancelChannelTurnRunById,
+  listNonterminalChannelTurnRuns,
+} from './channel-reliability-store.js';
 import { logger } from './logger.js';
 import { onTeamSessionDeleted } from './work-item-service.js';
 import {
@@ -145,47 +149,68 @@ export interface SessionDeletion {
 }
 
 /**
- * Delete a session. A retry its lane has armed is settled as stopped first
- * (the failed batch is neither run again nor carried anywhere). Then one
- * transaction runs `moveFirst` (a caller's own writes, such as moving the
- * session's chats elsewhere) and writes the deletion. Only after it commits
- * do the effects outside the database follow: those `moveFirst` returned,
- * the live cache of the chats, the runner stop, the directory removal and the
- * Web updates. On a throw nothing outside the database has changed. The
- * caller has already settled the session's worktree.
+ * What follows a committed deletion, by name. Each runs on its own: one that
+ * fails is logged and does not keep the others from running.
+ */
+export type AfterCommit = Record<string, () => void>;
+
+/**
+ * Delete a session. One transaction runs `moveFirst` (a caller's own writes,
+ * such as moving the session's chats elsewhere) and writes the deletion; on
+ * a throw nothing outside the database has changed. Once it commits, the
+ * effects outside it follow: those `moveFirst` returned, then the live cache
+ * of the chats, the runner stop, the directory removal and the Web updates.
+ * The caller has already settled the session's worktree.
  */
 export function deleteConversationSession(
   input: SessionDeletion,
-  moveFirst?: () => () => void,
+  moveFirst?: () => AfterCommit,
 ): void {
-  const laneJid = `${input.workspaceJid}#agent:${input.session.id}`;
-  getWebDeps()?.queue.stopArmedRetry(laneJid);
-  const afterCommit = runImmediateTransaction(() => {
-    const finishMove = moveFirst?.();
-    const finishDeletion = writeSessionDeletion(input, laneJid);
-    return () => {
-      finishMove?.();
-      finishDeletion();
-    };
-  });
-  afterCommit();
+  const afterCommit = runImmediateTransaction(() => [
+    moveFirst?.() ?? {},
+    writeSessionDeletion(input),
+  ]);
+  for (const steps of afterCommit) {
+    for (const [step, run] of Object.entries(steps)) {
+      try {
+        run();
+      } catch (err) {
+        logger.error(
+          { err, sessionId: input.session.id, step },
+          'A step after deleting a session failed',
+        );
+      }
+    }
+  }
+}
+
+/** The turns of a session that have not ended: running, waiting to retry or for its user. */
+function openTurnsOf(agentId: string) {
+  return listNonterminalChannelTurnRuns(50_000).filter(
+    (turn) => turn.agentId === agentId,
+  );
 }
 
 /**
  * The rows of a session's deletion: its transcript, session and runtime rows,
- * and the bindings of the chats still bound to it (through the binding write
- * path, so their mounts and team mode follow). Returns what follows the
- * commit.
+ * its open turns (cancelled: what it was running or waiting to retry goes
+ * with it), and the bindings of the chats still bound to it (through the
+ * binding write path, so their mounts and team mode follow).
  */
-function writeSessionDeletion(
-  { workspaceJid, group, session }: SessionDeletion,
-  laneJid: string,
-): () => void {
+function writeSessionDeletion({
+  workspaceJid,
+  group,
+  session,
+}: SessionDeletion): AfterCommit {
+  const laneJid = `${workspaceJid}#agent:${session.id}`;
   const live = session.status === 'running' || session.status === 'idle';
   if (live) updateAgentStatus(session.id, 'error', '用户手动停止');
   if (session.kind === 'conversation') deleteMessagesForChatJid(laneJid);
   deleteSession(group.folder, session.id);
   clearSessionChannelOwner(group.folder, session.id);
+  for (const turn of openTurnsOf(session.id)) {
+    cancelChannelTurnRunById(turn.id, 'Session deleted');
+  }
   const unbound: Array<[string, RegisteredGroup]> = [];
   for (const chatJid of listSessionBoundChatJids(workspaceJid, session.id)) {
     const chat = getRegisteredGroup(chatJid);
@@ -206,21 +231,18 @@ function writeSessionDeletion(
   // wakes its scheduler as it goes, so that only happens once the rest
   // succeeded.
   getAutomationService()?.onSessionDeleted(laneJid);
-  return () => {
-    applyCache();
-    if (live) void getWebDeps()?.queue.stopGroup(laneJid);
-    for (const dir of [
-      sessionIpcDir(group.folder, session.id),
+  const removeDir = (dir: string) => () =>
+    fs.rmSync(dir, { recursive: true, force: true });
+  return {
+    unboundChatsCache: applyCache,
+    // Whatever its status: this also clears its retry timer and parked tasks.
+    runner: () => void getWebDeps()?.queue.stopGroup(laneJid),
+    ipcDirectory: removeDir(sessionIpcDir(group.folder, session.id)),
+    sessionDirectory: removeDir(
       path.join(DATA_DIR, 'sessions', group.folder, 'agents', session.id),
-    ]) {
-      try {
-        fs.rmSync(dir, { recursive: true, force: true });
-      } catch {
-        /* ignore */
-      }
-    }
-    announceTeam();
-    projectWebAgentRemoved(workspaceJid, session.id, session.name);
+    ),
+    team: announceTeam,
+    web: () => projectWebAgentRemoved(workspaceJid, session.id, session.name),
   };
 }
 
@@ -231,21 +253,26 @@ const LANE_OWNED_INPUTS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Move the inputs from `chatJids` that `fromLane` has not taken yet into
- * `toLane` as new arrivals there (new ingest sequences, so after its
- * cursor): behind an active run they wait in its queue, otherwise they are
- * pending for its next turn. Inputs handed to the stopped runner, and the
- * ones the host composed for this lane, stay and go with it. Only writes
- * rows; the caller hands the moved inputs to `deliverCarriedInputs` once its
+ * Move the inputs from `chatJids` that session `fromId` has not taken yet
+ * into session `toId` as new arrivals there (new ingest sequences, so after
+ * its cursor): behind an active run they wait in its queue, otherwise they
+ * are pending for its next turn. What stays and goes with the session: the
+ * inputs an open turn of it covers (a turn covers its input and the earlier
+ * ones of its batch; running or waiting to retry, they are cancelled with
+ * it), and the ones the host composed for its lane. Only writes rows; the
+ * caller hands the moved inputs to `deliverCarriedInputs` once its
  * transaction commits.
  */
 export function carryUnprocessedInputs(
-  fromLane: string,
-  toLane: string,
+  workspaceJid: string,
+  fromId: string,
+  toId: string,
   chatJids: ReadonlySet<string>,
 ): NewMessage[] {
   const deps = getWebDeps();
   if (!deps || chatJids.size === 0) return [];
+  const fromLane = `${workspaceJid}#agent:${fromId}`;
+  const toLane = `${workspaceJid}#agent:${toId}`;
   const fromChat = (input: {
     source_jid?: string;
     source_kind?: string | null;
@@ -257,8 +284,16 @@ export function carryUnprocessedInputs(
     timestamp: '',
     id: '',
   };
+  const pending = getMessagesSince(fromLane, pullCursor);
+  const turnInputs = new Set(
+    pending.length > 0 ? openTurnsOf(fromId).map((t) => t.correlationId) : [],
+  );
+  const covered = pending.reduce(
+    (last, input, index) => (turnInputs.has(input.id) ? index : last),
+    -1,
+  );
   const inputs = [
-    ...getMessagesSince(fromLane, pullCursor),
+    ...pending.slice(covered + 1),
     ...listQueuedFollowUps(fromLane).filter(
       (item) => item.delivery_status === 'queued',
     ),
