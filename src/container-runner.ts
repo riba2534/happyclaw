@@ -127,7 +127,6 @@ import type {
   ClaudeOAuthCredentials,
   ClaudeProviderConfig,
   UnifiedProvider,
-  WebFetchPreflightPolicy,
 } from './runtime-config.js';
 import { resolveProviderWebFetchPreflightPolicy } from './provider-web-fetch-policy.js';
 import {
@@ -677,8 +676,8 @@ export interface ContainerInput {
   chatJid: string;
   /** Workspace-scoped interaction contract for this public Agent turn. */
   interactionMode?: InteractionMode;
-  /** Selected connection policy, resolved afresh immediately before launch. */
-  webFetchPreflightPolicy?: WebFetchPreflightPolicy;
+  /** Set when the selected connection skips WebFetch's domain check; read at launch. */
+  webFetchPreflightPolicy?: 'skip';
   /** Source JID of the latest message that triggered this run (e.g. `discord:123…`).
    * Used by per-channel MCP tools (discord_*, etc.) to identify the current
    * incoming chat. Undefined when chatJid already encodes the IM source. */

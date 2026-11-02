@@ -67,79 +67,54 @@ afterAll(() => {
 });
 
 describe('connection WebFetch policy storage', () => {
-  test.each(['check', 'skip'] as const)(
-    '%s survives rereads, unrelated edits and credential changes',
-    (webFetchPreflightPolicy) => {
+  // Only skip is stored, so an unrelated write cannot turn the default into
+  // an explicit choice.
+  test.each([
+    [undefined, undefined, 'check'],
+    ['check', undefined, 'check'],
+    ['skip', 'skip', 'skip'],
+  ] as const)(
+    'created with %s, stores %s through unrelated edits and credential changes',
+    (webFetchPreflightPolicy, stored, shown) => {
       const created = createThirdParty({ webFetchPreflightPolicy });
+      expect(created.webFetchPreflightPolicy).toBe(stored);
+      expect(readFile().providers[0].webFetchPreflightPolicy).toBe(stored);
       runtimeConfig.updateProvider(created.id, { name: 'Renamed connection' });
       runtimeConfig.updateProviderSecrets(created.id, {
         anthropicAuthToken: 'replacement-secret',
       });
+      expect(readFile().providers[0].webFetchPreflightPolicy).toBe(stored);
       const reloaded = runtimeConfig.getProviderById(created.id)!;
-      expect(reloaded.webFetchPreflightPolicy).toBe(webFetchPreflightPolicy);
+      expect(reloaded.webFetchPreflightPolicy).toBe(stored);
       expect(runtimeConfig.toPublicProvider(reloaded)).toMatchObject({
-        webFetchPreflightPolicy,
+        webFetchPreflightPolicy: shown,
         hasAnthropicAuthToken: true,
       });
-      expect(
-        runtimeConfig.providerToConfig(reloaded).webFetchPreflightPolicy,
-      ).toBe(webFetchPreflightPolicy);
       expect(reloaded.anthropicAuthToken).toBe('replacement-secret');
       expect(readFile().version).toBe(5);
     },
   );
 
-  test('new connections default to an explicit check policy', () => {
-    const created = createThirdParty();
-    expect(readFile().providers[0].webFetchPreflightPolicy).toBe('check');
-    expect(
-      runtimeConfig.toPublicProvider(runtimeConfig.getProviderById(created.id)!)
-        .webFetchPreflightPolicy,
-    ).toBe('check');
-  });
-
-  test.each([undefined, 'inherit', 'unexpected'])(
-    'stored %s is read as check without rewriting the configuration',
-    (storedPolicy) => {
-      const created = createThirdParty();
-      const file = readFile();
-      if (storedPolicy === undefined) {
-        delete file.providers[0].webFetchPreflightPolicy;
-      } else {
-        file.providers[0].webFetchPreflightPolicy = storedPolicy;
-      }
-      writeFile(file);
-      const unchangedFile = fs.readFileSync(configFile, 'utf8');
-      const reloaded = runtimeConfig.getProviderById(created.id)!;
-      expect(reloaded.webFetchPreflightPolicy).toBe('check');
-      expect(
-        runtimeConfig.toPublicProvider(reloaded).webFetchPreflightPolicy,
-      ).toBe('check');
-      expect(
-        runtimeConfig.providerToConfig(reloaded).webFetchPreflightPolicy,
-      ).toBe('check');
-      expect(fs.readFileSync(configFile, 'utf8')).toBe(unchangedFile);
-    },
-  );
-
-  test('returning to check persists the enabled default', () => {
+  test('returning to check removes the stored policy', () => {
     const created = createThirdParty({ webFetchPreflightPolicy: 'skip' });
     expect(readFile().providers[0].webFetchPreflightPolicy).toBe('skip');
-    runtimeConfig.updateProvider(created.id, {
+    const updated = runtimeConfig.updateProvider(created.id, {
       webFetchPreflightPolicy: 'check',
     });
-    expect(readFile().providers[0].webFetchPreflightPolicy).toBe('check');
+    expect(updated.webFetchPreflightPolicy).toBeUndefined();
+    expect(readFile().providers[0]).not.toHaveProperty(
+      'webFetchPreflightPolicy',
+    );
     expect(
-      runtimeConfig.toPublicProvider(runtimeConfig.getProviderById(created.id)!)
-        .webFetchPreflightPolicy,
-    ).toBe('check');
+      runtimeConfig.getProviderById(created.id)!.webFetchPreflightPolicy,
+    ).toBeUndefined();
   });
 
   test('OAuth refresh and duplication keep their connection policy', () => {
     const official = runtimeConfig.createProvider({
       name: 'OAuth',
       type: 'official',
-      webFetchPreflightPolicy: 'check',
+      webFetchPreflightPolicy: 'skip',
       claudeOAuthCredentials: {
         accessToken: 'old-access',
         refreshToken: 'refresh-token',
@@ -159,7 +134,7 @@ describe('connection WebFetch policy storage', () => {
     ).toBe(true);
     expect(
       runtimeConfig.getProviderById(official.id)!.webFetchPreflightPolicy,
-    ).toBe('check');
+    ).toBe('skip');
     const thirdParty = createThirdParty({ webFetchPreflightPolicy: 'skip' });
     const duplicate = runtimeConfig.duplicateProvider(thirdParty.id);
     expect(

@@ -1,8 +1,12 @@
 import type { ContainerInput } from './types.js';
 
-/** Always pin the connection choice above native user/project/local settings. */
+/**
+ * Claude Code reads `skipWebFetchPreflight` only from settings. A connection
+ * set to skip pins it above the admin's, project and local settings; without
+ * it the key is left to them.
+ */
 export function webFetchPreflightSettings(
   policy: ContainerInput['webFetchPreflightPolicy'],
-): { skipWebFetchPreflight: boolean } {
-  return { skipWebFetchPreflight: policy === 'skip' };
+): { skipWebFetchPreflight?: true } {
+  return policy === 'skip' ? { skipWebFetchPreflight: true } : {};
 }

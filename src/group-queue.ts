@@ -1381,19 +1381,6 @@ export class GroupQueue {
     return true;
   }
 
-  /** Saved connection policy applies to new inputs; accepted turns finish. */
-  requestProviderRuntimeRefresh(providerId: string): void {
-    for (const [jid, state] of this.groups) {
-      if (
-        state.active &&
-        state.process &&
-        state.selectedProviderId === providerId
-      ) {
-        this.retireRunnerAfterQuery(jid);
-      }
-    }
-  }
-
   /** Close `runnerJid` after its current query; idle runners close now. */
   private closeAfterQuery(
     runnerJid: string,
