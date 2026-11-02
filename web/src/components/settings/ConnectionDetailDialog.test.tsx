@@ -68,8 +68,8 @@ afterEach(async () => {
 
 let current: UnifiedProviderPublic;
 
-async function render(provider: UnifiedProviderPublic) {
-  current = provider;
+async function render(provider: UnifiedProviderPublic | null) {
+  if (provider) current = provider;
   await act(async () => {
     root.render(
       <ConnectionDetailDialog
@@ -690,5 +690,208 @@ describe('后台与子代理', () => {
   test('official connections have no roles', async () => {
     await render(officialProvider);
     expect(text()).not.toContain('后台与子代理');
+  });
+});
+
+describe('connection WebFetch policy', () => {
+  const field = '#connection-web-fetch-preflight';
+
+  test.each([
+    ['Claude subscription', officialProvider],
+    [
+      'Anthropic API',
+      makeProvider({
+        type: 'official',
+        claudeAuthKind: 'api_key',
+        hasAnthropicApiKey: true,
+      }),
+    ],
+    ['ChatGPT subscription', codexProvider],
+    ['preset', makeProvider({ presetId: 'deepseek' })],
+    ['custom', legacyProvider],
+  ])(
+    'shows the policy and saves it for %s with the PATCH answer',
+    async (_kind, provider) => {
+      await render(provider);
+      expect(select(field).value).toBe('check');
+      expect([...select(field).options].map((option) => option.text)).toEqual([
+        '跟随 Claude Code 设置（默认检查）',
+        '跳过检查',
+      ]);
+      expect(button('保存连接设置').disabled).toBe(true);
+      await choose(field, 'skip');
+      await click(button('保存连接设置'));
+      await flush();
+      expect(mocks.patch).toHaveBeenCalledWith(
+        `${PROVIDERS}/${provider.id}`,
+        { webFetchPreflightPolicy: 'skip' },
+        120_000,
+      );
+      expect(mocks.confirm).not.toHaveBeenCalled();
+      expect(mocks.get).not.toHaveBeenCalledWith(PROVIDERS);
+      expect(mocks.get).not.toHaveBeenCalledWith(
+        `${PROVIDERS}/${provider.id}/impact`,
+      );
+      expect(onChanged).toHaveBeenCalledExactlyOnceWith({
+        ...provider,
+        webFetchPreflightPolicy: 'skip',
+        updatedAt: 'later',
+      });
+      expect(setNotice).toHaveBeenCalledWith(
+        '网页抓取设置已保存，当前回复结束后生效',
+      );
+    },
+  );
+
+  test.each([
+    ['check', 'skip'],
+    ['skip', 'check'],
+  ] as const)(
+    'saves %s → %s and shows the saved value after reopening',
+    async (from, to) => {
+      const provider = { ...legacyProvider, webFetchPreflightPolicy: from };
+      const saved = {
+        ...provider,
+        webFetchPreflightPolicy: to,
+        updatedAt: 'later',
+      };
+      await render(provider);
+      expect(select(field).value).toBe(from);
+      await choose(field, to);
+      await click(button('保存连接设置'));
+      await flush();
+      expect(onChanged).toHaveBeenCalledWith(saved);
+      await render(null);
+      await render(saved);
+      expect(select(field).value).toBe(to);
+      expect(button('保存连接设置').disabled).toBe(true);
+    },
+  );
+
+  test('does not write a cancelled draft or carry it to another connection', async () => {
+    await render(legacyProvider);
+    await choose(field, 'skip');
+    await render(null);
+    await render({ ...officialProvider, webFetchPreflightPolicy: 'check' });
+    expect(select(field).value).toBe('check');
+    expect(button('保存连接设置').disabled).toBe(true);
+    await render(legacyProvider);
+    expect(select(field).value).toBe('check');
+    expect(mocks.patch).not.toHaveBeenCalled();
+  });
+
+  test('follows a reloaded value until a local draft is made', async () => {
+    await render(legacyProvider);
+    await render({ ...legacyProvider, webFetchPreflightPolicy: 'skip' });
+    expect(select(field).value).toBe('skip');
+    await choose(field, 'check');
+    await render({ ...legacyProvider, webFetchPreflightPolicy: 'skip' });
+    expect(select(field).value).toBe('check');
+    expect(button('保存连接设置').disabled).toBe(false);
+  });
+
+  test('a ChatGPT connection saves only the switch, whatever its env became meanwhile', async () => {
+    const chatgpt = {
+      ...codexProvider,
+      customEnv: { CODEX_REASONING_EFFORT: 'high' },
+    };
+    await render(chatgpt);
+    // CodexDefaults saved a new effort; the dialog stays mounted.
+    await render({ ...chatgpt, customEnv: { CODEX_REASONING_EFFORT: 'low' } });
+    expect(button('保存连接设置').disabled).toBe(true);
+    await choose(field, 'skip');
+    await click(button('保存连接设置'));
+    await flush();
+    expect(mocks.patch).toHaveBeenCalledExactlyOnceWith(
+      `${PROVIDERS}/chatgpt`,
+      { webFetchPreflightPolicy: 'skip' },
+      120_000,
+    );
+    expect(mocks.confirm).not.toHaveBeenCalled();
+  });
+
+  test('keeps the draft retryable after a failed save', async () => {
+    mocks.patch.mockRejectedValueOnce(new Error('write failed'));
+    await render(legacyProvider);
+    await choose(field, 'skip');
+    await click(button('保存连接设置'));
+    await flush();
+    expect(select(field).value).toBe('skip');
+    expect(button('保存连接设置').disabled).toBe(false);
+    expect(onChanged).not.toHaveBeenCalled();
+    expect(setNotice).not.toHaveBeenCalled();
+    expect(setError).toHaveBeenCalledWith('write failed');
+
+    await click(button('保存连接设置'));
+    await flush();
+    expect(onChanged).toHaveBeenCalledWith({
+      ...legacyProvider,
+      webFetchPreflightPolicy: 'skip',
+      updatedAt: 'later',
+    });
+  });
+
+  test('keeps the saved policy when the reload after a new credential fails', async () => {
+    const { ClaudeProviderSection } = await import('./ClaudeProviderSection');
+    const provider = makeProvider({
+      id: 'official-api',
+      name: '官方 API',
+      type: 'official',
+      claudeAuthKind: 'api_key',
+      hasAnthropicApiKey: true,
+      webFetchPreflightPolicy: 'check',
+    });
+    current = provider;
+    let lists = 0;
+    mocks.get.mockImplementation(async (path: string) => {
+      if (path === PROVIDERS) {
+        lists += 1;
+        if (lists === 1) return { providers: [provider] };
+        throw new Error('list refresh failed');
+      }
+      if (path.endsWith('/impact'))
+        return { activeRunners: 1, stoppedRunners: 2 };
+      throw new Error('offline');
+    });
+    await act(async () => {
+      root.render(
+        <ClaudeProviderSection setNotice={setNotice} setError={setError} />,
+      );
+    });
+    await flush();
+    await click(
+      document.querySelector('[role="button"][aria-label="编辑「官方 API」"]'),
+    );
+    await choose(field, 'skip');
+    await type('#connection-secret', 'new-api-key');
+    await click(button('保存连接设置'));
+    await flush();
+
+    expect(mocks.put).toHaveBeenCalledWith(
+      `${PROVIDERS}/official-api/secrets`,
+      { anthropicApiKey: 'new-api-key' },
+      120_000,
+    );
+    expect(lists).toBe(2);
+    expect(setError).toHaveBeenCalledWith('list refresh failed');
+    expect(select(field).value).toBe('skip');
+    expect(button('保存连接设置').disabled).toBe(true);
+  });
+
+  test('keeps the protocol confirmation when a new key is saved with the policy', async () => {
+    await render(legacyProvider);
+    await choose(field, 'skip');
+    await type('#connection-secret', 'new-key');
+    await click(button('保存连接设置'));
+    await flush();
+    expect(mocks.confirm).toHaveBeenCalledTimes(1);
+    expect(mocks.patch).toHaveBeenCalledWith(
+      `${PROVIDERS}/glm`,
+      { webFetchPreflightPolicy: 'skip', anthropicAuthToken: 'new-key' },
+      120_000,
+    );
+    expect(onChanged).toHaveBeenCalledWith(
+      expect.objectContaining({ webFetchPreflightPolicy: 'skip' }),
+    );
   });
 });

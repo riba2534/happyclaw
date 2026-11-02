@@ -147,7 +147,7 @@ const app = web.createAppForTest({
     hasActiveRunnerForMessage: () => false,
     sendMessage: () => 'no_active',
     enqueueTask: (jid: string) => calls.tasks.push(jid),
-    closeStdin: () => {},
+    retireRunnerAfterQuery: () => false,
   },
   processAgentConversation: async () => {},
   getLastAgentTimestamp: () => pullCursors,

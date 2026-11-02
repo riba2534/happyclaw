@@ -1282,6 +1282,162 @@ describe('v88 legacy main session migration', () => {
         .map((c: { id: string }) => c.id),
     ).toEqual(['I1_no_workspace_jid_messages']);
   }, 60_000);
+  test.each(['single run', 'single card', 'multiple run/card'])(
+    'main-lane migration preserves NUL-delimited outbox keys: %s',
+    async (scenario) => {
+      const { semanticChannelOutboxIdentity } =
+        await import('../src/channel-outbox-runtime-scope.js');
+      const crypto = await import('node:crypto');
+      const digest = (value: string) =>
+        crypto.createHash('sha256').update(value).digest('hex').slice(0, 32);
+      const oldKey = 'channel-turn-v1:feishu:acct:binary-keys:main';
+      const oldId = `turn_${digest(oldKey)}`;
+      const oldCard = `stream_${digest(`${oldId}:primary`)}`;
+      const route = { provider: 'feishu', accountId: 'acct', sourceJid: HOME };
+      const suffixes = ['first', 'second'].map((text) =>
+        semanticChannelOutboxIdentity({
+          route,
+          kind: 'text',
+          payload: { text },
+        }),
+      );
+      const keys =
+        scenario === 'single run'
+          ? [`${oldId}:${suffixes[0]}`]
+          : scenario === 'single card'
+            ? [`${oldCard}:page\0卡片😀\0first`]
+            : [
+                ...suffixes.map((suffix) => `${oldId}:${suffix}`),
+                `${oldCard}:page\0卡片😀\0first`,
+                `${oldCard}:page\0卡片😀\0second`,
+              ];
+      keys.push('unrelated\0key\0unchanged');
+      let before: Array<Record<string, unknown>> = [];
+      buildV87((conn) => {
+        group(conn, HOME, { folder: 'main', isHome: true });
+        message(conn, HOME, 'binary-keys', T(1));
+        const insertRun = conn.prepare(`INSERT INTO turn_runs (
+          id, idempotency_key, provider, account_id, source_jid,
+          correlation_id, status, available_at, created_at, updated_at
+        ) VALUES (?, ?, 'feishu', 'acct', ?, ?, 'completed', ?, ?, ?)`);
+        insertRun.run(oldId, oldKey, HOME, 'binary-keys', T(1), T(1), T(1));
+        insertRun.run(
+          'untouched-run',
+          'untouched-key',
+          HOME,
+          'gone',
+          T(1),
+          T(1),
+          T(1),
+        );
+        conn
+          .prepare(
+            `INSERT INTO streaming_cards (
+          id, turn_run_id, provider, account_id, source_jid, status, created_at, updated_at
+        ) VALUES (?, ?, 'feishu', 'acct', ?, 'completed', ?, ?)`,
+          )
+          .run(oldCard, oldId, HOME, T(1), T(2));
+        const insert = conn.prepare(`INSERT INTO channel_outbox (
+          id, turn_run_id, ordinal, kind, idempotency_key, provider, account_id,
+          source_jid, payload, payload_hash, status, provider_message_id,
+          attempt, revision, error, lease_token, available_at, created_at, updated_at,
+          delivered_at
+        ) VALUES (?, ?, ?, ?, ?, 'feishu', 'acct', ?, ?, ?, ?, ?, 2, 3,
+          'previous retry', 4, ?, ?, ?, ?)`);
+        [...keys, `${oldId}:other-run\0unchanged`].forEach((key, index) => {
+          insert.run(
+            `binary-outbox-${index}`,
+            index === keys.length ? 'untouched-run' : oldId,
+            index,
+            key.startsWith(oldCard) ? 'card' : 'text',
+            key,
+            HOME,
+            JSON.stringify({ text: `内容 ${index}` }),
+            `payload-${index}`,
+            index === keys.length - 1 ? 'pending' : 'delivered',
+            `provider-message-${index}`,
+            T(1),
+            T(1),
+            T(2),
+            index === keys.length - 1 ? null : T(2),
+          );
+        });
+        before = conn
+          .prepare('SELECT * FROM channel_outbox ORDER BY ordinal')
+          .all() as Array<Record<string, unknown>>;
+      });
+
+      if (scenario === 'multiple run/card') {
+        const snapshot = () =>
+          inspect((conn) =>
+            [
+              'messages',
+              'agents',
+              'turn_runs',
+              'streaming_cards',
+              'channel_outbox',
+            ].map((table) =>
+              conn.prepare(`SELECT * FROM ${table} ORDER BY id`).all(),
+            ),
+          );
+        const beforeMigration = snapshot();
+        const writer = new Database(databasePath);
+        // Abort the second update after the first outbox row has moved.
+        writer.exec(`CREATE TRIGGER fail_second_outbox_move
+          AFTER UPDATE ON channel_outbox
+          WHEN NEW.turn_run_id != OLD.turn_run_id AND
+            (SELECT COUNT(*) FROM channel_outbox
+             WHERE turn_run_id = NEW.turn_run_id) = 2
+          BEGIN SELECT RAISE(ABORT, 'injected outbox migration failure'); END;`);
+        try {
+          expect(() => db.initDatabase()).toThrow(
+            'injected outbox migration failure',
+          );
+          db.closeDatabase();
+          expect(snapshot()).toEqual(beforeMigration);
+          expect(
+            inspect((conn) =>
+              conn
+                .prepare(
+                  "SELECT value FROM router_state WHERE key = 'schema_version'",
+                )
+                .get(),
+            ),
+          ).toEqual({ value: '87' });
+        } finally {
+          writer.exec('DROP TRIGGER fail_second_outbox_move');
+          writer.close();
+        }
+      }
+
+      const report = db.initDatabase().legacyMainSessions!;
+      const home = report.workspaces[0];
+      expect(home).toMatchObject({ turnRuns: 1, turnRunsRekeyed: 1 });
+      const newId = `turn_${digest(`channel-turn-v1:feishu:acct:binary-keys:${home.sessionId}`)}`;
+      const newCard = `stream_${digest(`${newId}:primary`)}`;
+      const expected = before.map((row, index) =>
+        index === keys.length
+          ? row
+          : {
+              ...row,
+              turn_run_id: newId,
+              idempotency_key: keys[index]
+                .replace(oldId, newId)
+                .replace(oldCard, newCard),
+            },
+      );
+      const read = () =>
+        inspect((conn) =>
+          conn.prepare('SELECT * FROM channel_outbox ORDER BY ordinal').all(),
+        );
+      expect(read()).toEqual(expected);
+      db.closeDatabase();
+      expect(db.initDatabase().legacyMainSessions).toBeNull();
+      expect(read()).toEqual(expected);
+      expect(inspect((conn) => conn.pragma('foreign_key_check'))).toEqual([]);
+    },
+  );
+
   test('an in-flight main-lane turn keeps one run, card and outbox under the session', async () => {
     const { ChannelTurnRuntime } =
       await import('../src/channel-turn-runtime.js');

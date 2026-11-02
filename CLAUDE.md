@@ -319,6 +319,11 @@ preset 的身份和默认风格，只低于平台的安全、权限、工具和�
   未被 HappyClaw 设置的键（例如官方连接的 `ANTHROPIC_BASE_URL`）仍可由工作区 cwd 下的
   项目/local settings 文件设置：Host 模式下那是管理员自己的仓库，Container 模式下所有者
   本就能读到该连接的凭据。
+- 连接的 WebFetch 域名检查（`webFetchPreflightPolicy`）：Claude Code 的 WebFetch 会先把
+  域名发到 `api.anthropic.com` 预检，连不上 Anthropic 时第三方连接的 WebFetch 必然失败；它只从
+  settings 读 `skipWebFetchPreflight`，没有环境变量。连接选 `skip` 时 Runner 在 flag
+  settings 把它固定为 `true`；`check`、未设置或没有选中连接时不写这个键，由其他 settings
+  决定。值变化后，使用该连接的 Runner 在本轮结束后退出，SDK 会话保留。
 - 渠道格式说明随每轮的 `<channel_context>` 发送，不进 system prompt；换渠道或每十轮
   重发一次，在被替换或撤回前一直有效。
 - 一个模型配置（连接）是一份凭据、一个地址和一组模型；设置页只添加和维护连接，选哪个

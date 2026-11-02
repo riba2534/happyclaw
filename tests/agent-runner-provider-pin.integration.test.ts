@@ -399,7 +399,10 @@ describe('the bound connection and the session choices win', () => {
       'utf8',
     );
     expect(runner).toContain(
-      'const flagSettings: Record<string, unknown> = pinBoundProviderSettings({\n    ...process.env,\n    ...claudeRuntimeEnv,\n  });',
+      '...pinBoundProviderSettings({\n      ...process.env,\n      ...claudeRuntimeEnv,\n    }),',
+    );
+    expect(runner).toContain(
+      '...webFetchPreflightSettings(containerInput.webFetchPreflightPolicy)',
     );
     expect(runner).toContain('      settings: flagSettings as any,');
   });

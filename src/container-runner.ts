@@ -128,6 +128,7 @@ import type {
   ClaudeProviderConfig,
   UnifiedProvider,
 } from './runtime-config.js';
+import { resolveProviderWebFetchPreflightPolicy } from './provider-web-fetch-policy.js';
 import {
   loadManagedMcpLayers,
   resolveManagedMcpPolicy,
@@ -675,6 +676,8 @@ export interface ContainerInput {
   chatJid: string;
   /** Workspace-scoped interaction contract for this public Agent turn. */
   interactionMode?: InteractionMode;
+  /** Set when the selected connection skips WebFetch's domain check; read at launch. */
+  webFetchPreflightPolicy?: 'skip';
   /** Source JID of the latest message that triggered this run (e.g. `discord:123…`).
    * Used by per-channel MCP tools (discord_*, etc.) to identify the current
    * incoming chat. Undefined when chatJid already encodes the IM source. */
@@ -3165,6 +3168,8 @@ export async function runContainerAgent(
       // the caller's `input` object (queue/log/retry paths reuse the same ref).
       const dockerInput: ContainerInput = {
         ...input,
+        webFetchPreflightPolicy:
+          resolveProviderWebFetchPreflightPolicy(selectedProfileId),
         workspaceMemoryMutationSigningSecret,
         workspaceMemoryRunnerInstanceId,
         plugins: dockerPlugins,
@@ -4459,6 +4464,9 @@ export async function runHostAgent(
       // plugins.
       const hostInput: ContainerInput = {
         ...input,
+        webFetchPreflightPolicy: resolveProviderWebFetchPreflightPolicy(
+          hostSelectedProfileId,
+        ),
         workspaceMemoryMutationSigningSecret,
         workspaceMemoryRunnerInstanceId,
         plugins: preparedHostPlugins,

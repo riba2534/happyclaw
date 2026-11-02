@@ -51,6 +51,42 @@ describe('provider connectivity probe', () => {
     });
   });
 
+  test('sends a fresh Claude Code session id, the header session-routed gateways need', async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse(200, { id: 'msg_1' }));
+    const probe = (customHeaders?: string) =>
+      probeProviderModel(
+        {
+          baseUrl: 'https://opencode.ai/zen/go',
+          token: 'sk-opencode-123456789',
+          authMode: 'x-api-key',
+          model: 'minimax-m3',
+          customHeaders,
+        },
+        { fetchImpl: fetchImpl as unknown as typeof fetch },
+      );
+    await probe();
+    await probe();
+    await probe('X-Claude-Code-Session-Id: pinned-by-user');
+    const sessions = fetchImpl.mock.calls.map(
+      (call) =>
+        (
+          (call as unknown as [string, RequestInit])[1].headers as Record<
+            string,
+            string
+          >
+        )['x-claude-code-session-id'],
+    );
+    expect(sessions[0]).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+    );
+    expect(sessions[1]).not.toBe(sessions[0]);
+    expect(sessions[2]).toBe('pinned-by-user');
+    const headers = (
+      fetchImpl.mock.calls[0] as unknown as [string, RequestInit]
+    )[1].headers as Record<string, string>;
+    expect(headers['x-opencode-session']).toBeUndefined();
+  });
+
   test('explains an auth failure without echoing the key', async () => {
     const fetchImpl = vi.fn(async () =>
       jsonResponse(401, {

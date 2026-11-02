@@ -858,6 +858,13 @@ Provider（模型连接：一份凭据和一个端点，提供一组模型）：
   可用 `claudeCredentialInput` 提交官方
   凭据原文（`.credentials.json` 内容或 setup-token），由服务端解析，格式无效时
   返回 400；官方 Provider 同一时刻只保留 OAuth、setup-token、API Key 中的一种
+- `webFetchPreflightPolicy: 'check' | 'skip'`（所有连接类型，与其他连接字段一样由
+  `manage_system_config` 在创建和 PATCH 时设置；公开 Provider 总是返回，未设置时为
+  `check`）：WebFetch 抓取前是否向 Anthropic
+  查询域名。`skip` 让使用该连接的会话跳过这次查询；`check` 不做设置，由 Claude Code
+  自己的设置决定（默认查询）。没有选中连接的启动（工作区自带 Provider 环境变量）同
+  `check`。值变化后，使用该连接的 Runner 在本轮结束后退出，下一条消息由新 Runner
+  按新值处理，SDK 会话保留；与端点等字段一起修改时按下述规则停 Runner。
 - `PATCH|DELETE /api/config/claude/providers/:id`，第三方 Provider 的 PATCH
   可同时携带 `anthropicAuthToken` / `clearAnthropicAuthToken`，与其他字段在同一
   请求内提交；删除 ChatGPT 订阅型 Provider 后在后台尽力吊销其 refresh token，

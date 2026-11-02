@@ -1742,6 +1742,13 @@ configRoutes.patch(
                 : {}),
             },
           };
+          // The WebFetch policy is fixed at launch too, but needs no stop:
+          // this connection's runners exit after their current query.
+          if (
+            updated.webFetchPreflightPolicy !== previous.webFetchPreflightPolicy
+          ) {
+            deps?.queue?.drainProviderRunnersForCredentialRefresh?.(id);
+          }
         }
 
         if (!mutation.applied.success) {

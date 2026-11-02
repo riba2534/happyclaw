@@ -59,6 +59,7 @@ import {
   getErrorMessage,
   type EnvRow,
   type UnifiedProviderPublic,
+  type WebFetchPreflightPolicy,
 } from './types';
 
 export type ConnectionUpdate = Pick<UnifiedProviderPublic, 'id'> &
@@ -392,31 +393,44 @@ function ConnectionSettings({
     ProviderAuthMode | 'auto' | null
   >(null);
   const authMode = authModeDraft ?? savedAuthMode;
+  const savedWebFetchPolicy =
+    provider.webFetchPreflightPolicy === 'skip' ? 'skip' : 'check';
+  const [webFetchPolicyDraft, setWebFetchPolicyDraft] =
+    useState<WebFetchPreflightPolicy | null>(null);
+  const webFetchPolicy = webFetchPolicyDraft ?? savedWebFetchPolicy;
   const [saving, setSaving] = useState(false);
   const baseUrlProblem =
     kind === 'custom' ? describeBaseUrlProblem(baseUrl) : null;
 
+  // A ChatGPT connection shows only the WebFetch switch here: CodexDefaults
+  // saves its env, which leaves the env draft above a stale snapshot.
+  const editsProtocol = kind !== 'chatgpt';
   const built = buildProviderCustomEnv(env);
-  const envChanged = !sameEnv(built.customEnv, provider.customEnv ?? {});
+  const envChanged =
+    editsProtocol && !sameEnv(built.customEnv, provider.customEnv ?? {});
   const urlChanged =
     kind === 'custom' && baseUrl.trim() !== provider.anthropicBaseUrl;
-  const authModeChanged = authMode !== savedAuthMode;
-  const dirty = urlChanged || !!secret.trim() || envChanged || authModeChanged;
+  const authModeChanged = editsProtocol && authMode !== savedAuthMode;
+  const protocolChanged =
+    urlChanged || !!secret.trim() || envChanged || authModeChanged;
+  const webFetchPolicyChanged = webFetchPolicy !== savedWebFetchPolicy;
+  const dirty = protocolChanged || webFetchPolicyChanged;
 
   const save = async () => {
     if (built.error) {
       setError(built.error);
       return;
     }
-    if (kind === 'custom' && !baseUrl.trim()) {
+    if (urlChanged && !baseUrl.trim()) {
       setError('请填写服务地址');
       return;
     }
-    if (!(await confirmProtocolChange(provider))) return;
+    if (protocolChanged && !(await confirmProtocolChange(provider))) return;
     setSaving(true);
     try {
       const patch: Record<string, unknown> = {};
       const secrets: Record<string, unknown> = {};
+      if (webFetchPolicyChanged) patch.webFetchPreflightPolicy = webFetchPolicy;
       if (urlChanged) patch.anthropicBaseUrl = baseUrl.trim();
       // Null clears the stored header, so the server falls back again.
       if (authModeChanged) {
@@ -444,9 +458,16 @@ function ConnectionSettings({
       }
       setSecret('');
       setAuthModeDraft(null);
-      setNotice('连接设置已保存；建议测试一次连接');
-      // A new credential changes masked fields the PATCH answer lacks.
-      onChanged(Object.keys(secrets).length > 0 ? undefined : saved);
+      setWebFetchPolicyDraft(null);
+      setNotice(
+        protocolChanged
+          ? '连接设置已保存；建议测试一次连接'
+          : '网页抓取设置已保存，当前回复结束后生效',
+      );
+      // The PATCH answer is the saved state; a new credential also changes
+      // masked fields it lacks, so reload after applying it.
+      onChanged(saved);
+      if (saved && Object.keys(secrets).length > 0) onChanged();
     } catch (err) {
       setError(getErrorMessage(err, '保存连接设置失败'));
     } finally {
@@ -650,12 +671,34 @@ function ConnectionSettings({
             </SettingsField>
           )}
           <ProviderEnvEditor value={env} onChange={setEnv} disabled={saving} />
-          <Button onClick={() => void save()} disabled={!dirty || saving}>
-            {saving && <Loader2 className="animate-spin" />}
-            保存连接设置
-          </Button>
         </div>
       )}
+      <SettingsField
+        label="网页抓取域名检查"
+        htmlFor="connection-web-fetch-preflight"
+        description="抓取网页前先向 Anthropic 查询域名；连不上 Anthropic 时选择跳过。对使用此连接的所有会话生效。"
+      >
+        <NativeSelect
+          id="connection-web-fetch-preflight"
+          value={webFetchPolicy}
+          onChange={(event) =>
+            setWebFetchPolicyDraft(
+              event.target.value as WebFetchPreflightPolicy,
+            )
+          }
+          disabled={saving}
+          className="w-full sm:w-72"
+        >
+          <NativeSelectOption value="check">
+            跟随 Claude Code 设置（默认检查）
+          </NativeSelectOption>
+          <NativeSelectOption value="skip">跳过检查</NativeSelectOption>
+        </NativeSelect>
+      </SettingsField>
+      <Button onClick={() => void save()} disabled={!dirty || saving}>
+        {saving && <Loader2 className="animate-spin" />}
+        保存连接设置
+      </Button>
     </SettingsSection>
   );
 }
