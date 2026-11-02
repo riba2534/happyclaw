@@ -610,3 +610,106 @@ describe('a migrated main session elsewhere in the runtime', () => {
     );
   });
 });
+
+describe('a stop while a failed turn waits for its retry', () => {
+  test('/break answers that it stopped the task, and only when a retry was armed', async () => {
+    const globals: Record<string, any> = {
+      logger,
+      learnFeishuDirectChat: vi.fn(),
+      resolveRuntimeControlTarget: () => LANE,
+      UNBOUND_CHAT_REPLY: UNBOUND,
+      cancelQueuedFollowUpsAtCutoff: () => [],
+      cancelAutomationInputs: vi.fn(),
+      closeRetryWaitTurnsOfInputs: vi.fn(),
+      endUsageLimitWait: vi.fn(),
+      interruptActiveSessionRun: () => ({
+        activeRunId: null,
+        interrupted: false,
+      }),
+      queue: { stopArmedRetry: vi.fn(() => true) },
+    };
+    const harness = createRuntimeSourceHarness(globals);
+    harness.install('breakLane');
+    harness.install('handleSessionBreak');
+    const brk = () =>
+      globals.handleSessionBreak({
+        sourceJid: 'feishu:oc_p',
+        senderImId: 'ou',
+      });
+
+    expect(await brk()).toBe('Current task stopped.');
+    expect(globals.queue.stopArmedRetry).toHaveBeenCalledWith(LANE);
+    globals.queue.stopArmedRetry = vi.fn(() => false);
+    expect(await brk()).toBe('No active task to stop.');
+  });
+
+  test('the failed batch is settled as stopped: committed, its runs and turns closed', () => {
+    const lane = `${HOME}#agent:retry-stop`;
+    db.ensureChatExists(lane);
+    db.storeMessageDirect(
+      'retry-in-1',
+      lane,
+      'owner',
+      'Owner',
+      'first',
+      '2026-11-02T00:00:01.000Z',
+      false,
+      { sourceJid: 'feishu:oc_retry', meta: { automationRunId: 'run-r1' } },
+    );
+    db.storeMessageDirect(
+      'retry-in-2',
+      lane,
+      'owner',
+      'Owner',
+      'second',
+      '2026-11-02T00:00:02.000Z',
+      false,
+      { sourceJid: 'feishu:oc_retry' },
+    );
+    const globals: Record<string, any> = {
+      getAgentBuilderInputMessage: db.getAgentBuilderInputMessage,
+      cancelAutomationInputs: vi.fn(),
+      advanceCursors: vi.fn(),
+      channelTurnScopeForInput: (jid: string, source: string) => ({
+        jid,
+        source,
+      }),
+      closeRetryWaitTurnsForWithdrawnInputs: vi.fn(),
+      clearTrackedProcessingIndicators: vi.fn(async () => {}),
+    };
+    const harness = createRuntimeSourceHarness(globals);
+    for (const name of [
+      'retrySnapshotInputs',
+      'closeRetryWaitTurnsOfInputs',
+      'settleStoppedRetryBatch',
+    ]) {
+      harness.install(name);
+    }
+    const cursor = { timestamp: '2026-11-02T00:00:02.000Z', id: 'retry-in-2' };
+    globals.settleStoppedRetryBatch(lane, {
+      coveredCursors: [
+        { timestamp: '2026-11-02T00:00:01.000Z', id: 'retry-in-1' },
+        cursor,
+      ],
+      cursor,
+    });
+
+    expect(globals.advanceCursors).toHaveBeenCalledWith(lane, cursor);
+    expect(globals.cancelAutomationInputs).toHaveBeenCalledWith(
+      [
+        expect.objectContaining({ id: 'retry-in-1' }),
+        expect.objectContaining({ id: 'retry-in-2' }),
+      ],
+      'break',
+    );
+    expect(
+      globals.closeRetryWaitTurnsForWithdrawnInputs.mock.calls.map(
+        ([scope, ids]: [unknown, string[]]) => [scope, ids],
+      ),
+    ).toEqual([
+      [{ jid: lane, source: 'feishu:oc_retry' }, ['retry-in-1']],
+      [{ jid: lane, source: 'feishu:oc_retry' }, ['retry-in-2']],
+    ]);
+    expect(globals.clearTrackedProcessingIndicators).toHaveBeenCalledWith(lane);
+  });
+});

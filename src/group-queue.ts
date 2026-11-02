@@ -8,7 +8,7 @@ import { getSystemSettings } from './runtime-config.js';
 import { logger } from './logger.js';
 import { resolveFeishuCliBoundAccountId } from './feishu-cli-runtime.js';
 import { isIpcInputPayloadFilename } from './ipc-delivery-recovery.js';
-import { sessionIpcDir } from './utils.js';
+import { agentIdOfJid, sessionIpcDir } from './utils.js';
 import type {
   RunnerRuntime,
   StuckRecoveryCandidate,
@@ -331,6 +331,9 @@ export class GroupQueue {
         snapshot: MessageRetrySnapshot | null,
       ) => void | Promise<void>)
     | null = null;
+  private onRetryStoppedFn:
+    | ((groupJid: string, snapshot: MessageRetrySnapshot | null) => void)
+    | null = null;
   private onContainerExitFn: ((groupJid: string) => void) | null = null;
   private onRunnerQueryTeardownFn: ((groupJid: string) => void) | null = null;
   private onRunnerStateChangeFn:
@@ -418,6 +421,15 @@ export class GroupQueue {
   private getMutationBaseJid(groupJid: string): string {
     const agentSep = groupJid.indexOf('#agent:');
     return agentSep >= 0 ? groupJid.slice(0, agentSep) : groupJid;
+  }
+
+  /**
+   * Every session lane the queue holds for a workspace JID. Unlike
+   * listDescendantJids it includes lanes whose only work is an armed retry.
+   */
+  private sessionLanesOf(workspaceJid: string): string[] {
+    const prefix = `${workspaceJid}#agent:`;
+    return [...this.groups.keys()].filter((jid) => jid.startsWith(prefix));
   }
 
   private getMutationPauseKey(groupJid: string): string {
@@ -815,6 +827,35 @@ export class GroupQueue {
     ) => void | Promise<void>,
   ): void {
     this.onMaxRetriesExceededFn = fn;
+  }
+
+  /**
+   * Called when an explicit stop ends a lane's armed retry, with the batch
+   * the failed attempt read: the host settles it as stopped.
+   */
+  setOnRetryStopped(
+    fn: (groupJid: string, snapshot: MessageRetrySnapshot | null) => void,
+  ): void {
+    this.onRetryStoppedFn = fn;
+  }
+
+  /**
+   * An explicit stop between failed attempts: no query runs to interrupt, so
+   * the stop ends the armed retry and the failed batch does not run again.
+   * Returns false when the lane has no retry armed.
+   */
+  stopArmedRetry(groupJid: string): boolean {
+    const state = this.groups.get(groupJid);
+    if (!state?.retryTimer) return false;
+    const snapshot = state.messageRetrySnapshot;
+    this.clearRetryTimer(state);
+    logger.info({ groupJid }, 'Explicit stop ended the armed retry');
+    try {
+      this.onRetryStoppedFn?.(groupJid, snapshot);
+    } catch (err) {
+      logger.error({ groupJid, err }, 'onRetryStopped callback failed');
+    }
+    return true;
   }
 
   /**
@@ -1679,7 +1720,9 @@ export class GroupQueue {
   ): StuckRecoveryCandidate | null {
     if (!state.active || state.restarting) return null;
     // Owed work: IPC input still owed by the query in flight (#618), or tasks
-    // queued behind this runner. The debt timestamp is cleared when the query
+    // queued behind a runner that runs no query and never takes them. Tasks
+    // waiting behind an in-flight query are not owed: a silent long tool call
+    // is not a stuck runner. The debt timestamp is cleared when the query
     // reports idle and ordinary output never refreshes it.
     const ipcOwedSinceAt = state.ipcOwedSinceAt ?? null;
     const hasIpcOwed = ipcOwedSinceAt !== null && state.queryInFlight;
@@ -1692,7 +1735,9 @@ export class GroupQueue {
       ipcOwedMs !== null && ipcOwedMs >= ipcForceThresholdMs;
     if (!reachedIdleThreshold && !reachedAbsoluteIpcCeiling) return null;
     // Checked last: it scans every lane state.
-    if (!hasIpcOwed && !this.laneHasQueuedTasks(jid)) return null;
+    if (state.queryInFlight ? !hasIpcOwed : !this.laneHasQueuedTasks(jid)) {
+      return null;
+    }
     return {
       jid,
       idleMs,
@@ -2575,7 +2620,13 @@ export class GroupQueue {
       ownState?.active && ownState.queryInFlight
         ? ownState
         : this.resolveActiveState(groupJid);
-    if (!state || !state.queryInFlight) return false;
+    if (!state || !state.queryInFlight) {
+      // A stop of the lane (not of one named query) between failed attempts
+      // ends the armed retry instead.
+      return reason === 'stop' && !expectedQueryId
+        ? this.stopArmedRetry(groupJid)
+        : false;
+    }
     if (expectedQueryId && state.queryId !== expectedQueryId) return false;
 
     // 只取消等待中的 retry 定时器（如果有），不重置 retryCount —— 不让用户
@@ -2646,6 +2697,15 @@ export class GroupQueue {
     groupJid: string,
     options?: { force?: boolean; preserveQueuedWork?: boolean },
   ): Promise<void> {
+    if (!agentIdOfJid(groupJid)) {
+      // A workspace runs nothing itself: stopping it stops every session.
+      await Promise.all(
+        this.sessionLanesOf(groupJid).map((jid) =>
+          this.stopGroup(jid, options),
+        ),
+      );
+      return;
+    }
     const force = options?.force ?? false;
     const preserveQueuedWork = options?.preserveQueuedWork ?? false;
     if (preserveQueuedWork && !this.isMutationPaused(groupJid)) {
@@ -2780,6 +2840,16 @@ export class GroupQueue {
    * queued tasks and ask the host to start the lane again (setLaneStarter).
    */
   async restartGroup(groupJid: string): Promise<void> {
+    if (!agentIdOfJid(groupJid)) {
+      // A workspace runs nothing itself: restarting it restarts every session
+      // runner (an idle session picks the change up at its next start).
+      await Promise.all(
+        this.sessionLanesOf(groupJid)
+          .filter((jid) => this.groups.get(jid)?.active)
+          .map((jid) => this.restartGroup(jid)),
+      );
+      return;
+    }
     const activeRunner = this.findActiveRunnerFor(groupJid);
     const targetJid = activeRunner || groupJid;
     const state = this.getGroup(targetJid);

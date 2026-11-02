@@ -464,6 +464,7 @@ describe('message retry exhaustion notice', () => {
       resolveTrustedInteractionMode: () => 'assistant',
       clearTrackedProcessingIndicators: vi.fn(async () => {}),
     });
+    runtime.harness.install('retrySnapshotInputs');
     runtime.harness.installCallArgument(
       'onMaxRetriesExceeded',
       'main',
