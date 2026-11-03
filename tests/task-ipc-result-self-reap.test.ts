@@ -117,9 +117,15 @@ function collectTaskResultPrefixes(): string[] {
       const callbackFactory = ts.isIdentifier(prefixArg)
         ? callbackFactoryOf(call, prefixArg.text)
         : null;
-      // The team tools' types are a const array (WORK_IPC_TYPES), not a
-      // literal union the scan can read.
-      if (callbackFactory === 'createWorkTools') {
+      // The work tools' types are a const array (WORK_IPC_TYPES), not a
+      // literal union the scan can read. Their sender is passed straight to
+      // createWorkTools, or declared once as a WorkIpcCall and shared by the
+      // team and delegation tools.
+      if (
+        callbackFactory === 'createWorkTools' ||
+        (ts.isIdentifier(prefixArg) &&
+          declaredCallbackType(call, prefixArg.text) === 'WorkIpcCall')
+      ) {
         for (const type of WORK_IPC_TYPES) prefixes.add(`${type}_result`);
         continue;
       }
@@ -160,6 +166,27 @@ function collectTaskResultPrefixes(): string[] {
     }
   }
   return [...prefixes].sort();
+}
+
+/**
+ * `const sender: <Type> = (request, <param>) => pollIpcResult(…, <param>)`:
+ * the declared type of `sender` when `param` is a parameter of the arrow.
+ */
+function declaredCallbackType(call: ts.Node, param: string): string | null {
+  let owner: ts.Node | undefined = call.parent;
+  while (owner && !ts.isArrowFunction(owner)) owner = owner.parent;
+  if (
+    !owner ||
+    !owner.parameters.some(
+      (p) => ts.isIdentifier(p.name) && p.name.text === param,
+    )
+  ) {
+    return null;
+  }
+  const declaration = owner.parent;
+  return ts.isVariableDeclaration(declaration) && declaration.type
+    ? declaration.type.getText()
+    : null;
 }
 
 /**
