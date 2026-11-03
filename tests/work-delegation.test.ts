@@ -1304,6 +1304,23 @@ describe('a delegation stopped while its worker session was made', () => {
     expect(rows(laneOf(item.agentId))).toEqual([]);
   });
 
+  test('stopped on the Web, then the session fails: it stays stopped', async () => {
+    duringSessionCreation = () => {
+      const [item] = store.listOpenDelegatedWorkItems(MAIN);
+      service.stopWorkItem(item.id);
+      throw new Error('disk full');
+    };
+    expect(await delegate(callerOf(MAIN))).toEqual({
+      ok: false,
+      error: 'Could not start the delegated task: disk full',
+    });
+    const [item] = service
+      .listWorkItemViews(WORKSPACE)
+      .sort((a, b) => b.seq - a.seq);
+    expect(item).toMatchObject({ status: 'ended', outcome: 'stopped' });
+    expect(db.getAgent(item.agentId)).toBeUndefined();
+  });
+
   test('its delegating session deleted: the item stops, the session goes', async () => {
     createSession('mt-gone-midway');
     duringSessionCreation = () => db.deleteAgent('mt-gone-midway');

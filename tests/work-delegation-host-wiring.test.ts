@@ -291,6 +291,13 @@ describe('a stop of the delegating session (breakLane)', () => {
     const harness = createRuntimeSourceHarness(globals);
     harness.install('releaseKeptReports');
     harness.install('requeueKeptReportsAfterReset');
+    // What a /clear or /fresh runs once its cursor is set, as main() wires it.
+    harness.installCallArgument(
+      'afterSessionReset',
+      'main',
+      'setAfterSessionReset',
+      0,
+    );
     return { globals, released };
   }
   const report = { id: 'work-report-w1-7', chat_jid: LANE };
@@ -320,7 +327,7 @@ describe('a stop of the delegating session (breakLane)', () => {
       activeRunId: null,
       queued: [typed, report],
     });
-    (globals.requeueKeptReportsAfterReset as (lane: string) => void)(LANE);
+    (globals.afterSessionReset as (lane: string) => void)(LANE);
     expect(globals.moveMessagesToIngestTail).toHaveBeenCalledWith(LANE, [
       report.id,
     ]);

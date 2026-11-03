@@ -2525,7 +2525,13 @@ async function delegate(
       { err: error, workItemId: item.id, laneJid: lane.laneJid },
       'Could not start a delegated item',
     );
-    broadcast(endItem(item, 'failed', { lastSummary: `派出失败：${reason}` }));
+    // Stopped meanwhile (on the Web, or its session deleted): it stays so.
+    const current = getWorkItem(item.id);
+    if (current?.status === 'open') {
+      broadcast(
+        endItem(current, 'failed', { lastSummary: `派出失败：${reason}` }),
+      );
+    }
     discardSession(lane.workspaceJid, lane.workspace, agentId);
     return fail(`Could not start the delegated task: ${reason}`);
   };
