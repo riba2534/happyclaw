@@ -142,9 +142,14 @@ export function createDelegationTools(
 
     tool(
       'work_stop',
-      '停止本会话派出的一个后台任务，只在用户要求停止时使用。之后会收到一条 state="stopped" 的 <work_report>，不必再告诉用户一次。',
+      '停止本会话派出的一个后台任务，只在用户要求停止时使用。停止后这个任务不会再有回报；直接告诉用户已停止。',
       strict({ item: itemSchema }),
-      async ({ item }) => send('work_stop', { item }, () => `已停止 ${item}。`),
+      async ({ item }) =>
+        send(
+          'work_stop',
+          { item },
+          () => `已停止 ${item}，它不会再有回报。告诉用户已停止。`,
+        ),
     ),
 
     tool(

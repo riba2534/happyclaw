@@ -859,6 +859,11 @@ describe('delegation tools over IPC', () => {
 
   test('work_stop and work_followup send the item and message as given', async () => {
     const env = await setup(undefined, 'multi');
+    // The host sends no report for a stop the session made itself.
+    const { tools } = await env.client.listTools();
+    const stopTool = tools.find((t) => t.name === 'work_stop');
+    expect(stopTool?.description).toContain('不会再有回报');
+    expect(stopTool?.description).not.toContain('state="stopped"');
     const stop = await exchange(
       env,
       'work_stop',
@@ -866,7 +871,9 @@ describe('delegation tools over IPC', () => {
       { ok: true, data: {} },
     );
     expect(body(stop.request)).toEqual({ type: 'work_stop', item: '#3' });
-    expect(textOf(stop.result)).toBe('已停止 #3。');
+    expect(textOf(stop.result)).toBe(
+      '已停止 #3，它不会再有回报。告诉用户已停止。',
+    );
 
     const followup = await exchange(
       env,
