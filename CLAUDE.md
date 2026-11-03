@@ -74,10 +74,14 @@ Agent Profile（身份、四段 Prompt、能力策略）
   `work_report`（progress、ready、blocked、failed）。ready、blocked、failed，以及并非派出会话自己
   `work_stop` 造成的停止（`state="stopped"`），以 `work_item_input` 注入派出它的会话，排在当前轮次
   之后、不 steer，回复沿用派出那一轮所回答输入的来源路由；派出的会话转述给用户，用
-  `work_followup` 把用户的回答转给 Worker。派发只接受工作区主人亲自发起的轮次（与
-  `install_skill` 同一闸门），每个会话最多 3 个、每个工作区最多 5 个未结束，并受计费闸门约束。
-  处理回报的那一轮不算主人亲自发起。删除派出的会话会停止它未结束的任务；切换 `work_mode`
-  不中断运行，暖 Runner 在本轮结束后退役。团队模式的代码路径只处理 `origin='team'` 的工作项。
+  `work_followup` 把用户的回答转给 Worker。派发、停止和跟进都只接受工作区主人亲自发起的轮次
+  （与 `install_skill` 同一闸门；派发请求不带 `inputTurnId` 时按非主人拒绝），每个会话最多 3 个、
+  每个工作区最多 5 个未结束，并受计费闸门约束；处理回报的那一轮不算主人亲自发起。独立 worktree
+  会话与自动化运行会话不能派发。Worker 的 summary 不超过 4000 字，更长的结果写进文件。Worker
+  一轮结束却没交回 ready、failed 或 blocked，或运行失败、被计费拒绝时，任务记为失败并告知派出的
+  会话；`/break` 与停止不会取消排队中的派发回报。删除派出的会话会停止它未结束的任务。切回
+  `single` 后，还有未结束派发项的会话仍按多任务运行到它们结束（只是不能再派），切换不中断运行，
+  暖 Runner 在本轮结束后退役。团队模式的代码路径只处理 `origin='team'` 的工作项。
 
 ## 3. 主要模块
 
