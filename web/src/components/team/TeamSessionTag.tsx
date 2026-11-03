@@ -2,12 +2,13 @@ import { useNavigate } from 'react-router-dom';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
 import { useWorkItemForSession } from '../../stores/work-items';
-import { workItemHref } from '../../lib/team-mode';
+import { workItemHref, workOriginWords } from '../../lib/team-mode';
 import type { AgentInfo } from '../../types';
 
 /**
  * 「团队路由」 or 「#N 工作项」 on a team-mode session (`isTeamSession`) in the
- * session tree. A work item's tag opens its detail.
+ * session tree, 「#N 后台任务」 on a delegated task's worker. A work item's
+ * tag opens its detail.
  */
 export function TeamSessionTag({
   workspaceJid,
@@ -44,7 +45,7 @@ export function TeamSessionTag({
           navigate(workItemHref(item.id));
         }}
       >
-        #{item.seq} 工作项
+        #{item.seq} {workOriginWords(item).noun}
       </button>
     </Badge>
   );

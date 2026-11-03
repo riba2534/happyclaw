@@ -8,6 +8,7 @@ import {
   WORK_DECISION_LABELS,
   WORK_RECENT_LIMIT,
   formatWorkTime,
+  workItemSource,
   workItemTitle,
   workStageLabel,
   workStageText,
@@ -71,7 +72,7 @@ function WorkItemRow({
 }) {
   const ended = item.status === 'ended';
   const readOnly = !ended && !isWorkItemWritable(item);
-  const where = [item.workspaceName, item.channelName]
+  const where = [item.workspaceName, workItemSource(item)]
     .filter(Boolean)
     .join(' · ');
   return (
@@ -181,11 +182,14 @@ export function WorkItemList({
   selectedId,
   onSelect,
   loading,
+  empty: emptyCopy,
 }: {
   sections: WorkSections;
   selectedId: string | null;
   onSelect: (id: string) => void;
   loading: boolean;
+  /** What an empty list says. */
+  empty: { title: string; description: string };
 }) {
   const renderItems = (list: WorkItemView[]) =>
     list.map((item) => (
@@ -202,11 +206,7 @@ export function WorkItemList({
   return (
     <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-4">
       {empty ? (
-        <EmptyState
-          icon={ClipboardList}
-          title="还没有工作项"
-          description="在飞书普通群的绑定上打开团队模式后，群里的请求会出现在这里。"
-        />
+        <EmptyState icon={ClipboardList} {...emptyCopy} />
       ) : (
         <>
           {sections.needsMe.length > 0 && (
