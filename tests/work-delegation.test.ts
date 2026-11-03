@@ -725,9 +725,10 @@ describe('work_stop and work_followup', () => {
       outcome: 'stopped',
     });
     expect(stopped).toEqual([laneOf(item.agentId)]);
-    const [input] = reportsIn(MAIN).filter((r) => attrsOf(r).id === item.id);
-    expect(attrsOf(input).state).toBe('stopped');
-    expect(input.content).toBe('已停止：本会话用 work_stop 停止了它');
+    // The session asked for the stop itself: no report, no extra turn.
+    expect(reportsIn(MAIN).filter((r) => attrsOf(r).id === item.id)).toEqual(
+      [],
+    );
     expect(
       await service.handleWorkIpc(callerOf(MAIN), {
         type: 'work_stop',
@@ -762,7 +763,15 @@ describe('work_stop and work_followup', () => {
         message: '一万以内',
       }),
     ).toEqual({ ok: true, data: {} });
-    expect(store.getWorkItem(item.id)?.attention).toBeNull();
+    expect(store.getWorkItem(item.id)).toMatchObject({
+      attention: null,
+      lastReport: 'progress',
+    });
+    // Working again: no longer among the items waiting for a person.
+    expect(
+      service.listWorkItemViews(WORKSPACE).find((view) => view.id === item.id)
+        ?.stage,
+    ).not.toBe('blocked');
     const followup = rows(laneOf(item.agentId)).at(-1)!;
     expect(followup).toMatchObject({
       content: '一万以内',

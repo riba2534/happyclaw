@@ -2538,8 +2538,17 @@ function handleWorkFollowup(
     text: message,
     now: now(),
   });
-  // The question it was blocked on is answered (or overtaken).
-  const updated = item.attention ? patchItem(item, { attention: null }) : item;
+  // The question it was blocked on is answered (or overtaken): the item is
+  // working again, no longer waiting for a person.
+  const updated =
+    item.attention || item.lastReport === 'blocked'
+      ? patchItem(item, {
+          attention: null,
+          ...(item.lastReport === 'blocked'
+            ? { lastReport: 'progress' as const }
+            : {}),
+        })
+      : item;
   injectTeamInput({
     workspaceJid: item.workspaceJid,
     agentId: item.agentId,
@@ -2651,7 +2660,9 @@ function stopDelegatedItem(
   const { stopped, eventId } = endStopped(item, cause);
   return () => {
     if (cause !== 'session_deleted') stopWorkerLane(item);
-    if (cause !== 'origin_deleted') {
+    // The delegating session hears of a stop it did not make itself: one it
+    // asked for with work_stop needs no report, which would only cost a turn.
+    if (cause !== 'origin_deleted' && cause !== 'work_stop') {
       try {
         reportToOrigin(stopped, {
           eventId,
