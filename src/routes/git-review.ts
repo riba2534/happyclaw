@@ -40,6 +40,7 @@ import {
   WORKTREE_UNAVAILABLE_MESSAGES,
 } from '../session-worktree.js';
 import { getSessionWorktree } from '../session-worktree-store.js';
+import { getWorkItemByAgent } from '../work-item-store.js';
 import { logger } from '../logger.js';
 import {
   agentIdOfJid,
@@ -215,10 +216,24 @@ gitReviewRoutes.get('/:jid/git/worktree-support', authMiddleware, async (c) => {
 });
 
 /**
+ * The session a delegated worker works for, else the session itself. A
+ * session and the workers it delegated share its directory by design (the
+ * chat lists them as its background tasks), so they are no peers of each
+ * other.
+ */
+function delegationRoot(agentId: string): string {
+  const item = getWorkItemByAgent(agentId);
+  return item?.origin === 'delegated' && item.originAgentId
+    ? item.originAgentId
+    : agentId;
+}
+
+/**
  * Sessions with a running turn whose working directory is the caller's.
  * Concurrency is only reported, never limited: different sessions may run
  * at once by design. Peers in workspaces the caller cannot see are counted
- * but not named. Every peer is a session (`kind: 'session'`).
+ * but not named. Every peer is a session (`kind: 'session'`); a session's
+ * own delegated workers, and their delegating session, are none.
  */
 gitReviewRoutes.get('/:jid/workdir/peers', authMiddleware, (c) => {
   c.header('Cache-Control', 'private, no-store');
@@ -233,6 +248,7 @@ gitReviewRoutes.get('/:jid/workdir/peers', authMiddleware, (c) => {
     resolveWorkspaceProjectRoot(scope.group, { agentId: scope.agentId }),
   );
   const principal = { id: scope.authUser.id, role: scope.authUser.role };
+  const ownRoot = scope.agentId ? delegationRoot(scope.agentId) : null;
   const peers: Array<{
     workspace_jid: string;
     workspace_name: string;
@@ -250,6 +266,7 @@ gitReviewRoutes.get('/:jid/workdir/peers', authMiddleware, (c) => {
     if (workspace.jid === scope.group.jid && agentId === scope.agentId) {
       continue;
     }
+    if (ownRoot && delegationRoot(agentId) === ownRoot) continue;
     const dir = realpathBestEffort(
       resolveWorkspaceProjectRoot(workspace, { agentId }),
     );

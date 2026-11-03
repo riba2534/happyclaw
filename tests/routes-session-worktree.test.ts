@@ -80,6 +80,7 @@ const { setAutomationRuntimeService } =
   await import('../src/automation-run-ledger.js');
 const automationHarness = await import('./automation-harness.js');
 const reliability = await import('../src/channel-reliability-store.js');
+const workItemStore = await import('../src/work-item-store.js');
 
 const ADMIN = 'admin-1';
 const queueGroups: Array<{
@@ -639,6 +640,69 @@ describe('same-directory peers', () => {
       `/${enc(a.jid)}/workdir/peers?agentId=${isolated}`,
     );
     expect(isolatedPeers.body).toEqual({ peers: [], hidden_count: 0 });
+  });
+
+  test('a session and the workers it delegated are no peers of each other', async () => {
+    const repo = makeRepo();
+    const a = seedWorkspace({ executionMode: 'host', customCwd: repo });
+    const main = (await createSession(a.jid, { name: 'main' })).body.session
+      .id as string;
+    const worker = (await createSession(a.jid, { name: 'worker' })).body.session
+      .id as string;
+    const sibling = (await createSession(a.jid, { name: 'sibling' })).body
+      .session.id as string;
+    const other = (await createSession(a.jid, { name: 'other' })).body.session
+      .id as string;
+    const now = new Date().toISOString();
+    const mandate = {
+      strength: 'explicit' as const,
+      requesterImId: null,
+      requesterName: null,
+      requesterListed: true,
+      requesterIsOwner: true,
+      matchedRules: [],
+      settingsVersion: 0,
+      writable: true,
+    };
+    for (const [n, agentId] of [
+      [1, worker],
+      [2, sibling],
+    ] as const) {
+      workItemStore.insertWorkItem({
+        id: `delegated-${a.folder}-${n}`,
+        workspaceJid: a.jid,
+        workspaceFolder: a.folder,
+        channelJid: `${a.jid}#agent:${agentId}`,
+        agentId,
+        title: `task ${n}`,
+        sourceMessageId: `delegate:${a.folder}:${n}`,
+        sourceRouteJid: `${a.jid}#agent:${main}`,
+        mandate,
+        now,
+        delegatedBy: { agentId: main, inputId: null },
+      });
+    }
+    for (const id of [main, worker, sibling, other]) {
+      queueGroups.push({
+        jid: `${a.jid}#agent:${id}`,
+        active: true,
+        queryInFlight: true,
+        groupFolder: a.folder,
+      });
+    }
+    const peersOf = async (id: string) =>
+      (
+        await call(gitRoutes, `/${enc(a.jid)}/workdir/peers?agentId=${id}`)
+      ).body.peers.map((p: any) => p.session_id);
+
+    // Its own background tasks are listed in the chat, not warned about.
+    expect(await peersOf(main)).toEqual([other]);
+    // A worker hears of neither its delegating session nor its siblings.
+    expect(await peersOf(worker)).toEqual([other]);
+    // An unrelated session still hears of all of them.
+    expect((await peersOf(other)).sort()).toEqual(
+      [main, worker, sibling].sort(),
+    );
   });
 });
 
