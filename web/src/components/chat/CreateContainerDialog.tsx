@@ -42,6 +42,8 @@ import {
 import { workspaceCreationBlockReason } from '../../utils/agent-product';
 import { extractErrorMessage } from '../../utils/error';
 import { InteractionModeSelector } from './InteractionModeSelector';
+import { WorkModeSelector } from './WorkModeSelector';
+import { DEFAULT_WORK_MODE, type WorkMode } from '../../work-items';
 import {
   HostDirectoryMountEditor,
   type HostDirectoryMountDraft,
@@ -190,6 +192,7 @@ export function CreateContainerDialog({
   const [selectedAgentProfileId, setSelectedAgentProfileId] = useState('');
   const [interactionMode, setInteractionMode] =
     useState<InteractionMode>('assistant');
+  const [workMode, setWorkMode] = useState<WorkMode>(DEFAULT_WORK_MODE);
   const [hostMounts, setHostMounts] = useState<HostDirectoryMountDraft[]>([]);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
@@ -288,6 +291,7 @@ export function CreateContainerDialog({
     setInitGitUrl('');
     setSelectedAgentProfileId('');
     setInteractionMode('assistant');
+    setWorkMode(DEFAULT_WORK_MODE);
     setHostMounts([]);
     setSubmitError(null);
     setFieldErrors({});
@@ -340,6 +344,7 @@ export function CreateContainerDialog({
       if (selectedAgentProfileId)
         options.agent_profile_id = selectedAgentProfileId;
       options.interaction_mode = interactionMode;
+      options.work_mode = workMode;
       const created = await createFlow(
         trimmed,
         Object.keys(options).length ? options : undefined,
@@ -441,6 +446,14 @@ export function CreateContainerDialog({
             name="create-workspace-interaction-mode"
             compact
             description="Assistant 回复一条最终消息；主动模式可在处理中多次发消息。"
+            disabled={loading}
+          />
+
+          <WorkModeSelector
+            value={workMode}
+            onChange={setWorkMode}
+            name="create-workspace-work-mode"
+            compact
             disabled={loading}
           />
 
