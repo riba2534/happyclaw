@@ -162,7 +162,7 @@ async function delegatedItem(): Promise<WorkItem> {
     {
       folder: FOLDER,
       agentId: MAIN,
-      ownerTurnInput: () => ({ chatJid: laneOf(MAIN), messageId }),
+      ownerTurn: () => ({ input: { chatJid: laneOf(MAIN), messageId } }),
     },
     { type: 'work_delegate', title: '调研', task: '做调研' },
   );
@@ -307,7 +307,11 @@ describe('team paths never reach a delegated item', () => {
   test('follow-up copies: a delegated follow-up stored in its worker is no group follow-up', async () => {
     const item = await delegatedItem();
     await service.handleWorkIpc(
-      { folder: FOLDER, agentId: MAIN },
+      {
+        folder: FOLDER,
+        agentId: MAIN,
+        ownerTurn: () => ({ input: null }),
+      },
       { type: 'work_followup', item: item.id, message: '补充一句' },
     );
     const followup = rows(laneOf(item.agentId)).at(-1)!;

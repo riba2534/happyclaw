@@ -623,7 +623,9 @@ import {
 import {
   countOpenWorkItems,
   followupCopyIdsOf,
+  failDelegatedWorkerRun,
   handleWorkIpc,
+  isDelegatedReportInput,
   isWorkIpcType,
   mayRunTeamMode,
   onTeamMessageStored,
@@ -2471,6 +2473,7 @@ function cancelQueuedInputsOfLane(laneJid: string): void {
   for (const item of cancelQueuedFollowUpsAtCutoff(
     laneJid,
     deliveryUpdatedAt,
+    isDelegatedReportInput,
   )) {
     settleCancelledFollowUp(laneJid, item, deliveryUpdatedAt);
   }
@@ -4733,6 +4736,7 @@ async function answerSessionBatchWithBillingNotice(input: {
   messages: NewMessage[];
   replySourceImJid: string | null;
 }): Promise<boolean> {
+  failDelegatedWorkerRun(input.agentId, '额度不足，无法运行');
   const last = input.messages[input.messages.length - 1];
   if (input.replySourceImJid) {
     const route = resolveDurableChannelRoute(input.replySourceImJid);
@@ -8936,6 +8940,23 @@ function writeTaskResult(
 }
 
 /**
+ * A delegated worker's turn finished and committed. When nothing else waits
+ * for its lane (queued, or stored past the committed cursor, such as a batch
+ * already piped to the runner), the worker is done with this item: one still
+ * open and not waiting on a question failed to hand back a result.
+ */
+function settleDelegatedWorkerTurn(laneJid: string, agentId: string): void {
+  if (
+    listQueuedFollowUps(laneJid).length > 0 ||
+    getMessagesSince(laneJid, lastCommittedCursor[laneJid] || EMPTY_CURSOR)
+      .length > 0
+  ) {
+    return;
+  }
+  failDelegatedWorkerRun(agentId, null);
+}
+
+/**
  * Why the turn a runner holds is not the workspace owner's own (the
  * install_skill rule), or null when it is.
  */
@@ -9140,29 +9161,30 @@ function resolveIpcAutomationActor(
 }
 
 /**
- * work_delegate (multi-task mode): the input the calling turn answers, when
- * the workspace owner started that turn, else null. The owner rule is
- * install_skill's (every turn the runner holds is the owner's own human
- * input); `inputTurnId` names which delivered batch the turn is, and the
- * last input of that batch is the one the delegation answers. A request that
- * outlived its turn names no delivered batch and is refused.
+ * Delegation tools (multi-task mode): the calling turn when the workspace
+ * owner started it, else null. The owner rule is install_skill's (every turn
+ * the runner holds is the owner's own human input). `inputTurnId` names which
+ * delivered batch the turn is, and that batch's last input is the one a
+ * delegation answers; without it there is no such input (`input: null`),
+ * never the batch running now. A request that outlived its turn names no
+ * delivered batch and is refused, as for the automation tools.
  */
-function ownerTurnInputOf(
+function ownerTurnOf(
   sourceGroup: string,
   sourceGroupEntry: RegisteredGroup | undefined,
   ipcAgentId: string,
   inputTurnId: string | null,
-): { chatJid: string; messageId: string } | null {
+): { input: { chatJid: string; messageId: string } | null } | null {
   const ownerUserId = sourceGroupEntry?.created_by;
   if (!ownerUserId) return null;
   const turnScope = agentBuilderTurnScope(sourceGroup, ipcAgentId);
   if (ownerTurnRejection(sourceGroup, turnScope, ownerUserId)) return null;
-  const turns = inputTurnId
-    ? activeAgentBuilderTurns.deliveredTurnsThrough(turnScope, inputTurnId)
-    : activeAgentBuilderTurns.activeBatch(turnScope);
-  const answered = turns.at(-1);
+  if (!inputTurnId) return { input: null };
+  const answered = activeAgentBuilderTurns
+    .deliveredTurnsThrough(turnScope, inputTurnId)
+    .at(-1);
   return answered
-    ? { chatJid: answered.chatJid, messageId: answered.messageId }
+    ? { input: { chatJid: answered.chatJid, messageId: answered.messageId } }
     : null;
 }
 
@@ -9412,13 +9434,8 @@ async function processTaskIpc(
       {
         folder: sourceGroup,
         agentId: ipcAgentId,
-        ownerTurnInput: (inputTurnId) =>
-          ownerTurnInputOf(
-            sourceGroup,
-            sourceGroupEntry,
-            ipcAgentId,
-            inputTurnId,
-          ),
+        ownerTurn: (inputTurnId) =>
+          ownerTurnOf(sourceGroup, sourceGroupEntry, ipcAgentId, inputTurnId),
       },
       data as unknown as { type: string } & Record<string, unknown>,
     ).then((result) =>
@@ -12412,6 +12429,7 @@ async function processAgentConversation(
   ): Promise<void> => {
     const inputTurnId = activeAgentInputTurnId;
     sendSystemMessage(virtualChatJid, webType, text);
+    failDelegatedWorkerRun(agentId, text);
     agentDeterministicTerminalError = terminalError;
     automationTurns.settle(inputTurnId, {
       status: 'failed',
@@ -12587,6 +12605,7 @@ async function processAgentConversation(
       );
     } else {
       sendSystemMessage(virtualChatJid, 'agent_error', errorDetail);
+      failDelegatedWorkerRun(agentId, errorDetail);
     }
     return true;
   };
@@ -13231,6 +13250,9 @@ async function processAgentConversation(
             lastProcessed.id,
           );
           commitCursor(inputTurnId);
+          if (teamRole?.role === 'worker' && teamRole.origin === 'delegated') {
+            settleDelegatedWorkerTurn(virtualChatJid, agentId);
+          }
           finalizeProactiveAgentOutputCoordinators(output);
           persistProactiveTurnTrace(inputTurnId);
           broadcastStreamEvent(
@@ -14049,7 +14071,11 @@ async function processAgentConversation(
         runtimeAgentKind: agent.kind,
       },
     );
-    const workMode = runnerWorkMode(agent, effectiveGroup.folder);
+    const workMode = runnerWorkMode(
+      agent,
+      effectiveGroup.folder,
+      missedMessages,
+    );
     const containerInput: ContainerInput = {
       prompt,
       sessionId,
@@ -17212,7 +17238,13 @@ function breakLane(
   cancelled: ReturnType<typeof cancelQueuedFollowUpsAtCutoff>;
 } {
   const deliveryUpdatedAt = new Date().toISOString();
-  const cancelled = cancelQueuedFollowUpsAtCutoff(targetJid, deliveryUpdatedAt);
+  // A delegated item's report stays queued: its item has ended, and the
+  // report is the only news of it.
+  const cancelled = cancelQueuedFollowUpsAtCutoff(
+    targetJid,
+    deliveryUpdatedAt,
+    isDelegatedReportInput,
+  );
   cancelAutomationInputs(cancelled, 'break');
   for (const item of cancelled) {
     broadcastFollowUpUpdate(targetJid, {
@@ -18886,6 +18918,7 @@ async function main(): Promise<void> {
         const session = agentId ? getAgent(agentId) : undefined;
         const name = session?.name || group?.name || laneJid;
         const error = `${name} 处理失败，已达最大重试次数`;
+        if (agentId) failDelegatedWorkerRun(agentId, '重试多次后仍然失败');
         let notifyChannel: (() => Promise<void>) | undefined;
         // Use only the immutable batch read by the final failed attempt. A
         // prompt arriving while this callback runs belongs to a future

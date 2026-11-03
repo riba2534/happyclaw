@@ -48,6 +48,7 @@ const gate = await import('../src/team-gate.js');
 const replySource = await import('../src/channel-reply-source.js');
 const sessions = await import('../src/session-factory.js');
 const webContext = await import('../src/web-context.js');
+const worktreeStore = await import('../src/session-worktree-store.js');
 
 import type { ChannelTurnContext, NewMessage } from '../src/types.js';
 import type { WorkItem } from '../src/work-items.js';
@@ -69,10 +70,15 @@ const stopped: string[] = [];
 const broadcasts: string[] = [];
 const laneMessages: { laneJid: string; text: string; id: string }[] = [];
 const wake = vi.fn();
+/** Every admission throws: a delegation fails half way. */
+let failAdmissions = false;
 
 function installHooks(): void {
   runtime.setWorkItemRuntimeHooks({
-    admitInput: () => 'started',
+    admitInput: () => {
+      if (failAdmissions) throw new Error('queue unavailable');
+      return 'started';
+    },
     wake,
     broadcastNewMessage: vi.fn(),
     stopLane: (laneJid) => stopped.push(laneJid),
@@ -134,7 +140,10 @@ function ownerInput(
   return { chatJid, messageId };
 }
 
-/** The caller as the host builds it: an owner turn answering `origin`. */
+/**
+ * The caller as the host builds it: an owner turn answering `origin`, or
+ * (null) a turn the owner did not start.
+ */
 function callerOf(
   agentId: string,
   origin: { chatJid: string; messageId: string } | null = ownerInput(agentId),
@@ -143,7 +152,7 @@ function callerOf(
   return {
     folder,
     agentId,
-    ownerTurnInput: vi.fn(() => origin),
+    ownerTurn: vi.fn(() => (origin ? { input: origin } : null)),
   };
 }
 
@@ -262,6 +271,8 @@ beforeEach(() => {
   broadcasts.length = 0;
   laneMessages.length = 0;
   billingAllowed = true;
+  failAdmissions = false;
+  db.setWorkspaceWorkMode(FOLDER, 'multi');
   createSessionWorktree.mockClear();
   wake.mockClear();
 });
@@ -282,7 +293,7 @@ describe('work_delegate', () => {
     expect(result.ok).toBe(true);
     const data = (result as { data: { workItemId: string; seq: number } }).data;
     // The Runner's inputTurnId reaches the host's owner-turn lookup.
-    expect(caller.ownerTurnInput).toHaveBeenCalledWith('turn-1');
+    expect(caller.ownerTurn).toHaveBeenCalledWith('turn-1');
     const item = store.getWorkItem(data.workItemId)!;
     expect(data.seq).toBe(item.seq);
     expect(item).toMatchObject({
@@ -487,21 +498,26 @@ describe('work_delegate', () => {
 describe('the runner of a session', () => {
   test('gets workMode=multi only as an ordinary session of a multi-task workspace', () => {
     const conversation = {
+      id: 'fresh-session',
       kind: 'conversation' as const,
       source_kind: 'manual',
     };
     expect(service.runnerWorkMode(conversation, FOLDER)).toBe('multi');
     expect(
       service.runnerWorkMode(
-        { kind: 'conversation', source_kind: 'legacy_main' },
+        {
+          id: 'fresh-legacy',
+          kind: 'conversation',
+          source_kind: 'legacy_main',
+        },
         FOLDER,
       ),
     ).toBe('multi');
     expect(service.runnerWorkMode(conversation, SINGLE_FOLDER)).toBeUndefined();
     for (const agent of [
-      { kind: 'conversation' as const, source_kind: 'team_router' },
-      { kind: 'conversation' as const, source_kind: 'work_item' },
-      { kind: 'spawn' as const, source_kind: 'manual' },
+      { id: 'r', kind: 'conversation' as const, source_kind: 'team_router' },
+      { id: 'w', kind: 'conversation' as const, source_kind: 'work_item' },
+      { id: 's', kind: 'spawn' as const, source_kind: 'manual' },
     ]) {
       expect(service.runnerWorkMode(agent, FOLDER)).toBeUndefined();
     }
@@ -926,5 +942,336 @@ describe('startup reconciliation', () => {
     const before = reportsIn(MAIN).length;
     service.reconcileDelegatedWorkItems();
     expect(reportsIn(MAIN)).toHaveLength(before);
+  });
+});
+
+describe('a workspace back in single-task mode (A)', () => {
+  test('work already delegated keeps its tools and its reports; nothing new is delegated', async () => {
+    const item = await delegateOk(MAIN);
+    db.setWorkspaceWorkMode(FOLDER, 'single');
+    const session = db.getAgent(MAIN)!;
+    // Its runner keeps the tools while the item is open.
+    expect(service.runnerWorkMode(session, FOLDER)).toBe('multi');
+    // A session that never delegated gets nothing, and may not manage.
+    createSession('mt-never');
+    expect(
+      service.runnerWorkMode(db.getAgent('mt-never')!, FOLDER),
+    ).toBeUndefined();
+    for (const type of ['work_delegations', 'work_followup', 'work_stop']) {
+      expect(
+        await service.handleWorkIpc(callerOf('mt-never'), {
+          type,
+          item: `#${item.seq}`,
+          message: 'x',
+        }),
+      ).toEqual({
+        ok: false,
+        error: '当前工作区是单任务模式，不能派出后台任务；请在当前会话里完成。',
+      });
+    }
+    // Delegating anew is refused, following up is not.
+    expect(await delegate(callerOf(MAIN))).toEqual({
+      ok: false,
+      error: '当前工作区是单任务模式，不能派出后台任务；请在当前会话里完成。',
+    });
+    const listed = await service.handleWorkIpc(callerOf(MAIN), {
+      type: 'work_delegations',
+    });
+    expect(listed).toMatchObject({ ok: true });
+    expect(
+      (listed as { data: { workItemId: string }[] }).data.map(
+        (entry) => entry.workItemId,
+      ),
+    ).toContain(item.id);
+    expect(
+      await service.handleWorkIpc(callerOf(MAIN), {
+        type: 'work_followup',
+        item: item.id,
+        message: '继续',
+      }),
+    ).toEqual({ ok: true, data: {} });
+    // Its last report reaches a runner that still reads reports.
+    await report(item, 'ready', '做完了');
+    const [input] = reportsIn(MAIN).filter((r) => attrsOf(r).id === item.id);
+    expect(service.runnerWorkMode(session, FOLDER)).toBeUndefined();
+    expect(service.runnerWorkMode(session, FOLDER, [input])).toBe('multi');
+    // Ended items can still be named: their stop says they ended.
+    expect(
+      await service.handleWorkIpc(callerOf(MAIN), {
+        type: 'work_stop',
+        item: item.id,
+      }),
+    ).toEqual({ ok: false, error: '这个后台任务已经结束。' });
+    // Back in multi-task mode, all is as before.
+    db.setWorkspaceWorkMode(FOLDER, 'multi');
+    expect(service.runnerWorkMode(db.getAgent('mt-never')!, FOLDER)).toBe(
+      'multi',
+    );
+    await delegateOk(MAIN);
+  });
+});
+
+describe('sessions that get no delegation tools (D, F)', () => {
+  test("an automation's session gets no work mode", () => {
+    expect(
+      service.runnerWorkMode(
+        { id: 'auto-1', kind: 'conversation', source_kind: 'automation' },
+        FOLDER,
+      ),
+    ).toBeUndefined();
+  });
+
+  test('a worktree session may not delegate: its worker would edit the main checkout', async () => {
+    createSession('mt-worktree');
+    worktreeStore.insertSessionWorktree({
+      agent_id: 'mt-worktree',
+      group_folder: FOLDER,
+      chat_jid: WORKSPACE,
+      repo_path: '/repo',
+      cwd_subpath: '',
+      worktree_path: '/repo-worktrees/mt-worktree',
+      branch: 'happyclaw/mt-worktree',
+      base_commit: 'abc',
+      created_at: new Date().toISOString(),
+    });
+    expect(
+      service.runnerWorkMode(db.getAgent('mt-worktree')!, FOLDER),
+    ).toBeUndefined();
+    expect(await delegate(callerOf('mt-worktree'))).toEqual({
+      ok: false,
+      error: '独立 worktree 会话暂不支持派出后台任务；请在当前会话里完成。',
+    });
+    expect(store.listOpenDelegatedWorkItems('mt-worktree')).toEqual([]);
+  });
+});
+
+describe('the owner turn (H, I)', () => {
+  test('a delegation must name the input its turn answers', async () => {
+    const caller = {
+      folder: FOLDER,
+      agentId: MAIN,
+      // The owner's turn, but no batch named: no input to answer to.
+      ownerTurn: vi.fn(() => ({ input: null })),
+    };
+    expect(await delegate(caller)).toEqual({
+      ok: false,
+      error:
+        '只有工作区主人亲自发起的对话可以派出后台任务；请在当前会话里完成。',
+    });
+  });
+
+  test('stop and follow-up need the owner turn too; the list does not', async () => {
+    const item = await delegateOk(MAIN);
+    const notOwner = callerOf(MAIN, null);
+    for (const type of ['work_stop', 'work_followup']) {
+      expect(
+        await service.handleWorkIpc(notOwner, {
+          type,
+          item: item.id,
+          message: '改成别的',
+        }),
+      ).toEqual({
+        ok: false,
+        error:
+          '只有工作区主人亲自发起的对话可以停止或跟进后台任务；请把用户的意思转告主人。',
+      });
+    }
+    expect(store.getWorkItem(item.id)?.status).toBe('open');
+    expect(rows(laneOf(item.agentId))).toHaveLength(1);
+    expect(
+      await service.handleWorkIpc(notOwner, { type: 'work_delegations' }),
+    ).toMatchObject({ ok: true });
+  });
+});
+
+describe('a delegation judged inside the lock (E)', () => {
+  test('a session deleted while its call waited delegates nothing', async () => {
+    createSession('mt-vanishing');
+    const pending = [
+      delegate(callerOf('mt-vanishing')),
+      delegate(callerOf('mt-vanishing')),
+    ];
+    db.deleteAgent('mt-vanishing');
+    for (const result of await Promise.all(pending)) {
+      expect(result).toEqual({
+        ok: false,
+        error:
+          'Only an ordinary session of a multi-task workspace can use this tool.',
+      });
+    }
+    expect(store.listOpenDelegatedWorkItems('mt-vanishing')).toEqual([]);
+  });
+
+  test('a turn that stopped being the owner while the call waited delegates nothing', async () => {
+    let owner = true;
+    const origin = ownerInput(MAIN);
+    const caller = {
+      folder: FOLDER,
+      agentId: MAIN,
+      ownerTurn: vi.fn(() => (owner ? { input: origin } : null)),
+    };
+    const pending = delegate(caller);
+    owner = false;
+    expect(await pending).toMatchObject({ ok: false });
+    expect(store.listOpenDelegatedWorkItems(MAIN)).toEqual([]);
+  });
+
+  test('a delegation that fails half way leaves a failed item and no session', async () => {
+    const before = new Set(
+      service.listWorkItemViews(WORKSPACE).map((view) => view.id),
+    );
+    // The worker's lane refuses its assignment.
+    const caller = callerOf(MAIN);
+    failAdmissions = true;
+    const result = await delegate(caller);
+    failAdmissions = false;
+    expect(result).toEqual({
+      ok: false,
+      error: 'Could not start the delegated task: queue unavailable',
+    });
+    const [item] = service
+      .listWorkItemViews(WORKSPACE)
+      .filter((view) => !before.has(view.id));
+    expect(item).toMatchObject({ status: 'ended', outcome: 'failed' });
+    // Its session was made, then removed again.
+    expect(db.getAgent(item.agentId)).toBeUndefined();
+    expect(store.countOpenDelegatedWorkItems({ originAgentId: MAIN })).toBe(0);
+  });
+});
+
+describe('a delegated worker that ends without a result (C)', () => {
+  test('a finished turn with nothing handed back fails the item and tells its session', async () => {
+    const item = await delegateOk();
+    await report(item, 'progress', '查到一半');
+    service.failDelegatedWorkerRun(item.agentId, null);
+    expect(store.getWorkItem(item.id)).toMatchObject({
+      status: 'ended',
+      outcome: 'failed',
+    });
+    const [input] = reportsIn(MAIN).filter((r) => attrsOf(r).id === item.id);
+    expect(attrsOf(input).state).toBe('failed');
+    expect(input.content).toBe('Worker 结束了这一轮，但没有交回结果。');
+  });
+
+  test('a turn that ends on a question is normal', async () => {
+    const item = await delegateOk();
+    await report(item, 'blocked', '要哪三家？');
+    service.failDelegatedWorkerRun(item.agentId, null);
+    expect(store.getWorkItem(item.id)?.status).toBe('open');
+    // A failed run fails it even then.
+    service.failDelegatedWorkerRun(
+      item.agentId,
+      `context_overflow: 上下文太长\n${'x'.repeat(10)}`,
+    );
+    expect(store.getWorkItem(item.id)?.outcome).toBe('failed');
+    const failed = reportsIn(MAIN).filter(
+      (r) => attrsOf(r).id === item.id && attrsOf(r).state === 'failed',
+    );
+    expect(failed.map((r) => r.content)).toEqual([
+      'Worker 运行失败：context_overflow: 上下文太长',
+    ]);
+  });
+
+  test('a long reason is cut; settled items and team workers are left alone', async () => {
+    const item = await delegateOk();
+    service.failDelegatedWorkerRun(item.agentId, 'e'.repeat(300));
+    const [input] = reportsIn(MAIN).filter((r) => attrsOf(r).id === item.id);
+    expect(input.content).toBe(`Worker 运行失败：${'e'.repeat(200)}…`);
+    // Ended already: nothing more.
+    service.failDelegatedWorkerRun(item.agentId, null);
+    expect(
+      reportsIn(MAIN).filter((r) => attrsOf(r).id === item.id),
+    ).toHaveLength(1);
+    // A team worker's item is not this rule's.
+    const team = store.insertWorkItem({
+      id: 'team-item-c',
+      workspaceJid: WORKSPACE,
+      workspaceFolder: FOLDER,
+      channelJid: 'feishu:oc_team_c',
+      agentId: 'team-worker-c',
+      title: 'team',
+      sourceMessageId: 'om_team_c',
+      sourceRouteJid: 'feishu:oc_team_c',
+      mandate: {
+        strength: 'explicit',
+        requesterImId: null,
+        requesterName: null,
+        requesterListed: true,
+        requesterIsOwner: true,
+        matchedRules: [],
+        settingsVersion: 1,
+        writable: true,
+      },
+      now: new Date().toISOString(),
+    });
+    service.failDelegatedWorkerRun(team.agentId, null);
+    service.failDelegatedWorkerRun(team.agentId, 'boom');
+    expect(store.getWorkItem(team.id)?.status).toBe('open');
+  });
+});
+
+describe('a report the session has not run yet survives a stop (B)', () => {
+  test('the cutoff keeps a delegated report and cancels everything else', async () => {
+    const item = await delegateOk();
+    await report(item, 'ready', '做完了');
+    const [input] = reportsIn(MAIN).filter((r) => attrsOf(r).id === item.id);
+    const lane = laneOf(MAIN);
+    const typed = ownerInput(MAIN);
+    for (const id of [input.id, typed.messageId]) {
+      db.setMessageFollowUp(lane, id, {
+        mode: 'queue',
+        status: 'queued',
+        runId: 'run-1',
+      });
+    }
+    expect(service.isDelegatedReportInput(input)).toBe(true);
+    const cancelled = db.cancelQueuedFollowUpsAtCutoff(
+      lane,
+      undefined,
+      service.isDelegatedReportInput,
+    );
+    expect(cancelled.map((row) => row.id)).toEqual([typed.messageId]);
+    expect(db.listQueuedFollowUps(lane).map((row) => row.id)).toEqual([
+      input.id,
+    ]);
+  });
+
+  test("a team router's report is not a delegated report", () => {
+    const header = gate.withTeamInputAttachment(null, {
+      type: 'team_input',
+      tag: 'work_report',
+      attrs: [['state', 'ready']],
+      facts: { workItemId: 'team-item-c' },
+    });
+    expect(
+      service.isDelegatedReportInput({
+        source_kind: 'work_item_input',
+        attachments: header,
+      }),
+    ).toBe(false);
+    expect(
+      service.isDelegatedReportInput({
+        source_kind: null,
+        attachments: header,
+      }),
+    ).toBe(false);
+  });
+});
+
+describe('a delegated summary over the limit (G)', () => {
+  test('is refused, not cut', async () => {
+    const item = await delegateOk();
+    expect(await report(item, 'ready', 'x'.repeat(4001))).toEqual({
+      ok: false,
+      error:
+        'summary is limited to 4000 characters; put a longer result in a file and give its path.',
+    });
+    expect(store.getWorkItem(item.id)).toMatchObject({
+      status: 'open',
+      lastSummary: null,
+    });
+    expect(await report(item, 'ready', 'x'.repeat(4000))).toMatchObject({
+      ok: true,
+    });
   });
 });

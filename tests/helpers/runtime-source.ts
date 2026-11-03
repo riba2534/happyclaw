@@ -119,6 +119,9 @@ function automationDefaults(): Record<string, unknown> {
     readTeamInput,
     copiesGroupMessage,
     onTeamMessageStored: () => {},
+    // Multi-task mode: no delegated work item, so nothing to keep or fail.
+    isDelegatedReportInput: () => false,
+    failDelegatedWorkerRun: () => {},
     // utils.ts reads config at import; tests mock config, so not imported.
     agentIdOfJid: (jid: string) =>
       jid.includes('#agent:') ? jid.split('#agent:')[1] || null : null,
