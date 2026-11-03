@@ -258,6 +258,8 @@ interface GroupState {
   /** The query's input is answered and only background tasks keep it open
    * (see markRunnerBackgroundOnly). Null otherwise. */
   backgroundHold?: BackgroundHold | null;
+  /** The current input took over background tasks an earlier input started. */
+  inheritedBackgroundWork?: boolean;
   /**
    * The runner was asked to exit and takes no further query: `reclaim` freed
    * its idle container slot for waiting work, `after_query` closes it once
@@ -280,6 +282,8 @@ interface BackgroundHold {
   inputTurnId: string;
   next: {
     queryId: string;
+    /** Its IPC is out: from here the query ends with its deliveries. */
+    published: boolean;
     /** To restore the held query if the next input is never published. */
     heldStartedAt: number | null;
     heldCoveredMessageIds: Set<string>;
@@ -1424,6 +1428,7 @@ export class GroupQueue {
     state.idleSince = null;
     state.idleFromContinuation = false;
     state.backgroundHold = null;
+    state.inheritedBackgroundWork = false;
     try {
       callback?.(groupJid);
     } catch (err) {
@@ -1614,15 +1619,26 @@ export class GroupQueue {
 
   markRunnerQueryIdle(
     groupJid: string,
-    options?: { preserveIpcDebt?: boolean },
+    options?: {
+      preserveIpcDebt?: boolean;
+      /** Deliveries the terminal reporting this idle completed. */
+      completedDeliveryIds?: readonly string[];
+    },
   ): void {
     const state = this.resolveActiveState(groupJid);
     if (!state?.active || !state.queryInFlight) return;
-    // The held input ended before the next one started: that one keeps its
-    // query and owns the runner's next idle.
-    if (state.backgroundHold?.next) {
-      this.finishHeldQuery(groupJid, state, state.backgroundHold);
-      return;
+    const hold = state.backgroundHold;
+    if (hold?.next) {
+      // The held input ended before the next one started: that one keeps its
+      // query and owns the runner's next idle.
+      if (this.nextInputStillOwed(state, hold, options?.completedDeliveryIds)) {
+        this.finishHeldQuery(groupJid, state, hold);
+        return;
+      }
+      // Merged into this terminal or withdrawn: no later idle will come for
+      // it, and no client ever saw its run. The held run is what ends here.
+      state.queryId = hold.queryId;
+      state.announcedQueryId = hold.queryId;
     }
     // Truncation/compaction continues report queryIdle even though they
     // refused later user IPC (acceptIpc=false). Wiping the #618/#622 debt
@@ -1646,6 +1662,7 @@ export class GroupQueue {
     state.idleSince = Date.now();
     state.idleFromContinuation = options?.preserveIpcDebt === true;
     state.backgroundHold = null;
+    state.inheritedBackgroundWork = false;
     if (state.closing === 'after_query') this.closeStdin(groupJid);
     if (!completedQueryId) return;
     // Publish the terminal event before the legacy idle callback. The callback
@@ -1729,6 +1746,7 @@ export class GroupQueue {
     const queryId = randomUUID();
     hold.next = {
       queryId,
+      published: false,
       heldStartedAt: state.queryStartedAt,
       heldCoveredMessageIds: state.currentQueryCoveredMessageIds,
     };
@@ -1749,6 +1767,72 @@ export class GroupQueue {
     const hold = state?.backgroundHold;
     if (!state || hold?.inputTurnId !== inputTurnId || !hold.next) return;
     this.finishHeldQuery(groupJid, state, hold);
+  }
+
+  /**
+   * The Runner was interrupted and moved on, so whatever it runs next is not
+   * under the held query any more.
+   */
+  finishInterruptedBackgroundHold(groupJid: string): void {
+    const state = this.resolveActiveState(groupJid);
+    const hold = state?.backgroundHold;
+    if (!state || !hold) return;
+    if (hold.next) this.finishHeldQuery(groupJid, state, hold);
+    else state.backgroundHold = null;
+  }
+
+  /** Whether the current input carries background work of an earlier one. */
+  hasInheritedBackgroundWork(groupJid: string): boolean {
+    return !!this.resolveActiveState(groupJid)?.inheritedBackgroundWork;
+  }
+
+  setInheritedBackgroundWork(groupJid: string, inherited: boolean): void {
+    const state = this.resolveActiveState(groupJid);
+    if (state) state.inheritedBackgroundWork = inherited;
+  }
+
+  /**
+   * `/break` reached an input published to take over that has not started: it
+   * falls under the cutoff like a queued one. Removes its files and delivery
+   * records and returns its receipts; the caller names them in the stop so the
+   * Runner drops any copy it already accepted. Empty when nothing was removed.
+   */
+  withdrawBackgroundHandoffInput(groupJid: string): IpcDeliveryReceipt[] {
+    const state = this.resolveActiveState(groupJid);
+    const next = state?.backgroundHold?.next;
+    if (!state || !next?.published) return [];
+    const ids = [...(state.pendingIpcQueryIds ?? [])]
+      .filter(([, queryId]) => queryId === next.queryId)
+      .map(([deliveryId]) => deliveryId);
+    if (!this.discardDeliveryIpcFiles(state, new Set(ids))) return [];
+    const receipts: IpcDeliveryReceipt[] = [];
+    for (const id of ids) {
+      const receipt = state.pendingIpcDeliveries?.get(id);
+      if (receipt) receipts.push(receipt);
+      state.pendingIpcDeliveries?.delete(id);
+      state.pendingIpcQueryIds?.delete(id);
+      state.acknowledgedIpcDeliveryIds?.delete(id);
+    }
+    state.ipcOwedSinceAt = null;
+    return receipts;
+  }
+
+  private nextInputStillOwed(
+    state: GroupState,
+    hold: BackgroundHold,
+    completedDeliveryIds: readonly string[] = [],
+  ): boolean {
+    if (!hold.next?.published) return true;
+    for (const [deliveryId, queryId] of state.pendingIpcQueryIds ?? []) {
+      if (
+        queryId === hold.next.queryId &&
+        state.pendingIpcDeliveries?.has(deliveryId) &&
+        !completedDeliveryIds.includes(deliveryId)
+      ) {
+        return true;
+      }
+    }
+    return false;
   }
 
   private finishHeldQuery(
@@ -2408,6 +2492,9 @@ export class GroupQueue {
         state.pendingIpcDeliveries.set(receipt.deliveryId, receipt);
         state.pendingIpcQueryIds ??= new Map();
         state.pendingIpcQueryIds.set(receipt.deliveryId, queryRunId);
+        if (state.backgroundHold?.next?.queryId === queryRunId) {
+          state.backgroundHold.next.published = true;
+        }
         // Claim eligibility is observed synchronously in the same stack as
         // rename+registration. A blocked claim remains in both the file/ledger
         // until a later durable cursor advance makes it provably contiguous.
@@ -2796,6 +2883,8 @@ export class GroupQueue {
     groupJid: string,
     expectedQueryId?: string,
     reason: InterruptReason = 'steer',
+    /** Later inputs a stop also withdraws (withdrawBackgroundHandoffInput). */
+    withdrawDeliveryIds: readonly string[] = [],
   ): boolean {
     // During cold boot the exact JID is active before registerProcess supplies
     // groupFolder. Prefer it so a provider companion cannot miss the brief
@@ -2862,7 +2951,11 @@ export class GroupQueue {
         publishSentinel(
           inputDir,
           INTERRUPT_REASON_SENTINEL,
-          JSON.stringify({ queryId, reason }),
+          JSON.stringify({
+            queryId,
+            reason,
+            ...(withdrawDeliveryIds.length > 0 ? { withdrawDeliveryIds } : {}),
+          }),
         );
       }
       publishSentinel(inputDir, '_interrupt', queryId);
@@ -3227,11 +3320,15 @@ export class GroupQueue {
         }
         this.recoverUnconsumedIpc(groupJid, state);
       }
-      const unfinishedQueryId = state.queryId;
       const unfinishedHeldQueryId = state.backgroundHold?.next
         ? state.backgroundHold.queryId
         : null;
+      // A next input that never took over was never announced: no terminal.
+      const unfinishedQueryId = unfinishedHeldQueryId
+        ? unfinishedHeldQueryId
+        : state.queryId;
       state.backgroundHold = null;
+      state.inheritedBackgroundWork = false;
       state.active = false;
       state.activeTask = null;
       state.drainSentinelWritten = false;
@@ -3249,13 +3346,6 @@ export class GroupQueue {
         logger.error(
           { groupJid, err },
           'onRunnerQueryTeardown callback failed',
-        );
-      }
-      if (unfinishedHeldQueryId) {
-        this.announceQueryFinish(
-          groupJid,
-          unfinishedHeldQueryId,
-          state.stopRequested ? 'stopped' : 'runner_exit',
         );
       }
       if (unfinishedQueryId) {

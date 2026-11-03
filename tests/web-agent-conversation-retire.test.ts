@@ -149,3 +149,63 @@ test('a runner retired during Web plugin expansion finishes the other turn befor
     await new Promise((resolve) => setImmediate(resolve));
   }
 });
+
+test.each([
+  { hold: true, dispatched: 1 },
+  { hold: false, dispatched: 0 },
+])(
+  'a plain Web send while the run is active: background hold $hold',
+  async ({ hold, dispatched }) => {
+    const queue = new GroupQueue();
+    queue.setHostModeChecker(() => true);
+    let finishRunner!: () => void;
+    queue.enqueueTask(
+      laneJid,
+      'warm-runner',
+      () => new Promise<void>((resolve) => (finishRunner = resolve)),
+    );
+    queue.registerProcess(laneJid, { kill: vi.fn() } as never, {
+      containerName: null,
+      groupFolder: folder,
+      agentId,
+    });
+    queue.markRunnerQueryIdle(laneJid);
+    const heldRun = queue.reserveNextQuery(laneJid)!;
+    if (hold) {
+      expect(queue.markRunnerBackgroundOnly(laneJid, 'input-a', heldRun)).toBe(
+        true,
+      );
+    }
+    const dispatchQueuedFollowUps = vi.fn();
+    const app = createAppForTest({
+      queue,
+      dispatchQueuedFollowUps,
+      processAgentConversation: vi.fn(async () => true),
+      getLastAgentTimestamp: () => ({}),
+      setLastAgentTimestamp: () => {},
+      getRegisteredGroups: () => ({}),
+      formatMessages: () => 'prepared prompt',
+      advanceNextPullCursorOnly: () => {},
+    } as unknown as Parameters<typeof createAppForTest>[0]);
+    try {
+      const response = await app.request('/api/messages', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          chatJid: workspaceJid,
+          agentId,
+          content: 'next input',
+        }),
+      });
+      expect(response.status).toBe(200);
+      expect((await response.json()).disposition).toBe('queued');
+      // Same entry as an IM message: the head takes over, or stays queued.
+      expect(dispatchQueuedFollowUps).toHaveBeenCalledTimes(dispatched);
+      if (dispatched) {
+        expect(dispatchQueuedFollowUps).toHaveBeenCalledWith(laneJid);
+      }
+    } finally {
+      finishRunner();
+    }
+  },
+);

@@ -12,8 +12,13 @@ export interface BackgroundHandoffInput {
   route: string | null;
   /** Automation, work item or other input with no person waiting on it. */
   unattended: boolean;
-  /** Every input of the batch is the workspace owner's own. */
+  /**
+   * Every input of the batch is the workspace owner's own, as the Skill and
+   * Workspace Memory gates judge it.
+   */
   ownerAlone: boolean;
+  /** The same, as the Agent Builder gates judge it (narrower claim sources). */
+  agentBuilderOwnerAlone: boolean;
 }
 
 export function backgroundHandoffRefusal(input: {
@@ -30,7 +35,10 @@ export function backgroundHandoffRefusal(input: {
   if (!input.heldReplySettleable) return 'held_reply_not_delivered';
   if (input.next.unattended) return 'next_unattended';
   if (input.next.route !== input.held.route) return 'different_route';
-  if (input.next.ownerAlone !== input.held.ownerAlone) {
+  if (
+    input.next.ownerAlone !== input.held.ownerAlone ||
+    input.next.agentBuilderOwnerAlone !== input.held.agentBuilderOwnerAlone
+  ) {
     return 'different_authority';
   }
   return null;

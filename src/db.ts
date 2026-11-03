@@ -11727,14 +11727,18 @@ export function upsertSubagentCheckpoint(input: {
 }
 
 /**
- * A later input took over the given inputs' background work: their checkpoints
- * now replay with it, since the handed-over inputs are not replayed again.
+ * A later input took over the given inputs' background work: the tasks it took
+ * over now replay with it, since the handed-over inputs are not replayed again.
+ * Those are the tasks still running and the ones that ended after `answeredAt`,
+ * the held input's last reply. A task that ended earlier was already reported
+ * there; replaying it would report it twice.
  */
 export function reassignSubagentCheckpoints(
   groupFolder: string,
   chatJid: string,
   fromInputMessageIds: readonly string[],
   toInputMessageId: string,
+  answeredAt: string,
 ): number {
   const ids = [...new Set(fromInputMessageIds.filter(Boolean))];
   if (!groupFolder || !chatJid || !toInputMessageId || ids.length === 0) {
@@ -11745,7 +11749,8 @@ export function reassignSubagentCheckpoints(
       `UPDATE subagent_checkpoints
           SET input_message_id = ?, updated_at = ?
         WHERE group_folder = ? AND chat_jid = ?
-          AND input_message_id IN (${ids.map(() => '?').join(',')})`,
+          AND input_message_id IN (${ids.map(() => '?').join(',')})
+          AND (status = 'running' OR updated_at > ?)`,
     )
     .run(
       toInputMessageId,
@@ -11753,6 +11758,7 @@ export function reassignSubagentCheckpoints(
       groupFolder,
       chatJid,
       ...ids,
+      answeredAt,
     ).changes;
 }
 

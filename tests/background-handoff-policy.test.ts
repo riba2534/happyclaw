@@ -2,7 +2,12 @@ import { describe, expect, test } from 'vitest';
 
 import { backgroundHandoffRefusal } from '../src/background-handoff-policy.js';
 
-const person = { route: 'feishu:oc_a', unattended: false, ownerAlone: true };
+const person = {
+  route: 'feishu:oc_a',
+  unattended: false,
+  ownerAlone: true,
+  agentBuilderOwnerAlone: true,
+};
 const allowed = {
   teamRole: null,
   runtimeKind: 'conversation',
@@ -67,6 +72,22 @@ describe('backgroundHandoffRefusal', () => {
     );
     expect(
       backgroundHandoffRefusal({ ...allowed, held: member, next: member }),
+    ).toBeNull();
+  });
+
+  test('the Agent Builder gate judges owners more narrowly: it must agree too', () => {
+    // Owner for Skills and Memory (say, an `auto_feishu` claim), not for Agent
+    // Builder: taking over from them would widen what their sub-agents may do.
+    const skillOwnerOnly = { ...person, agentBuilderOwnerAlone: false };
+    expect(backgroundHandoffRefusal({ ...allowed, held: skillOwnerOnly })).toBe(
+      'different_authority',
+    );
+    expect(
+      backgroundHandoffRefusal({
+        ...allowed,
+        held: skillOwnerOnly,
+        next: skillOwnerOnly,
+      }),
     ).toBeNull();
   });
 

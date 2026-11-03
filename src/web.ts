@@ -1073,6 +1073,10 @@ async function handleAgentConversationMessage(
         runId: activeRunId!,
       };
     }
+    // Only background tasks hold the run: this input may take over now.
+    if (deps.queue.hasBackgroundHold(virtualChatJid)) {
+      deps.dispatchQueuedFollowUps?.(virtualChatJid);
+    }
     return {
       ok: true,
       messageId,

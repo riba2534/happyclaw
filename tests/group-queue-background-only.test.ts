@@ -161,6 +161,42 @@ describe('background-only hold', () => {
   });
 });
 
+describe('a runner exiting before the hand-over', () => {
+  test('ends the held run and announces nothing for the next input', async () => {
+    const queue = new GroupQueue();
+    queue.setHostModeChecker(() => true);
+    const web: string[] = [];
+    queue.setOnQueryStart((_jid, runId) => {
+      web.push(`start ${runId}`);
+    });
+    queue.setOnQueryFinish((_jid, runId, reason) => {
+      web.push(`finish ${runId} ${reason}`);
+    });
+    let exitRunner!: () => void;
+    const ended = new Promise<boolean>((resolve) => {
+      exitRunner = () => resolve(true);
+    });
+    queue.enqueueTask(JID, 'warm-runner', () => ended);
+    queue.registerProcess(JID, { kill: vi.fn() } as never, {
+      containerName: null,
+      groupFolder: FOLDER,
+      agentId: AGENT,
+    });
+    queue.markRunnerQueryIdle(JID);
+    const runA = queue.reserveNextQuery(JID)!;
+    queue.announceReservedQuery(JID, runA);
+    web.length = 0;
+    expect(queue.markRunnerBackgroundOnly(JID, 'input-a', runA)).toBe(true);
+    const runB = queue.reserveBackgroundHandoffQuery(JID)!;
+
+    exitRunner();
+    await vi.waitFor(() => expect(web).toHaveLength(1));
+
+    expect(web).toEqual([`finish ${runA} runner_exit`]);
+    expect(web.join()).not.toContain(runB);
+  });
+});
+
 describe('taking over from a held input', () => {
   function held() {
     const context = lane();
@@ -219,6 +255,106 @@ describe('taking over from a held input', () => {
     queue.markRunnerQueryIdle(JID);
     expect(state.queryInFlight).toBe(false);
     expect(idle).toEqual([runB]);
+  });
+
+  function published() {
+    const context = held();
+    const { state, runB } = context;
+    fs.mkdirSync(INPUT_DIR, { recursive: true });
+    const file = path.join(INPUT_DIR, 'b.json');
+    fs.writeFileSync(
+      file,
+      JSON.stringify({ receipt: { deliveryId: 'delivery-b' } }),
+    );
+    state.pendingIpcDeliveries.set('delivery-b', {
+      deliveryId: 'delivery-b',
+      chatJid: JID,
+      cursor: { timestamp: '', id: 'input-b' },
+    });
+    state.pendingIpcQueryIds = new Map([['delivery-b', runB]]);
+    state.ipcOwedSinceAt = 1;
+    state.backgroundHold.next.published = true;
+    return { ...context, file };
+  }
+
+  test('a published next input keeps its query when the held input ends alone', () => {
+    const { queue, state, web, idle, runB } = published();
+
+    queue.markRunnerQueryIdle(JID, { completedDeliveryIds: ['delivery-a'] });
+
+    expect(web).toEqual(['finish run-a completed', `start ${runB}`]);
+    expect(idle).toEqual([]);
+    expect(state.queryInFlight).toBe(true);
+    expect(queue.getActiveQueryId(JID)).toBe(runB);
+  });
+
+  test('a next input merged into the terminal does not leave the lane stuck', () => {
+    const { queue, state, web, idle } = published();
+
+    queue.markRunnerQueryIdle(JID, {
+      completedDeliveryIds: ['delivery-a', 'delivery-b'],
+    });
+
+    // No run for it was ever shown: only the held run ends.
+    expect(web).toEqual(['finish run-a completed']);
+    expect(idle).toEqual(['run-a']);
+    expect(state.queryInFlight).toBe(false);
+    expect(queue.getActiveQueryId(JID)).toBeNull();
+    expect(queue.hasBackgroundHold(JID)).toBe(false);
+  });
+
+  test('/break withdraws a published next input and the stop names it', () => {
+    const { queue, state, web, idle, file, runB } = published();
+
+    const receipts = queue.withdrawBackgroundHandoffInput(JID);
+    expect(receipts.map((receipt: any) => receipt.deliveryId)).toEqual([
+      'delivery-b',
+    ]);
+    expect(fs.existsSync(file)).toBe(false);
+    expect(state.pendingIpcDeliveries.has('delivery-b')).toBe(false);
+    expect(state.ipcOwedSinceAt).toBeNull();
+
+    expect(queue.interruptQuery(JID, runB, 'stop', ['delivery-b'])).toBe(true);
+    expect(JSON.parse(sentinel('_interrupt_reason')!)).toEqual({
+      queryId: 'run-a',
+      reason: 'stop',
+      withdrawDeliveryIds: ['delivery-b'],
+    });
+
+    // The Runner's interrupted status then ends the lane for good.
+    queue.markRunnerQueryIdle(JID);
+    expect(web).toEqual(['finish run-a completed']);
+    expect(idle).toEqual(['run-a']);
+    expect(state.queryInFlight).toBe(false);
+  });
+
+  test('nothing to withdraw before anything is published or after the hand-over', () => {
+    const { queue } = held();
+    expect(queue.withdrawBackgroundHandoffInput(JID)).toEqual([]);
+
+    const taken = published();
+    taken.queue.finishBackgroundHold(JID, 'input-a');
+    expect(taken.queue.withdrawBackgroundHandoffInput(JID)).toEqual([]);
+    expect(taken.state.pendingIpcDeliveries.has('delivery-b')).toBe(true);
+  });
+
+  test('an interrupt without a withdrawal moves the run to what the Runner runs next', () => {
+    const { queue, web, runB } = published();
+
+    queue.finishInterruptedBackgroundHold(JID);
+
+    expect(web).toEqual(['finish run-a completed', `start ${runB}`]);
+    expect(queue.hasBackgroundHold(JID)).toBe(false);
+  });
+
+  test('the taker of background work is known until its terminal', () => {
+    const { queue } = published();
+    queue.finishBackgroundHold(JID, 'input-a');
+    queue.setInheritedBackgroundWork(JID, true);
+    expect(queue.hasInheritedBackgroundWork(JID)).toBe(true);
+
+    queue.markRunnerQueryIdle(JID, { completedDeliveryIds: ['delivery-b'] });
+    expect(queue.hasInheritedBackgroundWork(JID)).toBe(false);
   });
 
   test('a stop before the hand-over names the query the Runner still runs', () => {

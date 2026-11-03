@@ -146,6 +146,7 @@ export interface Message {
     | 'shutdown'
     | 'crash_recovery'
     | 'truncated'
+    | 'background_handoff'
     | null;
   delivery_mode?: FollowUpMode | null;
   delivery_status?:

@@ -52,19 +52,33 @@ function readSentinel(inputDir: string): string | null {
 }
 
 /** The reason the host wrote for this interrupt, null when it wrote none. */
+function readReasonSentinel(
+  inputDir: string,
+  queryRunId: string,
+): { reason: InterruptReason; withdrawDeliveryIds: string[] } | null {
+  try {
+    const written = JSON.parse(
+      fs.readFileSync(path.join(inputDir, INTERRUPT_REASON_SENTINEL), 'utf8'),
+    ) as { queryId?: unknown; reason?: unknown; withdrawDeliveryIds?: unknown };
+    if (written?.queryId !== queryRunId) return null;
+    return {
+      reason: written.reason === 'stop' ? 'stop' : 'steer',
+      withdrawDeliveryIds: Array.isArray(written.withdrawDeliveryIds)
+        ? written.withdrawDeliveryIds.filter(
+            (id): id is string => typeof id === 'string',
+          )
+        : [],
+    };
+  } catch {
+    return null;
+  }
+}
+
 function readReason(
   inputDir: string,
   queryRunId: string,
 ): InterruptReason | null {
-  try {
-    const written = JSON.parse(
-      fs.readFileSync(path.join(inputDir, INTERRUPT_REASON_SENTINEL), 'utf8'),
-    ) as { queryId?: unknown; reason?: unknown };
-    if (written?.queryId !== queryRunId) return null;
-    return written.reason === 'stop' ? 'stop' : 'steer';
-  } catch {
-    return null;
-  }
+  return readReasonSentinel(inputDir, queryRunId)?.reason ?? null;
 }
 
 function unlinkSentinel(inputDir: string, name: string): void {
@@ -79,9 +93,12 @@ function unlinkSentinel(inputDir: string, name: string): void {
  * Consume a pending `_interrupt` and its reason. Null when none is pending
  * yet. A reason file written for another query is left alone.
  */
-export function consumeInterruptSentinel(
-  inputDir: string,
-): { queryRunId: string; reason: InterruptReason } | null {
+export function consumeInterruptSentinel(inputDir: string): {
+  queryRunId: string;
+  reason: InterruptReason;
+  /** Later accepted inputs the host withdrew with this stop (`/break`). */
+  withdrawDeliveryIds?: string[];
+} | null {
   const queryRunId = readSentinel(inputDir);
   if (queryRunId === null) {
     emptySentinelSince = 0;
@@ -94,9 +111,15 @@ export function consumeInterruptSentinel(
   }
   emptySentinelSince = 0;
   unlinkSentinel(inputDir, INTERRUPT_SENTINEL);
-  const reason = readReason(inputDir, queryRunId);
-  if (reason) unlinkSentinel(inputDir, INTERRUPT_REASON_SENTINEL);
-  return { queryRunId, reason: reason ?? 'steer' };
+  const written = readReasonSentinel(inputDir, queryRunId);
+  if (written) unlinkSentinel(inputDir, INTERRUPT_REASON_SENTINEL);
+  return {
+    queryRunId,
+    reason: written?.reason ?? 'steer',
+    ...(written?.withdrawDeliveryIds.length
+      ? { withdrawDeliveryIds: written.withdrawDeliveryIds }
+      : {}),
+  };
 }
 
 /**

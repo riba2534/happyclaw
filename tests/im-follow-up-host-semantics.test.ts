@@ -200,6 +200,7 @@ describe.each(CHANNELS)(
       expect(host.interruptActiveSessionRun).toHaveBeenCalledWith(
         targetJid,
         '/break',
+        { withdrawDeliveryIds: [] },
       );
       expect(db.listQueuedFollowUps(targetJid)).toEqual([]);
 

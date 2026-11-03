@@ -1601,6 +1601,14 @@ const activeBackgroundHandoffGates = new Map<
   string,
   (heldInputTurnId: string, next: QueuedFollowUp[]) => boolean
 >();
+/**
+ * Settles a published input that `/break` withdrew before it took over.
+ * Set while the session's run is active.
+ */
+const activeHandoffInputWithdrawals = new Map<
+  string,
+  (deliveryId: string) => void
+>();
 const activeHeldCardFinalizers = new Map<
   string,
   (sourceJid?: string | null, inputTurnId?: string) => void
@@ -2025,12 +2033,11 @@ function canHandOffBackgroundWork(chatJid: string): boolean {
 
 /**
  * Deliver the queue head without interrupting a lane that only background
- * tasks hold. True when the caller must not interrupt: the head is on its way,
- * or an earlier one is already taking over.
+ * tasks hold. True when the head is on its way; otherwise (a closing runner, an
+ * input already taking over, a head that may not) the caller's interrupt stands.
  */
 function deliverWithoutInterruptingBackgroundWork(chatJid: string): boolean {
   if (!queue.hasBackgroundHold(chatJid)) return false;
-  if (!queue.backgroundHoldAwaitingNext(chatJid)) return true;
   if (!canHandOffBackgroundWork(chatJid)) return false;
   void dispatchNextQueuedFollowUp(chatJid);
   return true;
@@ -12217,6 +12224,19 @@ async function processAgentConversation(
       ),
     );
   };
+  const inputsAreAgentBuilderOwnersAlone = (
+    messages: readonly BackgroundHandoffSender[],
+  ): boolean => {
+    const ownerUserId = effectiveGroup.created_by;
+    if (!ownerUserId || messages.length === 0) return false;
+    return messages.every((message) =>
+      isAgentBuilderOwnerInput(
+        { sender: message.sender, source_jid: message.source_jid ?? null },
+        ownerUserId,
+        (jid) => registeredGroups[jid] ?? getRegisteredGroup(jid),
+      ),
+    );
+  };
   const agentBackgroundHandoffRefusal = (
     heldInputTurnId: string,
     next: QueuedFollowUp[],
@@ -12234,11 +12254,13 @@ async function processAgentConversation(
         route,
         unattended: heldMessages.some(isUnattendedInput),
         ownerAlone: inputsAreOwnersAlone(heldMessages),
+        agentBuilderOwnerAlone: inputsAreAgentBuilderOwnersAlone(heldMessages),
       },
       next: {
         route: resolveBatchChannelReplySource(next),
         unattended: next.some(isUnattendedInput),
         ownerAlone: inputsAreOwnersAlone(next),
+        agentBuilderOwnerAlone: inputsAreAgentBuilderOwnersAlone(next),
       },
     });
   };
@@ -12252,6 +12274,25 @@ async function processAgentConversation(
     }
     return !refusal;
   });
+  activeHandoffInputWithdrawals.set(virtualChatJid, (deliveryId) => {
+    // Late side effects of the withdrawn input must fail closed.
+    agentRecalledInputIds.add(deliveryId);
+    const scope = agentChannelOutboxScopesByInput.get(deliveryId);
+    if (scope) {
+      activeChannelOutboxScopes.unbind(agentAdmissionKey, scope);
+      agentChannelOutboxScopesByInput.delete(deliveryId);
+    }
+    admittedWarmAgentInputs.delete(deliveryId);
+    agentInputMessagesByTurn.delete(deliveryId);
+    settleInterruptedChannelTurn(
+      agentChannelTurnRuntimes,
+      deliveryId,
+      'Input cancelled by /break',
+    );
+    void clearAgentProcessingIndicatorForInput(deliveryId);
+  });
+  // When each held input last answered: tasks ending after it are still owed.
+  const backgroundHeldAnsweredAt = new Map<string, string>();
   // 挂起中的输入只剩后台任务、后续输入已在同一 SDK 流里开始：不带新正文地结算它，
   // 后台任务及其汇总（含重启后的断点回注）转由后续输入承接。
   const settleAgentBackgroundHandoff = async (
@@ -12262,6 +12303,7 @@ async function processAgentConversation(
       lastProcessed.id,
     );
     queue.finishBackgroundHold(virtualJid, inputTurnId);
+    queue.setInheritedBackgroundWork(virtualJid, true);
     const inputIds = output.ipcReceipts?.length
       ? output.ipcReceipts.map((receipt) => receipt.deliveryId)
       : [inputTurnId];
@@ -12374,8 +12416,21 @@ async function processAgentConversation(
           )
         : missedMessages.map((message) => message.id),
       takeoverMessageId,
+      backgroundHeldAnsweredAt.get(inputTurnId) ?? new Date().toISOString(),
     );
+    // A crash from here until the cursor is durable replays this input and the
+    // later one as one batch (same route by the hand-off policy), and that
+    // batch still reads the moved checkpoints. No transaction needed.
     commitCursor(inputTurnId);
+    // Like the end of handleAgentOutput: a warm input's own cursor moves here,
+    // and until it does every later delivery's receipt waits behind it.
+    if (output.ipcReceipts?.length) {
+      queue.acknowledgeIpcDeliveries(
+        virtualJid,
+        output.ipcReceipts,
+        commitIpcDeliveryReceipts,
+      );
+    }
     if (!publishesFrameworkAnswer(interactionMode)) {
       finalizeProactiveAgentOutputCoordinators(output);
       persistProactiveTurnTrace(inputTurnId);
@@ -12969,8 +13024,14 @@ async function processAgentConversation(
       const preserveIpcDebt =
         output.sourceKind === 'truncation_continue' ||
         output.sourceKind === 'auto_continue';
-      queue.markRunnerQueryIdle(virtualJid, { preserveIpcDebt });
+      queue.markRunnerQueryIdle(virtualJid, {
+        preserveIpcDebt,
+        completedDeliveryIds: output.ipcReceipts?.map(
+          (receipt) => receipt.deliveryId,
+        ),
+      });
     }
+    if (isInterruptStatus) queue.finishInterruptedBackgroundHold(virtualJid);
 
     // #549: a provider switch surfaced as a failure clears the agent session so
     // the next turn starts fresh on the newly-selected provider.
@@ -14222,6 +14283,10 @@ async function processAgentConversation(
           output.inputTurnId === lastProcessed.id
             ? initialAgentQueryRunId
             : queue.getPublishedIpcQueryId(virtualJid, output.inputTurnId);
+        backgroundHeldAnsweredAt.set(
+          output.inputTurnId,
+          new Date().toISOString(),
+        );
         // After the reply is projected: the gate reads what it delivered.
         if (
           heldQueryId &&
@@ -14234,8 +14299,10 @@ async function processAgentConversation(
           void dispatchNextQueuedFollowUp(virtualJid);
         }
       } else if (output.inputTurnCompleted === true) {
-        // It ended by itself before a next input started.
+        // It ended by itself before a next input started, and with it any
+        // background work it had taken over.
         queue.finishBackgroundHold(virtualJid, output.inputTurnId);
+        queue.setInheritedBackgroundWork(virtualJid, false);
       } else {
         queue.clearBackgroundHold(virtualJid, output.inputTurnId);
       }
@@ -14633,6 +14700,7 @@ async function processAgentConversation(
     // ── Streaming card cleanup ──
     activeHeldCardFinalizers.delete(virtualChatJid);
     activeBackgroundHandoffGates.delete(virtualChatJid);
+    activeHandoffInputWithdrawals.delete(virtualChatJid);
     activeRouteAdmissions.delete(agentAdmissionKey);
     if (
       activeChannelTurnActivators.get(agentAdmissionKey) ===
@@ -17008,11 +17076,18 @@ async function discardRecalledStreamingCard(input: {
 function interruptActiveSessionRun(
   targetJid: string,
   label: string,
-  options: { silentCard?: boolean } = {},
+  options: { silentCard?: boolean; withdrawDeliveryIds?: string[] } = {},
 ): { activeRunId: string | null; interrupted: boolean } {
   const activeRunId = queue.getActiveQueryId(targetJid) ?? null;
   const interrupted = activeRunId
-    ? queue.interruptQuery(targetJid, activeRunId, 'stop')
+    ? options.withdrawDeliveryIds?.length
+      ? queue.interruptQuery(
+          targetJid,
+          activeRunId,
+          'stop',
+          options.withdrawDeliveryIds,
+        )
+      : queue.interruptQuery(targetJid, activeRunId, 'stop')
     : false;
   if (interrupted) {
     void clearTrackedProcessingIndicators(targetJid);
@@ -17189,7 +17264,9 @@ function handleChannelMessageRecalled(
     // The input is part of the executing prompt. Record the withdrawal
     // durably so no restart or recovery path ever re-runs it.
     cancelPendingInboundMessage(logicalJid, messageId);
-    if (pending.length === 1) {
+    // Background work taken over from an earlier input is not this input's to
+    // stop: with it the run serves more than the recalled input.
+    if (pending.length === 1 && !queue.hasInheritedBackgroundWork(logicalJid)) {
       recallStoppedSessions.set(logicalJid, { messageId, at: Date.now() });
       const { interrupted } = interruptActiveSessionRun(logicalJid, 'recall', {
         silentCard: true,
@@ -17512,13 +17589,42 @@ function breakLane(
   // The cutoff took the inputs a usage-limit wait had parked.
   endUsageLimitWait(targetJid, 'cancelled');
 
-  const run = interruptActiveSessionRun(targetJid, '/break');
+  const run = interruptActiveSessionRun(targetJid, '/break', {
+    withdrawDeliveryIds: withdrawBackgroundHandoffInputs(
+      targetJid,
+      deliveryUpdatedAt,
+    ),
+  });
   return {
     activeRunId: run.activeRunId,
     // Between failed attempts no query runs: the stop ends the armed retry.
     interrupted: run.interrupted || queue.stopArmedRetry(targetJid),
     cancelled,
   };
+}
+
+/**
+ * An input published to take over from a held one has not started, so `/break`
+ * cuts it off like a queued one. Returns the withdrawn delivery ids.
+ */
+function withdrawBackgroundHandoffInputs(
+  laneJid: string,
+  deliveryUpdatedAt: string,
+): string[] {
+  const receipts = queue.withdrawBackgroundHandoffInput(laneJid);
+  for (const receipt of receipts) {
+    for (const cursor of receipt.coveredCursors ?? [receipt.cursor]) {
+      cancelPendingInboundMessage(laneJid, cursor.id, deliveryUpdatedAt);
+      broadcastFollowUpUpdate(laneJid, {
+        id: cursor.id,
+        delivery_status: 'cancelled',
+        delivery_run_id: null,
+        delivery_updated_at: deliveryUpdatedAt,
+      });
+    }
+    activeHandoffInputWithdrawals.get(laneJid)?.(receipt.deliveryId);
+  }
+  return receipts.map((receipt) => receipt.deliveryId);
 }
 
 /** Close the retry_wait turns of inputs withdrawn from a lane. */

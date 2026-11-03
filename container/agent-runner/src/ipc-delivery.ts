@@ -306,6 +306,26 @@ export class IpcTurnDeliveryTracker {
     return cancelled;
   }
 
+  /** Drop later accepted turns the host withdrew; the current one stays. */
+  cancelLaterTurns(deliveryIds: ReadonlySet<string>): IpcInputMessage[] {
+    const cancelled: IpcInputMessage[] = [];
+    for (let index = this.turns.length - 1; index >= 1; index -= 1) {
+      const turn = this.turns[index]!;
+      const withdrawn = turn.some(
+        (message) =>
+          !!message.receipt && deliveryIds.has(message.receipt.deliveryId),
+      );
+      if (!withdrawn) continue;
+      this.turns.splice(index, 1);
+      for (const message of turn) {
+        const position = this.unacknowledgedMessages.indexOf(message);
+        if (position >= 0) this.unacknowledgedMessages.splice(position, 1);
+        cancelled.push(message);
+      }
+    }
+    return cancelled;
+  }
+
   completeNextTurn(): IpcDeliveryReceipt[] {
     const completed = this.turns.shift() ?? [];
     for (const message of completed) {

@@ -132,6 +132,7 @@ function automationDefaults(): Record<string, unknown> {
     activeIpcReplyTurnTrackers: new Map(),
     agentIpcReplyTracker: { inputTurnId: '', delivered: false },
     broadcastOwnerBillingUsage: () => {},
+    withdrawBackgroundHandoffInputs: () => [],
     clearSessionOomExits: () => {},
   };
 }

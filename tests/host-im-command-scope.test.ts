@@ -658,11 +658,12 @@ describe('Feishu runtime /clear and /fresh (P1-3, P1-4)', () => {
 
 function recalledLane(
   rows: any[],
-  options: { pending: any[]; active?: string },
+  options: { pending: any[]; active?: string; inherited?: boolean },
 ) {
   const queue = {
     getActiveQueryId: vi.fn(() => options.active ?? null),
     interruptQuery: vi.fn(() => true),
+    hasInheritedBackgroundWork: vi.fn(() => options.inherited === true),
   };
   const session = { isActive: () => true, abort: vi.fn(async () => {}) };
   const globals: Record<string, any> = {
@@ -756,6 +757,22 @@ describe('a recalled Feishu message is withdrawn (prod P2-4)', () => {
     expect(l.queue.interruptQuery).not.toHaveBeenCalled();
     expect(l.globals.recallStoppedSessions.size).toBe(0);
     // Still withdrawn durably: a restart must not replay it.
+    expect(l.globals.cancelPendingInboundMessage).toHaveBeenCalledWith(
+      'web:ws#agent:s1',
+      'om_recalled',
+    );
+  });
+
+  test('an input carrying background work it took over is withdrawn, not stopped', () => {
+    const l = recalledLane([row(null)], {
+      pending: [{ id: 'om_recalled' }],
+      active: 'run-1',
+      inherited: true,
+    });
+    l.recalled(chat, 'om_recalled');
+    // A stop would kill sub-agents the recalled input did not start.
+    expect(l.queue.interruptQuery).not.toHaveBeenCalled();
+    expect(l.globals.recallStoppedSessions.size).toBe(0);
     expect(l.globals.cancelPendingInboundMessage).toHaveBeenCalledWith(
       'web:ws#agent:s1',
       'om_recalled',

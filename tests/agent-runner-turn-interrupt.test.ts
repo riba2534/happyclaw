@@ -205,6 +205,20 @@ describe('Host → runner interrupt reason', () => {
     expect(consumeInterruptSentinel(lane.inputDir)).toBeNull();
   });
 
+  test('a stop names the later inputs it withdraws; others name none', () => {
+    const lane = runningLane();
+    expect(
+      lane.queue.interruptQuery(lane.jid, 'run-1', 'stop', ['delivery-b']),
+    ).toBe(true);
+
+    expect(consumeInterruptSentinel(lane.inputDir)).toEqual({
+      queryRunId: 'run-1',
+      reason: 'stop',
+      withdrawDeliveryIds: ['delivery-b'],
+    });
+    expect(fs.readdirSync(lane.inputDir)).toEqual([]);
+  });
+
   test('steer and 「发送」 (no reason) reach the runner as steer', () => {
     const lane = runningLane();
     expect(lane.queue.interruptQuery(lane.jid, 'run-1')).toBe(true);
@@ -596,7 +610,11 @@ function runnerPollHarness(
     containerInput: { turnId: 'turn-1' },
     generateTurnId: () => 'turn-x',
     emitResultUsage: () => {},
-    ipcDeliveryTracker: { laterTurnMessages: [], cancelCurrentTurn: () => [] },
+    ipcDeliveryTracker: {
+      laterTurnMessages: [],
+      cancelCurrentTurn: () => [],
+      cancelLaterTurns: () => [],
+    },
     stream: { end: () => {} },
     ipcQueryWatcher: { close: () => {} },
     stopAfterSteerWatcher: undefined,

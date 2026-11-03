@@ -138,6 +138,7 @@ function agentRun(name: string) {
     queue: {
       markRunnerActivity: vi.fn(),
       markRunnerQueryIdle: vi.fn(),
+      finishInterruptedBackgroundHold: vi.fn(),
     },
     steeringTransitions: { shouldSuppressOutput: () => false },
     resolveSteeringInterrupt: () => false,

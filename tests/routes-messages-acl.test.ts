@@ -126,6 +126,7 @@ const testDeps = {
       stopGroupCalls.push({ jid, opts });
     },
     getActiveQueryId: () => activeQueryId,
+    hasBackgroundHold: () => false,
   },
   setLastAgentTimestamp: () => {},
   getRegisteredGroups: () => registeredGroupsCache,

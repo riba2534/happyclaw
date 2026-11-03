@@ -1439,7 +1439,7 @@ function isInterruptRelatedError(err: unknown): boolean {
  */
 function shouldInterrupt(
   isAcceptedQueryRunId: (queryRunId: string) => boolean = () => false,
-): InterruptReason | null {
+): { reason: InterruptReason; withdrawDeliveryIds: string[] } | null {
   const interrupt = consumeInterruptSentinel(IPC_INPUT_DIR);
   if (!interrupt) return null;
   const sentinelQueryRunId = interrupt.queryRunId;
@@ -1455,7 +1455,10 @@ function shouldInterrupt(
     return null;
   }
   markInterruptRequested();
-  return interrupt.reason;
+  return {
+    reason: interrupt.reason,
+    withdrawDeliveryIds: interrupt.withdrawDeliveryIds ?? [],
+  };
 }
 
 /**
@@ -2444,12 +2447,13 @@ async function runQueryAttempt(
       ipcQueryWatcher.close();
       return;
     }
-    const interruptReason = shouldInterrupt(
+    const interrupt = shouldInterrupt(
       (queryRunId) =>
         ipcDeliveryTracker.hasTurnFromQueryRun(queryRunId) ||
         handedOverQueryRunIds.has(queryRunId),
     );
-    if (interruptReason) {
+    if (interrupt) {
+      const interruptReason = interrupt.reason;
       log(
         `Interrupt sentinel detected (${interruptReason}), interrupting current query`,
       );
@@ -2457,7 +2461,13 @@ async function runQueryAttempt(
       clearBackgroundProtocolDebtWatchdog();
       interruptedDuringQuery = true;
       const turnsQueuedInCli = ipcDeliveryTracker.laterTurnMessages.length;
-      const cancelledInputs = ipcDeliveryTracker.cancelCurrentTurn();
+      const cancelledInputs = [
+        // Withdrawn by `/break` before it started: never requeued below.
+        ...ipcDeliveryTracker.cancelLaterTurns(
+          new Set(interrupt.withdrawDeliveryIds),
+        ),
+        ...ipcDeliveryTracker.cancelCurrentTurn(),
+      ];
       cancelledIpcReceipts = cancelledInputs
         .map((message) => message.receipt)
         .filter((receipt): receipt is IpcDeliveryReceipt => !!receipt);
@@ -2875,6 +2885,19 @@ async function runQueryAttempt(
     // still means the background work, which the later input now owns.
     if (containerInput.queryRunId) {
       handedOverQueryRunIds.add(containerInput.queryRunId);
+    }
+    // The held input's notification turn already gave its Result, which only
+    // waits out the quiet period: that summary is this input's, so it completes
+    // now and there is nothing left to hand over. Waiting would publish it as
+    // the later input's answer, or lose it on the later input's first frame.
+    const summary = pendingBackgroundResult;
+    if (summary) {
+      backgroundResultGate.activityObserved();
+      pendingBackgroundResult = undefined;
+      processor.commitObservedBackgroundResult();
+      publishResultCandidate({ ...summary, pendingBgTasks: 0 }, true);
+      log('Held input completed with its summary as a later input started');
+      return;
     }
     const pendingBgTasks = processor.getBlockingPendingSdkTaskCount();
     log(

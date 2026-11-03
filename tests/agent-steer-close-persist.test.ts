@@ -125,6 +125,7 @@ function agentRunEnd(streamedText: string) {
     agentBuilderScope: 'steer-builder',
     activeHeldCardFinalizers: new Map(),
     activeBackgroundHandoffGates: new Map(),
+    activeHandoffInputWithdrawals: new Map(),
     activeRouteAdmissions: new Map(),
     activeImReplyRoutes: new Map(),
     activeAgentBuilderTurns: new Map(),

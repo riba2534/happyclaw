@@ -120,7 +120,13 @@ function heldRun(name: string, interactionMode = 'assistant') {
     agentDeliveryNeedsManualReconciliation: false,
     agentDefinitiveFailureSettled: false,
     agentTurnOutputCoordinators: new Map(),
-    queue: { finishBackgroundHold: vi.fn() },
+    queue: {
+      finishBackgroundHold: vi.fn(),
+      setInheritedBackgroundWork: vi.fn(),
+      acknowledgeIpcDeliveries: vi.fn(),
+    },
+    backgroundHeldAnsweredAt: new Map<string, string>(),
+    commitIpcDeliveryReceipts: vi.fn(),
     finalizeChannelCardAfterDelivery,
     publishesFrameworkAnswer,
     hasUnfinishedProactiveOutput,
@@ -235,6 +241,20 @@ describe('settling a background hand-off', () => {
     });
     db.upsertSubagentCheckpoint({
       ...base,
+      taskId: 'toolu_reported',
+      description: 'count the files',
+      status: 'completed',
+      resultText: 'already in the reply',
+    });
+    // The held input answered here: what ended before it was reported in it.
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    run.globals.backgroundHeldAnsweredAt.set(
+      run.inputId,
+      new Date().toISOString(),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    db.upsertSubagentCheckpoint({
+      ...base,
       taskId: 'toolu_done',
       description: 'read the logs',
       status: 'completed',
@@ -244,11 +264,14 @@ describe('settling a background hand-off', () => {
     await run.settle();
 
     expect(run.advanceCursors).toHaveBeenCalledTimes(1);
+    // Already reported in the held input's reply: stays behind, never replayed.
     expect(
-      db.listSubagentCheckpointsForInputs(run.folder, run.virtualChatJid, [
-        run.inputId,
-      ]),
-    ).toEqual([]);
+      db
+        .listSubagentCheckpointsForInputs(run.folder, run.virtualChatJid, [
+          run.inputId,
+        ])
+        .map((checkpoint) => checkpoint.taskId),
+    ).toEqual(['toolu_reported']);
     // What a replay of the later input reads back.
     const context = buildSubagentCheckpointContext(
       db.listSubagentCheckpointsForInputs(run.folder, run.virtualChatJid, [
@@ -258,6 +281,7 @@ describe('settling a background hand-off', () => {
     expect(context).toMatchObject({ completed: 1, unfinished: 1 });
     expect(context?.context).toContain('logs are clean');
     expect(context?.context).toContain('deploy to staging');
+    expect(context?.context).not.toContain('already in the reply');
     // A task's later terminal keeps pointing at the input that replays it.
     db.upsertSubagentCheckpoint({
       ...base,
@@ -269,6 +293,64 @@ describe('settling a background hand-off', () => {
         run.nextId,
       ]),
     ).toHaveLength(2);
+  });
+
+  test('moved checkpoints survive a crash before the cursor is durable', async () => {
+    const run = heldRun('crash-window');
+    run.globals.agentNonTerminalDeliveryAckByInput.set(run.inputId, true);
+    db.upsertSubagentCheckpoint({
+      groupFolder: run.folder,
+      chatJid: run.virtualChatJid,
+      inputMessageId: run.inputId,
+      taskId: 'toolu_running',
+      description: 'deploy to staging',
+    });
+    run.advanceCursors.mockImplementation(() => {
+      throw new Error('crashed before the cursor was saved');
+    });
+
+    await expect(run.settle()).rejects.toThrow('crashed');
+
+    // The cursor did not move, so a restart replays both inputs as one batch.
+    expect(
+      db.listSubagentCheckpointsForInputs(run.folder, run.virtualChatJid, [
+        run.inputId,
+        run.nextId,
+      ]),
+    ).toHaveLength(1);
+  });
+
+  test("a warm held input's receipt is acknowledged so later ones are not blocked", async () => {
+    const run = heldRun('warm-receipt');
+    run.globals.agentNonTerminalDeliveryAckByInput.set(run.inputId, true);
+    const receipts = [
+      {
+        deliveryId: run.inputId,
+        chatJid: run.virtualChatJid,
+        cursor: { timestamp: '2026-11-01T00:00:00.000Z', id: run.inputId },
+      },
+    ];
+
+    await run.settle({
+      status: 'success',
+      inputTurnId: run.inputId,
+      inputTurnCompleted: true,
+      backgroundHandoff: true,
+      ipcReceipts: receipts,
+      activeIpcReceipts: [
+        { deliveryId: 'delivery-b', cursor: { id: run.nextId } },
+      ],
+    });
+
+    expect(run.globals.queue.acknowledgeIpcDeliveries).toHaveBeenCalledWith(
+      run.virtualChatJid,
+      receipts,
+      run.globals.commitIpcDeliveryReceipts,
+    );
+    expect(run.globals.queue.setInheritedBackgroundWork).toHaveBeenCalledWith(
+      run.virtualChatJid,
+      true,
+    );
   });
 
   test('without a later input to replay with, the cursor stays behind', async () => {
@@ -405,6 +487,8 @@ describe('whether the queue head may take over', () => {
       workspaceOwnerImIds: () => [],
       isOwnerProfileOwnerInput: (message: any, owner: string) =>
         message.sender === owner,
+      isAgentBuilderOwnerInput: (message: any, owner: string) =>
+        message.sender === owner && !message.notAgentBuilderOwner,
       publishesFrameworkAnswer,
       hasUnfinishedProactiveOutput,
       backgroundHandoffRefusal,
@@ -417,6 +501,7 @@ describe('whether the queue head may take over', () => {
     for (const fn of [
       'heldAgentReplySettleable',
       'inputsAreOwnersAlone',
+      'inputsAreAgentBuilderOwnersAlone',
       'agentBackgroundHandoffRefusal',
     ]) {
       harness.install(fn, 'processAgentConversation');
@@ -527,14 +612,17 @@ describe('steering while only background tasks hold the lane', () => {
     );
   });
 
-  test('while another input is taking over, the steer waits instead of stopping it', () => {
+  test('a closing runner, or another input taking over, keeps the ordinary steer', () => {
+    // backgroundHoldAwaitingNext is null in both: the steer must not be
+    // reported as delivered while it actually waits for every background task.
     const { globals, queue, item } = steerLane({
       awaitingNext: false,
       gate: true,
     });
     const result = globals.steerQueuedFollowUpBatch(item.chat_jid, item.id);
-    expect(result).toMatchObject({ ok: true, state: 'queued' });
-    expect(queue.interruptQuery).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ ok: true, state: 'interrupting' });
+    expect(queue.interruptQuery).toHaveBeenCalledWith(item.chat_jid, 'run-a');
+    expect(queue.reserveBackgroundHandoffQuery).not.toHaveBeenCalled();
   });
 
   test('a head that may not take over keeps the ordinary steer', () => {
@@ -545,5 +633,71 @@ describe('steering while only background tasks hold the lane', () => {
     const result = globals.steerQueuedFollowUpBatch(item.chat_jid, item.id);
     expect(result).toMatchObject({ ok: true, state: 'interrupting' });
     expect(queue.interruptQuery).toHaveBeenCalledWith(item.chat_jid, 'run-a');
+  });
+});
+
+describe('/break while an input is published to take over', () => {
+  function breaking(withdrawn: any[]) {
+    const lane = 'web:ws#agent:s1';
+    const settle = vi.fn();
+    const queue = {
+      withdrawBackgroundHandoffInput: vi.fn(() => withdrawn),
+      getActiveQueryId: vi.fn(() => 'run-b'),
+      interruptQuery: vi.fn(() => true),
+      stopArmedRetry: vi.fn(() => false),
+    };
+    const globals: Record<string, any> = {
+      queue,
+      logger,
+      activeHandoffInputWithdrawals: new Map([[lane, settle]]),
+      cancelQueuedFollowUpsAtCutoff: () => [],
+      cancelAutomationInputs: vi.fn(),
+      closeRetryWaitTurnsForWithdrawnInputs: vi.fn(),
+      channelTurnScopeForInput: () => null,
+      endUsageLimitWait: vi.fn(),
+      broadcastFollowUpUpdate: vi.fn(),
+      cancelPendingInboundMessage: vi.fn(() => true),
+      clearTrackedProcessingIndicators: vi.fn(async () => {}),
+      getStreamingSession: () => undefined,
+    };
+    const harness = createRuntimeSourceHarness(globals);
+    harness.install('interruptActiveSessionRun');
+    harness.install('withdrawBackgroundHandoffInputs');
+    return { globals, queue, settle, lane };
+  }
+
+  test('it falls under the cutoff: cancelled durably and named in the stop', () => {
+    const receipt = {
+      deliveryId: 'delivery-b',
+      chatJid: 'web:ws#agent:s1',
+      cursor: { timestamp: '', id: 'om_b2' },
+      coveredCursors: [
+        { timestamp: '', id: 'om_b1' },
+        { timestamp: '', id: 'om_b2' },
+      ],
+    };
+    const { globals, queue, settle, lane } = breaking([receipt]);
+
+    const result = globals.breakLane(lane, 'Input cancelled by /break');
+
+    expect(result.interrupted).toBe(true);
+    expect(
+      globals.cancelPendingInboundMessage.mock.calls.map(
+        (call: any[]) => call[1],
+      ),
+    ).toEqual(['om_b1', 'om_b2']);
+    expect(settle).toHaveBeenCalledWith('delivery-b');
+    expect(queue.interruptQuery).toHaveBeenCalledWith(lane, 'run-b', 'stop', [
+      'delivery-b',
+    ]);
+  });
+
+  test('with nothing published the stop names nothing', () => {
+    const { globals, queue, settle, lane } = breaking([]);
+
+    globals.breakLane(lane, 'Input cancelled by /break');
+
+    expect(settle).not.toHaveBeenCalled();
+    expect(queue.interruptQuery).toHaveBeenCalledWith(lane, 'run-b', 'stop');
   });
 });
