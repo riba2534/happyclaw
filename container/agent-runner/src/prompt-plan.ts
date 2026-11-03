@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto';
 
+import type { SessionKind } from './session-kind.js';
+
 export type PromptBlockScope = 'main' | 'subagent' | 'both';
 export type PromptBlockOwner = 'platform' | 'agent_profile' | 'workspace';
 
@@ -51,11 +53,12 @@ export interface HappyClawPromptSources {
   };
   agentBuilder?: string;
   /**
-   * Team mode: the router's or the worker's contract. It takes the place of
-   * the output and delivery contracts, which are built on send_message.
+   * Team mode: the router's or the worker's contract, or a delegated item's
+   * worker contract. It takes the place of the output and delivery
+   * contracts, which are built on send_message.
    */
   team?: {
-    id: 'team-router' | 'team-worker';
+    id: RolePromptId;
     text: string;
   };
   /** Required, except that a team section replaces it. */
@@ -171,12 +174,45 @@ const ENGINE_CONDITIONS: Record<
   'runtime-baseline': 'Claude Code preset is not included',
 };
 
-const TEAM_CONDITIONS: Record<
-  NonNullable<HappyClawPromptSources['team']>['id'],
-  string
-> = {
+const TEAM_CONDITIONS: Record<RolePromptId, string> = {
   'team-router': 'team mode router session',
   'team-worker': 'team mode worker session',
+  'delegated-worker': 'multi-task mode delegated worker session',
+};
+
+/** A session role's section, named after its file under prompts/. */
+export type RolePromptId = Exclude<SessionKind, 'single' | 'multi'>;
+
+/** Background-task guidance, named after its file under prompts/. */
+export type BackgroundTasksPromptId =
+  | 'background-tasks'
+  | 'background-tasks.team'
+  | 'background-tasks.multi'
+  | 'background-tasks.delegated';
+
+/**
+ * The role section and background-task guidance each kind of session gets:
+ * a conversation of a multi-task workspace swaps in the delegation guidance,
+ * and a delegated item's worker has a section of its own.
+ */
+export const SESSION_PROMPTS: Record<
+  SessionKind,
+  { role?: RolePromptId; backgroundTasks: BackgroundTasksPromptId }
+> = {
+  single: { backgroundTasks: 'background-tasks' },
+  multi: { backgroundTasks: 'background-tasks.multi' },
+  'team-router': {
+    role: 'team-router',
+    backgroundTasks: 'background-tasks.team',
+  },
+  'team-worker': {
+    role: 'team-worker',
+    backgroundTasks: 'background-tasks.team',
+  },
+  'delegated-worker': {
+    role: 'delegated-worker',
+    backgroundTasks: 'background-tasks.delegated',
+  },
 };
 
 function wrap(tag: string, text: string): string {
