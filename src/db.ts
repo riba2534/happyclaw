@@ -4149,6 +4149,29 @@ export function cancelQueuedFollowUpsAtCutoff(
 }
 
 /**
+ * Give stored messages new ingest sequences after every existing one in
+ * their chat, so a cursor that passed them while they waited in the queue
+ * reads them again once they are released.
+ */
+export function moveMessagesToIngestTail(
+  chatJid: string,
+  messageIds: readonly string[],
+): void {
+  const remove = prepareCached(
+    'DELETE FROM message_ingest_sequences WHERE chat_jid = ? AND message_id = ?',
+  );
+  const add = prepareCached(
+    'INSERT INTO message_ingest_sequences (chat_jid, message_id) VALUES (?, ?)',
+  );
+  db.transaction(() => {
+    for (const id of messageIds) {
+      remove.run(chatJid, id);
+      add.run(chatJid, id);
+    }
+  })();
+}
+
+/**
  * Read the `attachments` JSON column for a single message row, or null
  * if the row is missing (caller treats null as "no persisted state").
  */

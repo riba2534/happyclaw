@@ -227,6 +227,7 @@ import {
   updateChannelAccountAuthStatus,
   updateChannelAccountStatus,
   cancelQueuedFollowUpsAtCutoff,
+  moveMessagesToIngestTail,
   cancelQueuedFollowUp,
   withdrawQueuedFollowUp,
   listQueuedChannelFollowUps,
@@ -677,6 +678,7 @@ import {
   executeFreshWindowReset,
   FRESH_WINDOW_FAILURE_REPLY,
   FRESH_WINDOW_SUCCESS_REPLY,
+  setAfterSessionReset,
 } from './commands.js';
 import {
   captureWorkspaceSnapshot,
@@ -2392,9 +2394,7 @@ function usageLimitParkedMessageIds(
   output: ContainerOutput,
   batch: readonly { id: string }[],
 ): string[] {
-  const covered = (output.ipcReceipts ?? []).flatMap((receipt) =>
-    (receipt.coveredCursors ?? [receipt.cursor]).map((cursor) => cursor.id),
-  );
+  const covered = ipcReceiptMessageIds(output);
   const pending = getMessagesSince(
     laneJid,
     lastCommittedCursor[laneJid] || EMPTY_CURSOR,
@@ -8939,17 +8939,35 @@ function writeTaskResult(
   }
 }
 
+/** The inputs an output's IPC receipts cover (its warm-runner batches). */
+function ipcReceiptMessageIds(
+  output: Pick<ContainerOutput, 'ipcReceipts'>,
+): string[] {
+  return (output.ipcReceipts ?? []).flatMap((receipt) =>
+    (receipt.coveredCursors ?? [receipt.cursor]).map((cursor) => cursor.id),
+  );
+}
+
 /**
  * A delegated worker's turn finished and committed. When nothing else waits
  * for its lane (queued, or stored past the committed cursor, such as a batch
  * already piped to the runner), the worker is done with this item: one still
- * open and not waiting on a question failed to hand back a result.
+ * open and not waiting on a question failed to hand back a result. The
+ * inputs this turn answered through IPC (a follow-up piped to a warm runner)
+ * are acknowledged only after this runs, so they count as answered here.
  */
-function settleDelegatedWorkerTurn(laneJid: string, agentId: string): void {
+function settleDelegatedWorkerTurn(
+  laneJid: string,
+  agentId: string,
+  output: Pick<ContainerOutput, 'ipcReceipts'>,
+): void {
+  const answered = new Set(ipcReceiptMessageIds(output));
   if (
     listQueuedFollowUps(laneJid).length > 0 ||
-    getMessagesSince(laneJid, lastCommittedCursor[laneJid] || EMPTY_CURSOR)
-      .length > 0
+    getMessagesSince(
+      laneJid,
+      lastCommittedCursor[laneJid] || EMPTY_CURSOR,
+    ).some((message) => !answered.has(message.id))
   ) {
     return;
   }
@@ -13251,7 +13269,7 @@ async function processAgentConversation(
           );
           commitCursor(inputTurnId);
           if (teamRole?.role === 'worker' && teamRole.origin === 'delegated') {
-            settleDelegatedWorkerTurn(virtualChatJid, agentId);
+            settleDelegatedWorkerTurn(virtualChatJid, agentId, output);
           }
           finalizeProactiveAgentOutputCoordinators(output);
           persistProactiveTurnTrace(inputTurnId);
@@ -13324,6 +13342,8 @@ async function processAgentConversation(
         status: 'failed',
         error: output.result,
       });
+      // No connection left (the usage-limit waits used up as well).
+      failDelegatedWorkerRun(agentId, output.result);
       logger.warn(
         {
           chatJid,
@@ -17268,12 +17288,42 @@ function breakLane(
   endUsageLimitWait(targetJid, 'cancelled');
 
   const run = interruptActiveSessionRun(targetJid, '/break');
-  return {
-    activeRunId: run.activeRunId,
-    // Between failed attempts no query runs: the stop ends the armed retry.
-    interrupted: run.interrupted || queue.stopArmedRetry(targetJid),
-    cancelled,
-  };
+  // Between failed attempts no query runs: the stop ends the armed retry.
+  const interrupted = run.interrupted || queue.stopArmedRetry(targetJid);
+  // A query the stop ends dispatches what the cutoff kept when it goes
+  // idle; without one (a usage-limit wait, an armed retry) nothing would.
+  if (!run.activeRunId) releaseKeptReports(targetJid);
+  return { activeRunId: run.activeRunId, interrupted, cancelled };
+}
+
+/**
+ * Hand the delegated reports a cutoff kept in a lane to the cold reader,
+ * so they run now: no query is left in the lane to dispatch them when it
+ * goes idle. Other queued inputs are left as they are.
+ */
+function releaseKeptReports(laneJid: string): void {
+  const reports = listQueuedFollowUps(laneJid).filter(isDelegatedReportInput);
+  if (reports.length === 0) return;
+  const runId = `recovery:${crypto.randomUUID()}`;
+  const deliveryUpdatedAt = new Date().toISOString();
+  if (!releaseQueuedFollowUpBatch(reports, runId, deliveryUpdatedAt)) return;
+  broadcastFollowUpBatchUpdate(laneJid, reports, runId, deliveryUpdatedAt);
+  enqueueReleasedFollowUp(reports[reports.length - 1]);
+}
+
+/**
+ * After /clear or /fresh: the reset's cursor passed the delegated reports
+ * that waited in the queue. They move behind it and run now: their items
+ * have ended, and the report is the only news of them.
+ */
+function requeueKeptReportsAfterReset(laneJid: string): void {
+  const reports = listQueuedFollowUps(laneJid).filter(isDelegatedReportInput);
+  if (reports.length === 0) return;
+  moveMessagesToIngestTail(
+    laneJid,
+    reports.map((report) => report.id),
+  );
+  releaseKeptReports(laneJid);
 }
 
 /** Close the retry_wait turns of inputs withdrawn from a lane. */
@@ -18880,6 +18930,7 @@ async function main(): Promise<void> {
   queue.setOnLaneDiscarded((jid) => {
     endUsageLimitWait(jid, 'discarded');
   });
+  setAfterSessionReset(requeueKeptReportsAfterReset);
   // An idle runner that still owes its lane queued input or a running
   // background agent keeps its container slot.
   queue.setIdleRunnerReclaimBlocker(

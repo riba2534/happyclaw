@@ -152,6 +152,9 @@ const AUTOMATION_SOURCE_HELPERS = [
   'breakLane',
   'closeRetryWaitTurnsOfInputs',
   'onImMessagePersisted',
+  // Multi-task mode: what /break releases, and the inputs a turn answered.
+  'releaseKeptReports',
+  'ipcReceiptMessageIds',
 ];
 
 const HOST_INDEX = new URL('../../src/index.ts', import.meta.url);

@@ -72,6 +72,8 @@ const laneMessages: { laneJid: string; text: string; id: string }[] = [];
 const wake = vi.fn();
 /** Every admission throws: a delegation fails half way. */
 let failAdmissions = false;
+/** Runs once, as the next session is created. */
+let duringSessionCreation: (() => void) | null = null;
 
 function installHooks(): void {
   runtime.setWorkItemRuntimeHooks({
@@ -258,7 +260,13 @@ beforeAll(() => {
     folder: SINGLE_FOLDER,
   });
   webContext.setWebDeps({
-    broadcastAgentStatus: vi.fn(),
+    // A new session announces itself: a test may act right then, while the
+    // delegation that made it awaits it.
+    broadcastAgentStatus: vi.fn(() => {
+      const step = duringSessionCreation;
+      duringSessionCreation = null;
+      step?.();
+    }),
     broadcastAgentRemoved: vi.fn(),
     queue: { stopGroup: vi.fn(async () => {}) },
   } as unknown as Parameters<typeof webContext.setWebDeps>[0]);
@@ -1273,5 +1281,67 @@ describe('a delegated summary over the limit (G)', () => {
     expect(await report(item, 'ready', 'x'.repeat(4000))).toMatchObject({
       ok: true,
     });
+  });
+});
+
+describe('a delegation stopped while its worker session was made', () => {
+  const stoppedBeforeStart = {
+    ok: false,
+    error: '这个后台任务在 Worker 启动前已被停止，没有开始执行。',
+  };
+
+  test('stopped on the Web: the worker never gets the task', async () => {
+    duringSessionCreation = () => {
+      const [item] = store.listOpenDelegatedWorkItems(MAIN);
+      service.stopWorkItem(item.id);
+    };
+    expect(await delegate(callerOf(MAIN))).toEqual(stoppedBeforeStart);
+    const [item] = service
+      .listWorkItemViews(WORKSPACE)
+      .sort((a, b) => b.seq - a.seq);
+    expect(item).toMatchObject({ status: 'ended', outcome: 'stopped' });
+    expect(db.getAgent(item.agentId)).toBeUndefined();
+    expect(rows(laneOf(item.agentId))).toEqual([]);
+  });
+
+  test('its delegating session deleted: the item stops, the session goes', async () => {
+    createSession('mt-gone-midway');
+    duringSessionCreation = () => db.deleteAgent('mt-gone-midway');
+    expect(await delegate(callerOf('mt-gone-midway'))).toEqual(
+      stoppedBeforeStart,
+    );
+    const [item] = service
+      .listWorkItemViews(WORKSPACE)
+      .sort((a, b) => b.seq - a.seq);
+    expect(item).toMatchObject({
+      originAgentId: 'mt-gone-midway',
+      status: 'ended',
+      outcome: 'stopped',
+    });
+    expect(db.getAgent(item.agentId)).toBeUndefined();
+    expect(rows(laneOf(item.agentId))).toEqual([]);
+  });
+});
+
+describe('a queued report a reset passed (moveMessagesToIngestTail)', () => {
+  test('is read again past the new cursor once released', () => {
+    const lane = laneOf(MAIN);
+    const waiting = ownerInput(MAIN).messageId;
+    db.setMessageFollowUp(lane, waiting, {
+      mode: 'queue',
+      status: 'queued',
+      runId: 'run-1',
+    });
+    const divider = ownerInput(MAIN).messageId;
+    const cursor = db.getMessageCursor(lane, divider)!;
+    db.releaseQueuedFollowUpBatch(
+      [{ chat_jid: lane, id: waiting }],
+      'recovery:1',
+    );
+    const readable = () =>
+      db.getMessagesSince(lane, cursor).map((message) => message.id);
+    expect(readable()).not.toContain(waiting);
+    db.moveMessagesToIngestTail(lane, [waiting]);
+    expect(readable()).toEqual([waiting]);
   });
 });
