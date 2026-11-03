@@ -95,6 +95,7 @@ import {
   setWorkspaceInteractionMode,
   getWorkspaceProcessVisibility,
   setWorkspaceProcessVisibility,
+  getWorkspaceModes,
   getWorkspaceWorkMode,
   setWorkspaceWorkMode,
   getUserById,
@@ -537,13 +538,7 @@ function buildGroupsPayload(user: AuthUser): Record<string, GroupPayloadItem> {
       // A workspace without a session yet is as recent as its creation.
       lastMessageTime: latest.timestamp || group.added_at,
       execution_mode: group.executionMode || 'container',
-      interaction_mode: isWeb
-        ? getWorkspaceInteractionMode(group.folder)
-        : undefined,
-      process_visibility: isWeb
-        ? getWorkspaceProcessVisibility(group.folder)
-        : undefined,
-      work_mode: isWeb ? getWorkspaceWorkMode(group.folder) : undefined,
+      ...(isWeb ? getWorkspaceModes(group.folder) : {}),
       custom_cwd: isAdmin ? group.customCwd : undefined,
       is_home: isHome || undefined,
       is_my_home: (isHome && group.created_by === user.id) || undefined,

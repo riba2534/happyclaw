@@ -256,7 +256,8 @@ Workspace↔AgentProfile 绑定行上，因此：仅 `web:` 前缀工作区可�
 owner，没有绑定行时 409 `WORKSPACE_AGENT_PROFILE_MISSING`）。切换不经过 quiesce，不中断
 正在运行的回合，也不重置 SDK 会话：该工作区的每个暖 Runner 在本轮结束后退役，空闲的
 立即关闭，下一轮由新的 Runner 按新值决定工具和提示词。`multi` 下，普通会话可以把大任务
-派给 Worker 会话（见「团队模式与多任务模式」）。
+派给 Worker 会话（见「团队模式与多任务模式」）。切回 `single` 后不再派新任务，已派出的
+任务照常完成并回报，派出它们的会话在还有未结束的任务时保留跟进和停止的工具。
 
 `process_visibility`（`hidden`、`activity` 或 `full`）决定主动模式工作区的 Web
 能看到一个回合的多少过程，存放在同一条绑定行上。`GET /api/groups` 的每个 `web:`
@@ -1054,7 +1055,9 @@ Legacy 渠道 facade 位于 `/api/config/user-im/*`，涵盖飞书、Telegram、
 已删除时为 `null`）。派发型工作项的 `channelJid` 是派出会话的 lane，`channelName`
 为 `null`。对派发型工作项调用 `POST /api/work-items/:id/stop` 时，工作项结束为
 `stopped`，Worker 停下，派出它的会话收到一条 `state="stopped"` 的 `work_report` 输入；
-`/approve` 不适用，派发型工作项一开始就可修改，调用返回 409。
+`/approve` 不适用，派发型工作项一开始就可修改，调用返回 409。派出会话的 `/break` 或
+Web 停止不会取消队列里尚未处理的派发回报；Worker 一轮结束却没有交回结果（或运行彻底
+失败、计费被拒）时，工作项结束为 `failed`，派出会话收到 `state="failed"` 的回报。
 
 ## Skills、MCP 和 Plugins
 

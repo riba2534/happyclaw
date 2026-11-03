@@ -4123,9 +4123,11 @@ export function withdrawQueuedFollowUp(
 export function cancelQueuedFollowUpsAtCutoff(
   chatJid: string,
   updatedAt = new Date().toISOString(),
+  /** Queued inputs the cutoff leaves in the queue. */
+  keep: (item: QueuedFollowUp) => boolean = () => false,
 ): QueuedFollowUp[] {
   return db.transaction(() => {
-    const items = listQueuedFollowUps(chatJid);
+    const items = listQueuedFollowUps(chatJid).filter((item) => !keep(item));
     if (items.length === 0) return [];
     const cancelQueued = prepareCached(`UPDATE messages
        SET delivery_status = 'cancelled', delivery_updated_at = ?
@@ -7184,13 +7186,28 @@ export function getWorkspaceAgentProfileId(
   return getWorkspaceAgentProfileBinding(groupFolder)?.agent_profile_id;
 }
 
+/**
+ * The modes on a Workspace's Agent binding, with their defaults when it has
+ * none, from one read of the row.
+ */
+export function getWorkspaceModes(
+  groupFolder: string,
+): Pick<
+  WorkspaceAgentProfileBinding,
+  'interaction_mode' | 'process_visibility' | 'work_mode'
+> {
+  const binding = getWorkspaceAgentProfileBinding(groupFolder);
+  return {
+    interaction_mode: binding?.interaction_mode ?? 'assistant',
+    process_visibility: binding?.process_visibility ?? 'hidden',
+    work_mode: binding?.work_mode ?? DEFAULT_WORK_MODE,
+  };
+}
+
 export function getWorkspaceInteractionMode(
   groupFolder: string,
 ): InteractionMode {
-  return (
-    getWorkspaceAgentProfileBinding(groupFolder)?.interaction_mode ??
-    'assistant'
-  );
+  return getWorkspaceModes(groupFolder).interaction_mode;
 }
 
 export function setWorkspaceInteractionMode(
@@ -7211,9 +7228,7 @@ export function setWorkspaceInteractionMode(
 export function getWorkspaceProcessVisibility(
   groupFolder: string,
 ): ProcessVisibility {
-  return (
-    getWorkspaceAgentProfileBinding(groupFolder)?.process_visibility ?? 'hidden'
-  );
+  return getWorkspaceModes(groupFolder).process_visibility;
 }
 
 /**
@@ -7236,9 +7251,7 @@ export function setWorkspaceProcessVisibility(
 
 /** How the Workspace's sessions take on work; `single` without a binding. */
 export function getWorkspaceWorkMode(groupFolder: string): WorkMode {
-  return (
-    getWorkspaceAgentProfileBinding(groupFolder)?.work_mode ?? DEFAULT_WORK_MODE
-  );
+  return getWorkspaceModes(groupFolder).work_mode;
 }
 
 /**

@@ -17,7 +17,7 @@ import {
   setChannelMountInteractionModeOverride,
   getWorkspaceAgentProfileId,
   getWorkspaceInteractionMode,
-  getWorkspaceWorkMode,
+  getWorkspaceModes,
   listAgentChannelMountsByWorkspace,
   listActiveGuestGrantJids,
   listWorkspaceRecords,
@@ -136,6 +136,7 @@ function serializeWorkspaceSummary(
     ? listAgentChannelMountsByWorkspace(workspace.jid)
     : [];
   const isAdmin = hasHostExecutionPermission(user);
+  const { interaction_mode, work_mode } = getWorkspaceModes(workspace.folder);
   return {
     jid: workspace.jid,
     folder: workspace.folder,
@@ -146,8 +147,8 @@ function serializeWorkspaceSummary(
     execution_mode: inspectGovernance
       ? (group.executionMode ?? 'container')
       : undefined,
-    interaction_mode: getWorkspaceInteractionMode(workspace.folder),
-    work_mode: getWorkspaceWorkMode(workspace.folder),
+    interaction_mode,
+    work_mode,
     custom_cwd: isAdmin ? (group.customCwd ?? null) : undefined,
     agent_profile: getAgentProfileSnapshot(workspace, inspectGovernance),
     runtime_session_count: inspectGovernance

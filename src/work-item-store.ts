@@ -509,6 +509,13 @@ export function listOpenDelegatedWorkItems(originAgentId?: string): WorkItem[] {
   return rows.map(mapItem);
 }
 
+/** Whether a session ever delegated an item, open or ended. */
+export function hasDelegatedWorkItems(originAgentId: string): boolean {
+  return !!stmt(
+    "SELECT 1 FROM work_items WHERE origin_agent_id = ? AND origin = 'delegated' LIMIT 1",
+  ).get(originAgentId);
+}
+
 /** Open delegated items of a session, or of a whole workspace. */
 export function countOpenDelegatedWorkItems(
   scope: { originAgentId: string } | { workspaceJid: string },
