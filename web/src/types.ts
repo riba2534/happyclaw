@@ -1,4 +1,5 @@
 import type { ResolvedModelCapabilities } from './lib/model-providers';
+import type { WorkMode } from './work-items';
 
 export type InteractionMode = 'assistant' | 'proactive';
 /**
@@ -15,6 +16,8 @@ export interface GroupInfo {
   added_at: string;
   interaction_mode: InteractionMode;
   process_visibility?: ProcessVisibility;
+  /** Web workspaces: single-task (default) or multi-task (多任务). */
+  work_mode?: WorkMode;
   kind?: 'home' | 'feishu' | 'web';
   is_home?: boolean;
   is_my_home?: boolean;
@@ -61,6 +64,7 @@ export interface CreateWorkspaceOptions {
   init_git_url?: string;
   agent_profile_id?: string;
   interaction_mode?: InteractionMode;
+  work_mode?: WorkMode;
   additional_mounts?: AdditionalMountInput[];
 }
 
