@@ -46,7 +46,10 @@ import {
 } from '../../lib/chat-date-label';
 import { useAuthStore } from '../../stores/auth';
 import type { InteractionMode } from '../../types';
+import type { WorkMode } from '../../work-items';
 import { sessionJidOf } from '../../lib/session-jid';
+import { DelegatedTaskCards } from './DelegatedTaskCards';
+import { lastPersonMessageAt } from '../../lib/multitask';
 
 interface MessageListProps {
   messages: Message[];
@@ -67,6 +70,8 @@ interface MessageListProps {
   agentAvatarEmoji?: string | null;
   agentAvatarColor?: string | null;
   interactionMode?: InteractionMode;
+  /** Multi-task: the tasks this session delegated follow the transcript. */
+  workMode?: WorkMode;
 }
 
 type FlatItem =
@@ -155,6 +160,7 @@ export const MessageList = memo(function MessageList({
   agentAvatarEmoji,
   agentAvatarColor,
   interactionMode = 'assistant',
+  workMode = 'single',
 }: MessageListProps) {
   const { mode: displayMode } = useDisplayMode();
   const thinkingCache = useChatStore((s) => s.thinkingCache ?? {});
@@ -195,6 +201,12 @@ export const MessageList = memo(function MessageList({
   const timelineMessages = useMemo(
     () => orderMessagesForTimeline(messages),
     [messages],
+  );
+  // Multi-task: an ended task stays below the transcript until the person
+  // writes again.
+  const personWroteAt = useMemo(
+    () => (workMode === 'multi' ? lastPersonMessageAt(timelineMessages) : 0),
+    [workMode, timelineMessages],
   );
   const today = useLocalToday();
   const parentRef = useRef<HTMLDivElement>(null);
@@ -1514,6 +1526,14 @@ export const MessageList = memo(function MessageList({
                 />
               ))}
             </div>
+
+            {workMode === 'multi' && (
+              <DelegatedTaskCards
+                groupJid={groupJid}
+                sessionId={agentId}
+                personWroteAt={personWroteAt}
+              />
+            )}
           </div>
         </div>
       </div>

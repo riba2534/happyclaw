@@ -17,7 +17,7 @@ import type {
 
 // Team mode (团队模式): work items, the decisions kept for review and the
 // group mounts' settings, for the 工作项 page, the settings dialog and the
-// session tree's tags.
+// session tree's tags. Multi-task mode's chat cards read the same items.
 
 interface WorkItemsState {
   items: Record<string, WorkItemView>;
@@ -26,8 +26,8 @@ interface WorkItemsState {
   details: Record<string, WorkItemDetail>;
   /** Workspaces the page loads; a reconnect reloads them. */
   pageWorkspaces: string[];
-  /** Workspaces whose open items the session tree fetched. */
-  requested: Record<string, true>;
+  /** What ensureWorkspace fetched per workspace. */
+  requested: Record<string, FetchScope>;
   loaded: boolean;
   loading: boolean;
   error: string | null;
@@ -36,13 +36,22 @@ interface WorkItemsState {
 
   /** The page: every listed workspace's items and recorded decisions. */
   load: (workspaceJids: string[]) => Promise<void>;
-  /** Once per workspace, for the session tree's `#N` tags. */
-  ensureWorkspace: (workspaceJid: string) => void;
+  /**
+   * Once per workspace outside the page: its open items (the session tree's
+   * `#N` tags, the settings dialog), or with `recent` the recently ended
+   * ones too (the chat's delegated task cards keep an ended task until the
+   * person writes again).
+   */
+  ensureWorkspace: (workspaceJid: string, recent?: boolean) => void;
+  /** After a reconnect: what ensureWorkspace fetched, unless the page did. */
+  reloadRequested: () => void;
   loadDetail: (id: string) => Promise<void>;
   stop: (id: string) => Promise<void>;
   approve: (id: string) => Promise<void>;
   handleUpdated: (event: WorkItemWsEvent) => void;
 }
+
+type FetchScope = 'open' | 'recent';
 
 const enc = encodeURIComponent;
 
@@ -54,15 +63,23 @@ function fetchItems(jid: string, query: string) {
     .then((data) => data.items);
 }
 
-async function fetchWorkspace(jid: string) {
-  const [open, ended, decisions] = await Promise.all([
+/** Open items and the recently ended ones. */
+async function fetchRecentItems(jid: string) {
+  const [open, ended] = await Promise.all([
     fetchItems(jid, 'status=open'),
     fetchItems(jid, `status=ended&limit=${WORK_RECENT_LIMIT}`),
+  ]);
+  return [...open, ...ended];
+}
+
+async function fetchWorkspace(jid: string) {
+  const [items, decisions] = await Promise.all([
+    fetchRecentItems(jid),
     api.get<{ decisions: WorkDecision[] }>(
       `/api/workspaces/${enc(jid)}/work-decisions?kind=would_accept&limit=${WORK_RECENT_LIMIT}`,
     ),
   ]);
-  return { items: [...open, ...ended], decisions: decisions.decisions };
+  return { items, decisions: decisions.decisions };
 }
 
 // WS events refetch an open detail at most once per burst.
@@ -70,6 +87,25 @@ const REFRESH_DELAY_MS = 120;
 const pendingRefresh = new Map<string, ReturnType<typeof setTimeout>>();
 
 export const useWorkItemsStore = create<WorkItemsState>((set, get) => {
+  const fetchScope = (jid: string, scope: FetchScope) =>
+    (scope === 'recent'
+      ? fetchRecentItems(jid)
+      : fetchItems(jid, 'status=open')
+    )
+      .then((fetched) =>
+        set((state) => {
+          const items = { ...state.items };
+          for (const item of fetched) {
+            // An update the socket delivered meanwhile is newer: keep it.
+            const known = items[item.id];
+            if (!known || known.updatedAt <= item.updatedAt)
+              items[item.id] = item;
+          }
+          return { items };
+        }),
+      )
+      .catch(() => undefined);
+
   const putItem = (item: WorkItemView) =>
     set((state) => ({
       items: { ...state.items, [item.id]: item },
@@ -150,22 +186,21 @@ export const useWorkItemsStore = create<WorkItemsState>((set, get) => {
       });
     },
 
-    ensureWorkspace: (workspaceJid) => {
-      if (get().requested[workspaceJid]) return;
+    ensureWorkspace: (workspaceJid, recent = false) => {
+      const had = get().requested[workspaceJid];
+      if (had === 'recent' || (had && !recent)) return;
+      const scope: FetchScope = recent ? 'recent' : 'open';
       set((state) => ({
-        requested: { ...state.requested, [workspaceJid]: true },
+        requested: { ...state.requested, [workspaceJid]: scope },
       }));
-      // A worker's tag needs only the open items.
-      void fetchItems(workspaceJid, 'status=open')
-        .then((items) =>
-          set((state) => ({
-            items: {
-              ...Object.fromEntries(items.map((item) => [item.id, item])),
-              ...state.items,
-            },
-          })),
-        )
-        .catch(() => undefined);
+      void fetchScope(workspaceJid, scope);
+    },
+
+    reloadRequested: () => {
+      const { requested, loaded, pageWorkspaces } = get();
+      for (const [jid, scope] of Object.entries(requested))
+        if (!(loaded && pageWorkspaces.includes(jid)))
+          void fetchScope(jid, scope);
     },
 
     loadDetail: async (id) => {
@@ -219,8 +254,11 @@ export function useWorkItemSubscription(): void {
       ),
       // Events missed while the socket was down.
       wsManager.on('connected', (data: { reconnect?: boolean }) => {
-        const { loaded, pageWorkspaces, load } = useWorkItemsStore.getState();
-        if (data?.reconnect && loaded) void load(pageWorkspaces);
+        if (!data?.reconnect) return;
+        const { loaded, pageWorkspaces, load, reloadRequested } =
+          useWorkItemsStore.getState();
+        if (loaded) void load(pageWorkspaces);
+        reloadRequested();
       }),
     ];
     return () => unsubs.forEach((unsub) => unsub());

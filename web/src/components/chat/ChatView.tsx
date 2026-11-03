@@ -1731,6 +1731,7 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
                 agentId={sessionId}
                 {...agentLook}
                 interactionMode={interactionMode}
+                workMode={workMode}
               />
             )}
             {/* One place in the tree for both layouts, so docking after the
