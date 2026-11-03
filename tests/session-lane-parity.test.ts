@@ -619,6 +619,8 @@ describe('a stop while a failed turn waits for its retry', () => {
       resolveRuntimeControlTarget: () => LANE,
       UNBOUND_CHAT_REPLY: UNBOUND,
       cancelQueuedFollowUpsAtCutoff: () => [],
+      // Nothing the cutoff kept is left queued.
+      listQueuedFollowUps: () => [],
       cancelAutomationInputs: vi.fn(),
       closeRetryWaitTurnsOfInputs: vi.fn(),
       endUsageLimitWait: vi.fn(),

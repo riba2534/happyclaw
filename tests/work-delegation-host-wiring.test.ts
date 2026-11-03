@@ -194,22 +194,28 @@ describe("a delegated item's report waiting in a group session's queue", () => {
 });
 
 describe("a delegated worker's finished turn (settleDelegatedWorkerTurn)", () => {
-  function host(pending: { queued?: number; stored?: number }) {
+  function host(
+    pending: { queued?: number; stored?: string[] },
+    output: Record<string, unknown> = {},
+  ) {
     const failDelegatedWorkerRun = vi.fn();
     const globals: Record<string, unknown> = {
       listQueuedFollowUps: () => Array.from({ length: pending.queued ?? 0 }),
       getMessagesSince: (_lane: string, cursor: unknown) => {
         expect(cursor).toEqual({ timestamp: 't', id: 'last' });
-        return Array.from({ length: pending.stored ?? 0 });
+        return (pending.stored ?? []).map((id) => ({ id }));
       },
       lastCommittedCursor: { [LANE]: { timestamp: 't', id: 'last' } },
       EMPTY_CURSOR: { timestamp: '', id: '' },
       failDelegatedWorkerRun,
     };
-    createRuntimeSourceHarness(globals).install('settleDelegatedWorkerTurn');
+    const harness = createRuntimeSourceHarness(globals);
+    harness.install('ipcReceiptMessageIds');
+    harness.install('settleDelegatedWorkerTurn');
     (globals.settleDelegatedWorkerTurn as (...args: unknown[]) => void)(
       LANE,
       'worker-1',
+      output,
     );
     return failDelegatedWorkerRun;
   }
@@ -220,15 +226,112 @@ describe("a delegated worker's finished turn (settleDelegatedWorkerTurn)", () =>
 
   test('a queued input or a batch piped past the cursor is not the end', () => {
     expect(host({ queued: 1 })).not.toHaveBeenCalled();
-    expect(host({ stored: 1 })).not.toHaveBeenCalled();
+    expect(host({ stored: ['followup-2'] })).not.toHaveBeenCalled();
+  });
+
+  test('the follow-up a warm runner answered this turn counts as answered', () => {
+    // Its IPC receipt is acknowledged after this runs: the input is still
+    // past the committed cursor.
+    const receipts = {
+      ipcReceipts: [
+        {
+          deliveryId: 'd-1',
+          chatJid: LANE,
+          cursor: { timestamp: 't2', id: 'followup-1' },
+          coveredCursors: [
+            { timestamp: 't1', id: 'followup-0' },
+            { timestamp: 't2', id: 'followup-1' },
+          ],
+        },
+      ],
+    };
+    expect(
+      host({ stored: ['followup-0', 'followup-1'] }, receipts),
+    ).toHaveBeenCalledWith('worker-1', null);
+    // One piped behind it is not.
+    expect(
+      host({ stored: ['followup-1', 'followup-2'] }, receipts),
+    ).not.toHaveBeenCalled();
   });
 });
 
 describe('a stop of the delegating session (breakLane)', () => {
+  /** breakLane and what releases the reports it keeps. */
+  function host(input: {
+    activeRunId: string | null;
+    queued: { id: string; chat_jid: string }[];
+  }) {
+    const released: unknown[][] = [];
+    const globals: Record<string, unknown> = {
+      crypto: { randomUUID: () => 'uuid-1' },
+      cancelQueuedFollowUpsAtCutoff: vi.fn(() => []),
+      isDelegatedReportInput: (item: { id: string }) =>
+        item.id.startsWith('work-report-'),
+      listQueuedFollowUps: () => input.queued,
+      releaseQueuedFollowUpBatch: (items: unknown[], runId: string) => {
+        released.push([items, runId]);
+        return true;
+      },
+      broadcastFollowUpBatchUpdate: vi.fn(),
+      enqueueReleasedFollowUp: vi.fn(),
+      moveMessagesToIngestTail: vi.fn(),
+      cancelAutomationInputs: vi.fn(),
+      broadcastFollowUpUpdate: vi.fn(),
+      getChannelType,
+      clearStandaloneProcessingIndicator: vi.fn(),
+      closeRetryWaitTurnsForWithdrawnInputs: vi.fn(),
+      channelTurnScopeForInput: vi.fn(),
+      endUsageLimitWait: vi.fn(),
+      interruptActiveSessionRun: vi.fn(() => ({
+        activeRunId: input.activeRunId,
+        interrupted: input.activeRunId !== null,
+      })),
+      queue: { stopArmedRetry: vi.fn(() => false) },
+    };
+    const harness = createRuntimeSourceHarness(globals);
+    harness.install('releaseKeptReports');
+    harness.install('requeueKeptReportsAfterReset');
+    return { globals, released };
+  }
+  const report = { id: 'work-report-w1-7', chat_jid: LANE };
+  const typed = { id: 'in-9', chat_jid: LANE };
+
+  test('with no query left in the lane, the kept reports run now', () => {
+    const { globals, released } = host({
+      activeRunId: null,
+      queued: [typed, report],
+    });
+    (globals.breakLane as (...args: unknown[]) => unknown)(LANE, 'stop');
+    expect(released).toEqual([[[report], 'recovery:uuid-1']]);
+    expect(globals.enqueueReleasedFollowUp).toHaveBeenCalledWith(report);
+  });
+
+  test('a query the stop ends dispatches them itself', () => {
+    const { globals, released } = host({
+      activeRunId: 'run-1',
+      queued: [report],
+    });
+    (globals.breakLane as (...args: unknown[]) => unknown)(LANE, 'stop');
+    expect(released).toEqual([]);
+  });
+
+  test('after /clear or /fresh they move past the new cursor and run', () => {
+    const { globals, released } = host({
+      activeRunId: null,
+      queued: [typed, report],
+    });
+    (globals.requeueKeptReportsAfterReset as (lane: string) => void)(LANE);
+    expect(globals.moveMessagesToIngestTail).toHaveBeenCalledWith(LANE, [
+      report.id,
+    ]);
+    expect(released).toEqual([[[report], 'recovery:uuid-1']]);
+  });
+
   test('keeps the queued reports of delegated items', () => {
     const keep = () => true;
     const cancelQueuedFollowUpsAtCutoff = vi.fn(() => []);
     const globals: Record<string, unknown> = {
+      listQueuedFollowUps: () => [],
       cancelQueuedFollowUpsAtCutoff,
       isDelegatedReportInput: keep,
       cancelAutomationInputs: vi.fn(),
@@ -246,6 +349,7 @@ describe('a stop of the delegating session (breakLane)', () => {
       settleCancelledFollowUp: vi.fn(),
     };
     const harness = createRuntimeSourceHarness(globals);
+    harness.install('releaseKeptReports');
     harness.install('cancelQueuedInputsOfLane');
     (globals.breakLane as (...args: unknown[]) => unknown)(LANE, 'stop');
     (globals.cancelQueuedInputsOfLane as (lane: string) => void)(LANE);

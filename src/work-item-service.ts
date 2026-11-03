@@ -2170,6 +2170,7 @@ const DELEGATION_ERRORS = {
   manageNotOwner:
     '只有工作区主人亲自发起的对话可以停止或跟进后台任务；请把用户的意思转告主人。',
   worktree: '独立 worktree 会话暂不支持派出后台任务；请在当前会话里完成。',
+  stoppedBeforeStart: '这个后台任务在 Worker 启动前已被停止，没有开始执行。',
 };
 
 /** Why a delegated item stopped: its event text, and what its session reads. */
@@ -2517,6 +2518,17 @@ async function delegate(
     now: now(),
     delegatedBy: { agentId: lane.agentId, inputId: origin.messageId },
   });
+  // Nothing half made stays: the item fails and its session goes.
+  const abandon = (error: unknown): never => {
+    const reason = error instanceof Error ? error.message : String(error);
+    logger.warn(
+      { err: error, workItemId: item.id, laneJid: lane.laneJid },
+      'Could not start a delegated item',
+    );
+    broadcast(endItem(item, 'failed', { lastSummary: `派出失败：${reason}` }));
+    discardSession(lane.workspaceJid, lane.workspace, agentId);
+    return fail(`Could not start the delegated task: ${reason}`);
+  };
   try {
     // Shares the delegating session's directory: no worktree.
     await createConversationSession({
@@ -2527,6 +2539,20 @@ async function delegate(
       sessionId: agentId,
       sourceKind: 'work_item',
     });
+  } catch (error) {
+    abandon(error);
+  }
+  // Stopped on the Web, or its delegating session deleted, while the
+  // session was being made: no worker runs it.
+  const current = getWorkItem(item.id);
+  if (current?.status !== 'open' || !originSessionOf(current)) {
+    if (current?.status === 'open') {
+      stopDelegatedItem(current, 'origin_deleted')();
+    }
+    discardSession(lane.workspaceJid, lane.workspace, agentId);
+    fail(DELEGATION_ERRORS.stoppedBeforeStart);
+  }
+  try {
     // The task in full: the item's detail shows it as the request.
     noteDelivery(item, item.sourceMessageId, request.task);
     injectTeamInput({
@@ -2546,15 +2572,7 @@ async function delegate(
       },
     });
   } catch (error) {
-    // Nothing half made stays: the item fails and its session goes.
-    const reason = error instanceof Error ? error.message : String(error);
-    logger.warn(
-      { err: error, workItemId: item.id, laneJid: lane.laneJid },
-      'Could not start a delegated item',
-    );
-    broadcast(endItem(item, 'failed', { lastSummary: `派出失败：${reason}` }));
-    discardSession(lane.workspaceJid, lane.workspace, agentId);
-    fail(`Could not start the delegated task: ${reason}`);
+    abandon(error);
   }
   logger.info(
     {

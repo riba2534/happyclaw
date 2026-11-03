@@ -26,6 +26,18 @@ export interface CommandDeps {
 
 export type SessionResetMode = 'clear' | 'fresh';
 
+let afterSessionReset: ((laneJid: string) => void) | null = null;
+
+/**
+ * Set once at startup (index.ts): what follows a reset of a session lane
+ * once its new cursor is in place, such as the inputs a stop keeps.
+ */
+export function setAfterSessionReset(
+  fn: ((laneJid: string) => void) | null,
+): void {
+  afterSessionReset = fn;
+}
+
 export interface SessionResetOptions {
   mode?: SessionResetMode;
   handoff?: string;
@@ -189,6 +201,9 @@ export async function executeSessionReset(
       false,
     );
   }
+
+  // 6. Inputs a stop keeps (a delegated item's report) come after it.
+  afterSessionReset?.(targetJid);
 
   logger.info(
     { baseChatJid, targetJid, folder, agentId, mode },
