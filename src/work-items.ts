@@ -9,6 +9,12 @@
  * `work_reply`; a worker confirms a request once with `work_ack` and reports
  * to the router with `work_report`.
  *
+ * Multi-task mode (多任务模式) reuses the same work items outside any group:
+ * in a workspace whose work mode is `multi`, a session delegates a sizeable
+ * task with `work_delegate`, ends its turn and takes the next input; the
+ * task runs as a delegated work item in a worker session of its own, whose
+ * `work_report` comes back to the delegating session as an input.
+ *
  * Canonical file: shared/work-items.ts, copied by `make sync-types`.
  */
 
@@ -215,21 +221,43 @@ export type WorkItemOutcome =
   | 'stopped'
   | null;
 
+/**
+ * Where a work item came from: a team-mode group, or a session of a
+ * multi-task workspace that delegated it.
+ */
+export type WorkItemOrigin = 'team' | 'delegated';
+
 export interface WorkItem {
   id: string;
   /** `#<seq>` per workspace, for people. */
   seq: number;
   workspaceJid: string;
   workspaceFolder: string;
-  /** The Feishu group (route jid without suffixes) the item came from. */
+  /**
+   * team: the Feishu group (route jid without suffixes) the item came from.
+   * delegated: the delegating session's lane, `<workspaceJid>#agent:<id>`.
+   */
   channelJid: string;
   /** The Runtime Session (agents.id) that does the work. */
   agentId: string;
   title: string;
-  /** The message that started the item, as the provider identifies it. */
+  /**
+   * team: the message that started the item, as the provider identifies it.
+   * delegated: `delegate:<uuid>`, one per delegation (a turn may delegate
+   * several tasks).
+   */
   sourceMessageId: string;
-  /** The route its replies go to (the group's IM jid). */
+  /**
+   * team: the route its replies go to (the group's IM jid).
+   * delegated: the source route of the input that delegated it, which the
+   * report input keeps so the delegating session answers where it was asked.
+   */
   sourceRouteJid: string;
+  origin: WorkItemOrigin;
+  /** delegated: the session (agents.id) that delegated it and gets its reports. */
+  originAgentId: string | null;
+  /** delegated: the input message the delegating turn was answering. */
+  originInputId: string | null;
   mandate: WorkMandate;
   status: WorkItemStatus;
   outcome: WorkItemOutcome;
@@ -371,10 +399,19 @@ export type WorkReplyPurpose = 'ack' | 'result' | 'attention' | 'answer';
 
 // ── Runner ↔ host (IPC) ────────────────────────────────────────────────
 
-/** How the Runner knows a session's role in team mode. */
+/**
+ * How the Runner knows a session's role in team mode, or that it is the
+ * worker of a delegated item (`origin: 'delegated'`), which reports to the
+ * session that delegated it instead of a group's router.
+ */
 export type TeamRole =
   | { role: 'router' }
-  | { role: 'worker'; workItemId: string; writable: boolean };
+  | {
+      role: 'worker';
+      workItemId: string;
+      writable: boolean;
+      origin?: WorkItemOrigin;
+    };
 
 export interface WorkRouteItem {
   kind: 'accept' | 'attach' | 'stop' | 'ignore';
@@ -437,8 +474,82 @@ export const WORK_IPC_TYPES = [
   'work_report',
   'work_ack',
   'work_handback',
+  'work_delegate',
+  'work_delegations',
+  'work_stop',
+  'work_followup',
 ] as const;
 export type WorkIpcType = (typeof WORK_IPC_TYPES)[number];
+
+// ── Multi-task mode (多任务模式) ────────────────────────────────────────
+
+/**
+ * How a workspace's sessions take on work. `single` (the default) keeps one
+ * input at a time, long work running in the session itself. `multi` lets a
+ * session hand a sizeable task to a worker with `work_delegate` and take the
+ * next input at once.
+ */
+export type WorkMode = 'single' | 'multi';
+export const DEFAULT_WORK_MODE: WorkMode = 'single';
+
+export function parseWorkMode(value: unknown): WorkMode | null {
+  return value === 'single' || value === 'multi' ? value : null;
+}
+
+/** Open delegated items one session may have at a time. */
+export const DELEGATED_OPEN_PER_SESSION = 3;
+/** Open delegated items one workspace may have at a time. */
+export const DELEGATED_OPEN_PER_WORKSPACE = 5;
+/** `work_delegate.task`, in characters. */
+export const DELEGATE_TASK_CHAR_LIMIT = 8000;
+/** `work_delegate.context`, in characters. */
+export const DELEGATE_CONTEXT_CHAR_LIMIT = 8000;
+/** `work_delegate.files`: paths relative to the working directory. */
+export const DELEGATE_FILES_LIMIT = 50;
+/** `work_followup.message`, in characters. */
+export const DELEGATE_FOLLOWUP_CHAR_LIMIT = 4000;
+
+/** `work_delegate`: a session of a multi-task workspace hands a task over. */
+export interface WorkDelegateRequest {
+  /** A short title, at most WORK_TITLE_CHAR_LIMIT characters. */
+  title: string;
+  /** What to do and what result to return, self-contained. */
+  task: string;
+  /** Background the worker needs from this conversation (optional). */
+  context?: string;
+  /** Files the worker should read or may change (optional). */
+  files?: string[];
+}
+
+export interface WorkDelegateResult {
+  workItemId: string;
+  seq: number;
+}
+
+/**
+ * `work_stop` and `work_followup` name an item by id or by `#seq`. A session
+ * reaches only the items it delegated.
+ */
+export interface WorkStopRequest {
+  item: string;
+}
+
+export interface WorkFollowupRequest {
+  item: string;
+  /** Passed to the worker as its next input (an answer, a correction). */
+  message: string;
+}
+
+/** `work_delegations`: the open items this session delegated, newest first. */
+export interface DelegatedWorkSummary {
+  workItemId: string;
+  seq: number;
+  title: string;
+  stage: WorkStage;
+  lastReport: WorkReportState | null;
+  lastSummary: string | null;
+  createdAt: string;
+}
 
 // ── Web ────────────────────────────────────────────────────────────────
 
@@ -446,6 +557,8 @@ export interface WorkItemView extends WorkItem {
   stage: WorkStage;
   workspaceName: string;
   channelName: string | null;
+  /** delegated: the delegating session's name, while it exists. */
+  originSessionName: string | null;
 }
 
 export type WorkEventKind =
