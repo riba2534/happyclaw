@@ -764,6 +764,12 @@ export interface ContainerInput {
    * from it. Absent for every other session.
    */
   teamRole?: TeamRole;
+  /**
+   * Multi-task mode (多任务模式): set for an ordinary conversation session
+   * (no team role) of a workspace whose work mode is `multi`. The Runner adds
+   * the delegation tools and their prompt section. Absent otherwise.
+   */
+  workMode?: 'multi';
 }
 
 /**

@@ -6,7 +6,7 @@ import { isAutomationTurnInput } from '../../src/agent-builder-turn-auth.js';
 import * as automationLedger from '../../src/automation-run-ledger.js';
 import { canDeleteAcknowledgedIpcSource } from '../../src/host-ipc-output-router.js';
 import { WORK_IPC_TYPES } from '../../src/work-items.js';
-import { readTeamInput } from '../../src/team-gate.js';
+import { copiesGroupMessage, readTeamInput } from '../../src/team-gate.js';
 
 // Execute whole production functions with explicit dependencies, without
 // importing index.ts (which starts the server). No routing/cursor algorithm is
@@ -117,6 +117,7 @@ function automationDefaults(): Record<string, unknown> {
     afterTeamMessageStored: () => {},
     followupCopyIdsOf: () => [],
     readTeamInput,
+    copiesGroupMessage,
     onTeamMessageStored: () => {},
     // utils.ts reads config at import; tests mock config, so not imported.
     agentIdOfJid: (jid: string) =>

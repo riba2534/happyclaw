@@ -614,6 +614,7 @@ import {
 } from './web.js';
 import { ProactiveCommentaryRelay } from './process-commentary.js';
 import {
+  copiesGroupMessage,
   decideTeamInbound,
   teamInputFrameOf,
   readTeamInput,
@@ -628,10 +629,12 @@ import {
   onTeamMessageStored,
   teamRouteStillHolds,
   reconcileAllTeamGroups,
+  reconcileDelegatedWorkItems,
   reconcileTeamGroup,
   resolveTeamGroup,
   resolveTeamRole,
   resumePendingTeamReplies,
+  runnerWorkMode,
   teamLaneOf,
   teamGateDeps,
   teamInputItemFor,
@@ -1912,12 +1915,18 @@ function queuedInputImSender(
   const sourceJid = item.source_jid;
   const provider = sourceJid ? getChannelType(sourceJid) : null;
   if (!sourceJid || !provider) return null;
-  // A team input the host composed from a group message (a follow-up copy,
-  // a hand-back) is that person's message: its own sender is the host.
-  const imId =
-    item.source_kind === 'work_item_input'
-      ? readTeamInput(item.attachments)?.facts?.senderImId
-      : (ownerImIdFromPersistedSender(sourceJid, item.sender) ?? undefined);
+  let imId: string | undefined;
+  if (item.source_kind === 'work_item_input') {
+    const header = readTeamInput(item.attachments);
+    // A team input the host composed from a group message (a follow-up
+    // copy, a hand-back) is that person's message: its own sender is the
+    // host. Any other (a delegated item's report, riding the chat route of
+    // the input that delegated it) is nobody's.
+    if (header && !copiesGroupMessage(header)) return null;
+    imId = header?.facts?.senderImId;
+  } else {
+    imId = ownerImIdFromPersistedSender(sourceJid, item.sender) ?? undefined;
+  }
   if (item.channel_context) {
     return item.channel_context.provider === provider ? { imId } : null;
   }
@@ -8927,6 +8936,27 @@ function writeTaskResult(
 }
 
 /**
+ * Why the turn a runner holds is not the workspace owner's own (the
+ * install_skill rule), or null when it is.
+ */
+function ownerTurnRejection(
+  sourceGroup: string,
+  turnScope: string,
+  ownerUserId: string,
+): string | null {
+  return skillMutationTurnRejection({
+    registry: activeAgentBuilderTurns,
+    sourceFolder: sourceGroup,
+    turnScope,
+    ownerUserId,
+    loadPersistedInput: getAgentBuilderInputMessage,
+    getGroup: (jid) => registeredGroups[jid] ?? getRegisteredGroup(jid),
+    getFolderJids: getJidsByFolder,
+    getChannelType,
+  });
+}
+
+/**
  * Refuse a Skill install/uninstall from a turn the workspace owner did not
  * start, writing the reason as the tool result. Returns true when refused.
  */
@@ -8938,16 +8968,11 @@ function refuseSkillMutationFromNonOwnerTurn(request: {
   tasksDir: string;
   resultFilePath: string;
 }): boolean {
-  const rejection = skillMutationTurnRejection({
-    registry: activeAgentBuilderTurns,
-    sourceFolder: request.sourceGroup,
-    turnScope: agentBuilderTurnScope(request.sourceGroup, request.ipcAgentId),
-    ownerUserId: request.ownerUserId,
-    loadPersistedInput: getAgentBuilderInputMessage,
-    getGroup: (jid) => registeredGroups[jid] ?? getRegisteredGroup(jid),
-    getFolderJids: getJidsByFolder,
-    getChannelType,
-  });
+  const rejection = ownerTurnRejection(
+    request.sourceGroup,
+    agentBuilderTurnScope(request.sourceGroup, request.ipcAgentId),
+    request.ownerUserId,
+  );
   if (!rejection) return false;
   logger.warn(
     {
@@ -9110,18 +9135,35 @@ function resolveIpcAutomationActor(
     turns: deliveredTurns,
     loadInput: getAgentBuilderInputMessage,
     isOwnerTurn: () =>
-      !!ownerUserId &&
-      !skillMutationTurnRejection({
-        registry: activeAgentBuilderTurns,
-        sourceFolder: sourceGroup,
-        turnScope,
-        ownerUserId,
-        loadPersistedInput: getAgentBuilderInputMessage,
-        getGroup: (jid) => registeredGroups[jid] ?? getRegisteredGroup(jid),
-        getFolderJids: getJidsByFolder,
-        getChannelType,
-      }),
+      !!ownerUserId && !ownerTurnRejection(sourceGroup, turnScope, ownerUserId),
   });
+}
+
+/**
+ * work_delegate (multi-task mode): the input the calling turn answers, when
+ * the workspace owner started that turn, else null. The owner rule is
+ * install_skill's (every turn the runner holds is the owner's own human
+ * input); `inputTurnId` names which delivered batch the turn is, and the
+ * last input of that batch is the one the delegation answers. A request that
+ * outlived its turn names no delivered batch and is refused.
+ */
+function ownerTurnInputOf(
+  sourceGroup: string,
+  sourceGroupEntry: RegisteredGroup | undefined,
+  ipcAgentId: string,
+  inputTurnId: string | null,
+): { chatJid: string; messageId: string } | null {
+  const ownerUserId = sourceGroupEntry?.created_by;
+  if (!ownerUserId) return null;
+  const turnScope = agentBuilderTurnScope(sourceGroup, ipcAgentId);
+  if (ownerTurnRejection(sourceGroup, turnScope, ownerUserId)) return null;
+  const turns = inputTurnId
+    ? activeAgentBuilderTurns.deliveredTurnsThrough(turnScope, inputTurnId)
+    : activeAgentBuilderTurns.activeBatch(turnScope);
+  const answered = turns.at(-1);
+  return answered
+    ? { chatJid: answered.chatJid, messageId: answered.messageId }
+    : null;
 }
 
 async function processTaskIpc(
@@ -9367,7 +9409,17 @@ async function processTaskIpc(
     // creates a worktree must not hold up the other requests of this sweep.
     const type = data.type;
     void handleWorkIpc(
-      { folder: sourceGroup, agentId: ipcAgentId },
+      {
+        folder: sourceGroup,
+        agentId: ipcAgentId,
+        ownerTurnInput: (inputTurnId) =>
+          ownerTurnInputOf(
+            sourceGroup,
+            sourceGroupEntry,
+            ipcAgentId,
+            inputTurnId,
+          ),
+      },
       data as unknown as { type: string } & Record<string, unknown>,
     ).then((result) =>
       writeTaskResult(tasksDir, type, data.requestId, { ...result }),
@@ -13997,6 +14049,7 @@ async function processAgentConversation(
         runtimeAgentKind: agent.kind,
       },
     );
+    const workMode = runnerWorkMode(agent, effectiveGroup.folder);
     const containerInput: ContainerInput = {
       prompt,
       sessionId,
@@ -14022,6 +14075,7 @@ async function processAgentConversation(
       images: imagesForAgent,
       agentProfile: toRunnerAgentProfile(agentProfile),
       ...(teamRole ? { teamRole } : {}),
+      ...(workMode ? { workMode } : {}),
     };
 
     // Write the groups snapshot
@@ -19281,6 +19335,10 @@ async function main(): Promise<void> {
   // Groups rebound while the service was down stop their work items now;
   // after this, binding changes reconcile their own group.
   reconcileAllTeamGroups();
+  // Multi-task mode: delegated items whose worker or delegating session went
+  // away while the service was down end now; after this, session deletion
+  // settles them.
+  reconcileDelegatedWorkItems();
   streamingBuffer.start();
   startRunnerSupervisor();
 

@@ -270,6 +270,16 @@ export function readTeamInput(
   return parseAttachments(attachmentsJson).find(isTeamInputItem) ?? null;
 }
 
+/**
+ * Whether a host-composed input copies a group member's message (a
+ * candidate, a follow-up, a hand-back): those name the message they copy as
+ * their trigger. Any other composed input, such as a delegated item's report,
+ * is nobody's message.
+ */
+export function copiesGroupMessage(item: TeamInputItem): boolean {
+  return item.attrs.some(([name]) => name === 'trigger');
+}
+
 /** `attachmentsJson` with the team item added (replacing an earlier one). */
 export function withTeamInputAttachment(
   attachmentsJson: string | null | undefined,
