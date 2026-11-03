@@ -131,6 +131,7 @@ function ipcHost(
   };
   const harness = createRuntimeSourceHarness(globals);
   harness.install('STALE_AUTOMATION_TURN_ERROR');
+  harness.install('ownerTurnRejection');
   harness.install('resolveIpcAutomationActor');
   harness.install('processTaskIpc');
   const send = (request: Record<string, unknown>) =>
