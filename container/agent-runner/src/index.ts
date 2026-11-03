@@ -171,8 +171,12 @@ import { createTranscriptUsageLoader } from './transcript-usage.js';
 import {
   buildHappyClawPromptPlan,
   hasBackgroundTaskTools,
+  SESSION_PROMPTS,
+  type BackgroundTasksPromptId,
   type PromptPlan,
+  type RolePromptId,
 } from './prompt-plan.js';
+import { sessionKind } from './session-kind.js';
 import {
   buildHappyClawSystemPrompt,
   withHappyClawSubagentContract,
@@ -345,8 +349,12 @@ const INTERACTION_GUIDELINES = loadPrompt('interaction.md');
 const ASSISTANT_OUTPUT_GUIDELINES = loadPrompt('output.assistant.md');
 const PROACTIVE_OUTPUT_GUIDELINES = loadPrompt('output.proactive.md');
 const WEB_FETCH_GUIDELINES = loadPrompt('web-fetch.md');
-const BACKGROUND_TASK_GUIDELINES = loadPrompt('background-tasks.md');
-const TEAM_BACKGROUND_TASK_GUIDELINES = loadPrompt('background-tasks.team.md');
+const BACKGROUND_TASK_GUIDELINES: Record<BackgroundTasksPromptId, string> = {
+  'background-tasks': loadPrompt('background-tasks.md'),
+  'background-tasks.team': loadPrompt('background-tasks.team.md'),
+  'background-tasks.multi': loadPrompt('background-tasks.multi.md'),
+  'background-tasks.delegated': loadPrompt('background-tasks.delegated.md'),
+};
 const ASSISTANT_DELIVERY_CONTRACT = loadPrompt(
   'delivery-contract.assistant.md',
 );
@@ -359,10 +367,11 @@ const HAPPYCLAW_PLATFORM_IDENTITY = loadPrompt('identity.happyclaw.md');
 const HAPPYCLAW_PLATFORM_BOOTSTRAP = loadPrompt('bootstrap.happyclaw.md');
 const RUNTIME_ADAPTATION = loadPrompt('runtime-adaptation.md');
 const RUNTIME_BASELINE = loadPrompt('runtime-baseline.md');
-const TEAM_PROMPTS = {
-  router: { id: 'team-router', text: loadPrompt('team-router.md') },
-  worker: { id: 'team-worker', text: loadPrompt('team-worker.md') },
-} as const;
+const ROLE_PROMPTS: Record<RolePromptId, string> = {
+  'team-router': loadPrompt('team-router.md'),
+  'team-worker': loadPrompt('team-worker.md'),
+  'delegated-worker': loadPrompt('delegated-worker.md'),
+};
 
 // 各渠道共用的格式说明：Web 端始终可看完整渲染，不因来源降级输出。
 // Mermaid 渲染说明已在模式专属 output prompt 中讲过，此处不重复，
@@ -2857,8 +2866,9 @@ async function runQueryAttempt(
   const includeClaudePreset =
     !proactiveInteractiveContract &&
     (containerInput.agentProfile?.includeClaudePreset ?? true);
-  const teamPrompt = containerInput.teamRole
-    ? TEAM_PROMPTS[containerInput.teamRole.role]
+  const sessionPrompts = SESSION_PROMPTS[sessionKind(containerInput)];
+  const teamPrompt = sessionPrompts.role
+    ? { id: sessionPrompts.role, text: ROLE_PROMPTS[sessionPrompts.role] }
     : undefined;
   const promptPlan = buildHappyClawPromptPlan({
     engine: includeClaudePreset
@@ -2902,9 +2912,8 @@ async function runQueryAttempt(
     ...(hasWebTools ? { web: WEB_FETCH_GUIDELINES } : {}),
     ...(backgroundTaskToolsAvailable
       ? {
-          backgroundTasks: teamPrompt
-            ? TEAM_BACKGROUND_TASK_GUIDELINES
-            : BACKGROUND_TASK_GUIDELINES,
+          backgroundTasks:
+            BACKGROUND_TASK_GUIDELINES[sessionPrompts.backgroundTasks],
         }
       : {}),
     ...(teamPrompt
@@ -4725,6 +4734,7 @@ async function main(): Promise<void> {
     ownerProfileEnabled: containerInput.happyClawOwnerProfileEnabled === true,
     interactionMode: containerInput.interactionMode ?? 'assistant',
     teamRole: containerInput.teamRole,
+    workMode: containerInput.workMode,
     currentInputTurnId: containerInput.turnId,
     workspaceMemoryMutationAuth:
       containerInput.workspaceMemoryMutationSigningSecret &&

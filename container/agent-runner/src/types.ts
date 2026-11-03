@@ -236,6 +236,13 @@ export interface ContainerInput {
    * disallowed tools; absent leaves the session exactly as it is.
    */
   teamRole?: TeamRole;
+  /**
+   * Multi-task mode (多任务模式): set only for an ordinary conversation of a
+   * multi-task workspace, never with a team role. It adds the delegation
+   * tools and their background-task guidance; absent leaves the session
+   * exactly as it is.
+   */
+  workMode?: 'multi';
   /** Source JID of the latest message that triggered this run (e.g. `discord:123…`).
    * Used by per-channel MCP tools (discord_*, etc.) to identify the current
    * incoming chat. Undefined when chatJid already encodes the IM source. */
