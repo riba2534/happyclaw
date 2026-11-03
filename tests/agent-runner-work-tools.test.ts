@@ -9,6 +9,7 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { afterEach, describe, expect, test, vi } from 'vitest';
 
 import { teamDisallowedTools } from '../container/agent-runner/src/builtin-tool-policy.js';
+import { createDelegationTools } from '../container/agent-runner/src/delegation-tools.js';
 import {
   createMcpTools,
   type McpContext,
@@ -34,6 +35,18 @@ const READER: TeamRole = {
   workItemId: 'item-2',
   writable: false,
 };
+const DELEGATED: TeamRole = {
+  role: 'worker',
+  workItemId: 'item-3',
+  writable: true,
+  origin: 'delegated',
+};
+const DELEGATION_TOOLS = [
+  'work_delegate',
+  'work_delegations',
+  'work_stop',
+  'work_followup',
+];
 
 /**
  * What a team session does not get: tools that post to the chat directly,
@@ -71,7 +84,11 @@ afterEach(async () => {
   }
 });
 
-function context(root: string, teamRole?: TeamRole): McpContext {
+function context(
+  root: string,
+  teamRole?: TeamRole,
+  workMode?: 'multi',
+): McpContext {
   return {
     chatJid: 'web:workspace',
     groupFolder: 'workspace',
@@ -84,21 +101,24 @@ function context(root: string, teamRole?: TeamRole): McpContext {
     workspaceIpc: root,
     workspaceGroup: root,
     ...(teamRole ? { teamRole } : {}),
+    ...(workMode ? { workMode } : {}),
   };
 }
 
 /** A Home session's tools, so the skill install tools are among them. */
-const names = (teamRole?: TeamRole) =>
+const definitions = (teamRole?: TeamRole, workMode?: 'multi') =>
   createMcpTools({
-    ...context('/tmp/work-tools-ipc', teamRole),
+    ...context('/tmp/work-tools-ipc', teamRole, workMode),
     isHome: true,
-  }).map((tool) => tool.name);
+  });
+const names = (teamRole?: TeamRole, workMode?: 'multi') =>
+  definitions(teamRole, workMode).map((tool) => tool.name);
 
 /** The Runner's real tool set behind a real MCP client, as the CLI sees it. */
-async function setup(teamRole: TeamRole) {
+async function setup(teamRole?: TeamRole, workMode?: 'multi') {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'work-tools-'));
   roots.push(root);
-  const ctx = context(root, teamRole);
+  const ctx = context(root, teamRole, workMode);
   const server = runnerSdk.createSdkMcpServer({
     name: 'happyclaw',
     version: 'test',
@@ -660,5 +680,294 @@ describe('worker tools over IPC', () => {
       reason: 'It asks about another page.',
     });
     expect(textOf(result)).toBe('Handed back to the router.');
+  });
+});
+
+describe('multi-task mode tool registration', () => {
+  test('only a multi-task conversation without a team role gets the delegation tools, after all the others', () => {
+    const single = names();
+    for (const name of DELEGATION_TOOLS) expect(single).not.toContain(name);
+    expect(names(undefined, 'multi')).toEqual([...single, ...DELEGATION_TOOLS]);
+    for (const role of [ROUTER, WRITER, READER, DELEGATED]) {
+      expect(names(role, 'multi')).toEqual(names(role));
+    }
+  });
+
+  test('the work mode leaves every other tool definition as it was', () => {
+    const shape = (tool: ReturnType<typeof definitions>[number]) => ({
+      name: tool.name,
+      description: tool.description,
+      annotations: tool.annotations,
+      meta: tool._meta,
+    });
+    const single = definitions().map(shape);
+    expect(
+      definitions(undefined, 'multi').map(shape).slice(0, single.length),
+    ).toEqual(single);
+  });
+
+  test('work_delegate is always loaded and work_delegations is read-only', () => {
+    const tools = definitions(undefined, 'multi');
+    const find = (name: string) => tools.find((tool) => tool.name === name)!;
+    expect(find('work_delegate')._meta?.['anthropic/alwaysLoad']).toBe(true);
+    expect(find('work_delegations').annotations?.readOnlyHint).toBe(true);
+    for (const name of ['work_stop', 'work_followup']) {
+      expect(find(name)._meta?.['anthropic/alwaysLoad']).toBeUndefined();
+      expect(find(name).annotations?.readOnlyHint).toBeUndefined();
+    }
+  });
+
+  test("a delegated item's worker swaps the withheld tools for work_report alone", () => {
+    const plain = names();
+    expect(names(DELEGATED)).toEqual([
+      ...plain.filter((name) => !WITHHELD_TOOLS.includes(name)),
+      'work_report',
+    ]);
+  });
+
+  test("a delegated item's worker, writable, only loses AskUserQuestion", () => {
+    expect(teamDisallowedTools(DELEGATED)).toEqual(['AskUserQuestion']);
+  });
+});
+
+describe('delegation tools over IPC', () => {
+  test('work_delegate sends the task with the input turn current when it is called', async () => {
+    const env = await setup(undefined, 'multi');
+    env.ctx.currentInputTurnId = 'turn-2';
+    const { request, result } = await exchange(
+      env,
+      'work_delegate',
+      {
+        title: ' Run the full test suite ',
+        task: 'Run make test and fix what fails.',
+        context: 'The owner wants it green before Friday.',
+        files: ['src/a.ts', 'tests/a.test.ts'],
+      },
+      { ok: true, data: { workItemId: 'item-9', seq: 3 } },
+    );
+    expect(body(request)).toEqual({
+      type: 'work_delegate',
+      title: 'Run the full test suite',
+      task: 'Run make test and fix what fails.',
+      context: 'The owner wants it green before Friday.',
+      files: ['src/a.ts', 'tests/a.test.ts'],
+      inputTurnId: 'turn-2',
+    });
+    expect(result.isError).toBeFalsy();
+    expect(textOf(result)).toBe(
+      '已派出 #3「Run the full test suite」（id: item-9）。结果会作为 <work_report> 输入自动回到本会话，不要等待或轮询。简短告诉用户已交给后台，然后结束本轮。',
+    );
+  });
+
+  test('work_delegate leaves out empty context and files, and names no turn when there is none', async () => {
+    const env = await setup(undefined, 'multi');
+    env.ctx.currentInputTurnId = null;
+    const { request } = await exchange(
+      env,
+      'work_delegate',
+      { title: 't', task: 'x', context: '  ', files: [] },
+      { ok: true, data: { workItemId: 'item-9', seq: 3 } },
+    );
+    expect(body(request)).toEqual({
+      type: 'work_delegate',
+      title: 't',
+      task: 'x',
+      inputTurnId: null,
+    });
+  });
+
+  test('work_delegate refuses what is over a limit before sending anything', async () => {
+    const env = await setup(undefined, 'multi');
+    const valid = { title: 't', task: 'x' };
+    for (const args of [
+      { ...valid, title: 'x'.repeat(61) },
+      { ...valid, title: '   ' },
+      { ...valid, task: 'x'.repeat(8001) },
+      { ...valid, context: 'x'.repeat(8001) },
+      { ...valid, files: Array.from({ length: 51 }, (_, i) => `f${i}`) },
+      { ...valid, files: [''] },
+      { ...valid, plan: 'y' },
+    ]) {
+      const result = await env.client.callTool({
+        name: 'work_delegate',
+        arguments: args,
+      });
+      expect(result.isError, JSON.stringify(args).slice(0, 80)).toBe(true);
+    }
+    expect(requestFiles(env.tasksDir)).toEqual([]);
+  });
+
+  test("work_delegate relays the host's refusal as it is", async () => {
+    const env = await setup(undefined, 'multi');
+    const refusal =
+      '当前工作区是单任务模式，不能派出后台任务；请在当前会话里完成。';
+    const { result } = await exchange(
+      env,
+      'work_delegate',
+      { title: 't', task: 'x' },
+      { ok: false, error: refusal },
+    );
+    expect(result.isError).toBe(true);
+    expect(textOf(result)).toBe(refusal);
+  });
+
+  test('work_delegations sends nothing but its type and lists the items', async () => {
+    const env = await setup(undefined, 'multi');
+    const { request, result } = await exchange(
+      env,
+      'work_delegations',
+      {},
+      {
+        ok: true,
+        data: [
+          {
+            workItemId: 'item-9',
+            seq: 3,
+            title: 'Run the full test suite',
+            stage: 'answer',
+            lastReport: 'blocked',
+            lastSummary: 'Skip the flaky e2e test?',
+            createdAt: '2026-11-04T01:00:00.000Z',
+          },
+          {
+            workItemId: 'item-8',
+            seq: 2,
+            title: 'Rename files',
+            stage: 'working',
+            lastReport: null,
+            lastSummary: null,
+            createdAt: '2026-11-04T00:00:00.000Z',
+          },
+        ],
+      },
+    );
+    expect(body(request)).toEqual({ type: 'work_delegations' });
+    expect(textOf(result)).toBe(
+      [
+        '- #3 Run the full test suite · id: item-9 · 等用户回答 · 最近回报: blocked · 派出于 2026-11-04T01:00:00.000Z · 摘要: Skip the flaky e2e test?',
+        '- #2 Rename files · id: item-8 · 进行中 · 最近回报: 无 · 派出于 2026-11-04T00:00:00.000Z',
+      ].join('\n'),
+    );
+    const empty = await exchange(
+      env,
+      'work_delegations',
+      {},
+      { ok: true, data: [] },
+    );
+    expect(textOf(empty.result)).toBe('本会话没有进行中的后台任务。');
+  });
+
+  test('work_stop and work_followup send the item and message as given', async () => {
+    const env = await setup(undefined, 'multi');
+    const stop = await exchange(
+      env,
+      'work_stop',
+      { item: '#3' },
+      { ok: true, data: {} },
+    );
+    expect(body(stop.request)).toEqual({ type: 'work_stop', item: '#3' });
+    expect(textOf(stop.result)).toBe('已停止 #3。');
+
+    const followup = await exchange(
+      env,
+      'work_followup',
+      { item: 'item-9', message: 'Skip it.' },
+      { ok: true, data: {} },
+    );
+    expect(body(followup.request)).toEqual({
+      type: 'work_followup',
+      item: 'item-9',
+      message: 'Skip it.',
+    });
+    expect(textOf(followup.result)).toBe(
+      '已转给 item-9 的 Worker。它的回报会作为 <work_report> 输入回到本会话。',
+    );
+
+    const tooLong = await env.client.callTool({
+      name: 'work_followup',
+      arguments: { item: '#3', message: 'x'.repeat(4001) },
+    });
+    expect(tooLong.isError).toBe(true);
+    expect(requestFiles(env.tasksDir)).toEqual([]);
+  });
+
+  test('a timeout says whether a write may have taken effect', async () => {
+    const tools = createDelegationTools(
+      async () => {
+        throw new Error('IPC result timeout');
+      },
+      () => 'turn-1',
+    );
+    const run = (name: string, args: Record<string, unknown>) =>
+      tools.find((tool) => tool.name === name)!.handler(args, {});
+    expect(await run('work_delegations', {})).toEqual({
+      content: [{ type: 'text', text: '等待宿主响应超时，请稍后再试。' }],
+      isError: true,
+    });
+    expect(await run('work_delegate', { title: 't', task: 'x' })).toEqual({
+      content: [
+        {
+          type: 'text',
+          text: '等待宿主确认超时：work_delegate 可能已经生效。先用 work_delegations 核实，不要直接重试。',
+        },
+      ],
+      isError: true,
+    });
+  });
+});
+
+describe("a delegated item's worker over IPC", () => {
+  test('work_report sends state and summary and says what follows', async () => {
+    const env = await setup(DELEGATED);
+    const replies: Record<string, string> = {
+      progress: '已记录。',
+      ready: '已回报，任务已结束。结束本轮。',
+      blocked: '已回报。结束本轮，回答会作为 <work_followup> 输入回来。',
+      failed: '已回报，任务已结束。结束本轮。',
+    };
+    for (const [state, reply] of Object.entries(replies)) {
+      const { request, result } = await exchange(
+        env,
+        'work_report',
+        { state, summary: ` ${state} summary ` },
+        { ok: true, data: {} },
+      );
+      expect(body(request)).toEqual({
+        type: 'work_report',
+        state,
+        summary: `${state} summary`,
+      });
+      expect(textOf(result)).toBe(reply);
+    }
+  });
+
+  test('work_report accepts only the delegated states and no question fields', async () => {
+    const env = await setup(DELEGATED);
+    const listed = await env.client.listTools();
+    const schema = listed.tools.find((tool) => tool.name === 'work_report')!
+      .inputSchema as {
+      additionalProperties?: unknown;
+      properties: Record<string, { enum?: string[] }>;
+    };
+    expect(schema.additionalProperties).toBe(false);
+    expect(Object.keys(schema.properties)).toEqual(['state', 'summary']);
+    expect(schema.properties.state.enum).toEqual([
+      'progress',
+      'ready',
+      'blocked',
+      'failed',
+    ]);
+    for (const args of [
+      { state: 'waiting', summary: 'x' },
+      { state: 'dropped', summary: 'x' },
+      { state: 'blocked', summary: 'x', humanAction: 'Which one?' },
+    ]) {
+      const result = await env.client.callTool({
+        name: 'work_report',
+        arguments: args,
+      });
+      expect(result.isError).toBe(true);
+    }
+    expect(requestFiles(env.tasksDir)).toEqual([]);
   });
 });
