@@ -17,6 +17,7 @@ import {
   setChannelMountInteractionModeOverride,
   getWorkspaceAgentProfileId,
   getWorkspaceInteractionMode,
+  getWorkspaceWorkMode,
   listAgentChannelMountsByWorkspace,
   listActiveGuestGrantJids,
   listWorkspaceRecords,
@@ -146,6 +147,7 @@ function serializeWorkspaceSummary(
       ? (group.executionMode ?? 'container')
       : undefined,
     interaction_mode: getWorkspaceInteractionMode(workspace.folder),
+    work_mode: getWorkspaceWorkMode(workspace.folder),
     custom_cwd: isAdmin ? (group.customCwd ?? null) : undefined,
     agent_profile: getAgentProfileSnapshot(workspace, inspectGovernance),
     runtime_session_count: inspectGovernance

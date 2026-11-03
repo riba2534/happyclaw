@@ -29,7 +29,7 @@
 | `/api/config`                      | `src/routes/config.ts`           | Provider、系统与兼容渠道配置  |
 | `/api/config`                      | `src/routes/brand-assets.ts`     | 品牌资源上传、删除与公开读取  |
 | `/api/automations`                 | `src/routes/automations.ts`      | 自动化和运行记录              |
-| `/api`                             | `src/routes/work-items.ts`       | 团队模式：群设置与工作项      |
+| `/api`                             | `src/routes/work-items.ts`       | 团队模式与多任务模式：工作项  |
 | `/api/tasks`                       | `src/routes/tasks.ts`            | 已废弃，一律 410              |
 | `/api/memory`                      | `src/routes/memory.ts`           | Workspace Memory v2           |
 | `/api/skills`                      | `src/routes/skills.ts`           | 用户 Skills                   |
@@ -248,6 +248,15 @@ Workspace↔AgentProfile 绑定行上，因此：仅 `web:` 前缀工作区可�
 工作区没有 AgentProfile 绑定时返回 409 `WORKSPACE_AGENT_PROFILE_MISSING`。
 它与 `execution_mode` 共享同一道 quiesce 边界，暖 Runner 只能观察到旧契约或新
 契约；停机失败返回 503 并带 `persisted` 标记。
+
+`work_mode`（`single` 或 `multi`）是工作区的工作方式，存放在同一条绑定行上。
+`GET /api/groups` 的每个 `web:` 工作区和 `GET /api/workspaces/:jid` 都带它（没有绑定行
+时为 `single`）；`POST /api/groups` 可在创建时指定，缺省 `single`；`PATCH /api/groups/:jid`
+同样接受它，响应回显当前值。权限与 `interaction_mode` 相同（仅 `web:` 前缀工作区、仅
+owner，没有绑定行时 409 `WORKSPACE_AGENT_PROFILE_MISSING`）。切换不经过 quiesce，不中断
+正在运行的回合，也不重置 SDK 会话：该工作区的每个暖 Runner 在本轮结束后退役，空闲的
+立即关闭，下一轮由新的 Runner 按新值决定工具和提示词。`multi` 下，普通会话可以把大任务
+派给 Worker 会话（见「团队模式与多任务模式」）。
 
 `process_visibility`（`hidden`、`activity` 或 `full`）决定主动模式工作区的 Web
 能看到一个回合的多少过程，存放在同一条绑定行上。`GET /api/groups` 的每个 `web:`
@@ -1021,7 +1030,7 @@ Legacy 渠道 facade 位于 `/api/config/user-im/*`，涵盖飞书、Telegram、
 
 旧的 `/api/tasks*` 全部返回 410，提示改用 `/api/automations`。
 
-## 团队模式
+## 团队模式与多任务模式
 
 - `GET /api/workspaces/:jid/team-mounts` → `{ mounts }`，工作区的群绑定及其团队设置，
   `eligible=false` 时带 `ineligibleReason`
@@ -1037,6 +1046,15 @@ Legacy 渠道 facade 位于 `/api/config/user-im/*`，涵盖飞书、Telegram、
 `docs/ACL-MATRIX.md` §4.7。校验和状态机在 `src/work-item-service.ts`，它的
 `WorkItemError` 按自带状态码返回 `{ error }`。工作项变化通过 WS `work_item_updated`
 只推给主人。
+
+工作项有两种来源（`origin`）：`team` 来自团队模式的群，`delegated` 是多任务工作区里
+某个会话用 `work_delegate` 派出的后台任务。两种工作项共用同一个工作区编号 `#seq`，
+也走同一组路由。`WorkItemView` 带 `origin`、`originAgentId`（派出它的会话）、
+`originInputId`（派出时那一轮回答的输入）和 `originSessionName`（派出它的会话名，会话
+已删除时为 `null`）。派发型工作项的 `channelJid` 是派出会话的 lane，`channelName`
+为 `null`。对派发型工作项调用 `POST /api/work-items/:id/stop` 时，工作项结束为
+`stopped`，Worker 停下，派出它的会话收到一条 `state="stopped"` 的 `work_report` 输入；
+`/approve` 不适用，派发型工作项一开始就可修改，调用返回 409。
 
 ## Skills、MCP 和 Plugins
 

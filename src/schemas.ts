@@ -218,6 +218,9 @@ const InteractionModeSchema = z
 /** How much of a proactive turn's process the Web shows (see ProcessVisibility). */
 export const ProcessVisibilitySchema = z.enum(['hidden', 'activity', 'full']);
 
+/** How a workspace's sessions take on work (see WorkMode). */
+export const WorkModeSchema = z.enum(['single', 'multi']);
+
 export const ChannelMountInteractionModePatchSchema = z
   .object({
     interaction_mode_override: z.enum(['assistant', 'proactive']).nullable(),
@@ -241,6 +244,7 @@ export const GroupCreateSchema = z.object({
   execution_mode: z.enum(['container', 'host']).optional(),
   interaction_mode: InteractionModeSchema.optional(),
   process_visibility: ProcessVisibilitySchema.optional(),
+  work_mode: WorkModeSchema.optional(),
   custom_cwd: z
     .string()
     .optional()
@@ -716,6 +720,7 @@ export const GroupPatchSchema = z.object({
   execution_mode: z.enum(['container', 'host']).optional(),
   interaction_mode: InteractionModeSchema.optional(),
   process_visibility: ProcessVisibilitySchema.optional(),
+  work_mode: WorkModeSchema.optional(),
 });
 
 export const LoginSchema = z.object({

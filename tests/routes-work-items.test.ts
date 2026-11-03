@@ -327,6 +327,50 @@ describe('work items', () => {
     );
   });
 
+  test('a delegated item reads and stops like any item, with its origin', async () => {
+    const delegated = item({
+      id: 'wi-d',
+      origin: 'delegated',
+      originAgentId: 'main-1',
+      originInputId: 'in-1',
+      originSessionName: '主会话',
+      channelName: null,
+    });
+    service.getWorkItemDetail.mockReturnValue({
+      item: delegated,
+      events: [],
+      subscriptions: [],
+    });
+    const detail = await call('GET', '/api/work-items/wi-d');
+    expect(detail.status).toBe(200);
+    expect(detail.body.item).toMatchObject({
+      origin: 'delegated',
+      originAgentId: 'main-1',
+      originInputId: 'in-1',
+      originSessionName: '主会话',
+    });
+    service.stopWorkItem.mockResolvedValue({
+      ...delegated,
+      status: 'ended',
+      outcome: 'stopped',
+    });
+    const stopped = await call('POST', '/api/work-items/wi-d/stop');
+    expect(stopped.body.item).toMatchObject({
+      origin: 'delegated',
+      outcome: 'stopped',
+    });
+    expect(service.stopWorkItem).toHaveBeenCalledWith('wi-d', {
+      userId: 'alice',
+      isAdmin: false,
+    });
+    // A guest still has no way to stop it.
+    as('guest-1', 'guest');
+    service.stopWorkItem.mockClear();
+    expect((await call('POST', '/api/work-items/wi-d/stop')).status).toBe(403);
+    expect(service.stopWorkItem).not.toHaveBeenCalled();
+    as('alice');
+  });
+
   test('list filters are validated', async () => {
     const base = `/api/workspaces/${enc(ALICE)}`;
     expect((await call('GET', `${base}/work-items?status=open`)).status).toBe(
