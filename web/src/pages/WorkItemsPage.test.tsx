@@ -91,6 +91,8 @@ const delegated = (
   });
 
 let served: WorkItemView[] = [];
+/** Whether a detail's events still hold the task's assignment. */
+let withAssignment = true;
 
 api.get.mockImplementation(async (path: string) => {
   if (path.includes('/work-decisions')) return { decisions: [] };
@@ -100,15 +102,30 @@ api.get.mockImplementation(async (path: string) => {
     return {
       item: found,
       events: [
+        // A later follow-up comes first: the assignment is matched by its
+        // trigger, not by being an input.
         {
-          id: 1,
+          id: 2,
           workItemId: found?.id,
           kind: 'input',
           state: null,
-          text: '把接口文档按模块整理成表格',
-          triggerMessageId: 'm-assign',
-          createdAt: '2026-11-01T01:00:00.000Z',
+          text: '预算控制在一万以内',
+          triggerMessageId: 'work-followup-x',
+          createdAt: '2026-11-01T02:00:00.000Z',
         },
+        ...(withAssignment
+          ? [
+              {
+                id: 1,
+                workItemId: found?.id,
+                kind: 'input',
+                state: null,
+                text: '把接口文档按模块整理成表格',
+                triggerMessageId: found?.sourceMessageId,
+                createdAt: '2026-11-01T01:00:00.000Z',
+              },
+            ]
+          : []),
       ],
       subscriptions: [],
     };
@@ -219,6 +236,28 @@ describe('工作项: delegated tasks list apart from the team', () => {
         (button) => button.textContent?.trim() === 'Worker 会话',
       ),
     ).toBe(true);
+  });
+
+  test("a delegated task's content is its assignment, or no record", async () => {
+    const requestSection = () =>
+      [...document.querySelectorAll('main section')].find((section) =>
+        section.querySelector('h2')?.textContent?.includes('任务内容'),
+      )!;
+    await render('/work/wi-20', mixed());
+    expect(requestSection().textContent).toContain(
+      '把接口文档按模块整理成表格',
+    );
+    expect(requestSection().textContent).not.toContain('预算控制在一万以内');
+    if (root) await act(async () => root?.unmount());
+    root = null;
+    withAssignment = false;
+    try {
+      await render('/work/wi-20', mixed());
+      expect(requestSection().textContent).toContain('没有记录。');
+      expect(requestSection().textContent).not.toContain('预算控制在一万以内');
+    } finally {
+      withAssignment = true;
+    }
   });
 
   test('without delegated tasks the page is as before', async () => {

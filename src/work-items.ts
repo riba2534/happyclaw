@@ -496,6 +496,17 @@ export function parseWorkMode(value: unknown): WorkMode | null {
   return value === 'single' || value === 'multi' ? value : null;
 }
 
+/** The states a delegated item's worker reports; the host accepts no others. */
+export const DELEGATED_REPORT_STATES = [
+  'progress',
+  'ready',
+  'blocked',
+  'failed',
+] as const satisfies readonly WorkReportState[];
+
+/** A `work_report.summary`, in characters. */
+export const WORK_SUMMARY_CHAR_LIMIT = 4000;
+
 /** Open delegated items one session may have at a time. */
 export const DELEGATED_OPEN_PER_SESSION = 3;
 /** Open delegated items one workspace may have at a time. */

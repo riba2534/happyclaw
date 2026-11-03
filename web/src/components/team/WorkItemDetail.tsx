@@ -103,12 +103,11 @@ export function WorkItemDetail({
     canApprove ? [approveAction] : [],
     open ? [stopAction] : [],
   ];
-  // The original request, when the host recorded it as the first input; a
-  // delegated task's first input is its assignment.
+  // The original request (a delegated task's assignment), recorded as the
+  // input whose trigger is the item's source message.
   const request = detail?.events.find(
     (event) =>
-      event.kind === 'input' &&
-      (delegated || event.triggerMessageId === item.sourceMessageId),
+      event.kind === 'input' && event.triggerMessageId === item.sourceMessageId,
   );
   const reportState = (state: string | null) =>
     WORK_REPORT_LABELS[state as WorkReportState] ?? null;

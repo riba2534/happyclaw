@@ -958,6 +958,17 @@ describe("a delegated item's worker over IPC", () => {
     };
     expect(schema.additionalProperties).toBe(false);
     expect(Object.keys(schema.properties)).toEqual(['state', 'summary']);
+    expect(
+      (
+        schema.properties.summary as {
+          maxLength?: number;
+          description?: string;
+        }
+      ).maxLength,
+    ).toBe(4000);
+    expect(
+      (schema.properties.summary as { description?: string }).description,
+    ).toContain('写进工作目录里的文件');
     expect(schema.properties.state.enum).toEqual([
       'progress',
       'ready',
@@ -968,6 +979,8 @@ describe("a delegated item's worker over IPC", () => {
       { state: 'waiting', summary: 'x' },
       { state: 'dropped', summary: 'x' },
       { state: 'blocked', summary: 'x', humanAction: 'Which one?' },
+      // The host's limit: a longer result goes into a file, not the summary.
+      { state: 'ready', summary: 'x'.repeat(4001) },
     ]) {
       const result = await env.client.callTool({
         name: 'work_report',

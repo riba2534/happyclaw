@@ -28,16 +28,17 @@ import {
 } from './automation-tools.js';
 
 import {
+  DELEGATED_REPORT_STATES,
   TEAM_IM_WORD_LIMIT,
   WORK_NOTE_WORD_LIMIT,
   WORK_REPORT_STATES,
+  WORK_SUMMARY_CHAR_LIMIT,
   WORK_TITLE_CHAR_LIMIT,
   countImWords,
   type TeamRole,
   type WorkIpcType,
   type WorkRouteItem,
   type WorkRouteResultItem,
-  type WorkReportState,
 } from './work-items.js';
 import { sessionKind } from './session-kind.js';
 
@@ -84,14 +85,6 @@ export function workSender(
     return text(onSuccess(result.data ?? ({} as D)));
   };
 }
-
-/** The states a delegated worker reports; the host accepts no others. */
-const DELEGATED_REPORT_STATES = [
-  'progress',
-  'ready',
-  'blocked',
-  'failed',
-] as const satisfies readonly WorkReportState[];
 
 function overWordLimit(label: string, value: string, limit: number) {
   // Every word is at least one character, so a short text needs no count.
@@ -448,8 +441,9 @@ function delegatedWorkerTools(call: WorkIpcCall): SdkMcpToolDefinition<any>[] {
           .string()
           .trim()
           .min(1)
+          .max(WORK_SUMMARY_CHAR_LIMIT)
           .describe(
-            '给派出任务的会话看的事实：结论、要点、产物路径、实际做过的检查',
+            `给派出任务的会话看的事实：结论、要点、产物路径、实际做过的检查。最多 ${WORK_SUMMARY_CHAR_LIMIT} 字；更长的结果写进工作目录里的文件，这里给结论和路径。`,
           ),
       }),
       async (args) => send('work_report', args, () => REPORTED[args.state]),
