@@ -86,7 +86,11 @@ import {
   getPendingAdminHostOnlyCleanupFolders,
   markAdminHostOnlyCleanupPending,
 } from '../admin-host-only-runtime.js';
-import { isAdminHostOnlyEffective } from '../deployment-mode.js';
+import {
+  isAdminHostOnlyEffective,
+  isSingleUserHost,
+} from '../deployment-mode.js';
+import { singleUserHostRefusal } from '../single-user-host-guard.js';
 import { onPasswordHashBusy } from '../password-hash-busy.js';
 
 const adminRoutes = new Hono<{ Variables: Variables }>();
@@ -310,6 +314,7 @@ adminRoutes.get('/permission-templates', authMiddleware, (c) => {
 
 // POST /api/admin/users - 创建用户
 adminRoutes.post('/users', authMiddleware, usersManageMiddleware, async (c) => {
+  if (isSingleUserHost()) return singleUserHostRefusal(c);
   const body = await c.req.json().catch(() => ({}));
   const validation = AdminCreateUserSchema.safeParse(body);
   if (!validation.success) {
@@ -428,6 +433,16 @@ adminRoutes.patch(
       async () => {
         const target = getUserById(id);
         if (!target) return c.json({ error: 'User not found' }, 404);
+        // Reactivating or promoting would add a second active user (or
+        // admin); disabling, deleting and editing stay allowed.
+        if (
+          isSingleUserHost() &&
+          ((validation.data.status === 'active' &&
+            target.status !== 'active') ||
+            (validation.data.role === 'admin' && target.role !== 'admin'))
+        ) {
+          return singleUserHostRefusal(c);
+        }
 
         const actor = c.get('user') as AuthUser;
         if (actor.role !== 'admin' && target.role === 'admin') {
@@ -1019,6 +1034,7 @@ adminRoutes.post(
   authMiddleware,
   inviteManageMiddleware,
   async (c) => {
+    if (isSingleUserHost()) return singleUserHostRefusal(c);
     const body = await c.req.json().catch(() => ({}));
     const validation = InviteCreateSchema.safeParse(body);
     if (!validation.success) {

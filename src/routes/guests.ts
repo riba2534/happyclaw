@@ -43,6 +43,8 @@ import { onPasswordHashBusy } from '../password-hash-busy.js';
 import { getClientIp } from '../utils.js';
 import type { AuthUser, User } from '../types.js';
 import { MAX_GUESTS_PER_OWNER, canOwnGuests } from '../guest-accounts.js';
+import { isSingleUserHost } from '../deployment-mode.js';
+import { singleUserHostRefusal } from '../single-user-host-guard.js';
 
 const guestRoutes = new Hono<{ Variables: Variables }>();
 guestRoutes.onError(onPasswordHashBusy);
@@ -156,7 +158,7 @@ guestRoutes.get('/', authMiddleware, (c) => {
   return c.json({
     guests: listGuestsByOwner(owner.id).map(serializeGuest),
     grantable_workspaces: listGrantableWorkspaces(owner.id),
-    can_create: canOwnGuests(owner),
+    can_create: canOwnGuests(owner) && !isSingleUserHost(),
     max_guests: MAX_GUESTS_PER_OWNER,
   });
 });
@@ -171,6 +173,7 @@ function guestLimitReached(ownerId: string): boolean {
 guestRoutes.post('/', authMiddleware, async (c) => {
   const owner = requireOwner(c);
   if (!owner) return c.json({ error: 'Forbidden' }, 403);
+  if (isSingleUserHost()) return singleUserHostRefusal(c);
   if (!canOwnGuests(owner))
     return c.json({ error: GUESTS_DISABLED_ERROR }, 403);
   if (guestLimitReached(owner.id)) {
@@ -264,6 +267,14 @@ guestRoutes.patch('/:id', authMiddleware, async (c) => {
     );
   }
   const data = validation.data;
+  // Re-enabling a guest would add a second active user.
+  if (
+    isSingleUserHost() &&
+    data.status === 'active' &&
+    guest.status !== 'active'
+  ) {
+    return singleUserHostRefusal(c);
+  }
 
   let workspaceJids: string[] | null = null;
   if (data.workspace_jids !== undefined) {

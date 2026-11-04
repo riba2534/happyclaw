@@ -71,7 +71,12 @@ import {
   invalidateSessionCache,
   invalidateUserSessions,
 } from '../web-context.js';
-import { getSystemSettings } from '../runtime-config.js';
+import { getSystemSettings, saveSystemSettings } from '../runtime-config.js';
+import {
+  getDeploymentMode,
+  isSingleUserHost,
+  parseDeploymentMode,
+} from '../deployment-mode.js';
 import {
   AvatarImageError,
   normalizeAvatarImage,
@@ -155,19 +160,32 @@ function buildSetupStatus() {
 // Public: check if system is initialized (any user exists)
 authRoutes.get('/status', (c) => {
   const initialized = getUserCount(true) > 0;
-  return c.json({ initialized });
+  return c.json({ initialized, deploymentMode: getDeploymentMode() });
 });
 
 // Public: initial admin setup (only when no users exist)
 authRoutes.post('/setup', authJsonBodyLimit, async (c) => {
   const body = await c.req.json().catch(() => ({}));
-  const { username: rawUsername, password } = body as {
+  const {
+    username: rawUsername,
+    password,
+    deployment_mode: rawDeploymentMode,
+  } = body as {
     username?: string;
     password?: string;
+    deployment_mode?: unknown;
   };
 
   if (!rawUsername || !password) {
     return c.json({ error: 'Username and password are required' }, 400);
+  }
+  // Absent keeps today's behaviour: nothing is stored.
+  const deploymentMode =
+    rawDeploymentMode === undefined
+      ? null
+      : parseDeploymentMode(rawDeploymentMode);
+  if (rawDeploymentMode !== undefined && !deploymentMode) {
+    return c.json({ error: 'Invalid deployment_mode' }, 400);
   }
 
   const usernameError = validateUsername(rawUsername);
@@ -211,6 +229,10 @@ authRoutes.post('/setup', authJsonBodyLimit, async (c) => {
     user_agent: ua,
     details: { source: 'setup_wizard', role: 'admin' },
   });
+
+  // Saved before the home workspace exists, so a single-user host install
+  // creates it under that mode.
+  if (deploymentMode) saveSystemSettings({ deploymentMode });
 
   // Create admin home group (web:main, folder=main, host mode)
   try {
@@ -406,6 +428,10 @@ authRoutes.get('/register/status', (c) => {
       requireInviteCode: true,
     });
   }
+  // Single-user host mode never opens registration; the stored switch stays.
+  if (isSingleUserHost()) {
+    return c.json({ allowRegistration: false, requireInviteCode: true });
+  }
 
   const config = getRegistrationConfig();
   return c.json({
@@ -417,6 +443,9 @@ authRoutes.get('/register/status', (c) => {
 authRoutes.post('/register', authJsonBodyLimit, async (c) => {
   if (getUserCount(true) === 0) {
     return c.json({ error: '系统尚未初始化，请先完成管理员设置。' }, 403);
+  }
+  if (isSingleUserHost()) {
+    return c.json({ error: '单人宿主机模式不开放注册。' }, 403);
   }
 
   // Check registration switch
@@ -633,16 +662,19 @@ authRoutes.get('/me', authMiddleware, (c) => {
   // own cache strategy (NetworkFirst + auth-store delete on login/logout).
   c.header('Cache-Control', 'private, no-store');
 
+  const deploymentMode = getDeploymentMode();
+
   // Admin users get setup status for the onboarding wizard
   if (fullUser.role === 'admin') {
     return c.json({
       user: userPublic,
       appearance,
+      deploymentMode,
       setupStatus: buildSetupStatus(),
     });
   }
 
-  return c.json({ user: userPublic, appearance });
+  return c.json({ user: userPublic, appearance, deploymentMode });
 });
 
 authRoutes.put('/profile', authMiddleware, async (c) => {
