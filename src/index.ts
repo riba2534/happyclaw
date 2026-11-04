@@ -462,7 +462,17 @@ import { resolveChannelAccountFallbackWorkspace } from './channel-account-routin
 import { testChannelAccountCredentials } from './channel-account-connectivity.js';
 import { hasAgentProfilePrompts } from './agent-profile-prompts.js';
 import { toRunnerAgentProfile } from './runner-agent-profile.js';
-import { isAdminHostOnlyEffective } from './deployment-mode.js';
+import {
+  isAdminHostOnlyEffective,
+  isSingleUserHost,
+} from './deployment-mode.js';
+import {
+  assignWorkspaceRootDirIfNew,
+  ensureWorkspaceDirs,
+  setWorkspaceRootResolver,
+  workspaceDirOf,
+} from './workspace-dir.js';
+import { getWorkspaceRootResolution } from './workspace-root.js';
 import {
   getFeishuProviderConfigWithSource,
   getTelegramProviderConfig,
@@ -3055,7 +3065,8 @@ function extractFeishuCardText(text: string): string | null {
 /**
  * The directory a run of workspace `folder` (as session `agentId`) works in,
  * where relative paths the Agent reports and IM files handed to it resolve:
- * a worktree session's worktree, a Host custom directory, or data/groups.
+ * a worktree session's worktree, a Host custom directory, or the workspace's
+ * own directory.
  */
 function agentWorkingRoot(folder: string, agentId?: string | null): string {
   const workspaceJid = findWebJidForFolder(folder);
@@ -3067,7 +3078,7 @@ function agentWorkingRoot(folder: string, agentId?: string | null): string {
         resolveEffectiveGroup(workspace).effectiveGroup,
         { agentId },
       )
-    : path.join(GROUPS_DIR, folder);
+    : workspaceDirOf(folder);
 }
 
 /**
@@ -4968,7 +4979,9 @@ async function clearSessionRuntimeFiles(
     );
   }
 
-  if (!cleared) {
+  // Single-user host mode never runs Docker; the files a container left
+  // behind stay until an admin removes them.
+  if (!cleared && !isSingleUserHost()) {
     try {
       await execFileAsync(
         'docker',
@@ -5257,7 +5270,7 @@ async function handleFreshCommand(
       getRegisteredGroup(target.baseChatJid);
     const snapshotCwd = targetGroup
       ? resolveWorkspaceProjectRoot(targetGroup, { agentId: target.agentId })
-      : path.join(GROUPS_DIR, target.folder);
+      : workspaceDirOf(target.folder);
     const snapshot = await captureWorkspaceSnapshot(snapshotCwd);
     const handoff = formatFreshWindowHandoff({
       notes: rawNotes,
@@ -6900,9 +6913,11 @@ function registerGroup(jid: string, group: RegisteredGroup): void {
   registeredGroups[jid] = group;
   setRegisteredGroup(jid, group);
 
-  // Create group folder
-  const groupDir = path.join(GROUPS_DIR, group.folder);
-  fs.mkdirSync(path.join(groupDir, 'logs'), { recursive: true });
+  // A new Host workspace without a custom directory lives in the workspace
+  // root; everything else (Container workspaces, IM chat rows sharing a
+  // workspace folder) uses the folder's directory as it is.
+  assignWorkspaceRootDirIfNew(jid, group);
+  ensureWorkspaceDirs(group.folder);
 
   logger.info(
     // `name` is pino's logger-name field; it would replace the log prefix.
@@ -7020,7 +7035,7 @@ function buildExpandContext(
       (group.executionMode || 'container') === 'host'
         ? resolveWorkspaceProjectRoot(group, { agentId: resolvedAgentId })
         : group.customCwd,
-    groupsDir: GROUPS_DIR,
+    workspaceDir: workspaceDirOf(group.folder),
     containerName: queue.getActiveContainerName(chatJid),
   });
 }
@@ -15159,6 +15174,12 @@ function recoverStartupTypedIpcDeliveries(): void {
 }
 
 async function ensureDockerRunning(): Promise<void> {
+  // Single-user host mode never uses Docker: no probe, no cleanup, whatever
+  // execution mode a leftover row still has.
+  if (isSingleUserHost()) {
+    logger.info('Single-user host mode, skipping Docker checks');
+    return;
+  }
   // Skip all Docker checks when no groups use container mode
   if (!hasContainerModeGroups()) {
     logger.info('All groups use host execution mode, skipping Docker checks');
@@ -18217,6 +18238,9 @@ function migrateDataDirectories(): void {
 
 async function main(): Promise<void> {
   migrateDataDirectories();
+  // New Host workspaces (home workspaces included, created during loadState
+  // and setup) get their directory in the workspace root.
+  setWorkspaceRootResolver(() => getWorkspaceRootResolution().effective);
   initDatabase();
   logger.info('Database initialized');
   installSystemMainModelConfigResolver();
@@ -18782,9 +18806,13 @@ async function main(): Promise<void> {
     10 * 60 * 1000,
   );
 
-  // Billing: check expired subscriptions every hour
+  // Billing: check expired subscriptions every hour. Off with billing
+  // (always in single-user host mode); expiry compares against now, so a
+  // later pass catches up when billing is turned back on. The retention
+  // cleanup below keeps running either way.
   setInterval(
     () => {
+      if (!isBillingEnabled()) return;
       checkAndExpireSubscriptions();
     },
     60 * 60 * 1000,

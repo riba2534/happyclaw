@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
-import { GROUPS_DIR, MAX_FILE_SIZE } from './config.js';
+import { MAX_FILE_SIZE } from './config.js';
+import { workspaceDirOf } from './workspace-dir.js';
 
 // MAX_FILE_SIZE 统一由 config.ts 定义（可通过 MAX_FILE_SIZE_MB 环境变量配置），
 // 此处 re-export 保持既有 import 路径不变。IM 渠道收文件与 Web 上传共用此上限。
@@ -89,7 +90,7 @@ export function sanitizeImFilename(raw: string | undefined | null): string {
  * cwd 是 customCwd 而不是 data/groups/{folder}；IM 聊天绑定到有独立 worktree
  * 的会话时是该 worktree（与 Web 文件面板一致）。附件必须落在 Agent 用相对路径
  * 能打开的位置，所以解析器还会拿到这条消息被路由到的 JID（会话路由带 #agent:）。
- * 由主进程在启动时注册；未注册或返回空值时回落到 GROUPS_DIR/{folder}。
+ * 由主进程在启动时注册；未注册或返回空值时回落到工作区目录（workspaceDirOf）。
  */
 type DownloadRootResolver = (
   groupFolder: string,
@@ -116,7 +117,7 @@ export function resolveImDownloadRoot(
   }
   return override && path.isAbsolute(override)
     ? override
-    : path.join(GROUPS_DIR, groupFolder);
+    : workspaceDirOf(groupFolder);
 }
 
 /**
