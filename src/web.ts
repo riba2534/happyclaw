@@ -153,8 +153,9 @@ import {
   SESSION_COOKIE_NAME_SECURE,
   SESSION_COOKIE_NAME_PLAIN,
   ASSISTANT_NAME,
-  GROUPS_DIR,
 } from './config.js';
+import { isSingleUserHost } from './deployment-mode.js';
+import { workspaceDirOf } from './workspace-dir.js';
 import { expandPluginSlashCommandIfNeeded } from './plugin-expander-core.js';
 import { makeExpandContext } from './plugin-expander-context.js';
 import type { ExpandContext } from './plugin-expander-context.js';
@@ -262,7 +263,7 @@ function buildWebExpandContext(
     ownerId: group.created_by,
     executionMode: rawMode,
     customCwd,
-    groupsDir: GROUPS_DIR,
+    workspaceDir: workspaceDirOf(group.folder),
     containerName,
   });
 }
@@ -2085,12 +2086,19 @@ function setupWebSocket(server: any): WebSocketServer {
               );
               return;
             }
-            if ((group.executionMode || 'container') === 'host') {
+            // Single-user host mode never starts a container, whatever mode
+            // a leftover row still has.
+            if (
+              isSingleUserHost() ||
+              (group.executionMode || 'container') === 'host'
+            ) {
               ws.send(
                 JSON.stringify({
                   type: 'terminal_error',
                   chatJid,
-                  error: '宿主机模式不支持终端',
+                  error: isSingleUserHost()
+                    ? '单人宿主机模式暂不支持 Web 终端。'
+                    : '宿主机模式不支持终端',
                 }),
               );
               return;

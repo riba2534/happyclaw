@@ -23,7 +23,7 @@ import type {
 } from '../types.js';
 import { DEFAULT_WORK_MODE, type WorkMode } from '../work-items.js';
 import { checkGroupLimit } from '../billing.js';
-import { DATA_DIR, GROUPS_DIR, isDockerAvailable } from '../config.js';
+import { DATA_DIR, isDockerAvailable } from '../config.js';
 import {
   isHostExecutionGroup,
   hasHostExecutionPermission,
@@ -561,6 +561,16 @@ function buildGroupsPayload(user: AuthUser): Record<string, GroupPayloadItem> {
 
 import { removeFlowArtifacts } from '../file-manager.js';
 import {
+  assertRecordedWorkdirRemovable,
+  assignWorkspaceRootDir,
+  getRecordedWorkdir,
+  releaseUnusedWorkdir,
+  UnsafeWorkdirError,
+  workspaceDirOf,
+  workspaceRootDirs,
+} from '../workspace-dir.js';
+import { getWorkspaceRootResolution } from '../workspace-root.js';
+import {
   getAutomationService,
   presentAutomationMessage,
 } from '../automation-run-ledger.js';
@@ -596,17 +606,27 @@ class WorkspaceFilesystemRollbackError extends AggregateError {
  */
 function stageWorkspaceResetForGroup(folder: string): StagedWorkspaceReset {
   const suffix = `.rebuild-backup-${crypto.randomUUID()}`;
-  const groupDir = path.join(GROUPS_DIR, folder);
+  // A recorded directory is moved aside next to itself, in the workspace
+  // root, only after it passes the same check as a delete; its logs live in
+  // data/logs/<folder> instead of inside it.
+  const recordedWorkdir = getRecordedWorkdir(folder);
+  if (recordedWorkdir) assertRecordedWorkdirRemovable(folder, recordedWorkdir);
+  const groupDir = workspaceDirOf(folder);
   const sessionDir = path.join(DATA_DIR, 'sessions', folder);
   const ipcDir = path.join(DATA_DIR, 'ipc', folder);
   const legacyMemoryDir = path.join(DATA_DIR, 'memory', folder);
-  const targets = [groupDir, sessionDir, ipcDir, legacyMemoryDir].map(
-    (targetPath) => ({
-      targetPath,
-      backupPath: `${targetPath}${suffix}`,
-      moved: false,
-    }),
-  );
+  const logsDir = recordedWorkdir ? [path.join(DATA_DIR, 'logs', folder)] : [];
+  const targets = [
+    groupDir,
+    sessionDir,
+    ipcDir,
+    legacyMemoryDir,
+    ...logsDir,
+  ].map((targetPath) => ({
+    targetPath,
+    backupPath: `${targetPath}${suffix}`,
+    moved: false,
+  }));
 
   const rollback = () => {
     const errors: unknown[] = [];
@@ -694,6 +714,14 @@ async function discardFamilyWork(
   jids: string[],
 ): Promise<void> {
   await Promise.all(jids.map((j) => queue.stopGroup(j, { force: true })));
+}
+
+function unsafeWorkdirConflict(err: UnsafeWorkdirError) {
+  return {
+    error: err.message,
+    code: 'WORKSPACE_DIR_UNSAFE',
+    reason: err.reason,
+  };
 }
 
 class DirtyWorktreesError extends Error {
@@ -790,6 +818,9 @@ groupRoutes.get('/', authMiddleware, (c) => {
   return c.json({
     groups,
     admin_host_only_mode: user.role === 'admin' && isAdminHostOnlyEffective(),
+    // Where a new Host workspace without a custom directory is created.
+    workspace_root:
+      user.role === 'admin' ? getWorkspaceRootResolution().effective : null,
   });
 });
 
@@ -974,6 +1005,22 @@ groupRoutes.post('/', authMiddleware, async (c) => {
         realPath = fs.realpathSync(customCwd);
       } catch {
         return c.json({ error: 'custom_cwd directory does not exist' }, 400);
+      }
+      // The workspace root holds other workspaces' directories.
+      const insideRoot = workspaceRootDirs().find((root) => {
+        const relative = path.relative(root, realPath);
+        return (
+          relative === '' ||
+          (!relative.startsWith('..') && !path.isAbsolute(relative))
+        );
+      });
+      if (insideRoot) {
+        return c.json(
+          {
+            error: `custom_cwd 不能位于工作区根目录 ${insideRoot} 中，那里是其他工作区的目录。`,
+          },
+          400,
+        );
       }
 
       // 白名单校验：检查路径是否在允许的根目录下，并过滤敏感路径
@@ -1168,7 +1215,7 @@ groupRoutes.post('/', authMiddleware, async (c) => {
   // registered workspace or its Agent membership. This removes the rollback
   // race entirely: while clone/copy awaits, migration/delete routes cannot see
   // the workspace, and a failure has no DB membership to undo.
-  const groupDir = path.join(GROUPS_DIR, folder);
+  const groupDir = workspaceDirOf(folder);
   try {
     if (initSourcePath) {
       await fsp.mkdir(groupDir, { recursive: true });
@@ -1275,6 +1322,9 @@ groupRoutes.post('/', authMiddleware, async (c) => {
               setWorkspaceWorkMode(folder, workMode);
             }
             setRegisteredGroup(jid, group);
+            if (group.executionMode === 'host' && !group.customCwd) {
+              assignWorkspaceRootDir(folder);
+            }
             updateChatName(jid, name);
             deps.getRegisteredGroups()[jid] = group;
             return lockedProfile;
@@ -1289,6 +1339,7 @@ groupRoutes.post('/', authMiddleware, async (c) => {
             }
             deleteWorkspaceAgentProfile(folder);
             deleteChatHistory(jid);
+            releaseUnusedWorkdir(folder);
             delete deps.getRegisteredGroups()[jid];
             throw err;
           }
@@ -2098,6 +2149,19 @@ groupRoutes.delete('/:jid', authMiddleware, async (c) => {
       confirmedWorktrees,
     );
     if (freshWorktreeBlock) return freshWorktreeBlock;
+    // A recorded directory is deleted only when it is exactly the one
+    // HappyClaw made; otherwise nothing at all is deleted.
+    const recordedWorkdir = getRecordedWorkdir(freshExisting.folder);
+    if (recordedWorkdir) {
+      try {
+        assertRecordedWorkdirRemovable(freshExisting.folder, recordedWorkdir);
+      } catch (err) {
+        if (err instanceof UnsafeWorkdirError) {
+          return c.json(unsafeWorkdirConflict(err), 409);
+        }
+        throw err;
+      }
+    }
 
     const channelUpdates: Array<{ jid: string; group: RegisteredGroup }> = [];
     deleteGroupData(jid, freshExisting.folder, {
@@ -2135,7 +2199,7 @@ groupRoutes.delete('/:jid', authMiddleware, async (c) => {
     delete registeredGroups[jid];
     deps.setLastAgentTimestamp(jid, { timestamp: '', id: '' });
 
-    removeFlowArtifacts(freshExisting.folder);
+    removeFlowArtifacts(freshExisting.folder, recordedWorkdir);
     await releaseWorkspaceWorktrees(freshExisting.folder);
 
     logger.info(
@@ -2838,6 +2902,11 @@ groupRoutes.post('/:jid/clear-history', authMiddleware, async (c) => {
       confirmedWorktrees,
     );
     if (dirty.length > 0) throw new DirtyWorktreesError(dirty);
+    // Refuse before any queued work is dropped; staging checks again.
+    const recordedWorkdir = getRecordedWorkdir(group.folder);
+    if (recordedWorkdir) {
+      assertRecordedWorkdirRemovable(group.folder, recordedWorkdir);
+    }
     // The rebuild goes ahead: work queued before it is dropped; work that
     // arrives during it stays parked and runs against the fresh workspace.
     await discardFamilyWork(deps.queue, stopJids);
@@ -2921,6 +2990,9 @@ groupRoutes.post('/:jid/clear-history', authMiddleware, async (c) => {
     }
     if (err instanceof DirtyWorktreesError && !rollbackError) {
       return c.json(dirtyWorktreesConflict(err.dirty), 409);
+    }
+    if (err instanceof UnsafeWorkdirError && !rollbackError) {
+      return c.json(unsafeWorkdirConflict(err), 409);
     }
     logger.error(
       {

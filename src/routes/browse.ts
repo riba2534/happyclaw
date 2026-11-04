@@ -11,10 +11,12 @@ import {
   expandPath,
   findAllowedRoot,
   isHostMountNavigationPathAllowed,
+  isInsideWorkspaceRoot,
   matchesBlockedPattern,
   validateMount,
 } from '../mount-security.js';
 import type { AllowedRoot } from '../types.js';
+import { workspaceRootDirs } from '../workspace-dir.js';
 
 const MAX_ENTRIES = 200;
 
@@ -44,6 +46,7 @@ function listSubdirectories(
   }
 
   const dirs: DirectoryEntry[] = [];
+  const workspaceRoots = workspaceRootDirs();
 
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
@@ -52,6 +55,15 @@ function listSubdirectories(
     // Skip blocked patterns
     let fullPath = path.join(dirPath, entry.name);
     if (matchesBlockedPattern(fullPath, blockedPatterns) !== null) continue;
+    // Workspace roots hold other workspaces' directories: neither a mount
+    // nor a custom directory may point into them.
+    try {
+      if (isInsideWorkspaceRoot(fs.realpathSync(fullPath), workspaceRoots)) {
+        continue;
+      }
+    } catch {
+      continue;
+    }
     if (mountPurpose) {
       try {
         fullPath = fs.realpathSync(fullPath);
@@ -229,6 +241,16 @@ browseRoutes.get('/directories', authMiddleware, (c) => {
     return c.json({ error: 'Path is not a directory' }, 400);
   }
 
+  if (isInsideWorkspaceRoot(realPath)) {
+    return c.json(
+      {
+        error: 'Path is inside the workspace root',
+        code: 'WORKSPACE_ROOT_FORBIDDEN',
+      },
+      403,
+    );
+  }
+
   if (
     purpose === 'mount' &&
     (matchesBlockedPattern(realPath, blockedPatterns) !== null ||
@@ -354,6 +376,16 @@ browseRoutes.post('/directories', authMiddleware, async (c) => {
 
   if (!fs.statSync(realParent).isDirectory()) {
     return c.json({ error: 'Parent path is not a directory' }, 400);
+  }
+
+  if (isInsideWorkspaceRoot(realParent)) {
+    return c.json(
+      {
+        error: 'Parent path is inside the workspace root',
+        code: 'WORKSPACE_ROOT_FORBIDDEN',
+      },
+      403,
+    );
   }
 
   // Allowlist range check

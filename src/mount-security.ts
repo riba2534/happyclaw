@@ -13,6 +13,7 @@ import crypto from 'crypto';
 
 import { DATA_DIR, MOUNT_ALLOWLIST_PATH } from './config.js';
 import { logger } from './logger.js';
+import { workspaceRootDirs } from './workspace-dir.js';
 import type {
   AdditionalMount,
   AllowedRoot,
@@ -255,6 +256,9 @@ function getProtectedHostPaths(): string[] {
     '/var/lib/containerd',
     '/var/lib/containers',
     DATA_DIR,
+    // Other workspaces' directories: the workspace root and every root a
+    // recorded workspace directory still lives in.
+    ...workspaceRootDirs(),
     path.join(process.cwd(), '.env'),
     path.join(process.cwd(), '.git'),
     ...[
@@ -284,6 +288,14 @@ function hardDeniedHostPath(realPath: string): string | null {
     .split(path.sep)
     .find((component) => SOCKET_COMPONENT_RE.test(component));
   return socketComponent ? `container socket "${socketComponent}"` : null;
+}
+
+/** Whether `realPath` is a workspace root or inside one. */
+export function isInsideWorkspaceRoot(
+  realPath: string,
+  roots: string[] = workspaceRootDirs(),
+): boolean {
+  return roots.some((root) => isPathWithin(root, realPath));
 }
 
 /**
