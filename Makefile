@@ -1,4 +1,4 @@
-.PHONY: dev dev-backend dev-web build build-backend build-web start \
+.PHONY: dev dev-backend dev-web build build-backend build-web start check \
        typecheck typecheck-backend typecheck-web typecheck-agent-runner \
        format format-check install install-host-tools clean reset-init update-sdk ensure-latest-sdk sync-types \
        backup restore help _ensure-docker-image docker-pull logs status stop \
@@ -164,6 +164,9 @@ typecheck-web:
 
 typecheck-agent-runner:
 	cd container/agent-runner && $(RUN) tsc --noEmit
+
+check: ## 合并前的全部检查（格式、审计、类型、测试、构建、冒烟、浏览器 e2e、Runner 自检）
+	@./scripts/check-all.sh
 
 test: ## 运行单元测试
 	$(RUN) vitest run
