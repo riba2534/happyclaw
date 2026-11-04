@@ -90,7 +90,10 @@ import {
   isAdminHostOnlyEffective,
   isSingleUserHost,
 } from '../deployment-mode.js';
-import { singleUserHostRefusal } from '../single-user-host-guard.js';
+import {
+  SingleUserHostConflictError,
+  singleUserHostRefusal,
+} from '../single-user-host-guard.js';
 import { onPasswordHashBusy } from '../password-hash-busy.js';
 
 const adminRoutes = new Hono<{ Variables: Variables }>();
@@ -168,6 +171,8 @@ async function commitActiveAdminHostOnlyGrant(
   userId: string,
   updates: Parameters<typeof updateUserFields>[1],
   reason: string,
+  /** Runs synchronously right before the write; throws to abort it. */
+  beforeWrite: () => void,
 ): Promise<void> {
   const targets = getUserWorkspaceRuntimeTargets(userId);
   const folders = targets.map((target) => target.folder);
@@ -179,6 +184,7 @@ async function commitActiveAdminHostOnlyGrant(
   }
 
   const commit = () => {
+    beforeWrite();
     const migration = updateUserFieldsAndForceRuntimesToHost(userId, updates);
     if (deps) {
       const liveGroups = deps.getRegisteredGroups();
@@ -350,6 +356,8 @@ adminRoutes.post('/users', authMiddleware, usersManageMiddleware, async (c) => {
   const now = new Date().toISOString();
   const userId = generateUserId();
   const passwordHash = await hashPassword(password);
+  // The mode may have switched while the password was hashing.
+  if (isSingleUserHost()) return singleUserHostRefusal(c);
 
   const finalRole = role || 'member';
   const finalPermissions = normalizePermissions(
@@ -434,15 +442,14 @@ adminRoutes.patch(
         const target = getUserById(id);
         if (!target) return c.json({ error: 'User not found' }, 404);
         // Reactivating or promoting would add a second active user (or
-        // admin); disabling, deleting and editing stay allowed.
-        if (
-          isSingleUserHost() &&
-          ((validation.data.status === 'active' &&
-            target.status !== 'active') ||
-            (validation.data.role === 'admin' && target.role !== 'admin'))
-        ) {
-          return singleUserHostRefusal(c);
-        }
+        // admin); disabling, deleting and editing stay allowed. Checked
+        // again right before each write, after the awaits below.
+        const addsActiveUser =
+          (validation.data.status === 'active' && target.status !== 'active') ||
+          (validation.data.role === 'admin' && target.role !== 'admin');
+        const refusedBySingleUserHost = () =>
+          addsActiveUser && isSingleUserHost();
+        if (refusedBySingleUserHost()) return singleUserHostRefusal(c);
 
         const actor = c.get('user') as AuthUser;
         if (actor.role !== 'admin' && target.role === 'admin') {
@@ -746,6 +753,7 @@ adminRoutes.patch(
           });
         }
 
+        if (refusedBySingleUserHost()) return singleUserHostRefusal(c);
         let updateAlreadyCommitted = false;
         const revokesHostPrivilege =
           targetIsActiveAdmin && !targetRemainsActiveAdmin;
@@ -766,9 +774,17 @@ adminRoutes.patch(
               id,
               updates,
               `Administrator ${id} gained active host-only privileges`,
+              () => {
+                if (refusedBySingleUserHost()) {
+                  throw new SingleUserHostConflictError();
+                }
+              },
             );
             updateAlreadyCommitted = true;
           } catch (err) {
+            if (err instanceof SingleUserHostConflictError) {
+              return singleUserHostRefusal(c);
+            }
             if (!(err instanceof WorkspaceRuntimeQuiesceError)) throw err;
             logger.error(
               { err, userId: id, persisted: err.persisted },

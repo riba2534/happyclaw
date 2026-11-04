@@ -3,6 +3,11 @@
  * would add one (create, invite, reactivate, promote, guests) refuse with
  * the 409 below; reading, disabling and deleting stay open so an install can
  * get down to one user before switching.
+ *
+ * Adding an account and switching modes both await (password hashing,
+ * runner quiesce) between their first check and their write. Each therefore
+ * checks again synchronously right before the write: JS does not interleave
+ * synchronous code, so whichever write lands second sees the first.
  */
 import type { Context } from 'hono';
 
@@ -16,6 +21,13 @@ export function singleUserHostRefusal(
   error = '单人宿主机模式只允许一个用户。',
 ) {
   return c.json({ error, code: SINGLE_USER_HOST_CODE }, 409);
+}
+
+/** Thrown from inside a synchronous commit when the final check fails. */
+export class SingleUserHostConflictError extends Error {
+  constructor(readonly users: OtherActiveUser[] = []) {
+    super('Single-user host mode allows one active user');
+  }
 }
 
 export interface OtherActiveUser {

@@ -6,7 +6,7 @@ import path from 'node:path';
 import { Agent as HttpsAgent } from 'node:https';
 import { ProxyAgent } from 'proxy-agent';
 import QRCode from 'qrcode';
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { DATA_DIR } from '../config.js';
 import { bindSystemMainIfUnbound } from '../model-binding-backfill.js';
 import {
@@ -288,7 +288,11 @@ import {
   validateWorkspaceRootSetting,
   WORKSPACE_ROOT_PROBLEM_MESSAGES,
 } from '../workspace-root.js';
-import { listOtherActiveUsers } from '../single-user-host-guard.js';
+import {
+  listOtherActiveUsers,
+  SingleUserHostConflictError,
+  type OtherActiveUser,
+} from '../single-user-host-guard.js';
 const configRoutes = new Hono<{ Variables: Variables }>();
 
 configRoutes.use('/user-im/*', async (c, next) => {
@@ -3738,6 +3742,17 @@ function toStoredHostIntegration(
 }
 
 /** Stored values plus how the workspace root and deployment mode resolve. */
+function otherActiveUsersConflict(c: Context, users: OtherActiveUser[]) {
+  return c.json(
+    {
+      error: '单人宿主机模式只允许一个用户；请先停用其他账号。',
+      code: 'SINGLE_USER_HOST_OTHER_USERS',
+      users,
+    },
+    409,
+  );
+}
+
 function toHostIntegrationResponse(
   settings: ReturnType<typeof getSystemSettings>,
 ) {
@@ -3818,19 +3833,10 @@ configRoutes.put(
         }).mode === 'single_user_host';
       const enablingSingleUserHost =
         !singleUserHostBefore && singleUserHostAfter;
+      const actorId = (c.get('user') as AuthUser).id;
       if (enablingSingleUserHost) {
-        const actor = c.get('user') as AuthUser;
-        const others = listOtherActiveUsers(actor.id);
-        if (others.length > 0) {
-          return c.json(
-            {
-              error: '单人宿主机模式只允许一个用户；请先停用其他账号。',
-              code: 'SINGLE_USER_HOST_OTHER_USERS',
-              users: others,
-            },
-            409,
-          );
-        }
+        const others = listOtherActiveUsers(actorId);
+        if (others.length > 0) return otherActiveUsersConflict(c, others);
       }
       // Single-user host mode makes admin host-only effective without
       // touching the stored switch, so it migrates the same way enabling it.
@@ -3963,6 +3969,13 @@ configRoutes.put(
         | ReturnType<typeof forceActiveAdminRuntimesToHost>
         | undefined;
       const commit = () => {
+        // An account may have been added while runners were quiescing.
+        // Checked before the first write, so nothing has changed yet when
+        // it fails (the stopped runners restart on demand).
+        if (enablingSingleUserHost) {
+          const others = listOtherActiveUsers(actorId);
+          if (others.length > 0) throw new SingleUserHostConflictError(others);
+        }
         if (enforcingAdminHostOnlyMode) {
           hostOnlyMigration = forceActiveAdminRuntimesToHost();
           if (deps) {
@@ -4018,6 +4031,9 @@ configRoutes.put(
             ADMIN_HOST_ONLY_RUNTIME_SAFETY_SOURCE,
           );
         } catch (err) {
+          if (err instanceof SingleUserHostConflictError) {
+            return otherActiveUsersConflict(c, err.users);
+          }
           if (!(err instanceof WorkspaceRuntimeQuiesceError)) throw err;
           return c.json(
             {
@@ -4031,7 +4047,12 @@ configRoutes.put(
           );
         }
       } else {
-        saved = commit();
+        try {
+          saved = commit();
+        } catch (err) {
+          if (!(err instanceof SingleUserHostConflictError)) throw err;
+          return otherActiveUsersConflict(c, err.users);
+        }
       }
       const response = toHostIntegrationResponse(saved);
       const changedFields = changedSettingFields(
