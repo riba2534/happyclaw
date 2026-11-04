@@ -635,8 +635,10 @@ export function validateAdditionalMountsStrict(
     }
   });
 
+  // Resolving the protected paths resolves the workspace roots: once.
+  const protectedPaths = parsedMounts.length > 0 ? getProtectedHostPaths() : [];
   for (let index = 0; index < parsedMounts.length; index += 1) {
-    const result = validateMount(parsedMounts[index], isMain);
+    const result = validateMount(parsedMounts[index], isMain, protectedPaths);
     if (
       !result.allowed ||
       !result.realHostPath ||

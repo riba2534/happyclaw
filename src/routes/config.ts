@@ -293,6 +293,7 @@ import {
   SingleUserHostConflictError,
   type OtherActiveUser,
 } from '../single-user-host-guard.js';
+import { getWorkspaceRootOccupancy } from '../workspace-dir.js';
 const configRoutes = new Hono<{ Variables: Variables }>();
 
 configRoutes.use('/user-im/*', async (c, next) => {
@@ -3756,7 +3757,8 @@ function otherActiveUsersConflict(c: Context, users: OtherActiveUser[]) {
 function toHostIntegrationResponse(
   settings: ReturnType<typeof getSystemSettings>,
 ) {
-  const root = getWorkspaceRootResolution();
+  // The same occupancy the server uses to pick the root (index.ts).
+  const root = getWorkspaceRootResolution(getWorkspaceRootOccupancy());
   const mode = getDeploymentModeResolution();
   return {
     ...toStoredHostIntegration(settings),
@@ -3810,7 +3812,10 @@ configRoutes.put(
     // The directory itself is created when the first workspace needs it.
     const rootProblem =
       validation.data.workspaceRoot !== undefined
-        ? validateWorkspaceRootSetting(validation.data.workspaceRoot)
+        ? validateWorkspaceRootSetting(
+            validation.data.workspaceRoot,
+            getWorkspaceRootOccupancy(),
+          )
         : null;
     if (rootProblem) {
       return c.json(

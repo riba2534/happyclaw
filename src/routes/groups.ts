@@ -567,8 +567,9 @@ import {
   releaseUnusedWorkdir,
   UnsafeWorkdirError,
   recordedWorkdirLogsDir,
+  getWorkspaceRootOccupancy,
   workspaceDirOf,
-  workspaceRootContaining,
+  workspacePathConflict,
 } from '../workspace-dir.js';
 import { getWorkspaceRootResolution } from '../workspace-root.js';
 import {
@@ -601,6 +602,28 @@ class WorkspaceFilesystemRollbackError extends AggregateError {
 }
 
 /**
+ * Remove `dir` if it holds nothing but empty directories (what a rebuild
+ * creates); anything with a file in it is left alone.
+ */
+function removeEmptyTree(dir: string): void {
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory()) return;
+    removeEmptyTree(path.join(dir, entry.name));
+  }
+  try {
+    fs.rmdirSync(dir);
+  } catch {
+    /* something appeared in it: leave it */
+  }
+}
+
+/**
  * Move destructive filesystem targets aside before touching SQLite. A handled
  * database failure can then restore the exact original directories instead of
  * returning 500 after files have already been permanently deleted.
@@ -626,17 +649,24 @@ function stageWorkspaceResetForGroup(folder: string): StagedWorkspaceReset {
   ].map((targetPath) => ({
     targetPath,
     backupPath: `${targetPath}${suffix}`,
+    existed: fs.existsSync(targetPath),
     moved: false,
   }));
 
+  // Only what this rebuild made goes: the fresh directory standing in for a
+  // moved original, or one it created where nothing was. An original that
+  // could not be moved (EACCES, EBUSY) is still in place and is never
+  // touched.
   const rollback = () => {
     const errors: unknown[] = [];
     for (const target of [...targets].reverse()) {
       try {
-        fs.rmSync(target.targetPath, { recursive: true, force: true });
         if (target.moved) {
+          fs.rmSync(target.targetPath, { recursive: true, force: true });
           fs.renameSync(target.backupPath, target.targetPath);
           target.moved = false;
+        } else if (!target.existed) {
+          removeEmptyTree(target.targetPath);
         }
       } catch (error) {
         errors.push(error);
@@ -821,7 +851,9 @@ groupRoutes.get('/', authMiddleware, (c) => {
     admin_host_only_mode: user.role === 'admin' && isAdminHostOnlyEffective(),
     // Where a new Host workspace without a custom directory is created.
     workspace_root:
-      user.role === 'admin' ? getWorkspaceRootResolution().effective : null,
+      user.role === 'admin'
+        ? getWorkspaceRootResolution(getWorkspaceRootOccupancy()).effective
+        : null,
   });
 });
 
@@ -1007,12 +1039,13 @@ groupRoutes.post('/', authMiddleware, async (c) => {
       } catch {
         return c.json({ error: 'custom_cwd directory does not exist' }, 400);
       }
-      // The workspace root holds other workspaces' directories.
-      const insideRoot = workspaceRootContaining(realPath);
-      if (insideRoot) {
+      // Workspace roots hold other workspaces' directories: a custom
+      // directory inside one, or around one (like ~), would expose them.
+      const conflict = workspacePathConflict(realPath);
+      if (conflict) {
         return c.json(
           {
-            error: `custom_cwd 不能位于工作区根目录 ${insideRoot} 中，那里是其他工作区的目录。`,
+            error: `custom_cwd 不能与工作区根目录或其他工作区的目录 ${conflict} 重叠。`,
           },
           400,
         );
@@ -1084,6 +1117,17 @@ groupRoutes.post('/', authMiddleware, async (c) => {
     } catch {
       return c.json(
         { error: 'init_source_path directory does not exist' },
+        400,
+      );
+    }
+    // Copying from inside or around a workspace root copies other
+    // workspaces' files.
+    const sourceConflict = workspacePathConflict(realPath);
+    if (sourceConflict) {
+      return c.json(
+        {
+          error: `init_source_path 不能与工作区根目录或其他工作区的目录 ${sourceConflict} 重叠。`,
+        },
         400,
       );
     }

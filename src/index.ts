@@ -470,6 +470,7 @@ import {
 import {
   assignWorkspaceRootDirIfNew,
   ensureWorkspaceDirs,
+  getWorkspaceRootOccupancy,
   setWorkspaceRootResolver,
   workspaceDirOf,
 } from './workspace-dir.js';
@@ -7049,7 +7050,11 @@ function buildExpandContext(
         ? resolveWorkspaceProjectRoot(group, { agentId: resolvedAgentId })
         : group.customCwd,
     workspaceDir: workspaceDirOf(group.folder),
-    containerName: queue.getActiveContainerName(chatJid),
+    // Single-user host mode never runs `docker exec`: with no container
+    // the expander answers instead of running a container `!` command.
+    containerName: isSingleUserHost()
+      ? null
+      : queue.getActiveContainerName(chatJid),
   });
 }
 
@@ -18253,7 +18258,11 @@ async function main(): Promise<void> {
   migrateDataDirectories();
   // New Host workspaces (home workspaces included, created during loadState
   // and setup) get their directory in the workspace root.
-  setWorkspaceRootResolver(() => getWorkspaceRootResolution().effective);
+  // The root must avoid what existing workspaces use, so a new
+  // workspace's directory can never land inside another's.
+  setWorkspaceRootResolver(
+    () => getWorkspaceRootResolution(getWorkspaceRootOccupancy()).effective,
+  );
   initDatabase();
   logger.info('Database initialized');
   installSystemMainModelConfigResolver();

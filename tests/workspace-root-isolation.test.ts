@@ -100,6 +100,19 @@ async function browse(target: string, purpose?: 'mount') {
 }
 
 describe('mounts', () => {
+  test('a mount list resolves the workspace root once', () => {
+    const sources = Array.from({ length: 5 }, (_, i) => {
+      const source = path.join(allowed, 'mount-sources', `m-${i}`);
+      fs.mkdirSync(source, { recursive: true });
+      return { hostPath: source, containerPath: `m${i}`, readonly: true };
+    });
+    rootResolutions = 0;
+    expect(
+      security.validateAdditionalMountsStrict(sources, 'ws', false),
+    ).toHaveLength(5);
+    expect(rootResolutions).toBe(1);
+  });
+
   test('the roots and every workspace directory in them are denied', () => {
     expect(mountable(sibling)).toBe(true);
     for (const target of [
@@ -138,9 +151,10 @@ describe('directory browser', () => {
   test('does not list the roots next to other directories', async () => {
     const { status, json } = await browse(allowed);
     expect(status).toBe(200);
-    expect(json.directories.map((d: { name: string }) => d.name)).toEqual([
-      'projects',
-    ]);
+    const names = json.directories.map((d: { name: string }) => d.name);
+    expect(names).toContain('projects');
+    expect(names).not.toContain('root-now');
+    expect(names).not.toContain('root-before');
   });
 
   test('resolves the workspace root once per request, not per entry', async () => {
