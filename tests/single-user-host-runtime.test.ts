@@ -87,9 +87,6 @@ describe('clearSessionRuntimeFiles', () => {
 });
 
 describe('IM auto-registration', () => {
-  const groupsDir = path.join(tmp, 'groups');
-  const logsDir = path.join(tmp, 'logs');
-
   function harness(hostOnly: boolean) {
     const saved: Array<{ jid: string; group: Record<string, unknown> }> = [];
     const globals: Record<string, any> = {
@@ -103,9 +100,8 @@ describe('IM auto-registration', () => {
       validateAdditionalMountsStrict: () => [],
       setRegisteredGroup: (jid: string, group: Record<string, unknown>) =>
         saved.push({ jid, group }),
-      assignWorkspaceRootDir: vi.fn(),
-      workspaceDirOf: (folder: string) => path.join(groupsDir, folder),
-      workspaceLogsDirOf: (folder: string) => path.join(logsDir, folder),
+      assignWorkspaceRootDirIfNew: vi.fn(),
+      ensureWorkspaceDirs: vi.fn(),
       resolveImGroupDefaults: () => ({ requireMention: false }),
       fs,
       path,
@@ -129,9 +125,7 @@ describe('IM auto-registration', () => {
       jid: 'feishu:oc_chat',
       group: { folder: 'main', executionMode: 'host' },
     });
-    // An IM row shares its workspace's folder; it never gets a directory.
-    expect(globals.assignWorkspaceRootDir).not.toHaveBeenCalled();
-    expect(fs.existsSync(path.join(logsDir, 'main'))).toBe(true);
+    expect(globals.ensureWorkspaceDirs).toHaveBeenCalledWith('main');
   });
 
   test('otherwise it keeps the default (container) mode', () => {
@@ -148,6 +142,9 @@ describe('IM auto-registration', () => {
       added_at: '2026-11-04T00:00:00.000Z',
       created_by: 'admin-1',
     });
-    expect(globals.assignWorkspaceRootDir).toHaveBeenCalledWith('flow-new');
+    expect(globals.assignWorkspaceRootDirIfNew).toHaveBeenCalledWith(
+      'web:flow-new',
+      expect.objectContaining({ folder: 'flow-new', executionMode: 'host' }),
+    );
   });
 });

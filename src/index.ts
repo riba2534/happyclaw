@@ -467,10 +467,10 @@ import {
   isSingleUserHost,
 } from './deployment-mode.js';
 import {
-  assignWorkspaceRootDir,
+  assignWorkspaceRootDirIfNew,
+  ensureWorkspaceDirs,
   setWorkspaceRootResolver,
   workspaceDirOf,
-  workspaceLogsDirOf,
 } from './workspace-dir.js';
 import { getWorkspaceRootResolution } from './workspace-root.js';
 import {
@@ -6916,15 +6916,8 @@ function registerGroup(jid: string, group: RegisteredGroup): void {
   // A new Host workspace without a custom directory lives in the workspace
   // root; everything else (Container workspaces, IM chat rows sharing a
   // workspace folder) uses the folder's directory as it is.
-  if (
-    jid.startsWith('web:') &&
-    group.executionMode === 'host' &&
-    !group.customCwd
-  ) {
-    assignWorkspaceRootDir(group.folder);
-  }
-  fs.mkdirSync(workspaceDirOf(group.folder), { recursive: true });
-  fs.mkdirSync(workspaceLogsDirOf(group.folder), { recursive: true });
+  assignWorkspaceRootDirIfNew(jid, group);
+  ensureWorkspaceDirs(group.folder);
 
   logger.info(
     // `name` is pino's logger-name field; it would replace the log prefix.

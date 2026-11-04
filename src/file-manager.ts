@@ -5,6 +5,7 @@ import { fileURLToPath } from 'url';
 import { DATA_DIR, GROUPS_DIR, MAX_FILE_SIZE } from './config.js';
 import {
   checkRecordedWorkdirRemoval,
+  recordedWorkdirLogsDir,
   workspaceDirOf,
 } from './workspace-dir.js';
 import { deleteContainerEnvConfig } from './runtime-config.js';
@@ -557,7 +558,7 @@ export function removeFlowArtifacts(
     } else {
       fs.rmSync(recordedWorkdir, { recursive: true, force: true });
     }
-    fs.rmSync(path.join(DATA_DIR, 'logs', folder), {
+    fs.rmSync(recordedWorkdirLogsDir(folder), {
       recursive: true,
       force: true,
     });

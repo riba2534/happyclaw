@@ -562,12 +562,13 @@ function buildGroupsPayload(user: AuthUser): Record<string, GroupPayloadItem> {
 import { removeFlowArtifacts } from '../file-manager.js';
 import {
   assertRecordedWorkdirRemovable,
-  assignWorkspaceRootDir,
+  assignWorkspaceRootDirIfNew,
   getRecordedWorkdir,
   releaseUnusedWorkdir,
   UnsafeWorkdirError,
+  recordedWorkdirLogsDir,
   workspaceDirOf,
-  workspaceRootDirs,
+  workspaceRootContaining,
 } from '../workspace-dir.js';
 import { getWorkspaceRootResolution } from '../workspace-root.js';
 import {
@@ -615,7 +616,7 @@ function stageWorkspaceResetForGroup(folder: string): StagedWorkspaceReset {
   const sessionDir = path.join(DATA_DIR, 'sessions', folder);
   const ipcDir = path.join(DATA_DIR, 'ipc', folder);
   const legacyMemoryDir = path.join(DATA_DIR, 'memory', folder);
-  const logsDir = recordedWorkdir ? [path.join(DATA_DIR, 'logs', folder)] : [];
+  const logsDir = recordedWorkdir ? [recordedWorkdirLogsDir(folder)] : [];
   const targets = [
     groupDir,
     sessionDir,
@@ -1007,13 +1008,7 @@ groupRoutes.post('/', authMiddleware, async (c) => {
         return c.json({ error: 'custom_cwd directory does not exist' }, 400);
       }
       // The workspace root holds other workspaces' directories.
-      const insideRoot = workspaceRootDirs().find((root) => {
-        const relative = path.relative(root, realPath);
-        return (
-          relative === '' ||
-          (!relative.startsWith('..') && !path.isAbsolute(relative))
-        );
-      });
+      const insideRoot = workspaceRootContaining(realPath);
       if (insideRoot) {
         return c.json(
           {
@@ -1322,9 +1317,7 @@ groupRoutes.post('/', authMiddleware, async (c) => {
               setWorkspaceWorkMode(folder, workMode);
             }
             setRegisteredGroup(jid, group);
-            if (group.executionMode === 'host' && !group.customCwd) {
-              assignWorkspaceRootDir(folder);
-            }
+            assignWorkspaceRootDirIfNew(jid, group);
             updateChatName(jid, name);
             deps.getRegisteredGroups()[jid] = group;
             return lockedProfile;

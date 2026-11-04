@@ -116,6 +116,33 @@ describe('workspaceDirOf', () => {
     expect(dir.getRecordedWorkdir('flow-unbound')).toBeNull();
   });
 
+  test('only a Web Host workspace without a custom directory gets one', () => {
+    const host = { executionMode: 'host' };
+    dir.assignWorkspaceRootDirIfNew('feishu:oc_chat', {
+      folder: 'flow-im',
+      ...host,
+    });
+    dir.assignWorkspaceRootDirIfNew('web:flow-cwd-x', {
+      folder: 'flow-cwd-x',
+      ...host,
+      customCwd: '/srv/repo',
+    });
+    dir.assignWorkspaceRootDirIfNew('web:flow-ctr', {
+      folder: 'flow-ctr',
+      executionMode: 'container',
+    });
+    dir.assignWorkspaceRootDirIfNew('web:flow-host', {
+      folder: 'flow-host',
+      ...host,
+    });
+    expect(dir.getRecordedWorkdir('flow-im')).toBeNull();
+    expect(dir.getRecordedWorkdir('flow-cwd-x')).toBeNull();
+    expect(dir.getRecordedWorkdir('flow-ctr')).toBeNull();
+    expect(dir.getRecordedWorkdir('flow-host')).toBe(
+      path.join(rootA, 'flow-host'),
+    );
+  });
+
   test('changing the root leaves existing workspaces where they are', () => {
     const first = dir.assignWorkspaceRootDir('flow-before-change');
     currentRoot = rootB;

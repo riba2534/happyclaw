@@ -77,17 +77,33 @@ export function workspaceDirOf(folder: string): string {
   return getRecordedWorkdir(folder) ?? path.join(GROUPS_DIR, folder);
 }
 
+/** Where the run logs of a workspace with a recorded directory go. */
+export function recordedWorkdirLogsDir(folder: string): string {
+  return path.join(DATA_DIR, 'logs', folder);
+}
+
 /**
  * Run logs: data/groups/<folder>/logs as before, data/logs/<folder> for a
  * recorded directory, which belongs to the user and gets no system files.
  */
 export function workspaceLogsDirOf(folder: string): string {
   return getRecordedWorkdir(folder)
-    ? path.join(DATA_DIR, 'logs', folder)
+    ? recordedWorkdirLogsDir(folder)
     : path.join(GROUPS_DIR, folder, 'logs');
 }
 
-export function listRecordedWorkdirs(): Array<{
+/** Create the workspace's directory and its logs directory. */
+export function ensureWorkspaceDirs(folder: string): void {
+  const recorded = getRecordedWorkdir(folder);
+  fs.mkdirSync(recorded ?? path.join(GROUPS_DIR, folder, 'logs'), {
+    recursive: true,
+  });
+  if (recorded) {
+    fs.mkdirSync(recordedWorkdirLogsDir(folder), { recursive: true });
+  }
+}
+
+function listRecordedWorkdirs(): Array<{
   folder: string;
   workdir: string;
 }> {
@@ -122,6 +138,24 @@ export function assignWorkspaceRootDir(folder: string): string {
   return workdir;
 }
 
+/**
+ * The one rule for who gets a directory in the workspace root: a Web
+ * workspace (not an IM chat row sharing its folder) running on the host
+ * without a custom directory.
+ */
+export function assignWorkspaceRootDirIfNew(
+  jid: string,
+  group: { folder: string; executionMode?: string; customCwd?: string },
+): void {
+  if (
+    jid.startsWith('web:') &&
+    group.executionMode === 'host' &&
+    !group.customCwd
+  ) {
+    assignWorkspaceRootDir(group.folder);
+  }
+}
+
 export function deleteRecordedWorkdir(folder: string): void {
   statement('DELETE FROM workspace_workdirs WHERE folder = ?')?.run(folder);
 }
@@ -141,11 +175,24 @@ export function releaseUnusedWorkdir(folder: string): void {
   }
 }
 
+/**
+ * Real path of the nearest existing ancestor plus the missing segments, so a
+ * root that does not exist yet compares the same way workspace-root.ts
+ * validated it (macOS /var -> /private/var included).
+ */
 function realpathOrResolved(target: string): string {
-  try {
-    return fs.realpathSync.native(target);
-  } catch {
-    return path.resolve(target);
+  const missing: string[] = [];
+  let current = path.resolve(target);
+  for (;;) {
+    try {
+      const real = fs.realpathSync.native(current);
+      return missing.length ? path.join(real, ...missing.reverse()) : real;
+    } catch {
+      const parent = path.dirname(current);
+      if (parent === current) return path.resolve(target);
+      missing.push(path.basename(current));
+      current = parent;
+    }
   }
 }
 
@@ -153,29 +200,39 @@ function isWithin(base: string, target: string): boolean {
   const relative = path.relative(base, target);
   return (
     relative === '' ||
-    (!relative.startsWith('..') && !path.isAbsolute(relative))
+    (relative.split(path.sep)[0] !== '..' && !path.isAbsolute(relative))
   );
 }
 
 /**
  * Directories that hold recorded workspace directories: the effective root
- * and the parent of every recorded directory (roots used before a change).
- * Real paths. One workspace must never mount or browse into these.
+ * and the parent of every recorded directory (roots used before a change),
+ * optionally leaving out one folder's own row. Real paths. One workspace
+ * must never mount or browse into these.
  */
-export function workspaceRootDirs(): string[] {
-  const roots = new Set<string>(
-    rootResolver ? [realpathOrResolved(rootResolver())] : [],
+export function workspaceRootDirs(
+  options: { excludeFolder?: string } = {},
+): string[] {
+  const parents = new Set(
+    listRecordedWorkdirs()
+      .filter((row) => row.folder !== options.excludeFolder)
+      .map((row) => path.dirname(row.workdir)),
   );
-  for (const { workdir } of listRecordedWorkdirs()) {
-    roots.add(realpathOrResolved(path.dirname(workdir)));
-  }
-  return [...roots];
+  if (rootResolver) parents.add(rootResolver());
+  return [...new Set([...parents].map(realpathOrResolved))];
+}
+
+/** The workspace root (or one of them) `realPath` is in, or undefined. */
+export function workspaceRootContaining(
+  realPath: string,
+  roots: string[] = workspaceRootDirs(),
+): string | undefined {
+  return roots.find((root) => isWithin(root, realPath));
 }
 
 export class UnsafeWorkdirError extends Error {
   constructor(
-    readonly folder: string,
-    readonly workdir: string,
+    workdir: string,
     readonly reason: string,
   ) {
     super(
@@ -215,14 +272,8 @@ export function checkRecordedWorkdirRemoval(
   const realParent = realpathOrResolved(path.dirname(workdir));
   const realWorkdir = path.join(realParent, folder);
 
-  const otherParents = listRecordedWorkdirs()
-    .filter((row) => row.folder !== folder)
-    .map((row) => realpathOrResolved(path.dirname(row.workdir)));
-  const knownRoots = new Set([
-    ...(rootResolver ? [realpathOrResolved(rootResolver())] : []),
-    ...otherParents,
-  ]);
-  if (!knownRoots.has(realParent)) return 'outside_known_root';
+  const knownRoots = workspaceRootDirs({ excludeFolder: folder });
+  if (!knownRoots.includes(realParent)) return 'outside_known_root';
 
   const installDir = realpathOrResolved(path.dirname(DATA_DIR));
   if (isWithin(installDir, realWorkdir) || isWithin(realWorkdir, installDir)) {
@@ -246,5 +297,5 @@ export function assertRecordedWorkdirRemovable(
   workdir: string,
 ): void {
   const reason = checkRecordedWorkdirRemoval(folder, workdir);
-  if (reason) throw new UnsafeWorkdirError(folder, workdir, reason);
+  if (reason) throw new UnsafeWorkdirError(workdir, reason);
 }

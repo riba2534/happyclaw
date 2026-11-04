@@ -11,12 +11,14 @@ import {
   expandPath,
   findAllowedRoot,
   isHostMountNavigationPathAllowed,
-  isInsideWorkspaceRoot,
   matchesBlockedPattern,
   validateMount,
 } from '../mount-security.js';
 import type { AllowedRoot } from '../types.js';
-import { workspaceRootDirs } from '../workspace-dir.js';
+import {
+  workspaceRootContaining,
+  workspaceRootDirs,
+} from '../workspace-dir.js';
 
 const MAX_ENTRIES = 200;
 
@@ -55,21 +57,17 @@ function listSubdirectories(
     // Skip blocked patterns
     let fullPath = path.join(dirPath, entry.name);
     if (matchesBlockedPattern(fullPath, blockedPatterns) !== null) continue;
-    // Workspace roots hold other workspaces' directories: neither a mount
-    // nor a custom directory may point into them.
+    let realPath: string;
     try {
-      if (isInsideWorkspaceRoot(fs.realpathSync(fullPath), workspaceRoots)) {
-        continue;
-      }
+      realPath = fs.realpathSync(fullPath);
     } catch {
       continue;
     }
+    // Workspace roots hold other workspaces' directories: neither a mount
+    // nor a custom directory may point into them.
+    if (workspaceRootContaining(realPath, workspaceRoots)) continue;
     if (mountPurpose) {
-      try {
-        fullPath = fs.realpathSync(fullPath);
-      } catch {
-        continue;
-      }
+      fullPath = realPath;
       if (
         !findAllowedRoot(fullPath, allowedRoots) ||
         !isHostMountNavigationPathAllowed(fullPath)
@@ -241,7 +239,7 @@ browseRoutes.get('/directories', authMiddleware, (c) => {
     return c.json({ error: 'Path is not a directory' }, 400);
   }
 
-  if (isInsideWorkspaceRoot(realPath)) {
+  if (workspaceRootContaining(realPath)) {
     return c.json(
       {
         error: 'Path is inside the workspace root',
@@ -378,7 +376,7 @@ browseRoutes.post('/directories', authMiddleware, async (c) => {
     return c.json({ error: 'Parent path is not a directory' }, 400);
   }
 
-  if (isInsideWorkspaceRoot(realParent)) {
+  if (workspaceRootContaining(realParent)) {
     return c.json(
       {
         error: 'Parent path is inside the workspace root',

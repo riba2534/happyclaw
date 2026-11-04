@@ -2088,15 +2088,16 @@ function setupWebSocket(server: any): WebSocketServer {
             }
             // Single-user host mode never starts a container, whatever mode
             // a leftover row still has.
+            const singleUserHost = isSingleUserHost();
             if (
-              isSingleUserHost() ||
+              singleUserHost ||
               (group.executionMode || 'container') === 'host'
             ) {
               ws.send(
                 JSON.stringify({
                   type: 'terminal_error',
                   chatJid,
-                  error: isSingleUserHost()
+                  error: singleUserHost
                     ? '单人宿主机模式暂不支持 Web 终端。'
                     : '宿主机模式不支持终端',
                 }),

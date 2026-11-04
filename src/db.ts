@@ -107,11 +107,10 @@ import {
 } from './owner-profile-store.js';
 import { initSessionWorktreeStore } from './session-worktree-store.js';
 import {
-  assignWorkspaceRootDir,
+  assignWorkspaceRootDirIfNew,
   deleteRecordedWorkdir,
+  ensureWorkspaceDirs,
   initWorkspaceDirStore,
-  workspaceDirOf,
-  workspaceLogsDirOf,
 } from './workspace-dir.js';
 import {
   deleteWorkspaceAutomations,
@@ -9642,8 +9641,7 @@ function ensureGroupDirExists(folder: string): void {
     return;
   }
   try {
-    fs.mkdirSync(workspaceDirOf(folder), { recursive: true });
-    fs.mkdirSync(workspaceLogsDirOf(folder), { recursive: true });
+    ensureWorkspaceDirs(folder);
   } catch (err) {
     logger.warn({ err, folder }, 'Failed to ensure group directory exists');
   }
@@ -9697,12 +9695,10 @@ export function ensureUserHomeGroup(
   setRegisteredGroup(jid, group);
   // A new admin home is a Host workspace without a custom directory: it lives
   // in the workspace root.
-  if (isAdmin) {
-    try {
-      assignWorkspaceRootDir(folder);
-    } catch (err) {
-      logger.warn({ err, folder }, 'Failed to create the workspace directory');
-    }
+  try {
+    assignWorkspaceRootDirIfNew(jid, group);
+  } catch (err) {
+    logger.warn({ err, folder }, 'Failed to create the workspace directory');
   }
   ensureGroupDirExists(folder);
   assignWorkspaceAgentProfile(

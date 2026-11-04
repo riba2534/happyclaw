@@ -246,37 +246,40 @@ export function findAllowedRoot(
 }
 
 function getProtectedHostPaths(): string[] {
-  return [
-    '/proc',
-    '/sys',
-    '/dev',
-    '/run',
-    '/var/run',
-    '/var/lib/docker',
-    '/var/lib/containerd',
-    '/var/lib/containers',
-    DATA_DIR,
-    // Other workspaces' directories: the workspace root and every root a
-    // recorded workspace directory still lives in.
-    ...workspaceRootDirs(),
-    path.join(process.cwd(), '.env'),
-    path.join(process.cwd(), '.git'),
-    ...[
-      '.ssh',
-      '.gnupg',
-      '.aws',
-      '.azure',
-      '.gcloud',
-      '.kube',
-      '.docker',
-      '.claude',
-    ].map((name) => path.join(os.homedir(), name)),
-  ].map((item) => {
-    const resolved = path.resolve(item);
-    // DATA_DIR and other protected locations may themselves be symlinks.
-    // Compare against their canonical target whenever it exists.
-    return getRealPath(resolved) ?? resolved;
-  });
+  return (
+    [
+      '/proc',
+      '/sys',
+      '/dev',
+      '/run',
+      '/var/run',
+      '/var/lib/docker',
+      '/var/lib/containerd',
+      '/var/lib/containers',
+      DATA_DIR,
+      path.join(process.cwd(), '.env'),
+      path.join(process.cwd(), '.git'),
+      ...[
+        '.ssh',
+        '.gnupg',
+        '.aws',
+        '.azure',
+        '.gcloud',
+        '.kube',
+        '.docker',
+        '.claude',
+      ].map((name) => path.join(os.homedir(), name)),
+    ]
+      .map((item) => {
+        const resolved = path.resolve(item);
+        // DATA_DIR and other protected locations may themselves be symlinks.
+        // Compare against their canonical target whenever it exists.
+        return getRealPath(resolved) ?? resolved;
+      })
+      // Other workspaces' directories: the workspace root and every root a
+      // recorded workspace directory still lives in (already real paths).
+      .concat(workspaceRootDirs())
+  );
 }
 
 function hardDeniedHostPath(realPath: string): string | null {
@@ -288,14 +291,6 @@ function hardDeniedHostPath(realPath: string): string | null {
     .split(path.sep)
     .find((component) => SOCKET_COMPONENT_RE.test(component));
   return socketComponent ? `container socket "${socketComponent}"` : null;
-}
-
-/** Whether `realPath` is a workspace root or inside one. */
-export function isInsideWorkspaceRoot(
-  realPath: string,
-  roots: string[] = workspaceRootDirs(),
-): boolean {
-  return roots.some((root) => isPathWithin(root, realPath));
 }
 
 /**
