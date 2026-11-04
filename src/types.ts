@@ -377,6 +377,8 @@ export interface WorkspaceAgentProfileBinding {
   interaction_mode: InteractionMode;
   /** Presentation only: no runtime restart when it changes. */
   process_visibility: ProcessVisibility;
+  /** Multi-task mode: sessions may delegate work to worker sessions. */
+  work_mode: import('./work-items.js').WorkMode;
   created_at: string;
   updated_at: string;
 }

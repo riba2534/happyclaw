@@ -223,6 +223,9 @@ describe('schema version head', () => {
     // v88: each workspace's main session becomes a legacy_main conversation
     // session; its state moves to the session's address
     // (legacy-main-session-migration.test.ts).
-    expect(db.CURRENT_SCHEMA_VERSION).toBe(88);
+    // v89: multi-task mode, workspace_agent_profiles.work_mode and
+    // work_items.origin / origin_agent_id / origin_input_id
+    // (schema-v89-multitask-mode.test.ts).
+    expect(db.CURRENT_SCHEMA_VERSION).toBe(89);
   });
 });

@@ -116,6 +116,11 @@ import {
   initWorkItemStore,
 } from './work-item-store.js';
 import {
+  DEFAULT_WORK_MODE,
+  parseWorkMode,
+  type WorkMode,
+} from './work-items.js';
+import {
   migrateLegacyMainSessions,
   forgetOrphanedLegacyMainState,
   relocateLegacyMainSessionDirectories,
@@ -2500,6 +2505,14 @@ export function initDatabase(
     'process_visibility',
     "TEXT NOT NULL DEFAULT 'hidden' CHECK (process_visibility IN ('hidden', 'activity', 'full'))",
   );
+  // v88 -> v89: how the workspace's sessions take on work (multi-task mode).
+  // Every existing workspace keeps working as before ('single'). Same row and
+  // same place as process_visibility: before the binding backfill below.
+  ensureColumn(
+    'workspace_agent_profiles',
+    'work_mode',
+    "TEXT NOT NULL DEFAULT 'single' CHECK (work_mode IN ('single', 'multi'))",
+  );
 
   db.exec('DROP TABLE IF EXISTS group_members');
   backfillAgentProfileDefaultsAndWorkspaceMappings();
@@ -2586,6 +2599,8 @@ export function initDatabase(
   // v86 -> v87: team mode (团队模式). work-item-store.ts owns its tables
   // (team_mounts, work_items, work_item_subscriptions, work_item_events,
   // work_decisions); they are new and additive, nothing is backfilled.
+  // v88 -> v89: work_items.origin / origin_agent_id / origin_input_id
+  // (multi-task mode); every existing item is a team item.
   initWorkItemStore(db);
 
   // v63 -> v64: early Feishu reply enrichment embedded quoted ancestors in
@@ -4108,9 +4123,11 @@ export function withdrawQueuedFollowUp(
 export function cancelQueuedFollowUpsAtCutoff(
   chatJid: string,
   updatedAt = new Date().toISOString(),
+  /** Queued inputs the cutoff leaves in the queue. */
+  keep: (item: QueuedFollowUp) => boolean = () => false,
 ): QueuedFollowUp[] {
   return db.transaction(() => {
-    const items = listQueuedFollowUps(chatJid);
+    const items = listQueuedFollowUps(chatJid).filter((item) => !keep(item));
     if (items.length === 0) return [];
     const cancelQueued = prepareCached(`UPDATE messages
        SET delivery_status = 'cancelled', delivery_updated_at = ?
@@ -4128,6 +4145,29 @@ export function cancelQueuedFollowUpsAtCutoff(
       cancelCoveredRoot.run(updatedAt, chatJid, item.id);
     }
     return items;
+  })();
+}
+
+/**
+ * Give stored messages new ingest sequences after every existing one in
+ * their chat, so a cursor that passed them while they waited in the queue
+ * reads them again once they are released.
+ */
+export function moveMessagesToIngestTail(
+  chatJid: string,
+  messageIds: readonly string[],
+): void {
+  const remove = prepareCached(
+    'DELETE FROM message_ingest_sequences WHERE chat_jid = ? AND message_id = ?',
+  );
+  const add = prepareCached(
+    'INSERT INTO message_ingest_sequences (chat_jid, message_id) VALUES (?, ?)',
+  );
+  db.transaction(() => {
+    for (const id of messageIds) {
+      remove.run(chatJid, id);
+      add.run(chatJid, id);
+    }
   })();
 }
 
@@ -7135,7 +7175,7 @@ export function getWorkspaceAgentProfileBinding(
   groupFolder: string,
 ): WorkspaceAgentProfileBinding | undefined {
   const row =
-    prepareCached(`SELECT group_folder, agent_profile_id, interaction_mode, process_visibility, created_at, updated_at
+    prepareCached(`SELECT group_folder, agent_profile_id, interaction_mode, process_visibility, work_mode, created_at, updated_at
        FROM workspace_agent_profiles
        WHERE group_folder = ?`).get(groupFolder) as
       | {
@@ -7143,6 +7183,7 @@ export function getWorkspaceAgentProfileBinding(
           agent_profile_id: string;
           interaction_mode: unknown;
           process_visibility: unknown;
+          work_mode: unknown;
           created_at: string;
           updated_at: string;
         }
@@ -7156,6 +7197,7 @@ export function getWorkspaceAgentProfileBinding(
       row.group_folder,
     ),
     process_visibility: parseProcessVisibility(row.process_visibility),
+    work_mode: parseWorkMode(row.work_mode) ?? DEFAULT_WORK_MODE,
     created_at: row.created_at,
     updated_at: row.updated_at,
   };
@@ -7167,13 +7209,28 @@ export function getWorkspaceAgentProfileId(
   return getWorkspaceAgentProfileBinding(groupFolder)?.agent_profile_id;
 }
 
+/**
+ * The modes on a Workspace's Agent binding, with their defaults when it has
+ * none, from one read of the row.
+ */
+export function getWorkspaceModes(
+  groupFolder: string,
+): Pick<
+  WorkspaceAgentProfileBinding,
+  'interaction_mode' | 'process_visibility' | 'work_mode'
+> {
+  const binding = getWorkspaceAgentProfileBinding(groupFolder);
+  return {
+    interaction_mode: binding?.interaction_mode ?? 'assistant',
+    process_visibility: binding?.process_visibility ?? 'hidden',
+    work_mode: binding?.work_mode ?? DEFAULT_WORK_MODE,
+  };
+}
+
 export function getWorkspaceInteractionMode(
   groupFolder: string,
 ): InteractionMode {
-  return (
-    getWorkspaceAgentProfileBinding(groupFolder)?.interaction_mode ??
-    'assistant'
-  );
+  return getWorkspaceModes(groupFolder).interaction_mode;
 }
 
 export function setWorkspaceInteractionMode(
@@ -7194,9 +7251,7 @@ export function setWorkspaceInteractionMode(
 export function getWorkspaceProcessVisibility(
   groupFolder: string,
 ): ProcessVisibility {
-  return (
-    getWorkspaceAgentProfileBinding(groupFolder)?.process_visibility ?? 'hidden'
-  );
+  return getWorkspaceModes(groupFolder).process_visibility;
 }
 
 /**
@@ -7211,6 +7266,29 @@ export function setWorkspaceProcessVisibility(
        SET process_visibility = ?, updated_at = ?
        WHERE group_folder = ?`).run(
     processVisibility,
+    new Date().toISOString(),
+    groupFolder,
+  );
+  return result.changes > 0;
+}
+
+/** How the Workspace's sessions take on work; `single` without a binding. */
+export function getWorkspaceWorkMode(groupFolder: string): WorkMode {
+  return getWorkspaceModes(groupFolder).work_mode;
+}
+
+/**
+ * Takes effect when a session's runner next starts: the runner reads it for
+ * its tools and prompt, nothing already running changes.
+ */
+export function setWorkspaceWorkMode(
+  groupFolder: string,
+  workMode: WorkMode,
+): boolean {
+  const result = prepareCached(`UPDATE workspace_agent_profiles
+       SET work_mode = ?, updated_at = ?
+       WHERE group_folder = ?`).run(
+    workMode,
     new Date().toISOString(),
     groupFolder,
   );

@@ -4,7 +4,9 @@ import {
   buildHappyClawPromptPlan,
   createPromptPlan,
   hasBackgroundTaskTools,
+  SESSION_PROMPTS,
 } from '../container/agent-runner/src/prompt-plan.js';
+import { sessionKind } from '../container/agent-runner/src/session-kind.js';
 
 describe('HappyClaw PromptPlan', () => {
   test('keeps identity first and includes only capabilities that are active', () => {
@@ -195,5 +197,75 @@ describe('HappyClaw PromptPlan', () => {
     expect(plan.text).toBe('甲\nsecond');
     expect(plan.totalBytes).toBe(Buffer.byteLength(plan.text, 'utf8'));
     expect(plan.estimatedTokens).toBeGreaterThan(0);
+  });
+});
+
+describe('session kinds and their prompts', () => {
+  const ROUTER = { role: 'router' } as const;
+  const TEAM_WORKER = {
+    role: 'worker',
+    workItemId: 'item-1',
+    writable: false,
+  } as const;
+  const DELEGATED = {
+    role: 'worker',
+    workItemId: 'item-2',
+    writable: true,
+    origin: 'delegated',
+  } as const;
+
+  test('without a role the work mode decides; a team role outranks it', () => {
+    expect(sessionKind({})).toBe('single');
+    expect(sessionKind({ workMode: 'multi' })).toBe('multi');
+    for (const workMode of [undefined, 'multi'] as const) {
+      expect(sessionKind({ teamRole: ROUTER, workMode })).toBe('team-router');
+      expect(sessionKind({ teamRole: TEAM_WORKER, workMode })).toBe(
+        'team-worker',
+      );
+      expect(
+        sessionKind({ teamRole: { ...TEAM_WORKER, origin: 'team' }, workMode }),
+      ).toBe('team-worker');
+      expect(sessionKind({ teamRole: DELEGATED, workMode })).toBe(
+        'delegated-worker',
+      );
+    }
+  });
+
+  test('single and team sessions keep their prompts; multi and delegated get their own', () => {
+    expect(SESSION_PROMPTS).toEqual({
+      single: { backgroundTasks: 'background-tasks' },
+      multi: { backgroundTasks: 'background-tasks.multi' },
+      'team-router': {
+        role: 'team-router',
+        backgroundTasks: 'background-tasks.team',
+      },
+      'team-worker': {
+        role: 'team-worker',
+        backgroundTasks: 'background-tasks.team',
+      },
+      'delegated-worker': {
+        role: 'delegated-worker',
+        backgroundTasks: 'background-tasks.delegated',
+      },
+    });
+  });
+
+  test("the delegated worker's section is the session's output contract", () => {
+    const plan = buildHappyClawPromptPlan({
+      interaction: 'interaction',
+      security: 'security',
+      team: { id: 'delegated-worker', text: 'WORKER_MARKER' },
+    });
+    expect(plan.errors).toEqual([]);
+    expect(plan.blocks.map((block) => block.id)).toEqual([
+      'interaction',
+      'security-rules',
+      'delegated-worker',
+    ]);
+    expect(plan.blocks[2]).toMatchObject({
+      required: true,
+      condition: 'multi-task mode delegated worker session',
+      text: '<delegated-worker>\nWORKER_MARKER\n</delegated-worker>',
+    });
   });
 });

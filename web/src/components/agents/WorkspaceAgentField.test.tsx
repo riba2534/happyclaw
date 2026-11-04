@@ -65,9 +65,11 @@ async function renderDialog(groupJid: string) {
         workspaceName="调研"
         currentMode="assistant"
         currentVisibility="activity"
+        currentWorkMode="single"
         onClose={mocks.onClose}
         onSave={mocks.onSave}
         onSaveVisibility={mocks.onSave}
+        onSaveWorkMode={mocks.onSave}
       />,
     );
   });

@@ -122,6 +122,38 @@ describe('executeSessionReset', () => {
       }),
     );
   });
+
+  test('what follows a reset runs once its new cursor is in place', async () => {
+    const { executeSessionReset, setAfterSessionReset } =
+      await import('../src/commands.js');
+    const setLastAgentTimestamp = vi.fn();
+    const afterReset = vi.fn();
+    setAfterSessionReset(afterReset);
+    try {
+      for (const mode of ['clear', 'fresh'] as const) {
+        await executeSessionReset(
+          'web:after-reset',
+          'after-reset',
+          {
+            queue: { stopGroup: vi.fn(async () => {}) },
+            broadcast: vi.fn(),
+            setLastAgentTimestamp,
+          },
+          'agent-1',
+          { mode },
+        );
+      }
+    } finally {
+      setAfterSessionReset(null);
+    }
+    expect(afterReset.mock.calls).toEqual([
+      ['web:after-reset#agent:agent-1'],
+      ['web:after-reset#agent:agent-1'],
+    ]);
+    expect(afterReset.mock.invocationCallOrder[0]).toBeGreaterThan(
+      setLastAgentTimestamp.mock.invocationCallOrder[0],
+    );
+  });
 });
 
 describe('parseFreshCommand', () => {

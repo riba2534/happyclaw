@@ -29,11 +29,12 @@ Telegram、QQ、钉钉、微信、企业微信、Discord、WhatsApp。
 
 ```text
 Agent Profile（身份、四段 Prompt、能力策略）
-└── Workspace（文件目录、执行模式、环境变量、话题群绑定）
+└── Workspace（文件目录、执行模式、工作方式、环境变量、话题群绑定）
     ├── Runtime Session（独立 Claude 上下文，可绑定私聊或普通群；Host 工作区可选独立 git worktree）
     ├── Native Context Session（飞书话题等原生线程）
     ├── Automation（自动化：按计划把提示词作为真实的一轮发进会话）
-    └── Work Item（团队模式的工作项：一件被授权的工作，由自己的执行会话完成）
+    └── Work Item（工作项：一件被授权的工作，由自己的执行会话完成；来自团队模式的群，
+                   或多任务工作区里派出它的会话）
 ```
 
 重要命名边界：
@@ -65,6 +66,23 @@ Agent Profile（身份、四段 Prompt、能力策略）
   （`source_kind='work_item'`；Host 工作区的 git 仓库用 worktree 会话）完成。只有路由会话在群里
   说话；执行会话只能发一次确认，结果经 `work_report` 回流给路由会话。工作项的阶段
   （等你回答、等你批准、受阻、失败、工作中、等待新消息）由记录派生，不存储。
+- 工作区有工作方式 `work_mode`（存于 `workspace_agent_profiles`）：`single`（单任务，默认）
+  一条输入处理完再处理下一条，长任务在会话内完成，行为与没有这个设置时一致；`multi`（多任务）
+  下，普通会话可以用 `work_delegate` 把较大的任务派给 Worker，这一轮随即结束，会话继续接下一条
+  输入。派出的任务是派发型工作项（`work_items.origin='delegated'`），由它自己的执行会话
+  （`source_kind='work_item'`，不建 worktree，与派出它的会话共用工作目录）完成；Worker 只用
+  `work_report`（progress、ready、blocked、failed）。ready、blocked、failed，以及并非派出会话自己
+  `work_stop` 造成的停止（`state="stopped"`），以 `work_item_input` 注入派出它的会话，排在当前轮次
+  之后、不 steer，回复沿用派出那一轮所回答输入的来源路由；派出的会话转述给用户，用
+  `work_followup` 把用户的回答转给 Worker。派发、停止和跟进都只接受工作区主人亲自发起的轮次
+  （与 `install_skill` 同一闸门；派发请求不带 `inputTurnId` 时按非主人拒绝），每个会话最多 3 个、
+  每个工作区最多 5 个未结束，并受计费闸门约束；处理回报的那一轮不算主人亲自发起。独立 worktree
+  会话与自动化运行会话不能派发。Worker 的 summary 不超过 4000 字，更长的结果写进文件。Worker
+  一轮结束却没交回 ready、failed 或 blocked，或运行失败、被计费拒绝时，任务记为失败并告知派出的
+  会话；`/break` 与停止不会取消排队中的派发回报（会话没有在跑的查询时立即交出处理），`/clear`、
+  `/fresh` 把它们排到重置之后照常处理。删除派出的会话会停止它未结束的任务。切回
+  `single` 后，还有未结束派发项的会话仍按多任务运行到它们结束（只是不能再派），切换不中断运行，
+  暖 Runner 在本轮结束后退役。团队模式的代码路径只处理 `origin='team'` 的工作项。
 
 ## 3. 主要模块
 
@@ -165,6 +183,10 @@ Web UI 约定：
   经 `MotionProvider` 懒加载并遵循减少动态效果设置。流式回复的贴底跟随（每批一次的
   WAAPI 位移补偿）和逐词淡入（CSS keyframes）是逐帧、逐词的热路径，不走 `m.*`，
   同样在减少动态效果时关闭。
+- 多任务工作区的对话页在消息列表末尾、输入框上方列出本会话派出的任务：未结束的一直显示，
+  已结束的显示到本会话下一条由人发出的消息为止；「查看」打开 Worker 会话，「停止」需确认，访客
+  不能停止。单任务工作区不挂载、不取数。工作方式在新建工作区弹窗和「工作区设置」里选择；
+  「工作项」页有派出的任务时分「团队工作项 / 派出的任务」两个视图。
 - 聊天输入框是 Tiptap 编辑器（`@tiptap/*` 全部精确锁同一版本）。编辑器内核（结构化列表、
   中文标点与选区修补、长粘贴折叠块、序列化）取自 cindy，位于
   `components/chat/composer/cindy/`，按 Apache-2.0 保留来源与修改声明；外层
@@ -285,8 +307,13 @@ preset 的身份和默认风格，只低于平台的安全、权限、工具和�
 
 规则：
 
-- Agent 工具权限保持开放；不要虚构只读或受限工具模式。团队模式的路由与执行会话按角色收紧
-  工具（见 §6.3），这是渠道发言规则，不是通用的受限模式。另一例外是 Claude Code
+- Agent 工具权限保持开放；不要虚构只读或受限工具模式。团队模式的路由与执行会话、多任务
+  工作区的 Worker 按角色收紧工具（见 §6.3 与 §2），这是发言规则，不是通用的受限模式：Worker
+  只通过 `work_report` 交回结果，不能直接对人说话。会话类型由 Runner 的 `sessionKind()`
+  统一判定，团队角色优先于工作方式；多任务工作区的普通会话由宿主设置
+  `ContainerInput.workMode='multi'`，Runner 据此注册 `work_delegate`、`work_delegations`、
+  `work_stop`、`work_followup` 并换用 `background-tasks.multi.md`，Worker 用
+  `delegated-worker.md` 与 `background-tasks.delegated.md`。另一例外是 Claude Code
   内置、依赖 CLI 进程常驻或交互审批的会话级工具（`CronCreate`/`CronDelete`/`CronList`、
   `ScheduleWakeup`、`EnterWorktree`/`ExitWorktree`、`EnterPlanMode`/`ExitPlanMode`）：
   Runner 每轮结束会关闭 CLI，这些承诺会静默丢失，计划模式也等不到审批，因此默认禁用，
@@ -507,8 +534,10 @@ WhatsApp、企微、微信支持 `/steer` 和 `/break`，其 `/clear` 与 `/fres
   不进入 Agent Prompt，也不额外发送框架确认。可携带图片。目标只查已有路由，不为
   `/steer`、`/break` 新建话题会话；目标不存在时回复目标不存在，消息不入库。
 - `/break`：必须无附件且正文精确匹配；以到达时为截止点取消此前 pending 并中断 active
-  Loop，保留 transcript，之后到达的消息继续运行；固定回复 `Current task stopped.` 或
-  `No active task to stop.`。只受响应对象/激活策略约束，不要求 owner。
+  Loop，保留 transcript，之后到达的消息继续运行；排队中的派发回报（多任务模式）不取消，
+  照常交给会话处理（会话没有在跑的查询时，例如在等用量上限，立即交出），要取消只能在 Web
+  队列里撤回。固定回复 `Current task stopped.` 或 `No active task to stop.`。
+  只受响应对象/激活策略约束，不要求 owner。
 - `/clear`：必须无附件且正文精确匹配；重置当前逻辑 Session 并固定回复
   `Session context cleared.`。
 - `/fresh [备注]`：必须无附件；停 runner、清 session 文件、写入

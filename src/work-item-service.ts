@@ -1,18 +1,22 @@
 /**
- * Team mode (团队模式): the operations REST and the host runtime share.
+ * Team mode (团队模式) and multi-task mode (多任务模式): the operations REST
+ * and the host runtime share.
  *
  * Validation, the state machine and the side effects (creating and stopping
  * worker sessions, delivering inputs, posting replies) live here, so the Web
- * and the router's tools change work items the same way. Callers check
+ * and the sessions' tools change work items the same way. Callers check
  * workspace access first; these functions check the rest.
  *
  * Lanes: the router session of a group is the Runtime Session recorded on
  * its team mount (source_kind 'team_router'); each work item has a worker
- * session of its own (source_kind 'work_item'). Inputs into both are composed
- * here and moved by work-item-runtime.ts.
+ * session of its own (source_kind 'work_item'). A delegated item (multi-task
+ * mode) has no group: its worker reports to the session that delegated it.
+ * Inputs into all of them are composed here and moved by work-item-runtime.ts.
  */
 import crypto from 'crypto';
 
+import { checkBillingAccessFresh } from './billing.js';
+import { KeyedLockPool } from './capability-lock.js';
 import { channelConversationJid } from './channel-address.js';
 import { resolveChannelConversationKind } from './channel-conversation-kind.js';
 import {
@@ -21,6 +25,8 @@ import {
   getChannelMount,
   getMessageChannelTurnContext,
   getRegisteredGroup,
+  getUserById,
+  getWorkspaceWorkMode,
   listChannelMountsByWorkspace,
 } from './db.js';
 import { getChannelType } from './im-channel.js';
@@ -33,6 +39,7 @@ import {
   createSessionWorktree,
   WorktreeUnavailableError,
 } from './session-worktree.js';
+import { getSessionWorktree } from './session-worktree-store.js';
 import {
   candidateInputItem,
   followupInputItem,
@@ -58,8 +65,12 @@ import {
   getWorkItem,
   getWorkItemByAgent,
   getWorkItemBySource,
+  countOpenDelegatedWorkItems,
   countWorkItemsByChannel,
   findSubscribedWorkItems,
+  getWorkItemBySeq,
+  hasDelegatedWorkItems,
+  listOpenDelegatedWorkItems,
   getWorkItemReply,
   hasWorkEvent,
   insertWorkItem,
@@ -93,6 +104,13 @@ import type { TeamMountView, WorkItemDetail } from './work-items.js';
 import {
   admitMessage,
   countImWords,
+  DELEGATE_CONTEXT_CHAR_LIMIT,
+  DELEGATE_FILES_LIMIT,
+  DELEGATE_FOLLOWUP_CHAR_LIMIT,
+  DELEGATE_TASK_CHAR_LIMIT,
+  DELEGATED_OPEN_PER_SESSION,
+  DELEGATED_OPEN_PER_WORKSPACE,
+  DELEGATED_REPORT_STATES,
   deriveWorkStage,
   imTextLimitError,
   parseTeamSettings,
@@ -104,12 +122,15 @@ import {
   WORK_IPC_TYPES,
   WORK_NOTE_WORD_LIMIT,
   WORK_REPORT_STATES,
+  WORK_SUMMARY_CHAR_LIMIT,
   WORK_TITLE_CHAR_LIMIT,
   isWorkItemWritable,
+  type DelegatedWorkSummary,
   type TeamRole,
   type TeamSettings,
   type WorkDecision,
   type WorkDecisionKind,
+  type WorkDelegateResult,
   type WorkItem,
   type WorkItemStatus,
   type WorkIpcType,
@@ -138,7 +159,6 @@ export class WorkItemError extends Error {
 
 export type { TeamMountView, WorkItemDetail } from './work-items.js';
 
-const SUMMARY_CHAR_LIMIT = 4000;
 const REASON_CHAR_LIMIT = 500;
 
 // ── Team groups ────────────────────────────────────────────────────────
@@ -252,8 +272,18 @@ export function teamGateDeps(context: TeamGroupContext): TeamGateDeps {
 }
 
 export function hasWorkerSession(item: WorkItem): boolean {
-  const agent = getAgent(item.agentId);
-  return agent?.kind === 'conversation' && agent.chat_jid === item.workspaceJid;
+  return !!liveSession(item.workspaceJid, item.agentId);
+}
+
+/** A conversation session of the workspace, while it exists. */
+function liveSession(
+  workspaceJid: string,
+  agentId: string,
+): SubAgent | undefined {
+  const agent = getAgent(agentId);
+  return agent?.kind === 'conversation' && agent.chat_jid === workspaceJid
+    ? agent
+    : undefined;
 }
 
 /**
@@ -269,13 +299,14 @@ export function teamLaneOf(
   }
   if (agent?.source_kind === 'work_item') {
     const item = getWorkItemByAgent(agent.id);
-    return item
-      ? {
-          role: 'worker',
-          workItemId: item.id,
-          writable: isWorkItemWritable(item),
-        }
-      : null;
+    if (!item) return null;
+    return {
+      role: 'worker',
+      workItemId: item.id,
+      writable: isWorkItemWritable(item),
+      // A delegated worker reports to the session that delegated it.
+      ...(item.origin === 'delegated' ? { origin: 'delegated' as const } : {}),
+    };
   }
   return null;
 }
@@ -294,7 +325,12 @@ function toView(item: WorkItem): WorkItemView {
     ...item,
     stage: deriveWorkStage(item),
     workspaceName: getRegisteredGroup(item.workspaceJid)?.name ?? '',
-    channelName: getRegisteredGroup(item.channelJid)?.name ?? null,
+    // A delegated item's channel is its delegating session's lane, no chat.
+    channelName:
+      item.origin === 'team'
+        ? (getRegisteredGroup(item.channelJid)?.name ?? null)
+        : null,
+    originSessionName: originSessionOf(item)?.name ?? null,
   };
 }
 
@@ -325,7 +361,7 @@ function patchItem(item: WorkItem, patch: WorkItemPatch): WorkItem {
 
 function endItem(
   item: WorkItem,
-  outcome: 'completed' | 'dropped' | 'stopped',
+  outcome: 'completed' | 'dropped' | 'failed' | 'stopped',
   extra: WorkItemPatch = {},
 ): WorkItem {
   const at = now();
@@ -717,16 +753,34 @@ function requireItem(id: string): WorkItem {
 }
 
 function stopItem(item: WorkItem, by: string, stopLane = true): WorkItem {
-  const stopped = endItem(item, 'stopped', { attention: null });
-  recordWorkEvent({ workItemId: item.id, kind: 'stop', text: by, now: now() });
-  // The worker stops like `/break`: its current turn and every input it has
-  // not run yet.
-  if (stopLane) {
-    getWorkItemRuntimeHooks().stopLane(
-      laneJidOf(item.workspaceJid, item.agentId),
-    );
-  }
+  const { stopped } = endStopped(item, by);
+  if (stopLane) stopWorkerLane(item);
   return stopped;
+}
+
+/** The rows of a stop: the item ends stopped, and its `stop` event. */
+function endStopped(
+  item: WorkItem,
+  by: string,
+): { stopped: WorkItem; eventId: number | null } {
+  const stopped = endItem(item, 'stopped', { attention: null });
+  const eventId = recordWorkEvent({
+    workItemId: item.id,
+    kind: 'stop',
+    text: by,
+    now: now(),
+  });
+  return { stopped, eventId };
+}
+
+/**
+ * The worker stops like `/break`: its current turn and every input it has
+ * not run yet.
+ */
+function stopWorkerLane(item: WorkItem): void {
+  getWorkItemRuntimeHooks().stopLane(
+    laneJidOf(item.workspaceJid, item.agentId),
+  );
 }
 
 /** End an item as stopped by a person; interrupts its worker. */
@@ -736,6 +790,7 @@ export function stopWorkItem(id: string, _actor?: WorkItemActor): WorkItemView {
     if (item.outcome === 'stopped') return toView(item);
     throw new WorkItemError('工作项已经结束', 409);
   }
+  if (item.origin === 'delegated') return stopDelegatedItem(item, 'web')();
   return broadcast(stopItem(item, 'web'));
 }
 
@@ -908,10 +963,28 @@ export function isWorkIpcType(type: unknown): type is WorkIpcType {
   return (WORK_IPC_TYPES as readonly unknown[]).includes(type);
 }
 
-/** Host-derived identity of the session that called a team tool. */
+/** Host-derived identity of the session that called a work tool. */
 export interface WorkIpcCaller {
   folder: string;
   agentId: string | null;
+  /**
+   * Delegation tools: the calling turn when the workspace owner started it
+   * (the install_skill rule), else null. Read from the host's turn registry;
+   * `inputTurnId` (the Runner's) names which delivered batch the turn is, and
+   * `input` is that batch's last input (null when no batch is named).
+   */
+  ownerTurn?: (inputTurnId: string | null) => OwnerTurn | null;
+}
+
+/** The workspace owner's own turn, as the host judged it. */
+export interface OwnerTurn {
+  input: DelegationOriginInput | null;
+}
+
+/** The stored input a delegating turn was answering. */
+export interface DelegationOriginInput {
+  chatJid: string;
+  messageId: string;
 }
 
 export type WorkIpcResult =
@@ -959,11 +1032,22 @@ function requireWorker(caller: WorkIpcCaller): WorkItem {
   if (!agent || !item || agent.group_folder !== caller.folder) {
     fail('Only a work item session can use this tool.');
   }
+  // A delegated item has no group: it reports to its delegating session.
+  if (item.origin === 'delegated') return item;
   // The group must still run team mode, mounted on the item's workspace.
   const context = resolveTeamGroup(item.channelJid);
   if (!context || context.workspaceJid !== item.workspaceJid) {
     reconcileTeamGroup(item.channelJid);
     fail('Team mode is off for this group.');
+  }
+  return item;
+}
+
+/** A worker tool that speaks in a group (work_ack, work_handback). */
+function requireTeamWorker(caller: WorkIpcCaller): WorkItem {
+  const item = requireWorker(caller);
+  if (item.origin !== 'team') {
+    fail('Only a team work item session can use this tool.');
   }
   return item;
 }
@@ -1345,6 +1429,21 @@ async function createWorkerSession(
   return session.id;
 }
 
+/** Delete a worker session no item ended up using. */
+function discardSession(
+  workspaceJid: string,
+  group: RegisteredGroup,
+  agentId: string,
+): void {
+  const orphan = getAgent(agentId);
+  if (!orphan) return;
+  try {
+    deleteConversationSession({ workspaceJid, group, session: orphan });
+  } catch {
+    /* the orphan stays; nothing routes to it */
+  }
+}
+
 async function acceptCandidate(
   router: RouterLane,
   candidate: Candidate,
@@ -1444,18 +1543,7 @@ async function acceptCandidate(
   });
   if (item.agentId !== agentId) {
     // Another process won the insert: its session does the work.
-    const orphan = getAgent(agentId);
-    if (orphan) {
-      try {
-        deleteConversationSession({
-          workspaceJid: context.workspaceJid,
-          group: context.workspace,
-          session: orphan,
-        });
-      } catch {
-        /* the orphan stays; nothing routes to it */
-      }
-    }
+    discardSession(context.workspaceJid, context.workspace, agentId);
     return routed(candidate, 'accept', item.id);
   }
   subscribeTrigger(item, candidate.messageId, facts.threadId);
@@ -1832,15 +1920,41 @@ function handleWorkList(
 
 const REPORT_STATES: ReadonlySet<string> = new Set(WORK_REPORT_STATES);
 
+/** Record a worker's report and show it in the worker's own transcript. */
+function recordReport(
+  item: WorkItem,
+  state: WorkReportState,
+  summary: string,
+): number | null {
+  const eventId = recordWorkEvent({
+    workItemId: item.id,
+    kind: 'report',
+    state,
+    text: summary,
+    now: now(),
+  });
+  void getWorkItemRuntimeHooks()
+    .postLaneMessage(
+      laneJidOf(item.workspaceJid, item.agentId),
+      summary,
+      reportInputId(item.id, eventId),
+    )
+    .catch((error) =>
+      logger.warn({ err: error, workItemId: item.id }, 'Report not stored'),
+    );
+  return eventId;
+}
+
 function handleWorkReport(
   caller: WorkIpcCaller,
   payload: Record<string, unknown>,
 ): unknown {
   const item = requireWorker(caller);
   if (item.status !== 'open') fail('This work item has ended.');
+  if (item.origin === 'delegated') return handleDelegatedReport(item, payload);
   const state = payload.state as WorkReportState;
   if (!REPORT_STATES.has(state)) fail('state is not a report state.');
-  const summary = optionalText(payload.summary, SUMMARY_CHAR_LIMIT);
+  const summary = optionalText(payload.summary, WORK_SUMMARY_CHAR_LIMIT);
   if (!summary) fail('summary is required.');
   const humanAction = optionalText(payload.humanAction, 1000);
   const questionFor = optionalText(payload.questionForMessageId, 200);
@@ -1863,20 +1977,7 @@ function handleWorkReport(
   } else {
     updated = patchItem(item, patch);
   }
-  const eventId = recordWorkEvent({
-    workItemId: item.id,
-    kind: 'report',
-    state,
-    text: summary,
-    now: now(),
-  });
-  const runtime = getWorkItemRuntimeHooks();
-  const workerLane = laneJidOf(item.workspaceJid, item.agentId);
-  void runtime
-    .postLaneMessage(workerLane, summary, reportInputId(item.id, eventId))
-    .catch((error) =>
-      logger.warn({ err: error, workItemId: item.id }, 'Report not stored'),
-    );
+  const eventId = recordReport(item, state, summary);
   // Progress only updates the item; a dropped item ends silently.
   if (forwardsReport(state, updated.attention)) {
     const context = resolveTeamGroup(item.channelJid);
@@ -1918,7 +2019,7 @@ function handleWorkAck(
   caller: WorkIpcCaller,
   payload: Record<string, unknown>,
 ): unknown {
-  const item = requireWorker(caller);
+  const item = requireTeamWorker(caller);
   requireOpen(item);
   const trigger = stringField(payload.triggerMessageId);
   if (!trigger || !wasDeliveredTo(item, trigger)) {
@@ -1938,7 +2039,7 @@ function handleWorkHandback(
   caller: WorkIpcCaller,
   payload: Record<string, unknown>,
 ): unknown {
-  const item = requireWorker(caller);
+  const item = requireTeamWorker(caller);
   requireOpen(item);
   const trigger = stringField(payload.triggerMessageId);
   if (
@@ -2055,6 +2156,688 @@ function restoreIfOnlyResumedBy(item: WorkItem, trigger: string): WorkItem {
   return endItem(item, outcome);
 }
 
+// ── Multi-task mode: delegated work ────────────────────────────────────
+
+/** Errors the delegating session's model reads, in the contract's words. */
+const DELEGATION_ERRORS = {
+  singleTask: '当前工作区是单任务模式，不能派出后台任务；请在当前会话里完成。',
+  notOwner:
+    '只有工作区主人亲自发起的对话可以派出后台任务；请在当前会话里完成。',
+  limit: `后台任务已达上限（每个会话最多 ${DELEGATED_OPEN_PER_SESSION} 个、每个工作区最多 ${DELEGATED_OPEN_PER_WORKSPACE} 个同时进行）；请等已有任务完成，或在当前会话里完成。`,
+  billing: '当前额度不足，不能派出后台任务。',
+  ended: '这个后台任务已经结束。',
+  notFound: (item: string) => `没有找到这个后台任务：${item}。`,
+  manageNotOwner:
+    '只有工作区主人亲自发起的对话可以停止或跟进后台任务；请把用户的意思转告主人。',
+  worktree: '独立 worktree 会话暂不支持派出后台任务；请在当前会话里完成。',
+  stoppedBeforeStart: '这个后台任务在 Worker 启动前已被停止，没有开始执行。',
+};
+
+/** Why a delegated item stopped: its event text, and what its session reads. */
+type DelegatedStopCause =
+  | 'work_stop'
+  | 'web'
+  | 'session_deleted'
+  | 'origin_deleted';
+
+const DELEGATED_STOP_REASON: Record<DelegatedStopCause, string> = {
+  work_stop: '本会话用 work_stop 停止了它',
+  web: '用户在 Web 上停止了它',
+  session_deleted: 'Worker 会话已被删除',
+  origin_deleted: '派出它的会话已被删除',
+};
+
+const WORKER_GONE_REPORT = 'Worker 会话已不存在，任务没有完成。';
+const WORKER_NO_RESULT_REPORT = 'Worker 结束了这一轮，但没有交回结果。';
+
+// One delegation at a time per workspace, so concurrent calls cannot pass
+// the open-item limits together. The checks and the item's insert run with
+// no await between them today; the lock keeps that true if one is added.
+const delegationLocks = new KeyedLockPool();
+
+/** A session that may delegate: ordinary, of a multi-task workspace. */
+interface DelegatingLane {
+  agentId: string;
+  workspaceJid: string;
+  workspace: RegisteredGroup;
+  laneJid: string;
+}
+
+/** The session that delegated an item, while it exists. */
+function originSessionOf(item: WorkItem): SubAgent | undefined {
+  return item.origin === 'delegated' && item.originAgentId
+    ? liveSession(item.workspaceJid, item.originAgentId)
+    : undefined;
+}
+
+/**
+ * Whether a session takes part in multi-task mode: an ordinary conversation.
+ * Team sessions (a router, any worker, delegated ones too) and spawned
+ * agents do not.
+ */
+export function mayDelegateWork(
+  agent: Pick<SubAgent, 'kind' | 'source_kind'>,
+): boolean {
+  return (
+    agent.kind === 'conversation' &&
+    agent.source_kind !== 'team_router' &&
+    agent.source_kind !== 'work_item'
+  );
+}
+
+/**
+ * `ContainerInput.workMode`: `multi` for a session that may delegate in a
+ * multi-task workspace, and for one whose delegated work is still under way
+ * after the workspace went back to single-task (an open item, or a report of
+ * one in the batch it runs), so it keeps the tools to follow that work up and
+ * reads its reports. An automation's session (its turns never pass the owner
+ * rule) and a worktree session (refused) get no delegation tools.
+ */
+export function runnerWorkMode(
+  agent: Pick<SubAgent, 'id' | 'kind' | 'source_kind'>,
+  workspaceFolder: string,
+  inputs: readonly DelegatedReportCandidate[] = [],
+): 'multi' | undefined {
+  if (
+    !mayDelegateWork(agent) ||
+    agent.source_kind === 'automation' ||
+    getSessionWorktree(agent.id)
+  ) {
+    return undefined;
+  }
+  return getWorkspaceWorkMode(workspaceFolder) === 'multi' ||
+    countOpenDelegatedWorkItems({ originAgentId: agent.id }) > 0 ||
+    inputs.some(isDelegatedReportInput)
+    ? 'multi'
+    : undefined;
+}
+
+/** The fields of a stored input that tell a delegated report. */
+interface DelegatedReportCandidate {
+  source_kind?: string | null;
+  attachments?: string | null;
+}
+
+/**
+ * A delegated item's report in its session's lane. Stopping that session's
+ * turn does not withdraw it from the queue: the item has ended, and the
+ * report is the only news of it.
+ */
+export function isDelegatedReportInput(
+  input: DelegatedReportCandidate,
+): boolean {
+  if (input.source_kind !== 'work_item_input') return false;
+  const header = readTeamInput(input.attachments);
+  const id = header?.tag === 'work_report' ? header.facts?.workItemId : null;
+  return !!id && getWorkItem(id)?.origin === 'delegated';
+}
+
+/**
+ * The calling session, if it may use a delegation tool. `delegate` needs a
+ * multi-task workspace and no worktree; following up work already delegated
+ * (`manage`) stays possible after the workspace went back to single-task.
+ */
+function requireDelegatingLane(
+  caller: WorkIpcCaller,
+  purpose: 'delegate' | 'manage',
+): DelegatingLane {
+  const agent = caller.agentId ? getAgent(caller.agentId) : undefined;
+  const workspace = agent?.chat_jid
+    ? getRegisteredGroup(agent.chat_jid)
+    : undefined;
+  if (
+    !agent ||
+    !workspace ||
+    agent.group_folder !== caller.folder ||
+    !mayDelegateWork(agent)
+  ) {
+    fail(
+      'Only an ordinary session of a multi-task workspace can use this tool.',
+    );
+  }
+  if (
+    getWorkspaceWorkMode(workspace.folder) !== 'multi' &&
+    (purpose === 'delegate' || !hasDelegatedWorkItems(agent.id))
+  ) {
+    fail(DELEGATION_ERRORS.singleTask);
+  }
+  // Its worker would edit the main checkout, not this session's worktree.
+  if (purpose === 'delegate' && getSessionWorktree(agent.id)) {
+    fail(DELEGATION_ERRORS.worktree);
+  }
+  return {
+    agentId: agent.id,
+    workspaceJid: agent.chat_jid,
+    workspace,
+    laneJid: laneJidOf(agent.chat_jid, agent.id),
+  };
+}
+
+/**
+ * The calling turn may change a delegated item (stop it, follow it up): the
+ * workspace owner started it, as for work_delegate. A turn answering a
+ * report is not the owner's own.
+ */
+function requireOwnerTurn(
+  caller: WorkIpcCaller,
+  payload: Record<string, unknown>,
+): void {
+  if (!caller.ownerTurn?.(stringField(payload.inputTurnId) || null)) {
+    fail(DELEGATION_ERRORS.manageNotOwner);
+  }
+}
+
+/**
+ * `payload.item` names one of the calling session's delegated items, by id
+ * or `#seq`, and the item is still open; the turn is the owner's own.
+ */
+function requireOpenDelegatedItem(
+  caller: WorkIpcCaller,
+  payload: Record<string, unknown>,
+): WorkItem {
+  const lane = requireDelegatingLane(caller, 'manage');
+  requireOwnerTurn(caller, payload);
+  const ref = payload.item;
+  const text = typeof ref === 'number' ? String(ref) : stringField(ref).trim();
+  const seq = /^#?(\d+)$/.exec(text);
+  const item = seq
+    ? getWorkItemBySeq(lane.workspaceJid, Number(seq[1]))
+    : getWorkItem(text);
+  if (
+    !item ||
+    item.origin !== 'delegated' ||
+    item.originAgentId !== lane.agentId
+  ) {
+    fail(DELEGATION_ERRORS.notFound(text));
+  }
+  if (item.status !== 'open') fail(DELEGATION_ERRORS.ended);
+  return item;
+}
+
+/** A trimmed string of at most `limit` characters, or null when empty. */
+function boundedText(
+  value: unknown,
+  what: string,
+  limit: number,
+): string | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== 'string') fail(`${what} must be a string.`);
+  const text = value.trim();
+  if ([...text].length > limit) {
+    fail(`${what} is limited to ${limit} characters.`);
+  }
+  return text || null;
+}
+
+function requireText(value: unknown, what: string, limit: number): string {
+  return boundedText(value, what, limit) ?? fail(`${what} is required.`);
+}
+
+/** The worker's assignment: the task, then the background and files given. */
+function assignmentBody(request: {
+  task: string;
+  context: string | null;
+  files: string[];
+}): string {
+  const parts = [request.task];
+  if (request.context) parts.push(`## 背景\n${request.context}`);
+  if (request.files.length > 0) {
+    parts.push(
+      `## 相关文件\n${request.files.map((file) => `- ${file}`).join('\n')}`,
+    );
+  }
+  return parts.join('\n\n');
+}
+
+function parseDelegateRequest(payload: Record<string, unknown>): {
+  title: string;
+  task: string;
+  context: string | null;
+  files: string[];
+} {
+  const title = requireText(payload.title, 'title', WORK_TITLE_CHAR_LIMIT);
+  const task = requireText(payload.task, 'task', DELEGATE_TASK_CHAR_LIMIT);
+  const context = boundedText(
+    payload.context,
+    'context',
+    DELEGATE_CONTEXT_CHAR_LIMIT,
+  );
+  let files: string[] = [];
+  if (payload.files !== undefined && payload.files !== null) {
+    if (
+      !Array.isArray(payload.files) ||
+      payload.files.some((file) => typeof file !== 'string')
+    ) {
+      fail('files must be a list of paths.');
+    }
+    files = (payload.files as string[])
+      .map((file) => file.trim())
+      .filter(Boolean);
+    if (files.length > DELEGATE_FILES_LIMIT) {
+      fail(`files is limited to ${DELEGATE_FILES_LIMIT} paths.`);
+    }
+  }
+  return { title, task, context, files };
+}
+
+/**
+ * The reply route of the input a delegation answered: its provider, Bot
+ * account, chat, topic and message. Nothing of that input's content (a
+ * quote, a forward, mentions, its sender) comes along: the report is not a
+ * reply to anything and must not render as quoted or forwarded material,
+ * but it goes back to the same chat and topic.
+ */
+function replyRouteContext(
+  context: ChannelTurnContext | null,
+): ChannelTurnContext | null {
+  if (!context) return null;
+  const { id, rootId, threadId } = context.message;
+  return {
+    schemaVersion: context.schemaVersion,
+    provider: context.provider,
+    channelAccountId: context.channelAccountId,
+    sourceJid: context.sourceJid,
+    ...(context.bot ? { bot: context.bot } : {}),
+    chat: context.chat,
+    message: {
+      id,
+      ...(rootId ? { rootId } : {}),
+      ...(threadId ? { threadId } : {}),
+    },
+  };
+}
+
+async function handleWorkDelegate(
+  caller: WorkIpcCaller,
+  payload: Record<string, unknown>,
+): Promise<WorkDelegateResult> {
+  const { workspaceJid } = requireDelegatingLane(caller, 'delegate');
+  const request = parseDelegateRequest(payload);
+  // Judged inside the lock: a call that waited for another delegation sees
+  // the session, the mode and the turn as they are now. The turn must name
+  // the input it answers, which the item's reports go back to.
+  return delegationLocks.withLocks([workspaceJid], () => {
+    const lane = requireDelegatingLane(caller, 'delegate');
+    const origin = caller.ownerTurn?.(
+      stringField(payload.inputTurnId) || null,
+    )?.input;
+    if (!origin || origin.chatJid !== lane.laneJid) {
+      fail(DELEGATION_ERRORS.notOwner);
+    }
+    return delegate(lane, request, origin);
+  });
+}
+
+async function delegate(
+  lane: DelegatingLane,
+  request: ReturnType<typeof parseDelegateRequest>,
+  origin: DelegationOriginInput,
+): Promise<WorkDelegateResult> {
+  if (
+    countOpenDelegatedWorkItems({ originAgentId: lane.agentId }) >=
+      DELEGATED_OPEN_PER_SESSION ||
+    countOpenDelegatedWorkItems({ workspaceJid: lane.workspaceJid }) >=
+      DELEGATED_OPEN_PER_WORKSPACE
+  ) {
+    fail(DELEGATION_ERRORS.limit);
+  }
+  // The billing gate every run of the owner passes.
+  const owner = lane.workspace.created_by
+    ? getUserById(lane.workspace.created_by)
+    : undefined;
+  if (
+    !owner ||
+    owner.status !== 'active' ||
+    !checkBillingAccessFresh(owner.id, owner.role).allowed
+  ) {
+    fail(DELEGATION_ERRORS.billing);
+  }
+  const originRow = getAgentBuilderInputMessage(lane.laneJid, origin.messageId);
+  // The item before its session: a crash in between leaves an item without
+  // a worker, which startup fails, never a session no item names.
+  const agentId = crypto.randomUUID();
+  const item = insertWorkItem({
+    id: crypto.randomUUID(),
+    workspaceJid: lane.workspaceJid,
+    workspaceFolder: lane.workspace.folder,
+    channelJid: lane.laneJid,
+    agentId,
+    title: request.title,
+    sourceMessageId: `delegate:${crypto.randomUUID()}`,
+    sourceRouteJid: originRow?.source_jid || lane.laneJid,
+    mandate: {
+      strength: 'explicit',
+      requesterImId: null,
+      requesterName: owner.display_name || owner.username || null,
+      requesterListed: true,
+      requesterIsOwner: true,
+      matchedRules: [],
+      settingsVersion: 0,
+      writable: true,
+    },
+    now: now(),
+    delegatedBy: { agentId: lane.agentId, inputId: origin.messageId },
+  });
+  // Nothing half made stays: the item fails and its session goes.
+  const abandon = (error: unknown): never => {
+    const reason = error instanceof Error ? error.message : String(error);
+    logger.warn(
+      { err: error, workItemId: item.id, laneJid: lane.laneJid },
+      'Could not start a delegated item',
+    );
+    // Stopped meanwhile (on the Web, or its session deleted): it stays so.
+    const current = getWorkItem(item.id);
+    if (current?.status === 'open') {
+      broadcast(
+        endItem(current, 'failed', { lastSummary: `派出失败：${reason}` }),
+      );
+    }
+    discardSession(lane.workspaceJid, lane.workspace, agentId);
+    return fail(`Could not start the delegated task: ${reason}`);
+  };
+  try {
+    // Shares the delegating session's directory: no worktree.
+    await createConversationSession({
+      workspaceJid: lane.workspaceJid,
+      group: lane.workspace,
+      createdBy: owner.id,
+      name: request.title,
+      sessionId: agentId,
+      sourceKind: 'work_item',
+    });
+  } catch (error) {
+    abandon(error);
+  }
+  // Stopped on the Web, or its delegating session deleted, while the
+  // session was being made: no worker runs it.
+  const current = getWorkItem(item.id);
+  if (current?.status !== 'open' || !originSessionOf(current)) {
+    if (current?.status === 'open') {
+      stopDelegatedItem(current, 'origin_deleted')();
+    }
+    discardSession(lane.workspaceJid, lane.workspace, agentId);
+    fail(DELEGATION_ERRORS.stoppedBeforeStart);
+  }
+  try {
+    // The task in full: the item's detail shows it as the request.
+    noteDelivery(item, item.sourceMessageId, request.task);
+    injectTeamInput({
+      workspaceJid: item.workspaceJid,
+      agentId,
+      messageId: `work-assignment-${item.id}`,
+      content: assignmentBody(request),
+      item: {
+        tag: 'work_assignment',
+        attrs: [
+          ['item', `#${item.seq}`],
+          ['id', item.id],
+          ['origin', 'delegated'],
+          ['writable', 'true'],
+        ],
+        facts: { workItemId: item.id },
+      },
+    });
+  } catch (error) {
+    abandon(error);
+  }
+  logger.info(
+    {
+      workItemId: item.id,
+      seq: item.seq,
+      agentId,
+      originAgentId: lane.agentId,
+      workspaceJid: lane.workspaceJid,
+    },
+    'Work delegated',
+  );
+  broadcast(item);
+  return { workItemId: item.id, seq: item.seq };
+}
+
+function handleWorkDelegations(caller: WorkIpcCaller): DelegatedWorkSummary[] {
+  const lane = requireDelegatingLane(caller, 'manage');
+  return listOpenDelegatedWorkItems(lane.agentId).map((item) => ({
+    workItemId: item.id,
+    seq: item.seq,
+    title: item.title,
+    stage: deriveWorkStage(item),
+    lastReport: item.lastReport,
+    lastSummary: item.lastSummary,
+    createdAt: item.createdAt,
+  }));
+}
+
+function handleWorkStop(
+  caller: WorkIpcCaller,
+  payload: Record<string, unknown>,
+): Record<string, never> {
+  stopDelegatedItem(requireOpenDelegatedItem(caller, payload), 'work_stop')();
+  return {};
+}
+
+function handleWorkFollowup(
+  caller: WorkIpcCaller,
+  payload: Record<string, unknown>,
+): Record<string, never> {
+  const item = requireOpenDelegatedItem(caller, payload);
+  const message = requireText(
+    payload.message,
+    'message',
+    DELEGATE_FOLLOWUP_CHAR_LIMIT,
+  );
+  const eventId = recordWorkEvent({
+    workItemId: item.id,
+    kind: 'input',
+    text: message,
+    now: now(),
+  });
+  // The question it was blocked on is answered (or overtaken): the item is
+  // working again, no longer waiting for a person.
+  const updated =
+    item.attention || item.lastReport === 'blocked'
+      ? patchItem(item, {
+          attention: null,
+          ...(item.lastReport === 'blocked'
+            ? { lastReport: 'progress' as const }
+            : {}),
+        })
+      : item;
+  injectTeamInput({
+    workspaceJid: item.workspaceJid,
+    agentId: item.agentId,
+    messageId: `work-followup-${item.id}-${eventId}`,
+    content: message,
+    item: {
+      tag: 'work_followup',
+      attrs: [
+        ['item', `#${item.seq}`],
+        ['id', item.id],
+        ['origin', 'delegated'],
+      ],
+      facts: { workItemId: item.id },
+    },
+  });
+  broadcast(updated);
+  return {};
+}
+
+/**
+ * A delegated worker's report. `progress` only updates the item; `ready`
+ * ends it completed and `failed` failed; `blocked` keeps it open with its
+ * question as the attention. The last three reach the delegating session as
+ * a `work_report` input on the route of the input that delegated it.
+ */
+function handleDelegatedReport(
+  item: WorkItem,
+  payload: Record<string, unknown>,
+): Record<string, never> {
+  const state = payload.state as WorkReportState;
+  if (!(DELEGATED_REPORT_STATES as readonly string[]).includes(state)) {
+    fail('state must be progress, ready, blocked or failed.');
+  }
+  // Refused, not cut: the delegating session relays the summary as it is.
+  const summary = stringField(payload.summary).trim();
+  if (!summary) fail('summary is required.');
+  if ([...summary].length > WORK_SUMMARY_CHAR_LIMIT) {
+    fail(
+      `summary is limited to ${WORK_SUMMARY_CHAR_LIMIT} characters; put a longer result in a file and give its path.`,
+    );
+  }
+  const patch: WorkItemPatch = { lastReport: state, lastSummary: summary };
+  let updated: WorkItem;
+  if (state === 'ready') {
+    updated = endItem(item, 'completed', { ...patch, attention: null });
+  } else if (state === 'failed') {
+    updated = endItem(item, 'failed', { ...patch, attention: null });
+  } else if (state === 'blocked') {
+    updated = patchItem(item, { ...patch, attention: summary });
+  } else {
+    updated = patchItem(item, patch);
+  }
+  const eventId = recordReport(item, state, summary);
+  if (state !== 'progress') {
+    reportToOrigin(updated, { eventId, state, text: summary });
+  }
+  broadcast(updated);
+  return {};
+}
+
+/**
+ * Hand a delegated item's news to the session that delegated it, as an
+ * input on the route of the input that delegated it: a Web turn answers in
+ * the Web, a chat or topic in that chat or topic. The id is fixed by the
+ * event, so a replay delivers nothing twice. Nothing when that session is
+ * gone.
+ */
+function reportToOrigin(
+  item: WorkItem,
+  report: { eventId: number | null; state: string; text: string },
+): void {
+  const origin = originSessionOf(item);
+  if (!origin) {
+    logger.info(
+      { workItemId: item.id, state: report.state },
+      'Delegated report not delivered: its delegating session is gone',
+    );
+    return;
+  }
+  injectTeamInput({
+    workspaceJid: item.workspaceJid,
+    agentId: origin.id,
+    messageId: reportInputId(item.id, report.eventId),
+    content: report.text,
+    sourceJid: item.sourceRouteJid,
+    channelContext: item.originInputId
+      ? replyRouteContext(
+          getMessageChannelTurnContext(item.channelJid, item.originInputId),
+        )
+      : null,
+    item: {
+      tag: 'work_report',
+      attrs: [
+        ['item', `#${item.seq}`],
+        ['id', item.id],
+        ['title', item.title],
+        ['state', report.state],
+      ],
+      facts: { workItemId: item.id },
+    },
+  });
+}
+
+/**
+ * End a delegated item as stopped. Writes rows only; returns what follows,
+ * to run now or once the caller's transaction commits: its worker stops
+ * (unless the worker's own session is being deleted), its delegating
+ * session hears `state="stopped"` (unless that session is the one gone) and
+ * the Web updates.
+ */
+function stopDelegatedItem(
+  item: WorkItem,
+  cause: DelegatedStopCause,
+): () => WorkItemView {
+  const { stopped, eventId } = endStopped(item, cause);
+  return () => {
+    if (cause !== 'session_deleted') stopWorkerLane(item);
+    // The delegating session hears of a stop it did not make itself: one it
+    // asked for with work_stop needs no report, which would only cost a turn.
+    if (cause !== 'origin_deleted' && cause !== 'work_stop') {
+      try {
+        reportToOrigin(stopped, {
+          eventId,
+          state: 'stopped',
+          text: `已停止：${DELEGATED_STOP_REASON[cause]}`,
+        });
+      } catch (error) {
+        logger.warn(
+          { err: error, workItemId: item.id },
+          'Could not tell the delegating session that its item stopped',
+        );
+      }
+    }
+    return broadcast(stopped);
+  };
+}
+
+/** End a delegated item failed, and tell its delegating session why. */
+function failDelegatedItem(item: WorkItem, text: string): void {
+  const failed = endItem(item, 'failed', { attention: null });
+  const eventId = recordWorkEvent({
+    workItemId: item.id,
+    kind: 'report',
+    state: 'failed',
+    text,
+    now: now(),
+  });
+  reportToOrigin(failed, { eventId, state: 'failed', text });
+  broadcast(failed);
+}
+
+/**
+ * A delegated worker's run ended without handing back a result.
+ * `failure` null: its turn finished and nothing else waits for it, yet the
+ * item is open and not waiting on a question (`blocked` is a result). A
+ * string: the run failed for good (retries exhausted, a failure no replay
+ * fixes, billing), and why. The item fails and its delegating session hears
+ * so; a team worker, or an item already settled, is left alone.
+ */
+export function failDelegatedWorkerRun(
+  agentId: string,
+  failure: string | null,
+): void {
+  const item = getWorkItemByAgent(agentId);
+  if (item?.origin !== 'delegated' || item.status !== 'open') return;
+  if (failure === null && item.lastReport === 'blocked') return;
+  failDelegatedItem(
+    item,
+    failure === null
+      ? WORKER_NO_RESULT_REPORT
+      : `Worker 运行失败：${briefReason(failure)}`,
+  );
+}
+
+/** The first line of an error, at most 200 characters. */
+function briefReason(text: string): string {
+  const line = [...(text.trim().split('\n')[0] ?? '')];
+  if (line.length === 0) return '未知错误';
+  return line.length > 200 ? `${line.slice(0, 200).join('')}…` : line.join('');
+}
+
+/**
+ * Startup: open delegated items whose sessions went away while the service
+ * was down. No worker: the item failed, and its delegating session (if any)
+ * hears so. No delegating session: the item stops, nobody to report to.
+ */
+export function reconcileDelegatedWorkItems(): void {
+  for (const item of listOpenDelegatedWorkItems()) {
+    if (!hasWorkerSession(item)) {
+      failDelegatedItem(item, WORKER_GONE_REPORT);
+    } else if (!originSessionOf(item)) {
+      stopDelegatedItem(item, 'origin_deleted')();
+    }
+  }
+}
+
 /** Run one team tool call; never throws. */
 export async function handleWorkIpc(
   caller: WorkIpcCaller,
@@ -2081,6 +2864,18 @@ export async function handleWorkIpc(
       case 'work_handback':
         data = handleWorkHandback(caller, request);
         break;
+      case 'work_delegate':
+        data = await handleWorkDelegate(caller, request);
+        break;
+      case 'work_delegations':
+        data = handleWorkDelegations(caller);
+        break;
+      case 'work_stop':
+        data = handleWorkStop(caller, request);
+        break;
+      case 'work_followup':
+        data = handleWorkFollowup(caller, request);
+        break;
       default:
         fail('Unknown team tool.');
     }
@@ -2102,16 +2897,27 @@ export async function handleWorkIpc(
 /**
  * A deleted session leaves no live team state behind: its work item ends
  * stopped (nothing can run it any more), and a deleted router stops routing
- * until the group's settings are saved again (which creates a new one).
- * Writes rows only; returns the Web update, to send once the caller's
- * transaction commits.
+ * until the group's settings are saved again (which creates a new one). A
+ * deleted delegated worker's session hears that its item stopped; a deleted
+ * delegating session stops every item it delegated.
+ * Writes rows only; returns what follows (inputs, lane stops, Web updates),
+ * to run once the caller's transaction commits.
  */
 export function onTeamSessionDeleted(agentId: string): () => void {
+  const after: (() => unknown)[] = [];
   const item = getWorkItemByAgent(agentId);
-  const stopped =
-    item && item.status === 'open'
-      ? stopItem(item, 'session_deleted', false)
-      : null;
+  if (item?.status === 'open' && item.origin === 'delegated') {
+    // Its delegating session hears that it stopped, once this commits.
+    after.push(stopDelegatedItem(item, 'session_deleted'));
+  } else if (item?.status === 'open') {
+    const stopped = stopItem(item, 'session_deleted', false);
+    after.push(() => broadcast(stopped));
+  }
+  // A deleted delegating session stops what it delegated: nobody is left to
+  // report to.
+  for (const delegated of listOpenDelegatedWorkItems(agentId)) {
+    after.push(stopDelegatedItem(delegated, 'origin_deleted'));
+  }
   const team = getTeamMountByRouter(agentId);
   if (team) {
     storeTeamMountSettings({
@@ -2124,7 +2930,7 @@ export function onTeamSessionDeleted(agentId: string): () => void {
     });
   }
   return () => {
-    if (stopped) broadcast(stopped);
+    for (const step of after) step();
   };
 }
 

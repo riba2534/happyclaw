@@ -675,7 +675,7 @@ describe('v88 legacy main session migration', () => {
       );
       expect(state(`conversation_history_isolation:${HOME}`)).toBeUndefined();
       expect(state(`conversation_history_isolation:${homeJid}`)).toBe(T(15));
-      expect(state('schema_version')).toBe('88');
+      expect(state('schema_version')).toBe(String(db.CURRENT_SCHEMA_VERSION));
     });
 
     expect(report.skippedWorkspaces).toEqual([EMPTY]);

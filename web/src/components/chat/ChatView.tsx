@@ -190,6 +190,7 @@ import { useNewConversation } from '../../hooks/useNewConversation';
 import { CHANNEL_LABEL } from '../settings/channel-meta';
 import { getAgentProfileDisplayName } from '../../utils/agent-product';
 import { normalizeInteractionMode } from '../../lib/interaction-mode';
+import { normalizeWorkMode } from '../../lib/multitask';
 import { normalizeProcessVisibility } from '../../lib/process-visibility';
 
 /** The binding dialog opened for the workspace's topic groups (vs. a session). */
@@ -309,6 +310,7 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
   const updateProcessVisibility = useChatStore(
     (s) => s.updateProcessVisibility,
   );
+  const updateWorkMode = useChatStore((s) => s.updateWorkMode);
 
   const agentsLoaded = useChatStore((s) => s.agents[groupJid] !== undefined);
   const agents = useChatStore((s) => s.agents[groupJid] ?? EMPTY_AGENTS);
@@ -419,6 +421,7 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
   const processVisibility = normalizeProcessVisibility(
     group?.process_visibility,
   );
+  const workMode = normalizeWorkMode(group?.work_mode);
 
   useEffect(() => {
     if (!canModifyWorkspaceConfig && contextPanelView === 'env') {
@@ -1708,6 +1711,7 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
                 agentId={sessionId}
                 {...agentLook}
                 interactionMode={interactionMode}
+                workMode={workMode}
               />
             )}
             {/* One place in the tree for both layouts, so docking after the
@@ -1844,11 +1848,13 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
           workspaceName={workspaceDisplayName}
           currentMode={interactionMode}
           currentVisibility={processVisibility}
+          currentWorkMode={workMode}
           onClose={() => setShowInteractionModeDialog(false)}
           onSave={(mode) => updateInteractionMode(groupJid, mode)}
           onSaveVisibility={(visibility) =>
             updateProcessVisibility(groupJid, visibility)
           }
+          onSaveWorkMode={(mode) => updateWorkMode(groupJid, mode)}
         />
       )}
 

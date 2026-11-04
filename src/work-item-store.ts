@@ -1,7 +1,8 @@
 /**
  * Durable state of team mode (团队模式): work items, the threads they
  * subscribe to, their event log, the replies the host owes a group and the
- * router's decisions.
+ * router's decisions. Multi-task mode's delegated items share the work item
+ * table (origin 'delegated'); the queries of a group read team items only.
  *
  * db.ts binds this module to its connection. The work item service is the
  * only writer; REST and views read through it as well.
@@ -15,6 +16,7 @@ import {
   type WorkEvent,
   type WorkEventKind,
   type WorkItem,
+  type WorkItemOrigin,
   type WorkItemOutcome,
   type WorkItemStatus,
   type WorkMandate,
@@ -95,6 +97,9 @@ export function initWorkItemStore(db: SqliteDatabase | null): void {
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       ended_at TEXT,
+      origin TEXT NOT NULL DEFAULT 'team' CHECK (origin IN ('team', 'delegated')),
+      origin_agent_id TEXT,
+      origin_input_id TEXT,
       UNIQUE (workspace_jid, seq),
       UNIQUE (channel_jid, source_message_id)
     );
@@ -170,6 +175,33 @@ export function initWorkItemStore(db: SqliteDatabase | null): void {
     CREATE INDEX IF NOT EXISTS idx_work_items_channel
       ON work_items(channel_jid, status, updated_at);
   `);
+  // v88 -> v89: multi-task mode. Items of databases made before it are all
+  // team items.
+  ensureColumn(
+    db,
+    'work_items',
+    'origin',
+    "TEXT NOT NULL DEFAULT 'team' CHECK (origin IN ('team', 'delegated'))",
+  );
+  ensureColumn(db, 'work_items', 'origin_agent_id', 'TEXT');
+  ensureColumn(db, 'work_items', 'origin_input_id', 'TEXT');
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_work_items_origin_agent
+      ON work_items(origin_agent_id, status);
+  `);
+}
+
+function ensureColumn(
+  db: SqliteDatabase,
+  table: string,
+  column: string,
+  definition: string,
+): void {
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all() as {
+    name: string;
+  }[];
+  if (columns.some((entry) => entry.name === column)) return;
+  db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
 }
 
 // ── Team mode settings ─────────────────────────────────────────────────
@@ -299,6 +331,9 @@ interface WorkItemRow {
   created_at: string;
   updated_at: string;
   ended_at: string | null;
+  origin: string;
+  origin_agent_id: string | null;
+  origin_input_id: string | null;
 }
 
 function mapItem(row: WorkItemRow): WorkItem {
@@ -312,6 +347,11 @@ function mapItem(row: WorkItemRow): WorkItem {
     title: row.title,
     sourceMessageId: row.source_message_id,
     sourceRouteJid: row.source_route_jid,
+    origin: (row.origin === 'delegated'
+      ? 'delegated'
+      : 'team') as WorkItemOrigin,
+    originAgentId: row.origin_agent_id,
+    originInputId: row.origin_input_id,
     mandate: JSON.parse(row.mandate_json) as WorkMandate,
     status: (row.status === 'ended' ? 'ended' : 'open') as WorkItemStatus,
     outcome: (row.outcome ?? null) as WorkItemOutcome,
@@ -337,11 +377,14 @@ export interface NewWorkItem {
   sourceRouteJid: string;
   mandate: WorkMandate;
   now: string;
+  /** Delegated items only: the session that delegated it and its input. */
+  delegatedBy?: { agentId: string; inputId: string | null };
 }
 
 /**
- * Insert an item with the next per-workspace number. Idempotent by its
- * source message: a second insert for the same trigger returns the first.
+ * Insert an item with the next per-workspace number (team and delegated
+ * items share it). Idempotent by its source message: a second insert for the
+ * same trigger returns the first.
  */
 export function insertWorkItem(input: NewWorkItem): WorkItem {
   const db = requireDatabase();
@@ -356,8 +399,9 @@ export function insertWorkItem(input: NewWorkItem): WorkItem {
     ).get(input.workspaceJid) as { next: number };
     stmt(
       `INSERT INTO work_items (id, workspace_jid, workspace_folder, seq, channel_jid, agent_id, title,
-         source_message_id, source_route_jid, mandate_json, status, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)`,
+         source_message_id, source_route_jid, mandate_json, status, created_at, updated_at,
+         origin, origin_agent_id, origin_input_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?)`,
     ).run(
       input.id,
       input.workspaceJid,
@@ -371,6 +415,9 @@ export function insertWorkItem(input: NewWorkItem): WorkItem {
       JSON.stringify(input.mandate),
       input.now,
       input.now,
+      input.delegatedBy ? 'delegated' : 'team',
+      input.delegatedBy?.agentId ?? null,
+      input.delegatedBy?.inputId ?? null,
     );
     return getWorkItem(input.id)!;
   })();
@@ -417,7 +464,7 @@ export function listWorkItems(
   return rows.map(mapItem);
 }
 
-/** A group's items, newest first. */
+/** A group's (team) items, newest first. */
 export function listWorkItemsByChannel(
   channelJid: string,
   options: { status?: WorkItemStatus; limit?: number } = {},
@@ -426,10 +473,10 @@ export function listWorkItemsByChannel(
   const rows = (
     options.status
       ? stmt(
-          'SELECT * FROM work_items WHERE channel_jid = ? AND status = ? ORDER BY updated_at DESC LIMIT ?',
+          "SELECT * FROM work_items WHERE channel_jid = ? AND status = ? AND origin = 'team' ORDER BY updated_at DESC LIMIT ?",
         ).all(channelJid, options.status, limit)
       : stmt(
-          'SELECT * FROM work_items WHERE channel_jid = ? ORDER BY updated_at DESC LIMIT ?',
+          "SELECT * FROM work_items WHERE channel_jid = ? AND origin = 'team' ORDER BY updated_at DESC LIMIT ?",
         ).all(channelJid, limit)
   ) as WorkItemRow[];
   return rows.map(mapItem);
@@ -440,9 +487,60 @@ export function countWorkItemsByChannel(
   status: WorkItemStatus,
 ): number {
   const row = stmt(
-    'SELECT COUNT(*) AS n FROM work_items WHERE channel_jid = ? AND status = ?',
+    "SELECT COUNT(*) AS n FROM work_items WHERE channel_jid = ? AND status = ? AND origin = 'team'",
   ).get(channelJid, status) as { n: number };
   return row.n;
+}
+
+/**
+ * Open delegated items, newest first: one session's, or every workspace's
+ * (startup reconciliation).
+ */
+export function listOpenDelegatedWorkItems(originAgentId?: string): WorkItem[] {
+  const rows = (
+    originAgentId
+      ? stmt(
+          "SELECT * FROM work_items WHERE origin_agent_id = ? AND status = 'open' AND origin = 'delegated' ORDER BY created_at DESC, seq DESC",
+        ).all(originAgentId)
+      : stmt(
+          "SELECT * FROM work_items WHERE status = 'open' AND origin = 'delegated' ORDER BY created_at DESC, seq DESC",
+        ).all()
+  ) as WorkItemRow[];
+  return rows.map(mapItem);
+}
+
+/** Whether a session ever delegated an item, open or ended. */
+export function hasDelegatedWorkItems(originAgentId: string): boolean {
+  return !!stmt(
+    "SELECT 1 FROM work_items WHERE origin_agent_id = ? AND origin = 'delegated' LIMIT 1",
+  ).get(originAgentId);
+}
+
+/** Open delegated items of a session, or of a whole workspace. */
+export function countOpenDelegatedWorkItems(
+  scope: { originAgentId: string } | { workspaceJid: string },
+): number {
+  const row = (
+    'originAgentId' in scope
+      ? stmt(
+          "SELECT COUNT(*) AS n FROM work_items WHERE origin_agent_id = ? AND status = 'open' AND origin = 'delegated'",
+        ).get(scope.originAgentId)
+      : stmt(
+          "SELECT COUNT(*) AS n FROM work_items WHERE workspace_jid = ? AND status = 'open' AND origin = 'delegated'",
+        ).get(scope.workspaceJid)
+  ) as { n: number };
+  return row.n;
+}
+
+/** A workspace's item by its `#seq`. */
+export function getWorkItemBySeq(
+  workspaceJid: string,
+  seq: number,
+): WorkItem | undefined {
+  const row = stmt(
+    'SELECT * FROM work_items WHERE workspace_jid = ? AND seq = ?',
+  ).get(workspaceJid, seq) as WorkItemRow | undefined;
+  return row ? mapItem(row) : undefined;
 }
 
 export interface WorkItemPatch {
@@ -545,6 +643,7 @@ export function findSubscribedWorkItems(
          JOIN work_items w ON w.id = s.work_item_id
         WHERE s.channel_jid = ? AND s.sub_key IN (${placeholders})
           AND w.workspace_jid = ?
+          AND w.origin = 'team'
           AND (w.status = 'open' OR w.outcome IS NOT 'stopped')
         ORDER BY w.created_at`,
     )

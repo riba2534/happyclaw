@@ -1,9 +1,10 @@
-import { useEffect, useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { ClipboardList } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { EmptyState } from '@/components/common/EmptyState';
 import { LoadErrorNotice } from '@/components/common/LoadErrorNotice';
+import { SegmentedControl } from '@/components/common/SegmentedControl';
 import { useMediaQuery } from '../hooks/useMediaQuery';
 import { useChatStore } from '../stores/chat';
 import { useWorkItemsStore } from '../stores/work-items';
@@ -15,11 +16,35 @@ import {
 import { WorkItemDetail } from '../components/team/WorkItemDetail';
 import { PhonePageHeader } from '../components/layout/PhonePageHeader';
 import { workItemHref } from '../lib/team-mode';
+import { isDelegated } from '../lib/multitask';
+import type { WorkItemOrigin, WorkItemView } from '../work-items';
+
+const VIEW_OPTIONS: { value: WorkItemOrigin; label: string }[] = [
+  { value: 'team', label: '团队工作项' },
+  { value: 'delegated', label: '派出的任务' },
+];
+
+const EMPTY: Record<WorkItemOrigin, { title: string; description: string }> = {
+  team: {
+    title: '还没有工作项',
+    description: '在飞书普通群的绑定上打开团队模式后，群里的请求会出现在这里。',
+  },
+  delegated: {
+    title: '还没有派出的任务',
+    description:
+      '多任务工作区里，Agent 把较大的任务交给后台 Worker 后，会出现在这里。',
+  },
+};
+
+const originOf = (item: Pick<WorkItemView, 'origin'>): WorkItemOrigin =>
+  isDelegated(item) ? 'delegated' : 'team';
 
 /**
  * 工作项 (团队模式): what needs me, what runs and what ended on the left, the
  * selected item on the right. Below the desktop width the list and the
- * detail are two screens (`/work` and `/work/:id`).
+ * detail are two screens (`/work` and `/work/:id`). Tasks delegated in
+ * multi-task workspaces (派出的任务) list apart from the team's items, once
+ * there are any.
  */
 export function WorkItemsPage() {
   const navigate = useNavigate();
@@ -47,15 +72,31 @@ export function WorkItemsPage() {
     void reload();
   }, [reload]);
 
+  const routed = itemId ? itemMap[itemId] : undefined;
+  const [chosenView, setChosenView] = useState<WorkItemOrigin | null>(null);
+  const items = useMemo(() => Object.values(itemMap), [itemMap]);
+  const hasDelegated = items.some(isDelegated);
+  const hasTeam =
+    items.some((item) => !isDelegated(item)) ||
+    Object.values(decisionMap).some((list) => list.length > 0);
+  // The routed item's kind wins; otherwise the reader's choice, else team.
+  const view: WorkItemOrigin = !hasDelegated
+    ? 'team'
+    : routed
+      ? originOf(routed)
+      : (chosenView ?? (hasTeam ? 'team' : 'delegated'));
   const sections = useMemo(
     () =>
       buildWorkSections(
-        Object.values(itemMap),
-        Object.values(decisionMap).flat(),
+        items.filter((item) => originOf(item) === view),
+        view === 'team' ? Object.values(decisionMap).flat() : [],
       ),
-    [itemMap, decisionMap],
+    [items, decisionMap, view],
   );
-  const routed = itemId ? itemMap[itemId] : undefined;
+  const changeView = (next: WorkItemOrigin) => {
+    setChosenView(next);
+    if (itemId) navigate('/work');
+  };
   const selected =
     routed ??
     (isDesktop && !itemId ? (firstWorkItem(sections) ?? undefined) : undefined);
@@ -68,12 +109,25 @@ export function WorkItemsPage() {
     </div>
   );
   const list = (
-    <WorkItemList
-      sections={sections}
-      selectedId={selected?.id ?? null}
-      onSelect={select}
-      loading={loading && !loaded}
-    />
+    <>
+      {hasDelegated && (
+        <div className="shrink-0 px-4 pb-2 phone:pt-1">
+          <SegmentedControl
+            label="工作项来源"
+            value={view}
+            options={VIEW_OPTIONS}
+            onChange={changeView}
+          />
+        </div>
+      )}
+      <WorkItemList
+        sections={sections}
+        selectedId={selected?.id ?? null}
+        onSelect={select}
+        loading={loading && !loaded}
+        empty={EMPTY[view]}
+      />
+    </>
   );
   const notFound = (
     <EmptyState

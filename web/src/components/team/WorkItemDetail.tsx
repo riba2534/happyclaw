@@ -22,14 +22,16 @@ import {
   WORK_REPORT_LABELS,
   formatWorkTime,
   subscriptionLabel,
+  workItemSource,
   workItemTitle,
   workPermissionText,
+  workStageLabel,
   workStageText,
   workStageVariant,
-  workStageLabel,
+  workOriginWords,
 } from '../../lib/team-mode';
+import { isDelegated } from '../../lib/multitask';
 import { openWorkspaceSession } from '../../lib/chat-navigation';
-import { confirmDialog } from '../../stores/confirm';
 import { useWorkItemsStore } from '../../stores/work-items';
 import { extractErrorMessage } from '../../utils/error';
 import {
@@ -39,6 +41,7 @@ import {
 } from '../../work-items';
 import { PhonePageHeader, PhoneBarButton } from '../layout/PhonePageHeader';
 import { useIsPhone } from '../layout/phone';
+import { confirmWorkItemAction } from './work-item-actions';
 
 function requesterText(item: WorkItemView): string {
   const { mandate } = item;
@@ -49,34 +52,6 @@ function requesterText(item: WorkItemView): string {
       ? '名单内'
       : '名单外';
   return `${who}（${role}）`;
-}
-
-/** Confirm, then stop or approve; a failure becomes a toast. */
-async function confirmAction(item: WorkItemView, action: 'stop' | 'approve') {
-  const title = workItemTitle(item);
-  const confirmed = await confirmDialog(
-    action === 'stop'
-      ? {
-          title: `停止 ${title}？`,
-          message:
-            '执行会话会被中断，工作项记为已停止。之后群里的回复不会再恢复它。',
-          confirmText: '停止',
-          variant: 'danger',
-        }
-      : {
-          title: `批准 ${title} 修改？`,
-          message: '批准后，执行会话可以修改文件、提交和推送代码。',
-          confirmText: '批准修改',
-        },
-  );
-  if (!confirmed) return;
-  try {
-    await useWorkItemsStore.getState()[action](item.id);
-  } catch (err) {
-    toast.error(
-      `${action === 'stop' ? '停止' : '批准'}失败：${extractErrorMessage(err)}`,
-    );
-  }
 }
 
 export function WorkItemDetail({
@@ -100,7 +75,10 @@ export function WorkItemDetail({
   }, [item.id, loadDetail]);
 
   const open = item.status === 'open';
+  const delegated = isDelegated(item);
   const canApprove = open && !isWorkItemWritable(item);
+  const words = workOriginWords(item);
+  const variant = workStageVariant(item);
   const openSession = () =>
     openWorkspaceSession(
       navigate,
@@ -113,19 +91,20 @@ export function WorkItemDetail({
     icon: Square,
     destructive: true,
     disabled: busy,
-    onSelect: () => void confirmAction(item, 'stop'),
+    onSelect: () => void confirmWorkItemAction(item, 'stop'),
   };
   const approveAction: MenuAction = {
     label: '批准修改',
     icon: Check,
     disabled: busy,
-    onSelect: () => void confirmAction(item, 'approve'),
+    onSelect: () => void confirmWorkItemAction(item, 'approve'),
   };
   const menuGroups: MenuAction[][] = [
     canApprove ? [approveAction] : [],
     open ? [stopAction] : [],
   ];
-  // The original request, when the host recorded it as the first input.
+  // The original request (a delegated task's assignment), recorded as the
+  // input whose trigger is the item's source message.
   const request = detail?.events.find(
     (event) =>
       event.kind === 'input' && event.triggerMessageId === item.sourceMessageId,
@@ -140,7 +119,7 @@ export function WorkItemDetail({
         onBack={onBack}
         action={
           <PhoneBarButton
-            label="打开执行会话"
+            label={`打开${words.session}`}
             icon={<MessageSquare />}
             onClick={openSession}
           />
@@ -160,11 +139,9 @@ export function WorkItemDetail({
         <div className="min-w-0 flex-1">
           <h1 className="text-title break-words text-foreground">{title}</h1>
           <div className="mt-1 flex flex-wrap items-center gap-1.5 text-caption text-muted-foreground">
-            <Badge variant={workStageVariant(item)}>
-              {workStageLabel(item)}
-            </Badge>
+            <Badge variant={variant}>{workStageLabel(item)}</Badge>
             <span>
-              {[item.workspaceName, item.channelName]
+              {[item.workspaceName, workItemSource(item)]
                 .filter(Boolean)
                 .join(' · ')}
             </span>
@@ -174,13 +151,13 @@ export function WorkItemDetail({
           <div className="flex shrink-0 items-center gap-1.5">
             <Button variant="outline" size="sm" onClick={openSession}>
               <MessageSquare />
-              执行会话
+              {words.session}
             </Button>
             {canApprove && (
               <Button
                 size="sm"
                 disabled={busy}
-                onClick={() => void confirmAction(item, 'approve')}
+                onClick={() => void confirmWorkItemAction(item, 'approve')}
               >
                 {busy ? <Loader2 className="animate-spin" /> : <Check />}
                 批准修改
@@ -207,11 +184,7 @@ export function WorkItemDetail({
         {item.stage !== 'working' && item.stage !== 'ended' && (
           <Callout
             tone={
-              item.stage === 'blocked' || item.stage === 'failed'
-                ? 'error'
-                : item.stage === 'idle'
-                  ? 'muted'
-                  : 'warning'
+              variant === 'error' || variant === 'warning' ? variant : 'muted'
             }
             role="status"
           >
@@ -225,30 +198,45 @@ export function WorkItemDetail({
         )}
 
         <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1.5 text-body">
-          <dt className="text-muted-foreground">发起人</dt>
-          <dd className="break-words text-foreground">{requesterText(item)}</dd>
-          <dt className="text-muted-foreground">授权依据</dt>
-          <dd className="text-foreground">
-            {item.mandate.strength === 'explicit' ? '明确请求' : '按规则推断'}
-          </dd>
-          {item.mandate.matchedRules.length > 0 && (
+          {delegated ? (
             <>
-              <dt className="text-muted-foreground">命中规则</dt>
-              <dd className="space-y-0.5 text-foreground">
-                {item.mandate.matchedRules.map((rule) => (
-                  <p key={rule.id} className="break-words">
-                    {rule.name}
-                    <span className="text-caption text-muted-foreground">
-                      {' '}
-                      · {rule.instruction}
-                    </span>
-                  </p>
-                ))}
+              <dt className="text-muted-foreground">来源会话</dt>
+              <dd className="break-words text-foreground">
+                {item.originSessionName ?? '已删除'}
               </dd>
             </>
+          ) : (
+            <>
+              <dt className="text-muted-foreground">发起人</dt>
+              <dd className="break-words text-foreground">
+                {requesterText(item)}
+              </dd>
+              <dt className="text-muted-foreground">授权依据</dt>
+              <dd className="text-foreground">
+                {item.mandate.strength === 'explicit'
+                  ? '明确请求'
+                  : '按规则推断'}
+              </dd>
+              {item.mandate.matchedRules.length > 0 && (
+                <>
+                  <dt className="text-muted-foreground">命中规则</dt>
+                  <dd className="space-y-0.5 text-foreground">
+                    {item.mandate.matchedRules.map((rule) => (
+                      <p key={rule.id} className="break-words">
+                        {rule.name}
+                        <span className="text-caption text-muted-foreground">
+                          {' '}
+                          · {rule.instruction}
+                        </span>
+                      </p>
+                    ))}
+                  </dd>
+                </>
+              )}
+              <dt className="text-muted-foreground">权限</dt>
+              <dd className="text-foreground">{workPermissionText(item)}</dd>
+            </>
           )}
-          <dt className="text-muted-foreground">权限</dt>
-          <dd className="text-foreground">{workPermissionText(item)}</dd>
           {item.lastSummary && item.stage !== 'blocked' && (
             <>
               <dt className="text-muted-foreground">最新进展</dt>
@@ -272,36 +260,44 @@ export function WorkItemDetail({
         </dl>
 
         <section className="space-y-2">
-          <h2 className="text-label font-medium text-foreground">原始消息</h2>
+          <h2 className="text-label font-medium text-foreground">
+            {words.request}
+          </h2>
           {request?.text ? (
             <blockquote className="border-l-2 border-surface-border pl-3 text-body break-words whitespace-pre-wrap text-foreground">
               {request.text}
             </blockquote>
           ) : (
             <p className="text-caption text-muted-foreground">
-              消息 {item.sourceMessageId}
+              {!delegated
+                ? `消息 ${item.sourceMessageId}`
+                : detail
+                  ? '没有记录。'
+                  : '正在加载…'}
             </p>
           )}
         </section>
 
-        <section className="space-y-2">
-          <h2 className="text-label font-medium text-foreground">
-            订阅的话题 · {detail?.subscriptions.length ?? 0}
-          </h2>
-          {detail && detail.subscriptions.length > 0 ? (
-            <ul className="space-y-0.5 text-caption break-all text-muted-foreground">
-              {detail.subscriptions.map((sub) => (
-                <li key={`${sub.channelJid}:${sub.subKey}`}>
-                  {subscriptionLabel(sub.subKey)}
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <p className="text-caption text-muted-foreground">
-              {detail ? '没有订阅。' : '正在加载…'}
-            </p>
-          )}
-        </section>
+        {!delegated && (
+          <section className="space-y-2">
+            <h2 className="text-label font-medium text-foreground">
+              订阅的话题 · {detail?.subscriptions.length ?? 0}
+            </h2>
+            {detail && detail.subscriptions.length > 0 ? (
+              <ul className="space-y-0.5 text-caption break-all text-muted-foreground">
+                {detail.subscriptions.map((sub) => (
+                  <li key={`${sub.channelJid}:${sub.subKey}`}>
+                    {subscriptionLabel(sub.subKey)}
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="text-caption text-muted-foreground">
+                {detail ? '没有订阅。' : '正在加载…'}
+              </p>
+            )}
+          </section>
+        )}
 
         <section className="space-y-2">
           <h2 className="text-label font-medium text-foreground">时间线</h2>

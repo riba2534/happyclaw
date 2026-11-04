@@ -16,6 +16,7 @@ import path from 'path';
 import {
   normalizeChannelTurnContext,
   type ChannelTurnContext,
+  type ContainerInput,
 } from './types.js';
 import { signWorkspaceMemoryMutation } from './workspace-memory-auth.js';
 import { memoryRecallQuery } from './workspace-memory-query.js';
@@ -28,7 +29,9 @@ import {
   formatFreshWindowHandoff,
 } from './fresh-window.js';
 import { createAutomationTools } from './automation-tools.js';
-import { createWorkTools } from './work-tools.js';
+import { createWorkTools, type WorkIpcCall } from './work-tools.js';
+import { createDelegationTools } from './delegation-tools.js';
+import { sessionKind } from './session-kind.js';
 import { teamLaneWithholdsTool, type TeamRole } from './work-items.js';
 
 /** Context required by MCP tools. Passed at construction time. */
@@ -47,6 +50,8 @@ export interface McpContext {
   interactionMode?: 'assistant' | 'proactive';
   /** Team mode role: replaces the posting tools with the role's work tools. */
   teamRole?: TeamRole;
+  /** Multi-task mode: adds the delegation tools (ignored with a team role). */
+  workMode?: ContainerInput['workMode'];
   /** Mutable correlation id for the user input currently being answered.
    * Cold starts use the triggering message id; IPC turns use the host-issued
    * delivery id from their receipt. */
@@ -2316,26 +2321,29 @@ Use the skills panel in the UI to find the skill ID (directory name, e.g. "memor
     ),
   );
 
+  const workIpc: WorkIpcCall = (request, resultPrefix, timeoutMs) =>
+    pollIpcResult(TASKS_DIR, request, resultPrefix, timeoutMs);
+  if (sessionKind(ctx) === 'multi') {
+    tools.push(...createDelegationTools(workIpc, () => ctx.currentInputTurnId));
+  }
   return applyToolLoadingHints(
-    ctx.teamRole ? withTeamTools(tools, ctx.teamRole, ctx) : tools,
+    ctx.teamRole ? withTeamTools(tools, ctx.teamRole, workIpc) : tools,
   );
 }
 
 /**
  * A team-mode session speaks only through its work tools: the router posts
- * with `work_reply`, a worker acknowledges with `work_ack`.
+ * with `work_reply`, a worker acknowledges with `work_ack`. A delegated
+ * item's worker loses the same tools and only reports.
  */
 function withTeamTools(
   tools: SdkMcpToolDefinition<any>[],
   teamRole: TeamRole,
-  ctx: McpContext,
+  workIpc: WorkIpcCall,
 ): SdkMcpToolDefinition<any>[] {
-  const tasksDir = path.join(ctx.workspaceIpc, 'tasks');
   return [
     ...tools.filter((definition) => !teamLaneWithholdsTool(definition.name)),
-    ...createWorkTools(teamRole, (request, resultPrefix, timeoutMs) =>
-      pollIpcResult(tasksDir, request, resultPrefix, timeoutMs),
-    ),
+    ...createWorkTools(teamRole, workIpc),
   ];
 }
 
@@ -2387,6 +2395,7 @@ const READ_ONLY_TOOL_NAMES = new Set([
   'workspace_memory_search',
   'workspace_memory_get',
   'work_list',
+  'work_delegations',
 ]);
 
 /**
@@ -2404,6 +2413,8 @@ const ALWAYS_LOADED_TOOL_NAMES = new Set([
   'work_reply',
   'work_report',
   'work_ack',
+  // Multi-task mode: weighed on every sizeable request.
+  'work_delegate',
 ]);
 
 /** The same hints `tool(name, ..., { annotations, alwaysLoad })` would set. */

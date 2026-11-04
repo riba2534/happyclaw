@@ -21,6 +21,7 @@ import type {
   NewMessage,
   ProcessVisibility,
 } from '../types.js';
+import { DEFAULT_WORK_MODE, type WorkMode } from '../work-items.js';
 import { checkGroupLimit } from '../billing.js';
 import { DATA_DIR, GROUPS_DIR, isDockerAvailable } from '../config.js';
 import {
@@ -93,6 +94,9 @@ import {
   setWorkspaceInteractionMode,
   getWorkspaceProcessVisibility,
   setWorkspaceProcessVisibility,
+  getWorkspaceModes,
+  getWorkspaceWorkMode,
+  setWorkspaceWorkMode,
   getUserById,
   getSessionModelSelectionDetail,
   setSessionModelSelection,
@@ -180,6 +184,23 @@ const execFileAsync = promisify(execFile);
  * persisted — a client-correctable conflict, never a server fault.
  */
 class WorkspaceAgentProfileMissingError extends Error {}
+
+/**
+ * 409 for a setting stored on the Workspace↔AgentProfile binding the
+ * workspace does not have.
+ */
+function agentProfileMissing(
+  c: Context,
+  setting: '回复模式' | '过程可见性' | '工作方式',
+) {
+  return c.json(
+    {
+      error: `该工作区未绑定智能体配置，因此无法修改${setting}。`,
+      code: 'WORKSPACE_AGENT_PROFILE_MISSING',
+    },
+    409,
+  );
+}
 class AdminHostOnlyModeConflictError extends Error {}
 
 /**
@@ -376,6 +397,7 @@ interface GroupPayloadItem {
   execution_mode: 'container' | 'host';
   interaction_mode?: InteractionMode;
   process_visibility?: ProcessVisibility;
+  work_mode?: WorkMode;
   custom_cwd?: string;
   is_home?: boolean;
   is_my_home?: boolean;
@@ -515,12 +537,7 @@ function buildGroupsPayload(user: AuthUser): Record<string, GroupPayloadItem> {
       // A workspace without a session yet is as recent as its creation.
       lastMessageTime: latest.timestamp || group.added_at,
       execution_mode: group.executionMode || 'container',
-      interaction_mode: isWeb
-        ? getWorkspaceInteractionMode(group.folder)
-        : undefined,
-      process_visibility: isWeb
-        ? getWorkspaceProcessVisibility(group.folder)
-        : undefined,
+      ...(isWeb ? getWorkspaceModes(group.folder) : {}),
       custom_cwd: isAdmin ? group.customCwd : undefined,
       is_home: isHome || undefined,
       is_my_home: (isHome && group.created_by === user.id) || undefined,
@@ -837,6 +854,7 @@ groupRoutes.post('/', authMiddleware, async (c) => {
   // New workspaces show the activity of a proactive turn by default; existing
   // ones stay hidden until their owner opts in.
   const processVisibility = validation.data.process_visibility ?? 'activity';
+  const workMode = validation.data.work_mode ?? DEFAULT_WORK_MODE;
   const customCwd = validation.data.custom_cwd; // Schema already trims and converts empty to undefined
   const initSourcePath = validation.data.init_source_path;
   const initGitUrl = validation.data.init_git_url;
@@ -1254,6 +1272,9 @@ groupRoutes.post('/', authMiddleware, async (c) => {
               interactionMode,
               processVisibility,
             );
+            if (workMode !== DEFAULT_WORK_MODE) {
+              setWorkspaceWorkMode(folder, workMode);
+            }
             setRegisteredGroup(jid, group);
             updateChatName(jid, name);
             deps.getRegisteredGroups()[jid] = group;
@@ -1312,6 +1333,7 @@ groupRoutes.post('/', authMiddleware, async (c) => {
     execution_mode: group.executionMode || 'container',
     interaction_mode: interactionMode,
     process_visibility: processVisibility,
+    work_mode: workMode,
     custom_cwd: isAdmin ? group.customCwd : undefined,
     is_my_home: undefined,
     can_modify: canModifyGroup(authUser, groupWithJid),
@@ -1357,6 +1379,7 @@ groupRoutes.patch('/:jid', authMiddleware, async (c) => {
     execution_mode,
     interaction_mode,
     process_visibility,
+    work_mode,
   } = validation.data;
   const name = rawName ? normalizeGroupName(rawName) : undefined;
 
@@ -1367,7 +1390,8 @@ groupRoutes.patch('/:jid', authMiddleware, async (c) => {
     activation_mode === undefined &&
     execution_mode === undefined &&
     interaction_mode === undefined &&
-    process_visibility === undefined
+    process_visibility === undefined &&
+    work_mode === undefined
   ) {
     return c.json({ error: 'No fields to update' }, 400);
   }
@@ -1409,7 +1433,8 @@ groupRoutes.patch('/:jid', authMiddleware, async (c) => {
     activation_mode === undefined &&
     execution_mode === undefined &&
     interaction_mode === undefined &&
-    process_visibility === undefined;
+    process_visibility === undefined &&
+    work_mode === undefined;
   if (isPinOnly) {
     if (
       !canAccessGroup(
@@ -1453,6 +1478,9 @@ groupRoutes.patch('/:jid', authMiddleware, async (c) => {
         403,
       );
     }
+    if (work_mode !== undefined && !jid.startsWith('web:')) {
+      return c.json({ error: 'Only web workspaces can change work mode' }, 403);
+    }
     // Session worktrees are host checkouts; a container run would put those
     // sessions back in the shared workspace directory.
     if (
@@ -1485,18 +1513,18 @@ groupRoutes.patch('/:jid', authMiddleware, async (c) => {
   // unbound. Refuse up front: throwing inside commitUpdate would surface as a
   // 500 and, on the quiesce path, only after the runtime was already stopped.
   if (
-    (interaction_mode !== undefined || process_visibility !== undefined) &&
+    (interaction_mode !== undefined ||
+      process_visibility !== undefined ||
+      work_mode !== undefined) &&
     !getWorkspaceAgentProfileId(existing.folder)
   ) {
-    return c.json(
-      {
-        error:
-          interaction_mode !== undefined
-            ? '该工作区未绑定智能体配置，因此无法修改回复模式。'
-            : '该工作区未绑定智能体配置，因此无法修改过程可见性。',
-        code: 'WORKSPACE_AGENT_PROFILE_MISSING',
-      },
-      409,
+    return agentProfileMissing(
+      c,
+      interaction_mode !== undefined
+        ? '回复模式'
+        : process_visibility !== undefined
+          ? '过程可见性'
+          : '工作方式',
     );
   }
 
@@ -1615,13 +1643,7 @@ groupRoutes.patch('/:jid', authMiddleware, async (c) => {
         }
         if (err instanceof WorkspaceAgentProfileMissingError) {
           deps.queue?.unblockGroupsForRuntimeSafety?.(runtimeJids);
-          return c.json(
-            {
-              error: '该工作区未绑定智能体配置，因此无法修改回复模式。',
-              code: 'WORKSPACE_AGENT_PROFILE_MISSING',
-            },
-            409,
-          );
+          return agentProfileMissing(c, '回复模式');
         }
         if (!(err instanceof WorkspaceRuntimeQuiesceError)) throw err;
         if (err.persisted) {
@@ -1655,13 +1677,7 @@ groupRoutes.patch('/:jid', authMiddleware, async (c) => {
           );
         }
         if (!(err instanceof WorkspaceAgentProfileMissingError)) throw err;
-        return c.json(
-          {
-            error: '该工作区未绑定智能体配置，因此无法修改回复模式。',
-            code: 'WORKSPACE_AGENT_PROFILE_MISSING',
-          },
-          409,
-        );
+        return agentProfileMissing(c, '回复模式');
       }
     }
   }
@@ -1674,13 +1690,26 @@ groupRoutes.patch('/:jid', authMiddleware, async (c) => {
     process_visibility !== undefined &&
     !setWorkspaceProcessVisibility(existing.folder, process_visibility)
   ) {
-    return c.json(
-      {
-        error: '该工作区未绑定智能体配置，因此无法修改过程可见性。',
-        code: 'WORKSPACE_AGENT_PROFILE_MISSING',
-      },
-      409,
-    );
+    return agentProfileMissing(c, '过程可见性');
+  }
+
+  // The work mode decides the tools and prompt a session's runner starts
+  // with. Nothing running is interrupted: each warm runner of the workspace
+  // finishes its turn and retires, so the next turn starts under the new mode.
+  if (work_mode !== undefined) {
+    const changed = work_mode !== getWorkspaceWorkMode(existing.folder);
+    if (!setWorkspaceWorkMode(existing.folder, work_mode)) {
+      return agentProfileMissing(c, '工作方式');
+    }
+    if (changed) {
+      for (const runtimeJid of getWorkspaceRuntimeJids(
+        deps,
+        existing.folder,
+        jid,
+      )) {
+        deps.queue.retireRunnerAfterQuery(runtimeJid);
+      }
+    }
   }
 
   return c.json({
@@ -1688,6 +1717,7 @@ groupRoutes.patch('/:jid', authMiddleware, async (c) => {
     pinned_at,
     interaction_mode: getWorkspaceInteractionMode(existing.folder),
     process_visibility: getWorkspaceProcessVisibility(existing.folder),
+    work_mode: getWorkspaceWorkMode(existing.folder),
   });
 });
 

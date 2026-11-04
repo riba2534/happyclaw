@@ -5,6 +5,8 @@
  * (`work_reply`) and reads the group's work items (`work_list`); a worker
  * session confirms a request once (`work_ack`), reports to the router
  * (`work_report`) and hands back what is beyond its item (`work_handback`).
+ * The worker of a multi-task mode delegated item only reports, to the
+ * session that delegated it.
  *
  * Each call writes one request into the task IPC directory and waits for
  * `<type>_result`: `{ ok: true, data } | { ok: false, error }`. The host
@@ -26,9 +28,11 @@ import {
 } from './automation-tools.js';
 
 import {
+  DELEGATED_REPORT_STATES,
   TEAM_IM_WORD_LIMIT,
   WORK_NOTE_WORD_LIMIT,
   WORK_REPORT_STATES,
+  WORK_SUMMARY_CHAR_LIMIT,
   WORK_TITLE_CHAR_LIMIT,
   countImWords,
   type TeamRole,
@@ -36,6 +40,7 @@ import {
   type WorkRouteItem,
   type WorkRouteResultItem,
 } from './work-items.js';
+import { sessionKind } from './session-kind.js';
 
 /** Writes the request and resolves with the host's result; throws on timeout. */
 export type WorkIpcCall = (
@@ -44,13 +49,42 @@ export type WorkIpcCall = (
   timeoutMs: number,
 ) => Promise<Record<string, unknown>>;
 
-type WorkIpcResult =
-  | { ok: true; data?: Record<string, unknown> }
-  | { ok: false; error?: string };
+type WorkIpcResult<D> = { ok: true; data?: D } | { ok: false; error?: string };
 
 /** Accepting creates sessions and maybe a git worktree, so it waits longer. */
 const ROUTE_TIMEOUT_MS = 120_000;
 const DEFAULT_TIMEOUT_MS = 30_000;
+
+/**
+ * Sends one work request at a time and turns the host's answer into tool
+ * text. A timeout leaves the outcome of a write unknown, so `timedOut` says,
+ * per request type, how to check before retrying.
+ */
+export function workSender(
+  call: WorkIpcCall,
+  timedOut: (type: WorkIpcType) => string,
+) {
+  return async <D = Record<string, unknown>>(
+    type: WorkIpcType,
+    payload: object,
+    onSuccess: (data: D) => string,
+    timeoutMs = DEFAULT_TIMEOUT_MS,
+  ): Promise<ToolResult> => {
+    const request = { type, requestId: randomUUID(), ...payload };
+    let result: WorkIpcResult<D>;
+    try {
+      result = (await call(
+        request,
+        `${type}_result`,
+        timeoutMs,
+      )) as unknown as WorkIpcResult<D>;
+    } catch {
+      return text(timedOut(type), true);
+    }
+    if (!result.ok) return text(result.error || `${type} failed`, true);
+    return text(onSuccess(result.data ?? ({} as D)));
+  };
+}
 
 function overWordLimit(label: string, value: string, limit: number) {
   // Every word is at least one character, so a short text needs no count.
@@ -187,35 +221,14 @@ export function createWorkTools(
   teamRole: TeamRole,
   call: WorkIpcCall,
 ): SdkMcpToolDefinition<any>[] {
-  /**
-   * Send and turn the host's answer into tool text. A timeout leaves the
-   * outcome of a write unknown, so it is checked before it is retried.
-   */
-  const send = async (
-    type: WorkIpcType,
-    payload: object,
-    onSuccess: (data: Record<string, unknown>) => string,
-    timeoutMs = DEFAULT_TIMEOUT_MS,
-  ): Promise<ToolResult> => {
-    const request = { type, requestId: randomUUID(), ...payload };
-    let result: WorkIpcResult;
-    try {
-      result = (await call(
-        request,
-        `${type}_result`,
-        timeoutMs,
-      )) as unknown as WorkIpcResult;
-    } catch {
-      return text(
-        type === 'work_list'
-          ? 'The host did not answer in time; try again shortly.'
-          : `The host did not confirm in time; ${type} may have taken effect. Check with ${teamRole.role === 'router' ? 'work_list' : 'the next input'} before retrying.`,
-        true,
-      );
-    }
-    if (!result.ok) return text(result.error || `${type} failed`, true);
-    return text(onSuccess(result.data ?? {}));
-  };
+  if (sessionKind({ teamRole }) === 'delegated-worker') {
+    return delegatedWorkerTools(call);
+  }
+  const send = workSender(call, (type) =>
+    type === 'work_list'
+      ? 'The host did not answer in time; try again shortly.'
+      : `The host did not confirm in time; ${type} may have taken effect. Check with ${teamRole.role === 'router' ? 'work_list' : 'the next input'} before retrying.`,
+  );
 
   if (teamRole.role === 'router') {
     return [
@@ -396,6 +409,44 @@ humanAction is the one concrete question a person must decide; it reaches the ro
       }),
       async (args) =>
         send('work_handback', args, () => 'Handed back to the router.'),
+    ),
+  ];
+}
+
+const REPORTED: Record<(typeof DELEGATED_REPORT_STATES)[number], string> = {
+  progress: '已记录。',
+  ready: '已回报，任务已结束。结束本轮。',
+  failed: '已回报，任务已结束。结束本轮。',
+  blocked: '已回报。结束本轮，回答会作为 <work_followup> 输入回来。',
+};
+
+/** A delegated item's worker only reports, to the session that delegated it. */
+function delegatedWorkerTools(call: WorkIpcCall): SdkMcpToolDefinition<any>[] {
+  const send = workSender(
+    call,
+    () => '等待宿主确认超时：回报可能已经生效。结束本轮，不要重复回报。',
+  );
+  return [
+    tool(
+      'work_report',
+      `向派出这个任务的会话回报；只有它看得到，由它转述给用户。
+- progress：内部记录进展，不唤醒任何人。
+- ready：任务完成并已核实，任务随之结束。summary 写成能直接转述的结论：结果、要点、产物路径、实际做过的检查。
+- blocked：需要用户决定或提供什么才能继续。summary 把问题和可选项写清楚，然后结束本轮；回答会作为 <work_followup> 输入回来。
+- failed：试过但没做成，任务随之结束。写清失败原因和试过什么。
+如实回报：没完成的草稿不是 ready，失败就报 failed。`,
+      strict({
+        state: z.enum(DELEGATED_REPORT_STATES),
+        summary: z
+          .string()
+          .trim()
+          .min(1)
+          .max(WORK_SUMMARY_CHAR_LIMIT)
+          .describe(
+            `给派出任务的会话看的事实：结论、要点、产物路径、实际做过的检查。最多 ${WORK_SUMMARY_CHAR_LIMIT} 字；更长的结果写进工作目录里的文件，这里给结论和路径。`,
+          ),
+      }),
+      async (args) => send('work_report', args, () => REPORTED[args.state]),
     ),
   ];
 }

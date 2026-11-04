@@ -124,8 +124,9 @@ Host 工作区要求 admin。Office 预览（`files/office-preview/:path`）与�
 `canModifyGroup()` 是 owner-only。需要 Modify 的典型操作：
 
 - 重命名、切换 Agent、修改执行方式
-- 修改回复模式与过程可见性（`PATCH /api/groups/:jid` 的 `interaction_mode`、
-  `process_visibility`，仅 `web:` 工作区；后者不重启运行时）
+- 修改回复模式、过程可见性与工作方式（`PATCH /api/groups/:jid` 的 `interaction_mode`、
+  `process_visibility`、`work_mode`，仅 `web:` 工作区；后两者不重启运行时，`work_mode`
+  让暖 Runner 在本轮结束后退役）
 - stop、interrupt、reset-session、clear-history
 - 切换会话模型与推理档位（`PUT /api/groups/:jid/model-selection`）；其中高于 `max` 的
   推理档位（目前是 `ultra`）另需 `manage_system_config`
@@ -248,7 +249,7 @@ read-only 投影按 host-issued turn ID 精确匹配当前或已接纳的 queued
 `/api/memory/global` 只要求有效登录，但无论角色均返回 410；它们不提供旧文件读取
 或兼容写入能力。
 
-### 4.7 团队模式
+### 4.7 团队模式与多任务模式
 
 `src/routes/work-items.ts` 只服务工作区主人：URL 中的工作区（或工作项所属工作区）
 必须是 `web:*` 并通过 `canModifyGroup()`（`created_by` 等于当前用户）；Host 工作区另需
@@ -263,7 +264,18 @@ admin。admin 没有跨 owner bypass，不存在与无权限都返回 404。
 | `GET /api/work-items/:id`、`POST .../stop`、`POST .../approve` | 允许                         | 404              | 拒绝 |
 
 访客拒绝是 403：guest guard 的放行清单不含这些路由，处理器也再拒绝一次。工作项事件
-`work_item_updated` 只推给工作区主人。
+`work_item_updated` 只推给工作区主人。多任务模式的派发型工作项（`origin='delegated'`）
+走同一组路由和同一张表，访客同样看不到，也不能停止。
+
+派发由 Agent 工具发起，不经过 HTTP，宿主在 IPC 侧把关：`work_delegate` 只接受多任务
+工作区里普通会话（不是团队路由或执行会话，也不是 spawn 或独立 worktree 会话）中由工作区
+主人亲自发起的轮次，判定与 `install_skill` 相同（执行中和已排队的每条输入都必须是主人本人
+的人工输入；处理回报的 `work_item_input` 轮次和自动化轮次都不算），请求还必须用
+`inputTurnId` 指明这一轮，过期的请求不借用当前轮次；另有每会话 3 个、每工作区 5 个
+未结束派发的上限和计费闸门。`work_stop`、`work_followup` 只能作用于本会话派出的工作项，
+并且同样只接受主人亲自发起的轮次；只读的 `work_delegations` 不受此限。工作区切回单任务
+后，有过派发的会话仍可用这三个工具跟进已派出的任务，只是不能再派新的。团队会话调用这四个
+工具一律被拒绝；派发型 Worker 被收走的工具与团队执行会话相同。
 
 ## 5. 工作区与 Session 渠道绑定
 

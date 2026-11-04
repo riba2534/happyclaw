@@ -20,6 +20,10 @@ import {
 import { getErrorMessage } from '../settings/types';
 import { InteractionModeSelector } from './InteractionModeSelector';
 import { ProcessVisibilitySelector } from './ProcessVisibilitySelector';
+import { WorkModeSelector } from './WorkModeSelector';
+import { useWorkItemsStore } from '../../stores/work-items';
+import { isDelegated } from '../../lib/multitask';
+import type { WorkMode } from '../../work-items';
 
 interface WorkspaceInteractionModeDialogProps {
   open: boolean;
@@ -28,9 +32,11 @@ interface WorkspaceInteractionModeDialogProps {
   workspaceName: string;
   currentMode: InteractionMode;
   currentVisibility: ProcessVisibility;
+  currentWorkMode: WorkMode;
   onClose: () => void;
   onSave: (mode: InteractionMode) => Promise<boolean>;
   onSaveVisibility: (visibility: ProcessVisibility) => Promise<boolean>;
+  onSaveWorkMode: (mode: WorkMode) => Promise<boolean>;
 }
 
 export function WorkspaceInteractionModeDialog({
@@ -39,14 +45,34 @@ export function WorkspaceInteractionModeDialog({
   workspaceName,
   currentMode,
   currentVisibility,
+  currentWorkMode,
   onClose,
   onSave,
   onSaveVisibility,
+  onSaveWorkMode,
 }: WorkspaceInteractionModeDialogProps) {
   const [draftMode, setDraftMode] = useState(currentMode);
   const [draftVisibility, setDraftVisibility] = useState(currentVisibility);
-  // Only a Web Workspace belongs to an Agent.
+  const [draftWorkMode, setDraftWorkMode] = useState(currentWorkMode);
+  // Only a Web Workspace belongs to an Agent and has a work mode.
   const workspaceJid = groupJid?.startsWith('web:') ? groupJid : undefined;
+  // Tasks delegated and still running, for the notice on leaving multi-task.
+  const watchDelegations =
+    open && !!workspaceJid && currentWorkMode === 'multi';
+  const ensureWorkspace = useWorkItemsStore((s) => s.ensureWorkspace);
+  useEffect(() => {
+    if (watchDelegations && workspaceJid) ensureWorkspace(workspaceJid);
+  }, [watchDelegations, workspaceJid, ensureWorkspace]);
+  const delegationsOpen = useWorkItemsStore(
+    (s) =>
+      watchDelegations &&
+      Object.values(s.items).some(
+        (item) =>
+          item.workspaceJid === workspaceJid &&
+          isDelegated(item) &&
+          item.status === 'open',
+      ),
+  );
   const currentAgentId = useWorkspaceAgentId(workspaceJid);
   const [draftAgentId, setDraftAgentId] = useState(currentAgentId);
   const setWorkspaceAgentProfile = useAgentProfilesStore(
@@ -58,9 +84,10 @@ export function WorkspaceInteractionModeDialog({
     if (open) {
       setDraftMode(currentMode);
       setDraftVisibility(currentVisibility);
+      setDraftWorkMode(currentWorkMode);
       setDraftAgentId(currentAgentId);
     }
-  }, [currentAgentId, currentMode, currentVisibility, open]);
+  }, [currentAgentId, currentMode, currentVisibility, currentWorkMode, open]);
 
   // Only a proactive workspace has a process to show or hide: an Assistant
   // workspace always shows its whole process on the Web.
@@ -72,7 +99,13 @@ export function WorkspaceInteractionModeDialog({
     const modeChanged = draftMode !== currentMode;
     const visibilityChanged =
       visibilityApplies && draftVisibility !== currentVisibility;
-    if (!agentChanged && !modeChanged && !visibilityChanged) {
+    const workModeChanged = !!workspaceJid && draftWorkMode !== currentWorkMode;
+    if (
+      !agentChanged &&
+      !modeChanged &&
+      !visibilityChanged &&
+      !workModeChanged
+    ) {
       onClose();
       return;
     }
@@ -101,12 +134,21 @@ export function WorkspaceInteractionModeDialog({
           return;
         }
       }
+      if (workModeChanged) {
+        const saved = await onSaveWorkMode(draftWorkMode);
+        if (!saved) {
+          toast.error('工作方式保存失败，请重试');
+          return;
+        }
+      }
       toast.success(
         modeChanged
           ? `已切换为${draftMode === 'proactive' ? '主动模式' : 'Assistant 模式'}`
-          : visibilityChanged
-            ? '过程可见性已更新'
-            : '已更换工作区智能体',
+          : workModeChanged
+            ? `已切换为${draftWorkMode === 'multi' ? '多任务' : '单任务'}`
+            : visibilityChanged
+              ? '过程可见性已更新'
+              : '已更换工作区智能体',
       );
       onClose();
     } finally {
@@ -126,7 +168,7 @@ export function WorkspaceInteractionModeDialog({
           <DialogTitle>工作区设置</DialogTitle>
           <DialogDescription>
             设置“{workspaceName}
-            ”的所属智能体，以及由谁控制对用户发消息的时机和数量。
+            ”的所属智能体、工作方式，以及由谁控制对用户发消息的时机和数量。
           </DialogDescription>
         </DialogHeader>
 
@@ -136,6 +178,24 @@ export function WorkspaceInteractionModeDialog({
             value={draftAgentId}
             onChange={setDraftAgentId}
             disabled={saving}
+          />
+        )}
+
+        {workspaceJid && (
+          <WorkModeSelector
+            value={draftWorkMode}
+            onChange={setDraftWorkMode}
+            name="workspace-work-mode"
+            disabled={saving}
+            description="切换不会中断正在进行的对话，从下一轮开始生效。"
+            notice={
+              draftWorkMode === 'single' &&
+              delegationsOpen && (
+                <Callout tone="warning" role="status" className="mt-2">
+                  已派出的任务会继续完成并汇报，之后不再派新任务。
+                </Callout>
+              )
+            }
           />
         )}
 

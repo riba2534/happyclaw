@@ -7,6 +7,7 @@ import type {
   TeamSettings,
   WorkDecisionKind,
   WorkEventKind,
+  WorkItemOrigin,
   WorkItemView,
   WorkReportState,
   WorkStage,
@@ -20,6 +21,7 @@ export type {
 export { TEAM_RULE_NAME_LIMIT } from '../work-items';
 import { isWorkItemWritable } from '../work-items';
 import { formatAutomationTime } from './automation';
+import { isDelegated } from './multitask';
 
 // Team mode (团队模式) on the Web: the REST shapes the shared file does not
 // carry and the words people read for stages, mandates and decisions.
@@ -38,10 +40,34 @@ const OUTCOME_LABELS = {
   failed: '失败',
 } as const;
 
+/** What the stage words read: a team item, or a delegated task when known. */
+type StageItem = Pick<WorkItemView, 'stage' | 'outcome'> &
+  Partial<Pick<WorkItemView, 'origin'>>;
+
+/**
+ * A delegated task in five words. Its worker may edit from the start and
+ * never reports `waiting`; a blocked report carries the question, so
+ * blocked reads as waiting for an answer.
+ */
+function delegatedStageLabel(item: StageItem): string {
+  switch (item.stage) {
+    case 'answer':
+    case 'blocked':
+      return '等你回答';
+    case 'failed':
+      return '失败';
+    case 'ended':
+      return item.outcome === 'completed' || item.outcome === 'failed'
+        ? OUTCOME_LABELS[item.outcome]
+        : OUTCOME_LABELS.stopped;
+    default:
+      return '进行中';
+  }
+}
+
 /** The stage in a few words: who it waits for and what for. */
-export function workStageLabel(
-  item: Pick<WorkItemView, 'stage' | 'outcome'>,
-): string {
+export function workStageLabel(item: StageItem): string {
+  if (isDelegated(item)) return delegatedStageLabel(item);
   switch (item.stage) {
     case 'answer':
       return '等你回答';
@@ -62,16 +88,20 @@ export function workStageLabel(
 
 /** The stage as a sentence, with the question when one waits. */
 export function workStageText(
-  item: Pick<WorkItemView, 'stage' | 'outcome' | 'attention'>,
+  item: StageItem & Pick<WorkItemView, 'attention'>,
 ): string {
   if (item.stage === 'answer' && item.attention)
     return `等你回答：${item.attention}`;
   return workStageLabel(item);
 }
 
-export function workStageVariant(
-  item: Pick<WorkItemView, 'stage' | 'outcome'>,
-): BadgeVariant {
+export function workStageVariant(item: StageItem): BadgeVariant {
+  if (isDelegated(item) && item.stage !== 'ended')
+    return item.stage === 'answer' || item.stage === 'blocked'
+      ? 'warning'
+      : item.stage === 'failed'
+        ? 'error'
+        : 'info';
   const variants: Record<Exclude<WorkStage, 'ended'>, BadgeVariant> = {
     answer: 'warning',
     approval: 'warning',
@@ -83,6 +113,48 @@ export function workStageVariant(
   if (item.stage !== 'ended') return variants[item.stage];
   if (item.outcome === 'completed') return 'success';
   return item.outcome === 'failed' ? 'error' : 'neutral';
+}
+
+/** The words that differ between a team item and a delegated task. */
+const WORK_ORIGIN_WORDS: Record<
+  WorkItemOrigin,
+  {
+    /** The worker session's tag in the session tree. */
+    noun: string;
+    /** The session that does the work. */
+    session: string;
+    /** The heading over what started the item. */
+    request: string;
+    /** What stopping does, in the confirmation. */
+    stop: string;
+  }
+> = {
+  team: {
+    noun: '工作项',
+    session: '执行会话',
+    request: '原始消息',
+    stop: '执行会话会被中断，工作项记为已停止。之后群里的回复不会再恢复它。',
+  },
+  delegated: {
+    noun: '后台任务',
+    session: 'Worker 会话',
+    request: '任务内容',
+    stop: 'Worker 会被中断，任务记为已停止，Agent 会收到停止的通知。',
+  },
+};
+
+export function workOriginWords(item: Pick<WorkItemView, 'origin'>) {
+  return WORK_ORIGIN_WORDS[isDelegated(item) ? 'delegated' : 'team'];
+}
+
+/**
+ * Where an item came from, after its workspace: a team item's group, a
+ * delegated task's session (null once deleted).
+ */
+export function workItemSource(
+  item: Pick<WorkItemView, 'origin' | 'channelName' | 'originSessionName'>,
+): string | null {
+  return isDelegated(item) ? item.originSessionName : item.channelName;
 }
 
 /** Whether edits are allowed, in words. */

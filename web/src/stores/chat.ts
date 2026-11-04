@@ -43,6 +43,8 @@ import {
   normalizeGroupInteractionMode,
   normalizeInteractionMode,
 } from '../lib/interaction-mode';
+import { normalizeWorkMode } from '../lib/multitask';
+import type { WorkMode } from '../work-items';
 import {
   MEMORY_WRITE_TOOLS,
   SPEECH_TOOL_NAME,
@@ -208,6 +210,16 @@ export interface ContextUsage {
   usedTokens: number | null;
   contextWindow: number | null;
   percentage: number | null;
+}
+
+/** `groups` with one workspace's fields changed; as is when it is not there. */
+function withGroupFields(
+  groups: Record<string, GroupInfo>,
+  jid: string,
+  fields: Partial<GroupInfo>,
+): Record<string, GroupInfo> {
+  const group = groups[jid];
+  return group ? { ...groups, [jid]: { ...group, ...fields } } : groups;
 }
 
 function toContextUsage(
@@ -1316,6 +1328,8 @@ interface ChatState {
     jid: string,
     interactionMode: InteractionMode,
   ) => Promise<boolean>;
+  /** Single- or multi-task; the next turn runs under it (no interruption). */
+  updateWorkMode: (jid: string, workMode: WorkMode) => Promise<boolean>;
   /** Change how much of a proactive turn's process the Web shows (no restart). */
   updateProcessVisibility: (
     jid: string,
@@ -3650,6 +3664,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       body.interaction_mode = normalizeInteractionMode(
         options?.interaction_mode,
       );
+      body.work_mode = normalizeWorkMode(options?.work_mode);
       if (options?.additional_mounts?.length)
         body.additional_mounts = options.additional_mounts;
 
@@ -3709,22 +3724,39 @@ export const useChatStore = create<ChatState>((set, get) => ({
         `/api/groups/${encodeURIComponent(jid)}`,
         { interaction_mode: interactionMode },
       );
-      const patchGroups = (groups: Record<string, GroupInfo>) => {
-        const group = groups[jid];
-        if (!group) return groups;
-        return {
-          ...groups,
-          [jid]: { ...group, interaction_mode: interactionMode },
-        };
-      };
+      const fields = { interaction_mode: interactionMode };
       // The caches of the process the mode no longer shows go with the
       // groups (see the subscription below the store).
       set((state) => ({
-        groups: patchGroups(state.groups),
+        groups: withGroupFields(state.groups, jid, fields),
         error: null,
       }));
       useGroupsStore.setState((state) => ({
-        groups: patchGroups(state.groups),
+        groups: withGroupFields(state.groups, jid, fields),
+      }));
+      return true;
+    } catch (err) {
+      set({ error: extractErrorMessage(err) });
+      return false;
+    }
+  },
+
+  updateWorkMode: async (jid, requested) => {
+    try {
+      const saved = await api.patch<{ success: boolean; work_mode?: string }>(
+        `/api/groups/${encodeURIComponent(jid)}`,
+        { work_mode: requested },
+      );
+      // The server echoes the mode now in force.
+      const fields = {
+        work_mode: normalizeWorkMode(saved?.work_mode ?? requested),
+      };
+      set((state) => ({
+        groups: withGroupFields(state.groups, jid, fields),
+        error: null,
+      }));
+      useGroupsStore.setState((state) => ({
+        groups: withGroupFields(state.groups, jid, fields),
       }));
       return true;
     } catch (err) {
@@ -3745,14 +3777,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const processVisibility = normalizeProcessVisibility(
         saved?.process_visibility ?? requested,
       );
-      const patchGroups = (groups: Record<string, GroupInfo>) => {
-        const group = groups[jid];
-        if (!group) return groups;
-        return {
-          ...groups,
-          [jid]: { ...group, process_visibility: processVisibility },
-        };
-      };
+      const fields = { process_visibility: processVisibility };
       set((state) => {
         // A level lowered mid-run must not leave what it hides in memory:
         // the workspace's listed sessions and those running in it.
@@ -3777,13 +3802,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
           }
         }
         return {
-          groups: patchGroups(state.groups),
+          groups: withGroupFields(state.groups, jid, fields),
           agentStreaming: nextAgentStreaming,
           error: null,
         };
       });
       useGroupsStore.setState((state) => ({
-        groups: patchGroups(state.groups),
+        groups: withGroupFields(state.groups, jid, fields),
       }));
       return true;
     } catch (err) {
