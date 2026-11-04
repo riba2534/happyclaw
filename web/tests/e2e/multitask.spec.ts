@@ -137,8 +137,6 @@ async function open(page: Page, route: string, query = ''): Promise<Calls> {
       }
       if (path.endsWith('/work-decisions'))
         return route.fulfill({ json: { decisions: [] } });
-      if (path.endsWith('/workdir/peers'))
-        return route.fulfill({ json: { peers: [], hidden_count: 0 } });
       const stop = path.match(/^\/api\/work-items\/([^/]+)\/stop$/);
       if (stop) {
         calls.posts.push(stop[1]);

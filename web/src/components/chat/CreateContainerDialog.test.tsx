@@ -5,11 +5,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, describe, expect, test, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
-  createFlow: vi.fn(async () => ({
-    jid: 'web:new',
-    folder: 'new',
-    warnings: [],
-  })),
+  createFlow: vi.fn(async () => ({ jid: 'web:new', folder: 'new' })),
   onCreated: vi.fn(),
   onClose: vi.fn(),
 }));
