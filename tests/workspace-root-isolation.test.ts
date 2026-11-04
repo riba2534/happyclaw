@@ -59,6 +59,7 @@ const security = await import('../src/mount-security.js');
 const browseRoutes = (await import('../src/routes/browse.js')).default;
 
 let root = oldRoot;
+let rootResolutions = 0;
 
 beforeAll(() => {
   process.env.HAPPYCLAW_SKIP_MIGRATION_BACKUP = '1';
@@ -67,7 +68,10 @@ beforeAll(() => {
   } finally {
     delete process.env.HAPPYCLAW_SKIP_MIGRATION_BACKUP;
   }
-  dir.setWorkspaceRootResolver(() => root);
+  dir.setWorkspaceRootResolver(() => {
+    rootResolutions++;
+    return root;
+  });
   // A workspace made before the root changed, then the root moves.
   dir.assignWorkspaceRootDir('flow-old');
   root = currentRoot;
@@ -87,9 +91,10 @@ function mountable(hostPath: string): boolean {
   ).allowed;
 }
 
-async function browse(target: string) {
+async function browse(target: string, purpose?: 'mount') {
+  const query = purpose ? `&purpose=${purpose}` : '';
   const res = await browseRoutes.request(
-    `/directories?path=${encodeURIComponent(target)}`,
+    `/directories?path=${encodeURIComponent(target)}${query}`,
   );
   return { status: res.status, json: (await res.json()) as any };
 }
@@ -136,6 +141,19 @@ describe('directory browser', () => {
     expect(json.directories.map((d: { name: string }) => d.name)).toEqual([
       'projects',
     ]);
+  });
+
+  test('resolves the workspace root once per request, not per entry', async () => {
+    for (let i = 0; i < 30; i++) {
+      fs.mkdirSync(path.join(sibling, `entry-${i}`), { recursive: true });
+    }
+    for (const purpose of [undefined, 'mount'] as const) {
+      rootResolutions = 0;
+      const { status, json } = await browse(sibling, purpose);
+      expect(status).toBe(200);
+      expect(json.directories).toHaveLength(30);
+      expect(rootResolutions).toBe(1);
+    }
   });
 
   test('cannot create a folder inside a root', async () => {

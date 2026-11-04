@@ -245,7 +245,14 @@ export function findAllowedRoot(
   return selected?.root ?? null;
 }
 
-function getProtectedHostPaths(): string[] {
+/**
+ * Real paths no mount may overlap. Building it resolves the workspace roots,
+ * so a caller checking many paths (the directory browser) builds it once and
+ * passes it to validateMount / isHostMountNavigationPathAllowed.
+ */
+export function getProtectedHostPaths(
+  workspaceRoots: string[] = workspaceRootDirs(),
+): string[] {
   return (
     [
       '/proc',
@@ -278,12 +285,15 @@ function getProtectedHostPaths(): string[] {
       })
       // Other workspaces' directories: the workspace root and every root a
       // recorded workspace directory still lives in (already real paths).
-      .concat(workspaceRootDirs())
+      .concat(workspaceRoots)
   );
 }
 
-function hardDeniedHostPath(realPath: string): string | null {
-  for (const protectedPath of getProtectedHostPaths()) {
+function hardDeniedHostPath(
+  realPath: string,
+  protectedPaths: string[] = getProtectedHostPaths(),
+): string | null {
+  for (const protectedPath of protectedPaths) {
     if (pathsOverlap(realPath, protectedPath)) return protectedPath;
   }
 
@@ -298,8 +308,11 @@ function hardDeniedHostPath(realPath: string): string | null {
  * even though that ancestor itself cannot be selected as a mount. It must
  * never enter the protected path or anything beneath it.
  */
-export function isHostMountNavigationPathAllowed(realPath: string): boolean {
-  for (const protectedPath of getProtectedHostPaths()) {
+export function isHostMountNavigationPathAllowed(
+  realPath: string,
+  protectedPaths: string[] = getProtectedHostPaths(),
+): boolean {
+  for (const protectedPath of protectedPaths) {
     if (isPathWithin(protectedPath, realPath)) return false;
   }
   return !realPath
@@ -465,6 +478,7 @@ export interface MountValidationResult {
 export function validateMount(
   mount: AdditionalMount,
   isMain: boolean,
+  protectedPaths?: string[],
 ): MountValidationResult {
   const allowlist = loadMountAllowlist();
   if (!allowlist || allowlist.allowedRoots.length === 0) {
@@ -527,7 +541,7 @@ export function validateMount(
     };
   }
 
-  const hardDenied = hardDeniedHostPath(realPath);
+  const hardDenied = hardDeniedHostPath(realPath, protectedPaths);
   if (hardDenied) {
     return {
       allowed: false,

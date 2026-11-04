@@ -10,6 +10,7 @@ import {
   loadMountAllowlist,
   expandPath,
   findAllowedRoot,
+  getProtectedHostPaths,
   isHostMountNavigationPathAllowed,
   matchesBlockedPattern,
   validateMount,
@@ -24,6 +25,23 @@ const MAX_ENTRIES = 200;
 
 const browseRoutes = new Hono<{ Variables: Variables }>();
 
+/**
+ * What one request may not enter, resolved once: the workspace roots (for
+ * every purpose) and the protected host paths mounts check against.
+ */
+interface BrowseDenySet {
+  workspaceRoots: string[];
+  protectedPaths: string[];
+}
+
+function browseDenySet(): BrowseDenySet {
+  const workspaceRoots = workspaceRootDirs();
+  return {
+    workspaceRoots,
+    protectedPaths: getProtectedHostPaths(workspaceRoots),
+  };
+}
+
 interface DirectoryEntry {
   name: string;
   path: string;
@@ -37,6 +55,7 @@ interface DirectoryEntry {
 function listSubdirectories(
   dirPath: string,
   blockedPatterns: string[],
+  deny: BrowseDenySet,
   mountPurpose = false,
   allowedRoots: AllowedRoot[] = [],
 ): DirectoryEntry[] {
@@ -48,7 +67,6 @@ function listSubdirectories(
   }
 
   const dirs: DirectoryEntry[] = [];
-  const workspaceRoots = workspaceRootDirs();
 
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
@@ -65,12 +83,12 @@ function listSubdirectories(
     }
     // Workspace roots hold other workspaces' directories: neither a mount
     // nor a custom directory may point into them.
-    if (workspaceRootContaining(realPath, workspaceRoots)) continue;
+    if (workspaceRootContaining(realPath, deny.workspaceRoots)) continue;
     if (mountPurpose) {
       fullPath = realPath;
       if (
         !findAllowedRoot(fullPath, allowedRoots) ||
-        !isHostMountNavigationPathAllowed(fullPath)
+        !isHostMountNavigationPathAllowed(fullPath, deny.protectedPaths)
       ) {
         continue;
       }
@@ -100,6 +118,7 @@ function listSubdirectories(
                 readonly: true,
               },
               false,
+              deny.protectedPaths,
             ).allowed,
           }
         : {}),
@@ -137,6 +156,7 @@ browseRoutes.get('/directories', authMiddleware, (c) => {
   if (purpose !== 'mount' && !hasHostExecutionPermission(authUser)) {
     return c.json({ error: 'Insufficient permissions' }, 403);
   }
+  const deny = browseDenySet();
 
   const requestedPath = c.req.query('path');
   const allowlist = loadMountAllowlist();
@@ -169,7 +189,7 @@ browseRoutes.get('/directories', authMiddleware, (c) => {
           continue;
         if (
           purpose === 'mount' &&
-          (!isHostMountNavigationPathAllowed(realPath) ||
+          (!isHostMountNavigationPathAllowed(realPath, deny.protectedPaths) ||
             matchesBlockedPattern(realPath, blockedPatterns) !== null)
         ) {
           continue;
@@ -198,6 +218,7 @@ browseRoutes.get('/directories', authMiddleware, (c) => {
                     readonly: true,
                   },
                   false,
+                  deny.protectedPaths,
                 ).allowed,
               }
             : {}),
@@ -218,7 +239,7 @@ browseRoutes.get('/directories', authMiddleware, (c) => {
     return c.json({
       currentPath: homeDir,
       parentPath: homeDir === '/' ? null : path.dirname(homeDir),
-      directories: listSubdirectories(homeDir, blockedPatterns),
+      directories: listSubdirectories(homeDir, blockedPatterns, deny),
       hasAllowlist: false,
     });
   }
@@ -239,7 +260,7 @@ browseRoutes.get('/directories', authMiddleware, (c) => {
     return c.json({ error: 'Path is not a directory' }, 400);
   }
 
-  if (workspaceRootContaining(realPath)) {
+  if (workspaceRootContaining(realPath, deny.workspaceRoots)) {
     return c.json(
       {
         error: 'Path is inside the workspace root',
@@ -252,7 +273,7 @@ browseRoutes.get('/directories', authMiddleware, (c) => {
   if (
     purpose === 'mount' &&
     (matchesBlockedPattern(realPath, blockedPatterns) !== null ||
-      !isHostMountNavigationPathAllowed(realPath))
+      !isHostMountNavigationPathAllowed(realPath, deny.protectedPaths))
   ) {
     return c.json(
       {
@@ -297,6 +318,7 @@ browseRoutes.get('/directories', authMiddleware, (c) => {
     directories: listSubdirectories(
       realPath,
       blockedPatterns,
+      deny,
       purpose === 'mount',
       allowlist?.allowedRoots ?? [],
     ),
@@ -311,6 +333,7 @@ browseRoutes.get('/directories', authMiddleware, (c) => {
               readonly: true,
             },
             false,
+            deny.protectedPaths,
           ).allowed,
         }
       : {}),
@@ -342,6 +365,7 @@ browseRoutes.post('/directories', authMiddleware, async (c) => {
   if (purpose !== 'mount' && !hasHostExecutionPermission(authUser)) {
     return c.json({ error: 'Insufficient permissions' }, 403);
   }
+  const deny = browseDenySet();
 
   const body = await c.req.json().catch(() => ({}));
   const { parentPath, name } = body;
@@ -376,7 +400,7 @@ browseRoutes.post('/directories', authMiddleware, async (c) => {
     return c.json({ error: 'Parent path is not a directory' }, 400);
   }
 
-  if (workspaceRootContaining(realParent)) {
+  if (workspaceRootContaining(realParent, deny.workspaceRoots)) {
     return c.json(
       {
         error: 'Parent path is inside the workspace root',
@@ -420,6 +444,7 @@ browseRoutes.post('/directories', authMiddleware, async (c) => {
         readonly: true,
       },
       false,
+      deny.protectedPaths,
     ).allowed
   ) {
     return c.json(
