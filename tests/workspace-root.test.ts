@@ -221,10 +221,10 @@ describe('saving and creating the root', () => {
     ).toBeNull();
   });
 
-  test('a root overlapping an existing custom directory or mount is refused', () => {
+  test('a custom directory or mount inside the root is refused; one around it is not', () => {
     const project = path.join(context.home, 'work', 'proj');
     fs.mkdirSync(project, { recursive: true });
-    // Containing it means the root is not empty; inside it is an overlap.
+    // A root that already contains the project is not empty anyway.
     expect(
       validateWorkspaceRootSetting(
         path.join(context.home, 'work'),
@@ -232,17 +232,17 @@ describe('saving and creating the root', () => {
         context,
       ),
     ).toBe('not_empty');
+    // An empty root equal to an occupied path would protect it.
+    const empty = path.join(context.home, 'mounted');
+    fs.mkdirSync(empty);
     expect(
-      validateWorkspaceRootSetting(
-        path.join(project, 'spaces'),
-        { occupiedPaths: [project] },
-        context,
-      ),
+      validateWorkspaceRootSetting(empty, { occupiedPaths: [empty] }, context),
     ).toBe('overlaps_workspace_paths');
+    // A custom directory around the root (such as ~) does not block it.
     expect(
       validateWorkspaceRootSetting(
-        path.join(context.home, 'other'),
-        { occupiedPaths: [project] },
+        path.join(context.home, 'spaces'),
+        { occupiedPaths: [context.home] },
         context,
       ),
     ).toBeNull();

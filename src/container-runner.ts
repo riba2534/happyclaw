@@ -3001,7 +3001,8 @@ export async function runContainerAgent(
     return {
       status: 'error',
       result: SINGLE_USER_HOST_CONTAINER_REFUSAL,
-      error: SINGLE_USER_HOST_CONTAINER_REFUSAL,
+      // A deterministic configuration failure: settled at once, no retry.
+      error: `agent_profile_unavailable: ${SINGLE_USER_HOST_CONTAINER_REFUSAL}`,
     };
   }
   const startTime = Date.now();

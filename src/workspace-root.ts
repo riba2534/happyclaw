@@ -155,8 +155,13 @@ export function checkWorkspaceRootCandidate(
   const overlaps = (other: string) =>
     pathsOverlap(canonicalizePath(other), resolved);
   const isThisRoot = (root: string) => canonicalizePath(root) === resolved;
+  // A custom directory or mount source inside the root would become a
+  // protected root's content; one around it (such as ~) is not harmed by
+  // HappyClaw's own directories appearing inside it.
+  const insideCandidate = (occupied: string) =>
+    isPathInside(canonicalizePath(occupied), resolved);
   if (
-    (occupancy.occupiedPaths ?? []).some(overlaps) ||
+    (occupancy.occupiedPaths ?? []).some(insideCandidate) ||
     (occupancy.workdirs ?? []).some(
       ({ workdir, root }) => !isThisRoot(root) && overlaps(workdir),
     ) ||

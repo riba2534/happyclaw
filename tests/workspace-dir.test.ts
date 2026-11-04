@@ -111,6 +111,14 @@ describe('workspaceDirOf', () => {
     expect(dir.getRecordedWorkdir('flow-old')).toBeNull();
   });
 
+  test('a resolver with no usable root keeps data/groups', () => {
+    dir.setWorkspaceRootResolver(() => null);
+    expect(dir.assignWorkspaceRootDir('flow-no-root')).toBe(
+      path.join(groupsDir, 'flow-no-root'),
+    );
+    expect(dir.getRecordedWorkdir('flow-no-root')).toBeNull();
+  });
+
   test('without a bound root nothing is recorded', () => {
     dir.setWorkspaceRootResolver(null);
     expect(dir.assignWorkspaceRootDir('flow-unbound')).toBe(
@@ -307,6 +315,28 @@ describe('removing a recorded directory', () => {
       expectKept(dir.getRecordedWorkdirRecord('flow-cwd')!, 'custom_cwd', file);
     } finally {
       db.deleteGroupData('web:uses-it', 'uses-it');
+    }
+  });
+
+  test('a custom directory around it (such as ~) does not block removal', () => {
+    const workdir = dir.assignWorkspaceRootDir('flow-under-home');
+    withFile(workdir);
+    db.setRegisteredGroup('web:uses-home', {
+      name: 'uses home',
+      folder: 'uses-home',
+      added_at: NOW,
+      executionMode: 'host',
+      customCwd: tmp,
+      created_by: 'admin-1',
+    });
+    try {
+      const record = dir.getRecordedWorkdirRecord('flow-under-home')!;
+      expect(dir.checkRecordedWorkdirRemoval(record)).toBeNull();
+      removeFlowArtifacts(record.folder, record);
+      expect(fs.existsSync(workdir)).toBe(false);
+      expect(fs.existsSync(tmp)).toBe(true);
+    } finally {
+      db.deleteGroupData('web:uses-home', 'uses-home');
     }
   });
 

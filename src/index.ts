@@ -18260,9 +18260,12 @@ async function main(): Promise<void> {
   // and setup) get their directory in the workspace root.
   // The root must avoid what existing workspaces use, so a new
   // workspace's directory can never land inside another's.
-  setWorkspaceRootResolver(
-    () => getWorkspaceRootResolution(getWorkspaceRootOccupancy()).effective,
-  );
+  // A fallback that has a problem of its own is not used: the workspace
+  // stays in data/groups rather than claim a doubtful directory.
+  setWorkspaceRootResolver(() => {
+    const root = getWorkspaceRootResolution(getWorkspaceRootOccupancy());
+    return root.fallbackWarning ? null : root.effective;
+  });
   initDatabase();
   logger.info('Database initialized');
   installSystemMainModelConfigResolver();

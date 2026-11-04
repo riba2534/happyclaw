@@ -62,7 +62,8 @@ describe('runContainerAgent in single-user host mode', () => {
     );
     expect(result).toMatchObject({
       status: 'error',
-      error: SINGLE_USER_HOST_CONTAINER_REFUSAL,
+      // Settled at once as a configuration failure (no retry backoff).
+      error: `agent_profile_unavailable: ${SINGLE_USER_HOST_CONTAINER_REFUSAL}`,
     });
     expect(SINGLE_USER_HOST_CONTAINER_REFUSAL).toBe(
       '单人宿主机模式不运行 Docker 工作区；请把工作区改为宿主机模式或切回多人模式。',

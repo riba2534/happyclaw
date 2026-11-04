@@ -181,3 +181,32 @@ describe('plugin `!` commands', () => {
     ).toBe('happyclaw-leftover');
   });
 });
+
+describe('the workspace root main() binds', () => {
+  function bound(resolution: {
+    effective: string;
+    fallbackWarning: string | null;
+  }): () => string | null {
+    const globals: Record<string, any> = {
+      getWorkspaceRootResolution: () => resolution,
+      getWorkspaceRootOccupancy: () => ({}),
+    };
+    createRuntimeSourceHarness(globals).installCallArgument(
+      'rootResolver',
+      'main',
+      'setWorkspaceRootResolver',
+      0,
+    );
+    return globals.rootResolver;
+  }
+
+  test('is the effective root', () => {
+    expect(bound({ effective: '/r', fallbackWarning: null })()).toBe('/r');
+  });
+
+  test('is none when even the fallback has a problem: data/groups is kept', () => {
+    expect(
+      bound({ effective: '/fallback', fallbackWarning: 'not_empty' })(),
+    ).toBeNull();
+  });
+});

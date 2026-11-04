@@ -34,11 +34,12 @@ export interface RecordedWorkdir {
   root: string;
 }
 
-let rootResolver: (() => string) | null = null;
+let rootResolver: (() => string | null) | null = null;
 
 /** Bind how the effective workspace root is resolved (workspace-root.ts). */
+/** The resolver returns null when no usable root exists (stay in data/groups). */
 export function setWorkspaceRootResolver(
-  resolver: (() => string) | null,
+  resolver: (() => string | null) | null,
 ): void {
   rootResolver = resolver;
 }
@@ -217,13 +218,16 @@ export function assignWorkspaceRootDir(folder: string): string {
   const insert = statement(
     'INSERT INTO workspace_workdirs (folder, workdir, root, created_at) VALUES (?, ?, ?, ?)',
   );
-  if (!insert || !rootResolver) return legacy;
+  const effectiveRoot = rootResolver?.() ?? null;
+  // No usable root (unbound, or even the fallback has a problem): stay in
+  // data/groups rather than adopt a doubtful directory.
+  if (!insert || !effectiveRoot) return legacy;
   // Creating a workspace never fails over its directory: anything wrong
   // with the root leaves the workspace in data/groups/<folder>.
   let root = '';
   let workdir = '';
   try {
-    root = ensureMarkedWorkspaceRoot(rootResolver());
+    root = ensureMarkedWorkspaceRoot(effectiveRoot);
     workdir = path.join(root, folder);
     fs.mkdirSync(workdir);
   } catch (err) {
@@ -286,7 +290,8 @@ export function releaseUnusedWorkdir(folder: string): void {
  */
 export function workspaceRootDirs(): string[] {
   const roots = new Set(listRecordedRoots());
-  if (rootResolver) roots.add(rootResolver());
+  const effectiveRoot = rootResolver?.();
+  if (effectiveRoot) roots.add(effectiveRoot);
   return [...new Set([...roots].map(canonicalizePath))];
 }
 
@@ -378,7 +383,9 @@ export function checkRecordedWorkdirRemoval(
     "SELECT custom_cwd FROM registered_groups WHERE custom_cwd IS NOT NULL AND custom_cwd != ''",
   )?.all() ?? []) as Array<{ custom_cwd: string }>;
   for (const { custom_cwd } of customCwds) {
-    if (pathsOverlap(canonicalizePath(custom_cwd), realWorkdir)) {
+    // Removing the workdir would take a custom directory inside it; one
+    // around it (such as ~) loses nothing it owns.
+    if (isPathInside(canonicalizePath(custom_cwd), realWorkdir)) {
       return 'custom_cwd';
     }
   }
