@@ -48,11 +48,15 @@ describe('reproducible build contract', () => {
     expect(installTarget).toContain('web && $(PKG) ci');
     expect(installTarget).not.toMatch(/\$\(PKG\) install(?:\s|$)/);
 
-    const ci = read('.github/workflows/ci.yml');
-    expect(ci).toContain('npm ci');
-    expect(ci).toContain('npm --prefix web ci');
-    expect(ci).toContain('npm --prefix container/agent-runner ci');
-    expect(ci).toContain('npm run audit:prod');
+    // The merge gate is local (make check, scripts/check-all.sh): it audits
+    // production dependencies and checks shared copies before typecheck
+    // (which syncs them) could hide drift.
+    expect(makefile).toMatch(/^check:.*\n\t@\.\/scripts\/check-all\.sh$/m);
+    const gate = read('scripts/check-all.sh');
+    expect(gate).toContain('npm run -s audit:prod');
+    expect(gate.indexOf('check-stream-event-sync.sh')).toBeLessThan(
+      gate.indexOf('make --no-print-directory typecheck'),
+    );
     expect(read('package.json')).toContain(
       '"audit:prod": "node scripts/audit-prod.mjs"',
     );
@@ -62,9 +66,17 @@ describe('reproducible build contract', () => {
       "cwd: path.join(root, 'container/agent-runner')",
     );
     expect(auditProd).toContain("['audit', '--omit=dev', '--json']");
-    expect(ci).not.toMatch(/^\s+npm(?: --prefix \S+)? install\s*$/m);
-    expect(ci).toMatch(/uses: actions\/checkout@[a-f0-9]{40}/);
-    expect(ci).toMatch(/uses: actions\/setup-node@[a-f0-9]{40}/);
+
+    // The image workflow is the only GitHub Actions workflow left; its
+    // actions stay pinned to full commit SHAs.
+    const workflows = fs.readdirSync(path.join(root, '.github/workflows'));
+    expect(workflows).not.toContain('ci.yml');
+    for (const workflow of workflows) {
+      const text = read(`.github/workflows/${workflow}`);
+      for (const [, ref] of text.matchAll(/uses: [\w./-]+@(\S+)/g)) {
+        expect(ref).toMatch(/^[a-f0-9]{40}$/);
+      }
+    }
   });
 
   test('generated StreamEvent copies stay synchronized and formatted', async () => {

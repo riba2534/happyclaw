@@ -764,14 +764,15 @@ npm run self-test
 
 ### 提交前门槛
 
+仓库没有 GitHub Actions CI，合并门槛就是本地的完整检查（`scripts/check-all.sh`）：
+
 ```bash
-npm run format:changed
-npm run docs:check
-make typecheck
-make test
-make build
-git diff --check
+npm run format:changed   # 先格式化改动文件
+make check               # 格式、审计、共享副本、类型、测试、构建、冒烟、浏览器 e2e、Runner 自检
 ```
+
+PR 的「验证」一节写明 `make check` 在哪个提交上通过；没跑的步骤（如 `CHECK_SKIP_E2E=1`）写明原因。
+合并前必须在最终提交上跑过。
 
 改动 Runner Prompt、`systemPrompt`、工具或 MCP 的 PR 须附改动前后的
 `cache_read_input_tokens` 占比（真实或脚本化运行，见 PR 模板）。
