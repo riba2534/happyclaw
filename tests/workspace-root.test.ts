@@ -277,6 +277,23 @@ describe('saving and creating the root', () => {
     ).toBeNull();
   });
 
+  test('a known root with workspaces in it stays valid without the marker', () => {
+    const root = path.join(context.home, 'spaces');
+    fs.mkdirSync(path.join(root, 'main'), { recursive: true });
+    expect(checkWorkspaceRootCandidate(root, context)).toBe('not_empty');
+    expect(
+      checkWorkspaceRootCandidate(root, context, { knownRoots: [root] }),
+    ).toBeNull();
+    expect(
+      resolveWorkspaceRoot({
+        configured: root,
+        env: undefined,
+        context,
+        occupancy: { knownRoots: [root] },
+      }).effective,
+    ).toBe(root);
+  });
+
   test('the root is marked, so HappyClaw can tell it from a person’s folder', () => {
     const root = path.join(context.home, 'spaces');
     ensureWorkspaceRootDir(resolve(root));

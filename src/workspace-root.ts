@@ -128,7 +128,12 @@ export function checkWorkspaceRootCandidate(
   if (state === 'not_directory' || (state === 'missing' && exists(resolved))) {
     return 'not_directory';
   }
-  if (state === 'foreign') return 'not_empty';
+  // A root HappyClaw already recorded workspaces in is its own, even
+  // without the marker (created before it, or the marker was removed).
+  const isKnownRoot = (occupancy.knownRoots ?? []).some(
+    (root) => canonicalizePath(root) === resolved,
+  );
+  if (state === 'foreign' && !isKnownRoot) return 'not_empty';
   const homeUserMemory = path.join(home, '.claude', 'CLAUDE.md');
   for (const dir of selfAndAncestors(resolved)) {
     const memories = [
