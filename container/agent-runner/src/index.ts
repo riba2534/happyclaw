@@ -2990,6 +2990,7 @@ async function runQueryAttempt(
     externalClaudeDir: contextAuditBase.externalClaudeDir,
     homeDir: process.env.HOME,
     projectRoot: contextAuditBase.projectRoot,
+    cwd: WORKSPACE_GROUP,
   });
   if (claudeMdExcludes.length > 0) {
     flagSettings.claudeMdExcludes = claudeMdExcludes;

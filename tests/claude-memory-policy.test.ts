@@ -146,3 +146,75 @@ describe('host Claude memory policy', () => {
     ).toEqual(['C:/code/happyclaw/.claude/rules/agent.md']);
   });
 });
+
+describe('platform repository memory by working directory', () => {
+  const repo = '/Users/operator/airepo/happyclaw';
+  const platformClaudeMd = path.join(repo, 'CLAUDE.md');
+
+  function excludesFor(source: string, cwd: string | undefined): string[] {
+    return resolveHostClaudeMdExcludes({
+      executionMode: 'host',
+      runtimePolicy: { context: { source } },
+      homeDir: '/Users/operator',
+      projectRoot: repo,
+      cwd,
+    });
+  }
+
+  for (const source of ['managed', 'host_claude']) {
+    test(`${source}: excludes it for workspaces under the install's data directory`, () => {
+      expect(excludesFor(source, `${repo}/data/groups/x`)).toContain(
+        platformClaudeMd,
+      );
+      expect(excludesFor(source, `${repo}/data/worktrees/x/y`)).toContain(
+        platformClaudeMd,
+      );
+    });
+
+    test(`${source}: keeps it for a workspace developing HappyClaw itself`, () => {
+      expect(excludesFor(source, repo)).not.toContain(platformClaudeMd);
+      expect(excludesFor(source, `${repo}/`)).not.toContain(platformClaudeMd);
+      expect(excludesFor(source, `${repo}/src`)).not.toContain(
+        platformClaudeMd,
+      );
+      expect(excludesFor(source, `${repo}/data`)).not.toContain(
+        platformClaudeMd,
+      );
+      expect(excludesFor(source, `${repo}/database`)).not.toContain(
+        platformClaudeMd,
+      );
+    });
+
+    test(`${source}: has nothing to exclude outside the install`, () => {
+      expect(
+        excludesFor(source, '/Users/operator/happyclaw/main'),
+      ).not.toContain(platformClaudeMd);
+    });
+
+    test(`${source}: an unknown working directory keeps the exclusion`, () => {
+      expect(excludesFor(source, undefined)).toContain(platformClaudeMd);
+      expect(excludesFor(source, 'relative/dir')).toContain(platformClaudeMd);
+    });
+  }
+
+  test('managed still excludes host user memory when the platform memory is kept', () => {
+    expect(excludesFor('managed', repo)).toEqual([
+      path.join('/Users/operator/.claude', 'CLAUDE.md'),
+      path.join('/Users/operator/.claude', 'rules', '**'),
+    ]);
+  });
+
+  test('compares Windows paths after normalising', () => {
+    const exclusionFor = (cwd: string) =>
+      resolveHostClaudeMdExcludes({
+        executionMode: 'host',
+        runtimePolicy: { context: { source: 'host_claude' } },
+        projectRoot: 'C:\\code\\happyclaw',
+        cwd,
+      });
+    expect(exclusionFor('C:\\code\\happyclaw\\data\\groups\\x')).toContain(
+      'C:/code/happyclaw/CLAUDE.md',
+    );
+    expect(exclusionFor('C:\\code\\happyclaw\\src')).toEqual([]);
+  });
+});

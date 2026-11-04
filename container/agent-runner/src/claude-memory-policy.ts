@@ -59,19 +59,40 @@ function hostUserMemoryExcludes(
   ]);
 }
 
+function isInside(child: string, parent: string): boolean {
+  const api = pathApiFor(parent);
+  const relative = api.relative(parent, child);
+  return (
+    relative !== '' &&
+    relative !== '..' &&
+    !relative.startsWith(`..${api.sep}`) &&
+    !api.isAbsolute(relative)
+  );
+}
+
 /**
- * Host agents run inside data/groups/<folder>, nested beneath the HappyClaw
- * install. Claude Code walks every parent directory, so it discovers the
- * install's own CLAUDE.md as Project memory. That file describes developing
- * HappyClaw and must not turn a business Agent into a codebase assistant,
- * whatever its context source. Only the platform root is excluded;
- * workspace-local CLAUDE.md files inside the group remain available.
+ * HappyClaw-owned workspaces beneath the install live under <projectRoot>/data
+ * (data/groups/<folder>, data/worktrees/...). Claude Code walks every parent
+ * directory, so it discovers the install's own CLAUDE.md as Project memory.
+ * That file describes developing HappyClaw and must not turn a business Agent
+ * into a codebase assistant, whatever its context source. A workspace whose
+ * cwd is the repository itself or its source tree is someone developing
+ * HappyClaw and keeps it; one outside the install never sees it. An unknown
+ * cwd stays excluded. Workspace-local CLAUDE.md files remain available.
  */
 function platformProjectMemoryExcludes(
   projectRoot: string | undefined,
+  cwd: string | undefined,
 ): string[] {
   const root = normalizedRoot(projectRoot);
   if (!root) return [];
+  const workingDir = normalizedRoot(cwd);
+  if (
+    workingDir &&
+    !isInside(workingDir, pathApiFor(root).join(root, 'data'))
+  ) {
+    return [];
+  }
   return [
     joinClaudePattern(root, 'CLAUDE.md'),
     joinClaudePattern(root, '.claude', 'CLAUDE.md'),
@@ -81,10 +102,10 @@ function platformProjectMemoryExcludes(
 }
 
 /**
- * `claudeMdExcludes` for a run. Host runs always exclude the platform
- * repository's memory, and exclude the person's own host memory only in
- * managed mode: `host_claude` deliberately inherits it. Container runs never
- * see either, so they get no exclusions.
+ * `claudeMdExcludes` for a run. Host runs inside the install's data directory
+ * exclude the platform repository's memory, and every Host run excludes the
+ * person's own host memory only in managed mode: `host_claude` deliberately
+ * inherits it. Container runs never see either, so they get no exclusions.
  */
 export function resolveHostClaudeMdExcludes(options: {
   executionMode: 'host' | 'container';
@@ -92,6 +113,8 @@ export function resolveHostClaudeMdExcludes(options: {
   externalClaudeDir?: string;
   homeDir?: string;
   projectRoot?: string;
+  /** The run's working directory; unknown keeps the platform exclusion. */
+  cwd?: string;
 }): string[] {
   if (options.executionMode !== 'host') return [];
   const userMemory =
@@ -102,7 +125,7 @@ export function resolveHostClaudeMdExcludes(options: {
   return [
     ...new Set([
       ...userMemory,
-      ...platformProjectMemoryExcludes(options.projectRoot),
+      ...platformProjectMemoryExcludes(options.projectRoot, options.cwd),
     ]),
   ];
 }
