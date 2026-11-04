@@ -5,6 +5,7 @@ import path from 'node:path';
 import { afterAll, describe, expect, test, vi } from 'vitest';
 
 import { canExecuteOnHost } from '../src/host-execution-policy.js';
+import { makeExpandContext } from '../src/plugin-expander-context.js';
 import { isValidWorkspaceFolderName } from '../src/workspace-folder.js';
 import { createRuntimeSourceHarness } from './helpers/runtime-source.js';
 
@@ -146,5 +147,37 @@ describe('IM auto-registration', () => {
       'web:flow-new',
       expect.objectContaining({ folder: 'flow-new', executionMode: 'host' }),
     );
+  });
+});
+
+describe('plugin `!` commands', () => {
+  test('never target a container in single-user host mode', () => {
+    const getActiveContainerName = vi.fn(() => 'happyclaw-leftover');
+    const globals: Record<string, any> = {
+      canExecuteOnHost,
+      getUserById: () => ({ role: 'member', status: 'active' }),
+      makeExpandContext,
+      resolveWorkspaceProjectRoot: () => '/unused',
+      workspaceDirOf: (folder: string) => `/groups/${folder}`,
+      queue: { getActiveContainerName },
+      isSingleUserHost: () => true,
+    };
+    createRuntimeSourceHarness(globals).install('buildExpandContext');
+    const group = {
+      name: 'Leftover',
+      folder: 'leftover',
+      added_at: '2026-11-04T00:00:00.000Z',
+      executionMode: 'container',
+      created_by: 'member-1',
+    };
+    expect(
+      globals.buildExpandContext('web:leftover', group, null),
+    ).toMatchObject({ executionMode: 'container', containerName: null });
+    expect(getActiveContainerName).not.toHaveBeenCalled();
+
+    globals.isSingleUserHost = () => false;
+    expect(
+      globals.buildExpandContext('web:leftover', group, null)?.containerName,
+    ).toBe('happyclaw-leftover');
   });
 });

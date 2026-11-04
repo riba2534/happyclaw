@@ -289,6 +289,7 @@ import {
   WORKSPACE_ROOT_PROBLEM_MESSAGES,
 } from '../workspace-root.js';
 import { listOtherActiveUsers } from '../single-user-host-guard.js';
+import { getWorkspaceRootOccupancy } from '../workspace-dir.js';
 const configRoutes = new Hono<{ Variables: Variables }>();
 
 configRoutes.use('/user-im/*', async (c, next) => {
@@ -3795,7 +3796,10 @@ configRoutes.put(
     // The directory itself is created when the first workspace needs it.
     const rootProblem =
       validation.data.workspaceRoot !== undefined
-        ? validateWorkspaceRootSetting(validation.data.workspaceRoot)
+        ? validateWorkspaceRootSetting(
+            validation.data.workspaceRoot,
+            getWorkspaceRootOccupancy(),
+          )
         : null;
     if (rootProblem) {
       return c.json(

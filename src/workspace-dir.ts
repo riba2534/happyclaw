@@ -19,6 +19,13 @@ import path from 'node:path';
 import { DATA_DIR, GROUPS_DIR } from './config.js';
 import { logger } from './logger.js';
 import { isValidWorkspaceFolderName } from './workspace-folder.js';
+import type { WorkspaceRootOccupancy } from './workspace-root.js';
+import {
+  canonicalizePath,
+  ensureMarkedWorkspaceRoot,
+  isPathInside,
+  pathsOverlap,
+} from './workspace-root-fs.js';
 
 /** A workspace's recorded directory and the root it was created in. */
 export interface RecordedWorkdir {
@@ -130,6 +137,56 @@ function listRecordedRoots(): string[] {
   ).map((row) => row.root);
 }
 
+function listRecordedWorkdirs(): RecordedWorkdir[] {
+  return (statement(
+    'SELECT folder, workdir, root FROM workspace_workdirs ORDER BY folder',
+  )?.all() ?? []) as RecordedWorkdir[];
+}
+
+/** Host paths existing workspaces use as their custom directory or mounts. */
+function listOccupiedHostPaths(): string[] {
+  const rows = (statement(
+    `SELECT custom_cwd, container_config FROM registered_groups
+     WHERE (custom_cwd IS NOT NULL AND custom_cwd != '')
+        OR container_config IS NOT NULL`,
+  )?.all() ?? []) as Array<{
+    custom_cwd: string | null;
+    container_config: string | null;
+  }>;
+  const paths: string[] = [];
+  for (const row of rows) {
+    if (row.custom_cwd) paths.push(row.custom_cwd);
+    if (!row.container_config) continue;
+    try {
+      const config = JSON.parse(row.container_config) as {
+        additionalMounts?: Array<{ hostPath?: unknown }>;
+      };
+      for (const mount of config.additionalMounts ?? []) {
+        if (typeof mount?.hostPath === 'string') paths.push(mount.hostPath);
+      }
+    } catch {
+      /* unreadable config: it mounts nothing */
+    }
+  }
+  return paths;
+}
+
+/**
+ * What existing workspaces use, for choosing or validating a workspace root
+ * (workspace-root.ts): a root overlapping any of it would put one
+ * workspace's directory inside another's, deleted along with it.
+ */
+export function getWorkspaceRootOccupancy(): WorkspaceRootOccupancy {
+  return {
+    occupiedPaths: listOccupiedHostPaths(),
+    workdirs: listRecordedWorkdirs().map(({ workdir, root }) => ({
+      workdir,
+      root,
+    })),
+    knownRoots: listRecordedRoots(),
+  };
+}
+
 /** An existing, real (not linked) directory with nothing in it. */
 function isEmptyDirectory(target: string): boolean {
   try {
@@ -161,17 +218,22 @@ export function assignWorkspaceRootDir(folder: string): string {
     'INSERT INTO workspace_workdirs (folder, workdir, root, created_at) VALUES (?, ?, ?, ?)',
   );
   if (!insert || !rootResolver) return legacy;
-  const root = rootResolver();
-  fs.mkdirSync(root, { recursive: true, mode: 0o700 });
-  const workdir = path.join(root, folder);
+  // Creating a workspace never fails over its directory: anything wrong
+  // with the root leaves the workspace in data/groups/<folder>.
+  let root = '';
+  let workdir = '';
   try {
+    root = ensureMarkedWorkspaceRoot(rootResolver());
+    workdir = path.join(root, folder);
     fs.mkdirSync(workdir);
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
-    if (!isEmptyDirectory(workdir)) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code !== 'EEXIST' || !isEmptyDirectory(workdir)) {
       logger.warn(
-        { folder, workdir },
-        'The workspace root already has this path with content; the workspace stays in data/groups',
+        { folder, workdir, err },
+        code === 'EEXIST'
+          ? 'The workspace root already has this path with content; the workspace stays in data/groups'
+          : 'Could not create the workspace directory in the workspace root; the workspace stays in data/groups',
       );
       return legacy;
     }
@@ -218,35 +280,6 @@ export function releaseUnusedWorkdir(folder: string): void {
 }
 
 /**
- * Real path of the nearest existing ancestor plus the missing segments, so a
- * root that does not exist yet compares the same way workspace-root.ts
- * validated it (macOS /var -> /private/var included).
- */
-function realpathOrResolved(target: string): string {
-  const missing: string[] = [];
-  let current = path.resolve(target);
-  for (;;) {
-    try {
-      const real = fs.realpathSync.native(current);
-      return missing.length ? path.join(real, ...missing.reverse()) : real;
-    } catch {
-      const parent = path.dirname(current);
-      if (parent === current) return path.resolve(target);
-      missing.push(path.basename(current));
-      current = parent;
-    }
-  }
-}
-
-function isWithin(base: string, target: string): boolean {
-  const relative = path.relative(base, target);
-  return (
-    relative === '' ||
-    (relative.split(path.sep)[0] !== '..' && !path.isAbsolute(relative))
-  );
-}
-
-/**
  * The known workspace roots: the effective one and every root a recorded
  * directory was created in (roots used before a change). Real paths. One
  * workspace must never mount or browse into these.
@@ -254,7 +287,7 @@ function isWithin(base: string, target: string): boolean {
 export function workspaceRootDirs(): string[] {
   const roots = new Set(listRecordedRoots());
   if (rootResolver) roots.add(rootResolver());
-  return [...new Set([...roots].map(realpathOrResolved))];
+  return [...new Set([...roots].map(canonicalizePath))];
 }
 
 /** The workspace root (or one of them) `realPath` is in, or undefined. */
@@ -262,7 +295,20 @@ export function workspaceRootContaining(
   realPath: string,
   roots: string[] = workspaceRootDirs(),
 ): string | undefined {
-  return roots.find((root) => isWithin(root, realPath));
+  return roots.find((root) => isPathInside(realPath, root));
+}
+
+/**
+ * The workspace root or recorded workspace directory `realPath` overlaps
+ * either way (inside it, or containing it like `~`), or undefined. A custom
+ * directory or copy source overlapping one would expose other workspaces and
+ * make their directories undeletable.
+ */
+export function workspacePathConflict(realPath: string): string | undefined {
+  return [
+    ...workspaceRootDirs(),
+    ...listRecordedWorkdirs().map((row) => canonicalizePath(row.workdir)),
+  ].find((known) => pathsOverlap(known, realPath));
 }
 
 export class UnsafeWorkdirError extends Error {
@@ -305,25 +351,34 @@ export function checkRecordedWorkdirRemoval(
   if (stat?.isSymbolicLink()) return 'symlink';
   if (stat && !stat.isDirectory()) return 'not_directory';
 
-  const realParent = realpathOrResolved(path.dirname(workdir));
+  const realParent = canonicalizePath(path.dirname(workdir));
   const realWorkdir = path.join(realParent, folder);
 
   // Roots are recorded as real paths; one that resolves elsewhere now is a
   // link planted (or swapped in) since, and judged as foreign.
-  if (realpathOrResolved(root) !== root) return 'root_not_real';
+  if (canonicalizePath(root) !== root) return 'root_not_real';
   if (realParent !== root) return 'root_mismatch';
 
-  const installDir = realpathOrResolved(path.dirname(DATA_DIR));
-  if (isWithin(installDir, realWorkdir) || isWithin(realWorkdir, installDir)) {
-    return 'install_dir';
+  const installDir = canonicalizePath(path.dirname(DATA_DIR));
+  if (pathsOverlap(installDir, realWorkdir)) return 'install_dir';
+
+  // Another workspace's directory inside this one (or around it) would go
+  // with it.
+  if (
+    listRecordedWorkdirs().some(
+      (other) =>
+        other.folder !== folder &&
+        pathsOverlap(canonicalizePath(other.workdir), realWorkdir),
+    )
+  ) {
+    return 'overlaps_other_workspace';
   }
 
   const customCwds = (statement(
     "SELECT custom_cwd FROM registered_groups WHERE custom_cwd IS NOT NULL AND custom_cwd != ''",
   )?.all() ?? []) as Array<{ custom_cwd: string }>;
   for (const { custom_cwd } of customCwds) {
-    const real = realpathOrResolved(custom_cwd);
-    if (isWithin(real, realWorkdir) || isWithin(realWorkdir, real)) {
+    if (pathsOverlap(canonicalizePath(custom_cwd), realWorkdir)) {
       return 'custom_cwd';
     }
   }

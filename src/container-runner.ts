@@ -33,6 +33,10 @@ import {
 } from './config.js';
 import type { ContainerMemoryLimit } from './container-memory-limit.js';
 import { workspaceDirOf, workspaceLogsDirOf } from './workspace-dir.js';
+import { isSingleUserHost } from './deployment-mode.js';
+
+export const SINGLE_USER_HOST_CONTAINER_REFUSAL =
+  '单人宿主机模式不运行 Docker 工作区；请把工作区改为宿主机模式或切回多人模式。';
 import { logger } from './logger.js';
 import { isCodexGatewayBaseUrl } from './codex-gateway/resolve-gateway-url.js';
 import {
@@ -2991,6 +2995,15 @@ export async function runContainerAgent(
   onOutput?: (output: ContainerOutput) => Promise<void>,
   ownerHomeFolder?: string,
 ): Promise<ContainerOutput> {
+  // Single-user host mode never runs Docker, whatever a leftover Container
+  // row says (other users kept while the mode comes only from env).
+  if (isSingleUserHost()) {
+    return {
+      status: 'error',
+      result: SINGLE_USER_HOST_CONTAINER_REFUSAL,
+      error: SINGLE_USER_HOST_CONTAINER_REFUSAL,
+    };
+  }
   const startTime = Date.now();
   // Worktrees are host checkouts; a container would run this session in the
   // shared workspace directory instead, so refuse rather than substitute.

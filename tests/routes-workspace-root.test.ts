@@ -59,6 +59,8 @@ vi.mock('../src/web.js', () => ({
 const db = await import('../src/db.js');
 const dir = await import('../src/workspace-dir.js');
 const { getWorkspaceRootResolution } = await import('../src/workspace-root.js');
+const { ensureMarkedWorkspaceRoot } =
+  await import('../src/workspace-root-fs.js');
 const webContext = await import('../src/web-context.js');
 const groupRoutes = (await import('../src/routes/groups.js')).default;
 
@@ -87,8 +89,12 @@ beforeAll(() => {
   }
   createUser('admin-1', 'admin');
   createUser('member-1', 'member');
-  // What main() binds at startup.
-  dir.setWorkspaceRootResolver(() => getWorkspaceRootResolution().effective);
+  // A root HappyClaw marked, so creating folders in it never reads as
+  // someone else's directory; and the resolver main() binds at startup.
+  ensureMarkedWorkspaceRoot(workspaceRoot);
+  dir.setWorkspaceRootResolver(
+    () => getWorkspaceRootResolution(dir.getWorkspaceRootOccupancy()).effective,
+  );
 });
 
 beforeEach(() => {
@@ -187,6 +193,38 @@ describe('creating workspaces', () => {
     expect(json.error).toContain('工作区根目录');
   });
 
+  test('a custom directory containing the root or a workspace is refused', async () => {
+    // ~ and the like: around the root, so around every workspace in it.
+    const around = await create({
+      name: 'Around',
+      execution_mode: 'host',
+      custom_cwd: tmp,
+    });
+    expect(around.status).toBe(400);
+    expect(around.json.error).toContain('重叠');
+
+    const ws = await create({ name: 'Has dir', execution_mode: 'host' });
+    const workdir = dir.getRecordedWorkdir(ws.json.group.folder)!;
+    const sub = path.join(workdir, 'sub');
+    fs.mkdirSync(sub, { recursive: true });
+    const inside = await create({
+      name: 'Inside ws',
+      execution_mode: 'host',
+      custom_cwd: sub,
+    });
+    expect(inside.status).toBe(400);
+  });
+
+  test('copying from around or inside a workspace is refused', async () => {
+    const res = await create({
+      name: 'Copy',
+      execution_mode: 'container',
+      init_source_path: tmp,
+    });
+    expect(res.status).toBe(400);
+    expect(res.json.error).toContain('init_source_path');
+  });
+
   test('GET reports the root to admins only', async () => {
     const admin = await (await groupRoutes.request('/')).json();
     expect(admin.workspace_root).toBe(workspaceRoot);
@@ -245,6 +283,32 @@ describe('deleting and rebuilding a recorded directory', () => {
     expect(dir.getRecordedWorkdir(ws.folder)).toBe(ws.workdir);
     expect(fs.existsSync(ws.workdir)).toBe(true);
     expect(fs.existsSync(ws.file)).toBe(false);
+    expect(
+      fs
+        .readdirSync(workspaceRoot)
+        .filter((n) => n.includes('.rebuild-backup-')),
+    ).toEqual([]);
+  });
+
+  test('a rebuild whose move fails keeps every original in place', async () => {
+    const ws = await hostWorkspace('Rebuild blocked');
+    const sessions = path.join(dataDir, 'sessions');
+    const sessionFile = path.join(sessions, ws.folder, 'transcript.jsonl');
+    fs.mkdirSync(path.dirname(sessionFile), { recursive: true });
+    fs.writeFileSync(sessionFile, 'history');
+    // The workspace directory moves aside; the session directory cannot.
+    fs.chmodSync(sessions, 0o555);
+    try {
+      const res = await groupRoutes.request(
+        `/${encodeURIComponent(ws.jid)}/clear-history`,
+        { method: 'POST' },
+      );
+      expect(res.status).toBe(500);
+    } finally {
+      fs.chmodSync(sessions, 0o755);
+    }
+    expect(fs.readFileSync(sessionFile, 'utf8')).toBe('history');
+    expect(fs.readFileSync(ws.file, 'utf8')).toBe('user data');
     expect(
       fs
         .readdirSync(workspaceRoot)

@@ -38,6 +38,9 @@ vi.mock('../src/logger.js', () => ({
 
 const db = await import('../src/db.js');
 const dir = await import('../src/workspace-dir.js');
+const workspaceRoot = await import('../src/workspace-root.js');
+const { WORKSPACE_ROOT_MARKER } = await import('../src/workspace-root-fs.js');
+const { logger } = await import('../src/logger.js');
 const { removeFlowArtifacts } = await import('../src/file-manager.js');
 
 const NOW = '2026-11-04T00:00:00.000Z';
@@ -366,5 +369,142 @@ describe('an existing <root>/<folder>', () => {
     expect(fs.existsSync(missing)).toBe(false);
     expect(dir.assignWorkspaceRootDir('flow-missing')).toBe(missing);
     expect(fs.statSync(missing).isDirectory()).toBe(true);
+  });
+});
+
+describe('the root never lands inside an existing workspace', () => {
+  // The resolver main() binds, with a temp home for the fallback root.
+  const home = path.join(tmp, 'home');
+  const savedHome = process.env.HOME;
+  const savedRoot = process.env.HAPPYCLAW_WORKSPACE_ROOT;
+
+  beforeAll(() => fs.mkdirSync(home, { recursive: true }));
+  beforeEach(() => {
+    process.env.HOME = home;
+    dir.setWorkspaceRootResolver(
+      () =>
+        workspaceRoot.getWorkspaceRootResolution(
+          dir.getWorkspaceRootOccupancy(),
+        ).effective,
+    );
+  });
+  afterAll(() => {
+    process.env.HOME = savedHome;
+    if (savedRoot === undefined) delete process.env.HAPPYCLAW_WORKSPACE_ROOT;
+    else process.env.HAPPYCLAW_WORKSPACE_ROOT = savedRoot;
+  });
+
+  test('occupancy lists custom directories, mounts, workdirs and roots', () => {
+    db.setRegisteredGroup('web:occ', {
+      name: 'occ',
+      folder: 'occ',
+      added_at: NOW,
+      executionMode: 'container',
+      created_by: 'admin-1',
+      containerConfig: {
+        version: 1,
+        additionalMounts: [
+          { hostPath: '/srv/mounted', containerPath: 'm', readonly: true },
+        ],
+      },
+    } as Parameters<typeof db.setRegisteredGroup>[1]);
+    db.setRegisteredGroup('web:occ-cwd', {
+      name: 'occ cwd',
+      folder: 'occ-cwd',
+      added_at: NOW,
+      executionMode: 'host',
+      customCwd: '/srv/repo',
+      created_by: 'admin-1',
+    });
+    try {
+      const occupancy = dir.getWorkspaceRootOccupancy();
+      expect(occupancy.occupiedPaths).toEqual(
+        expect.arrayContaining(['/srv/mounted', '/srv/repo']),
+      );
+      const recorded = dir.getRecordedWorkdirRecord('flow-host')!;
+      expect(occupancy.workdirs).toContainEqual({
+        workdir: recorded.workdir,
+        root: recorded.root,
+      });
+      expect(occupancy.knownRoots).toEqual(
+        expect.arrayContaining([rootA, rootB]),
+      );
+    } finally {
+      db.deleteGroupData('web:occ', 'occ');
+      db.deleteGroupData('web:occ-cwd', 'occ-cwd');
+    }
+  });
+
+  test('a root set inside workspace X is refused, and deleting X keeps Y', () => {
+    const rootH = path.join(home, 'hc');
+    process.env.HAPPYCLAW_WORKSPACE_ROOT = rootH;
+    const x = dir.assignWorkspaceRootDir('flow-x');
+    expect(x).toBe(path.join(rootH, 'flow-x'));
+    expect(fs.existsSync(path.join(rootH, WORKSPACE_ROOT_MARKER))).toBe(true);
+
+    const inside = path.join(x, 'sub');
+    expect(
+      workspaceRoot.validateWorkspaceRootSetting(
+        inside,
+        dir.getWorkspaceRootOccupancy(),
+      ),
+    ).toBe('overlaps_workspace_paths');
+
+    // Even if it comes from the environment, the effective root avoids X.
+    process.env.HAPPYCLAW_WORKSPACE_ROOT = inside;
+    const y = dir.assignWorkspaceRootDir('flow-y');
+    expect(y.startsWith(x + path.sep)).toBe(false);
+    const yFile = path.join(y, 'y.txt');
+    fs.writeFileSync(yFile, 'y');
+
+    const record = dir.getRecordedWorkdirRecord('flow-x')!;
+    expect(dir.checkRecordedWorkdirRemoval(record)).toBeNull();
+    removeFlowArtifacts('flow-x', record);
+    expect(fs.existsSync(yFile)).toBe(true);
+  });
+
+  test("a workdir holding another folder's workdir is not removed", () => {
+    const rootH = path.join(home, 'hc');
+    process.env.HAPPYCLAW_WORKSPACE_ROOT = rootH;
+    const outer = dir.assignWorkspaceRootDir('flow-outer');
+    const nestedRoot = path.join(outer, 'nested');
+    fs.mkdirSync(nestedRoot, { recursive: true });
+    const conn = new Database(path.join(storeDir, 'messages.db'));
+    try {
+      conn
+        .prepare(
+          'INSERT INTO workspace_workdirs (folder, workdir, root, created_at) VALUES (?, ?, ?, ?)',
+        )
+        .run(
+          'flow-inner',
+          path.join(nestedRoot, 'flow-inner'),
+          nestedRoot,
+          NOW,
+        );
+    } finally {
+      conn.close();
+    }
+    const innerFile = path.join(nestedRoot, 'flow-inner', 'inner.txt');
+    fs.mkdirSync(path.dirname(innerFile), { recursive: true });
+    fs.writeFileSync(innerFile, 'inner');
+
+    const record = dir.getRecordedWorkdirRecord('flow-outer')!;
+    expect(dir.checkRecordedWorkdirRemoval(record)).toBe(
+      'overlaps_other_workspace',
+    );
+    removeFlowArtifacts('flow-outer', record);
+    expect(fs.existsSync(innerFile)).toBe(true);
+  });
+
+  test('a root that cannot be created leaves the workspace in data/groups', () => {
+    const blocker = path.join(tmp, 'blocker-file');
+    fs.writeFileSync(blocker, 'not a directory');
+    vi.mocked(logger.warn).mockClear();
+    dir.setWorkspaceRootResolver(() => path.join(blocker, 'root'));
+    expect(dir.assignWorkspaceRootDir('flow-no-root')).toBe(
+      path.join(groupsDir, 'flow-no-root'),
+    );
+    expect(dir.getRecordedWorkdir('flow-no-root')).toBeNull();
+    expect(logger.warn).toHaveBeenCalled();
   });
 });

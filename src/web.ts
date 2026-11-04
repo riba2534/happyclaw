@@ -244,7 +244,10 @@ function buildWebExpandContext(
   agentId?: string | null,
 ): ExpandContext | null {
   const deps = getWebDeps();
-  const containerName = deps?.queue.getActiveContainerName(groupJid) ?? null;
+  // Single-user host mode never runs `docker exec` (see index.ts).
+  const containerName = isSingleUserHost()
+    ? null
+    : (deps?.queue.getActiveContainerName(groupJid) ?? null);
   const rawMode = group.executionMode ?? group.execution_mode;
   const customCwd =
     rawMode === 'host'
