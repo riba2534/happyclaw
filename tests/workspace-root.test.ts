@@ -35,6 +35,7 @@ const resolve = (configured: string, env?: string) =>
 describe('resolving the workspace root', () => {
   test('defaults to ~/happyclaw', () => {
     // Installed elsewhere, ~/happyclaw is free.
+    fs.rmSync(context.installDir, { recursive: true });
     context = { ...context, installDir: path.join(tmp, 'opt', 'happyclaw') };
     fs.mkdirSync(context.installDir, { recursive: true });
     expect(resolve('')).toMatchObject({
@@ -152,6 +153,32 @@ describe('checking a candidate', () => {
     ).toBeNull();
   });
 
+  test('an ancestor of home or of the install is refused', () => {
+    expect(
+      checkWorkspaceRootCandidate(path.dirname(context.home), context),
+    ).toBe('contains_home');
+    context = { home: path.join(tmp, 'h2'), installDir: context.installDir };
+    fs.mkdirSync(context.home);
+    expect(checkWorkspaceRootCandidate(path.join(tmp, 'home'), context)).toBe(
+      'contains_install_dir',
+    );
+  });
+
+  test('a directory with someone’s own files is refused; an empty one is fine', () => {
+    const notes = path.join(context.home, 'notes');
+    fs.mkdirSync(notes);
+    expect(checkWorkspaceRootCandidate(notes, context)).toBeNull();
+    fs.writeFileSync(path.join(notes, 'todo.md'), '- buy milk\n');
+    expect(checkWorkspaceRootCandidate(notes, context)).toBe('not_empty');
+  });
+
+  test('a dangling symlink is a problem, not a crash', () => {
+    const link = path.join(context.home, 'gone');
+    fs.symlinkSync(path.join(tmp, 'unmounted-drive'), link);
+    expect(checkWorkspaceRootCandidate(link, context)).toBe('not_directory');
+    expect(resolve(link).fallbackReason).toBe('not_directory');
+  });
+
   test('a directory inside another git repository is refused', () => {
     const repo = path.join(context.home, 'repo');
     fs.mkdirSync(path.join(repo, '.git'), { recursive: true });
@@ -185,13 +212,51 @@ describe('checking a candidate', () => {
 
 describe('saving and creating the root', () => {
   test("'' clears the setting; a bad value is refused", () => {
-    expect(validateWorkspaceRootSetting('', context)).toBeNull();
-    expect(validateWorkspaceRootSetting('relative', context)).toBe(
+    expect(validateWorkspaceRootSetting('', [], context)).toBeNull();
+    expect(validateWorkspaceRootSetting('relative', [], context)).toBe(
       'not_absolute',
     );
     expect(
-      validateWorkspaceRootSetting(path.join(context.home, 'ok'), context),
+      validateWorkspaceRootSetting(path.join(context.home, 'ok'), [], context),
     ).toBeNull();
+  });
+
+  test('a root overlapping an existing custom directory or mount is refused', () => {
+    const project = path.join(context.home, 'work', 'proj');
+    fs.mkdirSync(project, { recursive: true });
+    // Containing it means the root is not empty; inside it is an overlap.
+    expect(
+      validateWorkspaceRootSetting(
+        path.join(context.home, 'work'),
+        [project],
+        context,
+      ),
+    ).toBe('not_empty');
+    expect(
+      validateWorkspaceRootSetting(
+        path.join(project, 'spaces'),
+        [project],
+        context,
+      ),
+    ).toBe('overlaps_workspace_paths');
+    expect(
+      validateWorkspaceRootSetting(
+        path.join(context.home, 'other'),
+        [project],
+        context,
+      ),
+    ).toBeNull();
+  });
+
+  test('the root is marked, so HappyClaw can tell it from a person’s folder', () => {
+    const root = path.join(context.home, 'spaces');
+    ensureWorkspaceRootDir(resolve(root));
+    fs.mkdirSync(path.join(root, 'flow-a'));
+    // Marked and in use: still a valid root.
+    expect(checkWorkspaceRootCandidate(root, context)).toBeNull();
+    expect(fs.existsSync(path.join(root, '.happyclaw-workspace-root'))).toBe(
+      true,
+    );
   });
 
   test('the effective root is created owner-only', () => {

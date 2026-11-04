@@ -6,8 +6,9 @@
  * Resolution, per key: the `workspaceRoot` system setting, then
  * `HAPPYCLAW_WORKSPACE_ROOT`, then `~/happyclaw`. A candidate that would let
  * Claude Code find a foreign CLAUDE.md (it walks every parent directory up to
- * `/`) or that sits inside the HappyClaw install falls back to
- * `~/happyclaw-workspaces`. An explicit setting is validated on save instead.
+ * `/`), that overlaps the home or install directory, or that already holds
+ * someone's own files falls back to `~/happyclaw-workspaces`. An explicit
+ * setting is validated on save instead.
  */
 import fs from 'node:fs';
 import os from 'node:os';
@@ -15,6 +16,13 @@ import path from 'node:path';
 
 import { DATA_DIR } from './config.js';
 import { getSystemSettings } from './runtime-config.js';
+import {
+  canonicalizePath,
+  ensureMarkedWorkspaceRoot,
+  isPathInside,
+  pathsOverlap,
+  workspaceRootDirState,
+} from './workspace-root-fs.js';
 import type { WorkspaceRootProblem } from './workspace-root-problems.js';
 
 export {
@@ -53,31 +61,6 @@ function expandHome(value: string, home: string): string {
   return value;
 }
 
-/** Real path of the nearest existing ancestor, plus the missing segments. */
-function canonicalize(target: string): string {
-  const missing: string[] = [];
-  let current = path.resolve(target);
-  for (;;) {
-    try {
-      const real = fs.realpathSync.native(current);
-      return missing.length ? path.join(real, ...missing.reverse()) : real;
-    } catch {
-      const parent = path.dirname(current);
-      if (parent === current) return path.resolve(target);
-      missing.push(path.basename(current));
-      current = parent;
-    }
-  }
-}
-
-function isInside(target: string, base: string): boolean {
-  const relative = path.relative(base, target);
-  return (
-    relative === '' ||
-    (!relative.startsWith('..') && !path.isAbsolute(relative))
-  );
-}
-
 function exists(target: string): boolean {
   try {
     fs.lstatSync(target);
@@ -109,23 +92,32 @@ function selfAndAncestors(dir: string): string[] {
   }
 }
 
-/** The first reason `candidate` cannot be a workspace root, or null. */
+/**
+ * The first reason `candidate` cannot be a workspace root, or null.
+ * `occupiedPaths` (custom directories and mount sources of existing
+ * workspaces) must not overlap the root: it would become protected.
+ */
 export function checkWorkspaceRootCandidate(
   candidate: string,
   context: WorkspaceRootContext,
+  occupiedPaths: readonly string[] = [],
 ): WorkspaceRootProblem | null {
   const expanded = expandHome(candidate.trim(), context.home);
   if (!expanded || !path.isAbsolute(expanded)) return 'not_absolute';
-  const resolved = canonicalize(expanded);
+  const resolved = canonicalizePath(expanded);
   if (resolved === path.parse(resolved).root) return 'filesystem_root';
-  const home = canonicalize(context.home);
+  const home = canonicalizePath(context.home);
   if (resolved === home) return 'home_dir';
-  if (isInside(resolved, canonicalize(context.installDir))) {
-    return 'inside_install_dir';
-  }
-  if (exists(resolved) && !fs.statSync(resolved).isDirectory()) {
+  if (isPathInside(home, resolved)) return 'contains_home';
+  const installDir = canonicalizePath(context.installDir);
+  if (isPathInside(resolved, installDir)) return 'inside_install_dir';
+  if (isPathInside(installDir, resolved)) return 'contains_install_dir';
+  const state = workspaceRootDirState(resolved);
+  // A link to nowhere is "present" for lstat but no directory to use.
+  if (state === 'not_directory' || (state === 'missing' && exists(resolved))) {
     return 'not_directory';
   }
+  if (state === 'foreign') return 'not_empty';
   const homeUserMemory = path.join(home, '.claude', 'CLAUDE.md');
   for (const dir of selfAndAncestors(resolved)) {
     const memories = [
@@ -143,6 +135,13 @@ export function checkWorkspaceRootCandidate(
     selfAndAncestors(resolved).some((dir) => exists(path.join(dir, '.git')))
   ) {
     return 'inside_git_repo';
+  }
+  if (
+    occupiedPaths.some((occupied) =>
+      pathsOverlap(canonicalizePath(occupied), resolved),
+    )
+  ) {
+    return 'overlaps_workspace_paths';
   }
   try {
     fs.accessSync(nearestExisting(resolved), fs.constants.W_OK);
@@ -175,7 +174,7 @@ export function resolveWorkspaceRoot(input: {
   const fallbackReason = checkWorkspaceRootCandidate(requested, context);
   if (!fallbackReason) {
     return {
-      effective: canonicalize(requested),
+      effective: canonicalizePath(requested),
       source,
       configured,
       requested,
@@ -185,7 +184,7 @@ export function resolveWorkspaceRoot(input: {
   }
   const fallback = path.join(context.home, FALLBACK_WORKSPACE_ROOT_NAME);
   return {
-    effective: canonicalize(fallback),
+    effective: canonicalizePath(fallback),
     source,
     configured,
     requested,
@@ -208,20 +207,21 @@ export function getWorkspaceRootResolution(): WorkspaceRootResolution {
 
 /**
  * Validate a value an admin wants to store. '' clears the setting. Returns
- * the problem, or null when the value can be saved.
+ * the problem, or null when the value can be saved. `occupiedPaths`: custom
+ * directories and mount sources of existing workspaces.
  */
 export function validateWorkspaceRootSetting(
   value: string,
+  occupiedPaths: readonly string[] = [],
   context: WorkspaceRootContext = workspaceRootContext(),
 ): WorkspaceRootProblem | null {
   if (!value.trim()) return null;
-  return checkWorkspaceRootCandidate(value, context);
+  return checkWorkspaceRootCandidate(value, context, occupiedPaths);
 }
 
-/** Create the effective root (0700) and return it. */
+/** Create the effective root (0700, marked as HappyClaw's) and return it. */
 export function ensureWorkspaceRootDir(
   resolution: WorkspaceRootResolution = getWorkspaceRootResolution(),
 ): string {
-  fs.mkdirSync(resolution.effective, { recursive: true, mode: 0o700 });
-  return resolution.effective;
+  return ensureMarkedWorkspaceRoot(resolution.effective);
 }
