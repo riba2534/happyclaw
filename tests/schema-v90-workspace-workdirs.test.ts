@@ -114,11 +114,19 @@ describe('schema v90 workspace directories', () => {
     const conn = new Database(databasePath);
     try {
       const insert = conn.prepare(
-        'INSERT INTO workspace_workdirs (folder, workdir, created_at) VALUES (?, ?, ?)',
+        'INSERT INTO workspace_workdirs (folder, workdir, root, created_at) VALUES (?, ?, ?, ?)',
       );
-      insert.run('a', '/r/a', NOW);
-      expect(() => insert.run('a', '/r/a2', NOW)).toThrow(/UNIQUE/);
-      expect(() => insert.run('b', '/r/a', NOW)).toThrow(/UNIQUE/);
+      insert.run('a', '/r/a', '/r', NOW);
+      expect(() => insert.run('a', '/r/a2', '/r', NOW)).toThrow(/UNIQUE/);
+      expect(() => insert.run('b', '/r/a', '/r', NOW)).toThrow(/UNIQUE/);
+      // The root it was created in is part of every record.
+      expect(() =>
+        conn
+          .prepare(
+            'INSERT INTO workspace_workdirs (folder, workdir, created_at) VALUES (?, ?, ?)',
+          )
+          .run('c', '/r/c', NOW),
+      ).toThrow(/NOT NULL/);
       conn.prepare("DELETE FROM workspace_workdirs WHERE folder = 'a'").run();
     } finally {
       conn.close();

@@ -6,6 +6,7 @@ import { DATA_DIR, GROUPS_DIR, MAX_FILE_SIZE } from './config.js';
 import {
   checkRecordedWorkdirRemoval,
   recordedWorkdirLogsDir,
+  type RecordedWorkdir,
   workspaceDirOf,
 } from './workspace-dir.js';
 import { deleteContainerEnvConfig } from './runtime-config.js';
@@ -540,23 +541,23 @@ function calculateDirSize(dirPath: string, depth = 0): number {
 
 /**
  * Remove all runtime artifacts for a group folder (workspace, sessions, ipc,
- * env, memory). `recordedWorkdir` is the directory recorded for the folder,
- * read before the database row went away; it is checked again here and left
- * in place (logged) when the check fails, never removed on doubt.
+ * env, memory). `recorded` is the folder's directory record, read before the
+ * database row went away; it is checked again here and its directory left in
+ * place (logged) when the check fails, never removed on doubt.
  */
 export function removeFlowArtifacts(
   folder: string,
-  recordedWorkdir: string | null = null,
+  recorded: RecordedWorkdir | null = null,
 ): void {
-  if (recordedWorkdir) {
-    const unsafe = checkRecordedWorkdirRemoval(folder, recordedWorkdir);
+  if (recorded) {
+    const unsafe = checkRecordedWorkdirRemoval(recorded);
     if (unsafe) {
       logger.error(
-        { folder, workdir: recordedWorkdir, reason: unsafe },
+        { folder, workdir: recorded.workdir, reason: unsafe },
         'Kept a deleted workspace directory that failed the safety check',
       );
     } else {
-      fs.rmSync(recordedWorkdir, { recursive: true, force: true });
+      fs.rmSync(recorded.workdir, { recursive: true, force: true });
     }
     fs.rmSync(recordedWorkdirLogsDir(folder), {
       recursive: true,

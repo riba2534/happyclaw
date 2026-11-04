@@ -191,19 +191,20 @@ describe('home workspaces', () => {
 });
 
 describe('removing a recorded directory', () => {
-  /** Record `workdir` for `folder` as a forged or damaged row would. */
-  function forge(folder: string, workdir: string): void {
+  /** Record `workdir` in `root` for `folder`, as a forged or damaged row would. */
+  function forge(folder: string, workdir: string, root = rootA) {
     dir.deleteRecordedWorkdir(folder);
     const conn = new Database(path.join(storeDir, 'messages.db'));
     try {
       conn
         .prepare(
-          'INSERT INTO workspace_workdirs (folder, workdir, created_at) VALUES (?, ?, ?)',
+          'INSERT INTO workspace_workdirs (folder, workdir, root, created_at) VALUES (?, ?, ?, ?)',
         )
-        .run(folder, workdir, NOW);
+        .run(folder, workdir, root, NOW);
     } finally {
       conn.close();
     }
+    return dir.getRecordedWorkdirRecord(folder)!;
   }
 
   function withFile(target: string): string {
@@ -213,40 +214,56 @@ describe('removing a recorded directory', () => {
     return file;
   }
 
+  /** The record is refused for `reason` and removing it keeps the file. */
+  function expectKept(
+    record: ReturnType<typeof forge>,
+    reason: string,
+    file: string,
+  ): void {
+    expect(dir.checkRecordedWorkdirRemoval(record)).toBe(reason);
+    removeFlowArtifacts(record.folder, record);
+    expect(fs.existsSync(file)).toBe(true);
+  }
+
   test('the directory HappyClaw made is removed with its logs', () => {
     const workdir = dir.assignWorkspaceRootDir('flow-remove-ok');
     withFile(workdir);
     withFile(path.join(dataDir, 'logs', 'flow-remove-ok'));
-    expect(
-      dir.checkRecordedWorkdirRemoval('flow-remove-ok', workdir),
-    ).toBeNull();
-    removeFlowArtifacts('flow-remove-ok', workdir);
+    const record = dir.getRecordedWorkdirRecord('flow-remove-ok')!;
+    expect(record.root).toBe(rootA);
+    expect(dir.checkRecordedWorkdirRemoval(record)).toBeNull();
+    removeFlowArtifacts('flow-remove-ok', record);
     expect(fs.existsSync(workdir)).toBe(false);
     expect(fs.existsSync(path.join(dataDir, 'logs', 'flow-remove-ok'))).toBe(
       false,
     );
   });
 
+  test('the only workspace left in an old root can still be removed', () => {
+    const workdir = dir.assignWorkspaceRootDir('flow-lone');
+    withFile(workdir);
+    currentRoot = rootB;
+    const record = dir.getRecordedWorkdirRecord('flow-lone')!;
+    expect(dir.checkRecordedWorkdirRemoval(record)).toBeNull();
+    removeFlowArtifacts('flow-lone', record);
+    expect(fs.existsSync(workdir)).toBe(false);
+  });
+
   test('a wrong basename is refused and nothing is removed', () => {
     const elsewhere = path.join(rootA, 'someone-else');
     const file = withFile(elsewhere);
-    forge('flow-basename', elsewhere);
-    expect(dir.checkRecordedWorkdirRemoval('flow-basename', elsewhere)).toBe(
-      'basename_mismatch',
-    );
-    removeFlowArtifacts('flow-basename', elsewhere);
-    expect(fs.existsSync(file)).toBe(true);
+    expectKept(forge('flow-basename', elsewhere), 'basename_mismatch', file);
   });
 
-  test('a directory outside every known root is refused', () => {
+  test("a record whose root is not its directory's parent is refused", () => {
     const outside = path.join(tmp, 'projects', 'flow-outside');
     const file = withFile(outside);
-    forge('flow-outside', outside);
-    expect(dir.checkRecordedWorkdirRemoval('flow-outside', outside)).toBe(
-      'outside_known_root',
-    );
-    removeFlowArtifacts('flow-outside', outside);
-    expect(fs.existsSync(file)).toBe(true);
+    expectKept(forge('flow-outside', outside), 'root_mismatch', file);
+
+    // In a real root, but not the one recorded.
+    const inB = path.join(rootB, 'flow-other-root');
+    const fileB = withFile(inB);
+    expectKept(forge('flow-other-root', inB, rootA), 'root_mismatch', fileB);
   });
 
   test('a symlink, or a parent link that leaves the root, is refused', () => {
@@ -255,23 +272,21 @@ describe('removing a recorded directory', () => {
     const link = path.join(rootA, 'flow-link');
     fs.mkdirSync(rootA, { recursive: true });
     fs.symlinkSync(target, link);
-    forge('flow-link', link);
-    expect(dir.checkRecordedWorkdirRemoval('flow-link', link)).toBe('symlink');
-    removeFlowArtifacts('flow-link', link);
-    expect(fs.existsSync(file)).toBe(true);
+    expectKept(forge('flow-link', link), 'symlink', file);
 
-    // rootA/escape -> tmp/precious: rootA/escape/flow-parent really lives
-    // in tmp/precious, which is no root.
+    // rootA/escape -> tmp/precious. Under rootA it is not the recorded
+    // root's child; recorded as its own root, the root is a link.
     const parentTarget = path.join(tmp, 'precious', 'flow-parent');
     const parentFile = withFile(parentTarget);
-    fs.symlinkSync(path.join(tmp, 'precious'), path.join(rootA, 'escape'));
-    const viaLink = path.join(rootA, 'escape', 'flow-parent');
-    forge('flow-parent', viaLink);
-    expect(dir.checkRecordedWorkdirRemoval('flow-parent', viaLink)).toBe(
-      'outside_known_root',
+    const escape = path.join(rootA, 'escape');
+    fs.symlinkSync(path.join(tmp, 'precious'), escape);
+    const viaLink = path.join(escape, 'flow-parent');
+    expectKept(forge('flow-parent', viaLink), 'root_mismatch', parentFile);
+    expectKept(
+      forge('flow-parent', viaLink, escape),
+      'root_not_real',
+      parentFile,
     );
-    removeFlowArtifacts('flow-parent', viaLink);
-    expect(fs.existsSync(parentFile)).toBe(true);
   });
 
   test("a directory that is some workspace's custom directory is refused", () => {
@@ -286,11 +301,7 @@ describe('removing a recorded directory', () => {
       created_by: 'admin-1',
     });
     try {
-      expect(dir.checkRecordedWorkdirRemoval('flow-cwd', workdir)).toBe(
-        'custom_cwd',
-      );
-      removeFlowArtifacts('flow-cwd', workdir);
-      expect(fs.existsSync(file)).toBe(true);
+      expectKept(dir.getRecordedWorkdirRecord('flow-cwd')!, 'custom_cwd', file);
     } finally {
       db.deleteGroupData('web:uses-it', 'uses-it');
     }
@@ -300,16 +311,60 @@ describe('removing a recorded directory', () => {
     currentRoot = path.join(dataDir, 'roots');
     const workdir = dir.assignWorkspaceRootDir('flow-install');
     const file = withFile(workdir);
-    expect(dir.checkRecordedWorkdirRemoval('flow-install', workdir)).toBe(
+    expectKept(
+      dir.getRecordedWorkdirRecord('flow-install')!,
       'install_dir',
+      file,
     );
-    removeFlowArtifacts('flow-install', workdir);
-    expect(fs.existsSync(file)).toBe(true);
   });
 
   test('assertRecordedWorkdirRemovable throws UnsafeWorkdirError', () => {
     expect(() =>
-      dir.assertRecordedWorkdirRemovable('flow-x', path.join(rootA, 'other')),
+      dir.assertRecordedWorkdirRemovable({
+        folder: 'flow-x',
+        workdir: path.join(rootA, 'other'),
+        root: rootA,
+      }),
     ).toThrow(dir.UnsafeWorkdirError);
+  });
+});
+
+describe('an existing <root>/<folder>', () => {
+  test('with content is never adopted and stays untouched', () => {
+    const existing = path.join(rootA, 'flow-taken');
+    fs.mkdirSync(existing, { recursive: true });
+    fs.writeFileSync(path.join(existing, 'mine.txt'), 'personal');
+    expect(dir.assignWorkspaceRootDir('flow-taken')).toBe(
+      path.join(groupsDir, 'flow-taken'),
+    );
+    expect(dir.getRecordedWorkdir('flow-taken')).toBeNull();
+    expect(fs.readdirSync(existing)).toEqual(['mine.txt']);
+  });
+
+  test('that is a file or a link is not adopted either', () => {
+    fs.mkdirSync(rootA, { recursive: true });
+    fs.writeFileSync(path.join(rootA, 'flow-file'), 'x');
+    expect(dir.assignWorkspaceRootDir('flow-file')).toBe(
+      path.join(groupsDir, 'flow-file'),
+    );
+    const emptyTarget = path.join(tmp, 'empty-target');
+    fs.mkdirSync(emptyTarget, { recursive: true });
+    fs.symlinkSync(emptyTarget, path.join(rootA, 'flow-linked'));
+    expect(dir.assignWorkspaceRootDir('flow-linked')).toBe(
+      path.join(groupsDir, 'flow-linked'),
+    );
+    expect(dir.getRecordedWorkdir('flow-linked')).toBeNull();
+  });
+
+  test('that is empty is adopted; a missing one is created', () => {
+    const empty = path.join(rootA, 'flow-empty');
+    fs.mkdirSync(empty, { recursive: true });
+    expect(dir.assignWorkspaceRootDir('flow-empty')).toBe(empty);
+    expect(dir.getRecordedWorkdir('flow-empty')).toBe(empty);
+
+    const missing = path.join(rootA, 'flow-missing');
+    expect(fs.existsSync(missing)).toBe(false);
+    expect(dir.assignWorkspaceRootDir('flow-missing')).toBe(missing);
+    expect(fs.statSync(missing).isDirectory()).toBe(true);
   });
 });

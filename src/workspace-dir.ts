@@ -11,13 +11,21 @@
  * The workspace root comes from a resolver the server binds at startup
  * (setWorkspaceRootResolver): db.ts, which creates home workspaces, must not
  * import runtime-config.ts. While unbound no new directory is recorded and
- * only the parents of recorded directories count as roots.
+ * only the roots of recorded directories count as roots.
  */
 import fs from 'node:fs';
 import path from 'node:path';
 
 import { DATA_DIR, GROUPS_DIR } from './config.js';
+import { logger } from './logger.js';
 import { isValidWorkspaceFolderName } from './workspace-folder.js';
+
+/** A workspace's recorded directory and the root it was created in. */
+export interface RecordedWorkdir {
+  folder: string;
+  workdir: string;
+  root: string;
+}
 
 let rootResolver: (() => string) | null = null;
 
@@ -52,12 +60,18 @@ function statement(sql: string): SqliteStatement | null {
   return prepared;
 }
 
-/** v89 -> v90: one row per workspace folder that has a recorded directory. */
+/**
+ * v89 -> v90: one row per workspace folder that has a recorded directory,
+ * with the workspace root it was created in (`workdir` = `root`/`folder`).
+ * The root is what a delete is checked against, and what keeps an old root
+ * protected after the setting changes.
+ */
 export function initWorkspaceDirStore(db: SqliteDatabase | null): void {
   db?.exec(`
     CREATE TABLE IF NOT EXISTS workspace_workdirs (
       folder TEXT PRIMARY KEY,
       workdir TEXT NOT NULL UNIQUE,
+      root TEXT NOT NULL,
       created_at TEXT NOT NULL
     );
   `);
@@ -65,11 +79,17 @@ export function initWorkspaceDirStore(db: SqliteDatabase | null): void {
   statements.clear();
 }
 
-export function getRecordedWorkdir(folder: string): string | null {
+export function getRecordedWorkdirRecord(
+  folder: string,
+): RecordedWorkdir | null {
   const row = statement(
-    'SELECT workdir FROM workspace_workdirs WHERE folder = ?',
-  )?.get(folder) as { workdir: string } | undefined;
-  return row?.workdir ?? null;
+    'SELECT folder, workdir, root FROM workspace_workdirs WHERE folder = ?',
+  )?.get(folder) as RecordedWorkdir | undefined;
+  return row ?? null;
+}
+
+export function getRecordedWorkdir(folder: string): string | null {
+  return getRecordedWorkdirRecord(folder)?.workdir ?? null;
 }
 
 /** The workspace's directory: the recorded one, else data/groups/<folder>. */
@@ -103,20 +123,31 @@ export function ensureWorkspaceDirs(folder: string): void {
   }
 }
 
-function listRecordedWorkdirs(): Array<{
-  folder: string;
-  workdir: string;
-}> {
-  return (statement(
-    'SELECT folder, workdir FROM workspace_workdirs ORDER BY folder',
-  )?.all() ?? []) as Array<{ folder: string; workdir: string }>;
+function listRecordedRoots(): string[] {
+  return (
+    (statement('SELECT DISTINCT root FROM workspace_workdirs')?.all() ??
+      []) as Array<{ root: string }>
+  ).map((row) => row.root);
+}
+
+/** An existing, real (not linked) directory with nothing in it. */
+function isEmptyDirectory(target: string): boolean {
+  try {
+    const stat = fs.lstatSync(target);
+    return stat.isDirectory() && fs.readdirSync(target).length === 0;
+  } catch {
+    return false;
+  }
 }
 
 /**
  * Give a new Host workspace without a custom directory its directory in the
  * workspace root and create it. A folder that already has a directory keeps
  * it: a recorded one, or files already in data/groups/<folder> (a folder
- * re-registered from before). Returns the workspace's directory.
+ * re-registered from before). `<root>/<folder>` is created exclusively; one
+ * that already exists is adopted only while it is an empty directory, since
+ * deleting the workspace later deletes it. Otherwise nothing is recorded and
+ * the workspace uses data/groups/<folder>. Returns the workspace's directory.
  */
 export function assignWorkspaceRootDir(folder: string): string {
   if (!isValidWorkspaceFolderName(folder)) {
@@ -127,14 +158,25 @@ export function assignWorkspaceRootDir(folder: string): string {
   const legacy = path.join(GROUPS_DIR, folder);
   if (fs.existsSync(legacy)) return legacy;
   const insert = statement(
-    'INSERT INTO workspace_workdirs (folder, workdir, created_at) VALUES (?, ?, ?)',
+    'INSERT INTO workspace_workdirs (folder, workdir, root, created_at) VALUES (?, ?, ?, ?)',
   );
   if (!insert || !rootResolver) return legacy;
   const root = rootResolver();
   fs.mkdirSync(root, { recursive: true, mode: 0o700 });
   const workdir = path.join(root, folder);
-  fs.mkdirSync(workdir, { recursive: true });
-  insert.run(folder, workdir, new Date().toISOString());
+  try {
+    fs.mkdirSync(workdir);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
+    if (!isEmptyDirectory(workdir)) {
+      logger.warn(
+        { folder, workdir },
+        'The workspace root already has this path with content; the workspace stays in data/groups',
+      );
+      return legacy;
+    }
+  }
+  insert.run(folder, workdir, root, new Date().toISOString());
   return workdir;
 }
 
@@ -205,21 +247,14 @@ function isWithin(base: string, target: string): boolean {
 }
 
 /**
- * Directories that hold recorded workspace directories: the effective root
- * and the parent of every recorded directory (roots used before a change),
- * optionally leaving out one folder's own row. Real paths. One workspace
- * must never mount or browse into these.
+ * The known workspace roots: the effective one and every root a recorded
+ * directory was created in (roots used before a change). Real paths. One
+ * workspace must never mount or browse into these.
  */
-export function workspaceRootDirs(
-  options: { excludeFolder?: string } = {},
-): string[] {
-  const parents = new Set(
-    listRecordedWorkdirs()
-      .filter((row) => row.folder !== options.excludeFolder)
-      .map((row) => path.dirname(row.workdir)),
-  );
-  if (rootResolver) parents.add(rootResolver());
-  return [...new Set([...parents].map(realpathOrResolved))];
+export function workspaceRootDirs(): string[] {
+  const roots = new Set(listRecordedRoots());
+  if (rootResolver) roots.add(rootResolver());
+  return [...new Set([...roots].map(realpathOrResolved))];
 }
 
 /** The workspace root (or one of them) `realPath` is in, or undefined. */
@@ -244,19 +279,20 @@ export class UnsafeWorkdirError extends Error {
 
 /**
  * Why a recorded directory must not be deleted or moved, or null when it
- * may be. Fails closed: anything that does not look exactly like a directory
- * HappyClaw made for this folder in a known root is refused. A missing
- * directory is fine (nothing to remove).
+ * may be. Fails closed: anything that does not look exactly like the
+ * directory HappyClaw made for this folder in the root it recorded is
+ * refused. A missing directory is fine (nothing to remove).
  */
 export function checkRecordedWorkdirRemoval(
-  folder: string,
-  workdir: string,
+  record: RecordedWorkdir,
 ): string | null {
+  const { folder, workdir, root } = record;
   if (!isValidWorkspaceFolderName(folder)) return 'invalid_folder';
   if (!path.isAbsolute(workdir) || path.normalize(workdir) !== workdir) {
     return 'not_normalized';
   }
   if (path.basename(workdir) !== folder) return 'basename_mismatch';
+  if (workdir !== path.join(root, folder)) return 'root_mismatch';
 
   let stat: fs.Stats | null = null;
   try {
@@ -272,8 +308,10 @@ export function checkRecordedWorkdirRemoval(
   const realParent = realpathOrResolved(path.dirname(workdir));
   const realWorkdir = path.join(realParent, folder);
 
-  const knownRoots = workspaceRootDirs({ excludeFolder: folder });
-  if (!knownRoots.includes(realParent)) return 'outside_known_root';
+  // Roots are recorded as real paths; one that resolves elsewhere now is a
+  // link planted (or swapped in) since, and judged as foreign.
+  if (realpathOrResolved(root) !== root) return 'root_not_real';
+  if (realParent !== root) return 'root_mismatch';
 
   const installDir = realpathOrResolved(path.dirname(DATA_DIR));
   if (isWithin(installDir, realWorkdir) || isWithin(realWorkdir, installDir)) {
@@ -292,10 +330,7 @@ export function checkRecordedWorkdirRemoval(
   return null;
 }
 
-export function assertRecordedWorkdirRemovable(
-  folder: string,
-  workdir: string,
-): void {
-  const reason = checkRecordedWorkdirRemoval(folder, workdir);
-  if (reason) throw new UnsafeWorkdirError(workdir, reason);
+export function assertRecordedWorkdirRemovable(record: RecordedWorkdir): void {
+  const reason = checkRecordedWorkdirRemoval(record);
+  if (reason) throw new UnsafeWorkdirError(record.workdir, reason);
 }

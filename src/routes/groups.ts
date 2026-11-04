@@ -563,7 +563,7 @@ import { removeFlowArtifacts } from '../file-manager.js';
 import {
   assertRecordedWorkdirRemovable,
   assignWorkspaceRootDirIfNew,
-  getRecordedWorkdir,
+  getRecordedWorkdirRecord,
   releaseUnusedWorkdir,
   UnsafeWorkdirError,
   recordedWorkdirLogsDir,
@@ -610,8 +610,8 @@ function stageWorkspaceResetForGroup(folder: string): StagedWorkspaceReset {
   // A recorded directory is moved aside next to itself, in the workspace
   // root, only after it passes the same check as a delete; its logs live in
   // data/logs/<folder> instead of inside it.
-  const recordedWorkdir = getRecordedWorkdir(folder);
-  if (recordedWorkdir) assertRecordedWorkdirRemovable(folder, recordedWorkdir);
+  const recordedWorkdir = getRecordedWorkdirRecord(folder);
+  if (recordedWorkdir) assertRecordedWorkdirRemovable(recordedWorkdir);
   const groupDir = workspaceDirOf(folder);
   const sessionDir = path.join(DATA_DIR, 'sessions', folder);
   const ipcDir = path.join(DATA_DIR, 'ipc', folder);
@@ -2144,10 +2144,10 @@ groupRoutes.delete('/:jid', authMiddleware, async (c) => {
     if (freshWorktreeBlock) return freshWorktreeBlock;
     // A recorded directory is deleted only when it is exactly the one
     // HappyClaw made; otherwise nothing at all is deleted.
-    const recordedWorkdir = getRecordedWorkdir(freshExisting.folder);
+    const recordedWorkdir = getRecordedWorkdirRecord(freshExisting.folder);
     if (recordedWorkdir) {
       try {
-        assertRecordedWorkdirRemovable(freshExisting.folder, recordedWorkdir);
+        assertRecordedWorkdirRemovable(recordedWorkdir);
       } catch (err) {
         if (err instanceof UnsafeWorkdirError) {
           return c.json(unsafeWorkdirConflict(err), 409);
@@ -2896,10 +2896,8 @@ groupRoutes.post('/:jid/clear-history', authMiddleware, async (c) => {
     );
     if (dirty.length > 0) throw new DirtyWorktreesError(dirty);
     // Refuse before any queued work is dropped; staging checks again.
-    const recordedWorkdir = getRecordedWorkdir(group.folder);
-    if (recordedWorkdir) {
-      assertRecordedWorkdirRemovable(group.folder, recordedWorkdir);
-    }
+    const recordedWorkdir = getRecordedWorkdirRecord(group.folder);
+    if (recordedWorkdir) assertRecordedWorkdirRemovable(recordedWorkdir);
     // The rebuild goes ahead: work queued before it is dropped; work that
     // arrives during it stays parked and runs against the fresh workspace.
     await discardFamilyWork(deps.queue, stopJids);

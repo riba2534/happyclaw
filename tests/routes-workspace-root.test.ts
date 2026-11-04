@@ -254,7 +254,6 @@ describe('deleting and rebuilding a recorded directory', () => {
 
   test('rebuild of a forged record is refused and moves nothing', async () => {
     const ws = await hostWorkspace('Forged rebuild');
-    // Not under projects/: the forged delete above made that a known root.
     const outside = path.join(tmp, 'elsewhere', ws.folder);
     fs.mkdirSync(outside, { recursive: true });
     fs.writeFileSync(path.join(outside, 'keep.txt'), 'keep');
@@ -266,7 +265,7 @@ describe('deleting and rebuilding a recorded directory', () => {
     expect(res.status).toBe(409);
     expect(await res.json()).toMatchObject({
       code: 'WORKSPACE_DIR_UNSAFE',
-      reason: 'outside_known_root',
+      reason: 'root_mismatch',
     });
     expect(fs.existsSync(path.join(outside, 'keep.txt'))).toBe(true);
     expect(
