@@ -14,7 +14,6 @@
 
 <p align="center">
   <a href="https://happyclaw.cc/"><img src="https://img.shields.io/badge/Website-happyclaw.cc-F97316?style=for-the-badge" alt="Website" /></a>
-  <a href="https://github.com/riba2534/happyclaw/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/riba2534/happyclaw/ci.yml?branch=main&style=for-the-badge&label=CI" alt="CI" /></a>
   <a href="https://nodejs.org/"><img src="https://img.shields.io/badge/Node.js-%3E%3D20-339933?style=for-the-badge&logo=nodedotjs&logoColor=white" alt="Node.js" /></a>
   <img src="https://img.shields.io/badge/TypeScript-5.9-3178C6?style=for-the-badge&logo=typescript&logoColor=white" alt="TypeScript" />
   <a href="https://github.com/riba2534/happyclaw"><img src="https://img.shields.io/github/stars/riba2534/happyclaw?style=for-the-badge&color=f5a623" alt="GitHub Stars" /></a>
@@ -234,7 +233,7 @@ REST 接口见 [API 文档](docs/API.md#自动化)。
 ### 环境要求
 
 - macOS 或 Linux；Windows 推荐使用 WSL2。
-- [Node.js](https://nodejs.org/) 20 或更高版本，推荐使用 CI 同款 Node.js 24。
+- [Node.js](https://nodejs.org/) 20 或更高版本，推荐使用 Node.js 24。
 - npm 与 GNU Make。
 - [Docker](https://www.docker.com/)：普通成员和 Container 工作区需要；仅使用管理员 Host 工作区时可不安装。
 
@@ -409,7 +408,7 @@ flowchart LR
 | **Web**          | React 19、Vite、Tailwind CSS、Radix UI、Zustand、原生 SVG 图表、xterm.js                                 |
 | **渠道**         | Feishu SDK、grammY、QQ Bot API、DingTalk Stream、企业微信智能机器人 SDK、Discord.js、Baileys、微信 iLink |
 | **隔离执行**     | Docker、非 root Node.js 容器、Chromium、常用开发与浏览器工具                                             |
-| **质量保障**     | TypeScript、Vitest、Prettier、GitHub Actions                                                             |
+| **质量保障**     | TypeScript、Vitest、Playwright、Prettier，合并前本地运行 `make check`                                    |
 
 ## 安全模型
 
@@ -496,17 +495,18 @@ happyclaw/
 └── data/                        # 本地运行数据，不进入 Git
 ```
 
-### CI 合并门槛
+### 合并门槛
 
-每个 Pull Request 都会执行：
+仓库不再运行 GitHub Actions CI（Agent 镜像发布仍在 GitHub Actions）。合并前在本地执行：
 
-1. 三端 `npm ci` 可复现安装。
-2. 改动文件格式检查。
-3. 共享事件类型一致性检查。
-4. 后端、Web 和 Agent Runner 类型检查。
-5. 全量 Vitest 测试。
-6. 三端生产构建。
-7. Agent Runner 自检。
+```bash
+make check
+```
+
+它依次运行：改动文件格式、生产依赖审计、共享文件副本一致性、三端类型检查（含 Prompt 与文档检查）、全量
+Vitest、三端生产构建、四个全栈冒烟测试、Web 浏览器 e2e（手机与桌面）、Agent Runner 自检和
+`git diff --check`，并打印每一步耗时。并行 worktree 用 `PLAYWRIGHT_PORT` 指定 e2e 端口。PR 的
+「验证」一节写明在哪个提交上跑过。
 
 ## 文档
 

@@ -78,10 +78,15 @@ test.describe('the message menu', () => {
       .filter({ hasText: '那继续把会话列表也改成虚拟滚动吧' });
     await reveal(bubble);
     const sheet = page.getByRole('dialog', { name: '消息操作' });
-    // The virtual list may still be settling under a loaded machine: press
-    // where the bubble is now, again if it moved away under the finger.
+    // The virtual list may still be settling (it pins the bottom again while
+    // the first page measures): bring the bubble back into view before each
+    // press and press only where it is on screen, again if it moved away.
     await expect(async () => {
+      await reveal(bubble);
       const box = (await bubble.boundingBox())!;
+      const viewport = page.viewportSize()!;
+      expect(box.y + 10).toBeGreaterThan(0);
+      expect(box.y + 10).toBeLessThan(viewport.height);
       await longPress(page, { x: box.x + 30, y: box.y + 10 });
       await expect(sheet).toBeVisible({ timeout: 1500 });
     }).toPass({ timeout: 15_000 });
