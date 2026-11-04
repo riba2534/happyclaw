@@ -1,0 +1,150 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
+import { afterAll, beforeAll, describe, expect, test, vi } from 'vitest';
+
+// One workspace must never reach another's directory: neither as a container
+// mount nor through the directory browser (which feeds mounts and custom
+// directories). The deny set covers the current root and every root a
+// recorded directory still lives in.
+const tmp = fs.realpathSync(
+  fs.mkdtempSync(path.join(os.tmpdir(), 'ws-backend-root-isolation-')),
+);
+const dataDir = path.join(tmp, 'install', 'data');
+const storeDir = path.join(dataDir, 'db');
+const groupsDir = path.join(dataDir, 'groups');
+const allowed = path.join(tmp, 'allowed');
+const currentRoot = path.join(allowed, 'root-now');
+const oldRoot = path.join(allowed, 'root-before');
+const sibling = path.join(allowed, 'projects');
+for (const dir of [storeDir, groupsDir, currentRoot, oldRoot, sibling]) {
+  fs.mkdirSync(dir, { recursive: true });
+}
+fs.writeFileSync(
+  path.join(tmp, 'mount-allowlist.json'),
+  JSON.stringify({
+    allowedRoots: [{ path: allowed, allowReadWrite: true }],
+    blockedPatterns: [],
+    nonMainReadOnly: false,
+  }),
+);
+
+vi.mock('../src/config.js', async (importOriginal) => ({
+  ...((await importOriginal()) as Record<string, unknown>),
+  DATA_DIR: dataDir,
+  STORE_DIR: storeDir,
+  GROUPS_DIR: groupsDir,
+  MOUNT_ALLOWLIST_PATH: path.join(tmp, 'mount-allowlist.json'),
+}));
+vi.mock('../src/logger.js', () => ({
+  logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+}));
+vi.mock('../src/middleware/auth.ts', () => ({
+  authMiddleware: async (c: any, next: any) => {
+    c.set('user', {
+      id: 'admin-1',
+      username: 'admin-1',
+      role: 'admin',
+      status: 'active',
+      permissions: [],
+    });
+    return next();
+  },
+}));
+
+const db = await import('../src/db.js');
+const dir = await import('../src/workspace-dir.js');
+const security = await import('../src/mount-security.js');
+const browseRoutes = (await import('../src/routes/browse.js')).default;
+
+let root = oldRoot;
+
+beforeAll(() => {
+  process.env.HAPPYCLAW_SKIP_MIGRATION_BACKUP = '1';
+  try {
+    db.initDatabase();
+  } finally {
+    delete process.env.HAPPYCLAW_SKIP_MIGRATION_BACKUP;
+  }
+  dir.setWorkspaceRootResolver(() => root);
+  // A workspace made before the root changed, then the root moves.
+  dir.assignWorkspaceRootDir('flow-old');
+  root = currentRoot;
+  dir.assignWorkspaceRootDir('flow-new');
+});
+
+afterAll(() => {
+  dir.setWorkspaceRootResolver(null);
+  db.closeDatabase();
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+function mountable(hostPath: string): boolean {
+  return security.validateMount(
+    { hostPath, containerPath: 'data', readonly: true },
+    false,
+  ).allowed;
+}
+
+async function browse(target: string) {
+  const res = await browseRoutes.request(
+    `/directories?path=${encodeURIComponent(target)}`,
+  );
+  return { status: res.status, json: (await res.json()) as any };
+}
+
+describe('mounts', () => {
+  test('the roots and every workspace directory in them are denied', () => {
+    expect(mountable(sibling)).toBe(true);
+    for (const target of [
+      currentRoot,
+      path.join(currentRoot, 'flow-new'),
+      oldRoot,
+      path.join(oldRoot, 'flow-old'),
+      // An ancestor of a root overlaps it as well.
+      allowed,
+    ]) {
+      expect(mountable(target)).toBe(false);
+    }
+    expect(
+      security.validateMount(
+        { hostPath: currentRoot, containerPath: 'data', readonly: true },
+        false,
+      ).reason,
+    ).toContain('protected path');
+  });
+});
+
+describe('directory browser', () => {
+  test('cannot enter a root or a workspace directory', async () => {
+    for (const target of [
+      currentRoot,
+      path.join(currentRoot, 'flow-new'),
+      oldRoot,
+    ]) {
+      const { status, json } = await browse(target);
+      expect(status).toBe(403);
+      expect(json.code).toBe('WORKSPACE_ROOT_FORBIDDEN');
+    }
+    expect((await browse(sibling)).status).toBe(200);
+  });
+
+  test('does not list the roots next to other directories', async () => {
+    const { status, json } = await browse(allowed);
+    expect(status).toBe(200);
+    expect(json.directories.map((d: { name: string }) => d.name)).toEqual([
+      'projects',
+    ]);
+  });
+
+  test('cannot create a folder inside a root', async () => {
+    const res = await browseRoutes.request('/directories', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ parentPath: currentRoot, name: 'sneaky' }),
+    });
+    expect(res.status).toBe(403);
+    expect(fs.existsSync(path.join(currentRoot, 'sneaky'))).toBe(false);
+  });
+});

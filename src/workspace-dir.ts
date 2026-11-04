@@ -207,13 +207,13 @@ export function checkRecordedWorkdirRemoval(
   } catch {
     stat = null;
   }
+  // The directory itself must be a real directory, never a link to one; a
+  // link in a parent is resolved here and judged by where it really points.
+  if (stat?.isSymbolicLink()) return 'symlink';
   if (stat && !stat.isDirectory()) return 'not_directory';
 
   const realParent = realpathOrResolved(path.dirname(workdir));
-  const realWorkdir = stat
-    ? realpathOrResolved(workdir)
-    : path.join(realParent, folder);
-  if (realWorkdir !== path.join(realParent, folder)) return 'symlink_escape';
+  const realWorkdir = path.join(realParent, folder);
 
   const otherParents = listRecordedWorkdirs()
     .filter((row) => row.folder !== folder)
