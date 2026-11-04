@@ -28,6 +28,7 @@ import {
   resolveUncertainChannelOutbox,
 } from '../channel-reliability-store.js';
 import { CONTAINER_IMAGE } from '../config.js';
+import { isAdminHostOnlyEffective } from '../deployment-mode.js';
 import { getSystemSettings, getProviders } from '../runtime-config.js';
 import { logger } from '../logger.js';
 import { stripVirtualJidSuffix } from '../utils.js';
@@ -366,7 +367,7 @@ monitorRoutes.get('/status', authMiddleware, async (c) => {
     groups: enrichedGroups,
     dockerImageExists,
     dockerRequired,
-    adminHostOnlyMode: isAdmin ? systemSettings.adminHostOnlyMode : undefined,
+    adminHostOnlyMode: isAdmin ? isAdminHostOnlyEffective() : undefined,
     dockerPullInProgress: pullState.pulling,
     claudeCodeVersions: isAdmin ? await getClaudeCodeVersions() : undefined,
     dockerPullLogs:

@@ -4826,7 +4826,19 @@ export interface SystemSettings {
   // 普通成员能否创建只读访客账号。默认关闭：访客由所有者直接建号，不经过邀请码，
   // 开放给成员等于绕过邀请制注册。关闭时成员已有的访客也一并失效；admin 不受限。
   allowMemberGuests: boolean;
+  // Where new Host workspaces without a custom directory are created. '' =
+  // unset: HAPPYCLAW_WORKSPACE_ROOT, then ~/happyclaw (src/workspace-root.ts).
+  workspaceRoot: string;
+  // '' = unset: HAPPYCLAW_DEPLOYMENT_MODE, then 'multi_user'
+  // (src/deployment-mode.ts). Stored as configured, never as resolved.
+  deploymentMode: '' | DeploymentMode;
 }
+
+export type DeploymentMode = 'multi_user' | 'single_user_host';
+export const DEPLOYMENT_MODES: readonly DeploymentMode[] = [
+  'multi_user',
+  'single_user_host',
+];
 
 // Upper bound for the login lockout window. auth.ts reclaims login-attempt
 // records on a fixed 24h TTL (its authoritative window check assumes the
@@ -4856,6 +4868,8 @@ const DEFAULT_SYSTEM_SETTINGS: SystemSettings = {
   fallbackModel: '',
   pluginAutoScan: true,
   allowMemberGuests: false,
+  workspaceRoot: '',
+  deploymentMode: '',
 };
 
 type SystemSettingsSource = 'file' | 'env' | 'api';
@@ -4986,6 +5000,28 @@ function normalizeSystemSettings(
     }
   }
 
+  // Stored as configured; src/workspace-root.ts validates and resolves it.
+  let workspaceRoot = DEFAULT_SYSTEM_SETTINGS.workspaceRoot;
+  if (raw.workspaceRoot !== undefined) {
+    if (typeof raw.workspaceRoot === 'string') {
+      workspaceRoot = raw.workspaceRoot.trim();
+    } else {
+      invalidFields.add('workspaceRoot');
+    }
+  }
+
+  let deploymentMode = DEFAULT_SYSTEM_SETTINGS.deploymentMode;
+  if (raw.deploymentMode !== undefined && raw.deploymentMode !== '') {
+    if (
+      typeof raw.deploymentMode === 'string' &&
+      (DEPLOYMENT_MODES as readonly string[]).includes(raw.deploymentMode)
+    ) {
+      deploymentMode = raw.deploymentMode as DeploymentMode;
+    } else {
+      invalidFields.add('deploymentMode');
+    }
+  }
+
   let mainAgentContextSource = DEFAULT_SYSTEM_SETTINGS.mainAgentContextSource;
   if (raw.mainAgentContextSource !== undefined) {
     if (
@@ -5073,6 +5109,8 @@ function normalizeSystemSettings(
       'allowMemberGuests',
       DEFAULT_SYSTEM_SETTINGS.allowMemberGuests,
     ),
+    workspaceRoot,
+    deploymentMode,
   };
 
   if (invalidFields.size > 0) {

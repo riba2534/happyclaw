@@ -86,7 +86,7 @@ import {
   getPendingAdminHostOnlyCleanupFolders,
   markAdminHostOnlyCleanupPending,
 } from '../admin-host-only-runtime.js';
-import { getSystemSettings } from '../runtime-config.js';
+import { isAdminHostOnlyEffective } from '../deployment-mode.js';
 import { onPasswordHashBusy } from '../password-hash-busy.js';
 
 const adminRoutes = new Hono<{ Variables: Variables }>();
@@ -743,7 +743,7 @@ adminRoutes.patch(
           );
         const grantsHostOnlyAdminRuntime =
           targetRemainsActiveAdmin &&
-          getSystemSettings().adminHostOnlyMode &&
+          isAdminHostOnlyEffective() &&
           (!targetIsActiveAdmin || hasPendingHostOnlyCleanup);
         if (grantsHostOnlyAdminRuntime) {
           try {

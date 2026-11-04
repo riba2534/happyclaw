@@ -111,10 +111,10 @@ import {
   withAgentProfileLocks,
   WorkspaceRuntimeQuiesceError,
 } from '../agent-profile-runtime.js';
+import { isAdminHostOnlyEffective } from '../deployment-mode.js';
 import {
   getContainerEnvConfig,
   getProviders,
-  getSystemSettings,
   providerHasCredentials,
   saveContainerEnvConfig,
   toPublicContainerEnvConfig,
@@ -789,8 +789,7 @@ groupRoutes.get('/', authMiddleware, (c) => {
   const groups = buildGroupsPayload(user);
   return c.json({
     groups,
-    admin_host_only_mode:
-      user.role === 'admin' && getSystemSettings().adminHostOnlyMode,
+    admin_host_only_mode: user.role === 'admin' && isAdminHostOnlyEffective(),
   });
 });
 
@@ -831,7 +830,7 @@ groupRoutes.post('/', authMiddleware, async (c) => {
   const adminHostOnlyMode =
     authUser.role === 'admin' &&
     authUser.status === 'active' &&
-    getSystemSettings().adminHostOnlyMode;
+    isAdminHostOnlyEffective();
   if (adminHostOnlyMode && validation.data.execution_mode === 'container') {
     return c.json(
       {
@@ -1256,7 +1255,7 @@ groupRoutes.post('/', authMiddleware, async (c) => {
             group.executionMode !== 'host' &&
             currentOwner?.role === 'admin' &&
             currentOwner.status === 'active' &&
-            getSystemSettings().adminHostOnlyMode
+            isAdminHostOnlyEffective()
           ) {
             hostOnlyPolicyChangedDuringCreate = true;
             return undefined;
@@ -1415,7 +1414,7 @@ groupRoutes.patch('/:jid', authMiddleware, async (c) => {
     execution_mode === 'container' &&
     authUser.role === 'admin' &&
     authUser.status === 'active' &&
-    getSystemSettings().adminHostOnlyMode
+    isAdminHostOnlyEffective()
   ) {
     return c.json(
       {
@@ -1555,7 +1554,7 @@ groupRoutes.patch('/:jid', authMiddleware, async (c) => {
         execution_mode === 'container' &&
         authUser.role === 'admin' &&
         authUser.status === 'active' &&
-        getSystemSettings().adminHostOnlyMode
+        isAdminHostOnlyEffective()
       ) {
         throw new AdminHostOnlyModeConflictError();
       }

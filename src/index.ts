@@ -462,6 +462,7 @@ import { resolveChannelAccountFallbackWorkspace } from './channel-account-routin
 import { testChannelAccountCredentials } from './channel-account-connectivity.js';
 import { hasAgentProfilePrompts } from './agent-profile-prompts.js';
 import { toRunnerAgentProfile } from './runner-agent-profile.js';
+import { isAdminHostOnlyEffective } from './deployment-mode.js';
 import {
   getFeishuProviderConfigWithSource,
   getTelegramProviderConfig,
@@ -5479,7 +5480,7 @@ function handleUnbindCommand(chatJid: string): string {
 }
 
 function isAdminHostOnlyOwner(ownerId: string | null | undefined): boolean {
-  if (!ownerId || !getSystemSettings().adminHostOnlyMode) return false;
+  if (!ownerId || !isAdminHostOnlyEffective()) return false;
   return canExecuteOnHost(getUserById(ownerId));
 }
 
@@ -6782,7 +6783,7 @@ function loadState(): void {
 
   // Repair persisted runtime rows on every startup as well as on the settings
   // transition. This also makes ADMIN_HOST_ONLY_MODE=true safe on first boot.
-  if (getSystemSettings().adminHostOnlyMode) {
+  if (isAdminHostOnlyEffective()) {
     const migration = forceActiveAdminRuntimesToHost();
     if (migration.affectedGroups.length > 0) {
       registeredGroups = getAllRegisteredGroups();

@@ -27,6 +27,7 @@ import {
   toLocalDateString,
   toLocalMonthString,
 } from './db.js';
+import { isSingleUserHost } from './deployment-mode.js';
 import { getSystemSettings } from './runtime-config.js';
 import { logger } from './logger.js';
 import type {
@@ -41,7 +42,8 @@ import type {
 // No extra manual cache needed — avoids stale state when settings change.
 
 export function isBillingEnabled(): boolean {
-  return getSystemSettings().billingEnabled === true;
+  // Single-user host mode has no billing; the stored switch is kept as is.
+  return getSystemSettings().billingEnabled === true && !isSingleUserHost();
 }
 
 // --- Plan management ---
