@@ -462,6 +462,7 @@ import { resolveChannelAccountFallbackWorkspace } from './channel-account-routin
 import { testChannelAccountCredentials } from './channel-account-connectivity.js';
 import { hasAgentProfilePrompts } from './agent-profile-prompts.js';
 import { toRunnerAgentProfile } from './runner-agent-profile.js';
+import { listOtherActiveUsers } from './single-user-host-guard.js';
 import {
   isAdminHostOnlyEffective,
   isSingleUserHost,
@@ -6806,6 +6807,18 @@ function loadState(): void {
       logger.info(
         { migratedGroups: migration.affectedGroups.length },
         'Repaired administrator runtimes for host-only mode',
+      );
+    }
+  }
+  // The settings route refuses this state; an environment variable alone
+  // can still reach it. Other users keep their accounts and Container
+  // workspaces, which cannot run while Docker is not used.
+  if (isSingleUserHost()) {
+    const activeUsers = listOtherActiveUsers('');
+    if (activeUsers.length > 1) {
+      logger.warn(
+        { users: activeUsers.map((user) => user.username) },
+        'Single-user host mode with more than one active user; deactivate the others',
       );
     }
   }
