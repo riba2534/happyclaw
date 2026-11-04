@@ -1,7 +1,7 @@
 /**
  * HTTP surface of the developer workbench against real git repositories:
  * creating a session with its own worktree, listing it, the Review panel
- * status/diff, the file panel root, same-directory peers, and the deletion
+ * status/diff, the file panel root, and the deletion
  * paths that remove worktrees (session, workspace, rebuild) while keeping
  * branches and refusing to drop uncommitted work without confirmation.
  */
@@ -539,109 +539,6 @@ describe('Review panel and file panel roots', () => {
   });
 });
 
-describe('same-directory peers', () => {
-  test('reports other running sessions in the same directory only', async () => {
-    const repo = makeRepo();
-    const a = seedWorkspace({ executionMode: 'host', customCwd: repo });
-    const b = seedWorkspace({ executionMode: 'host', customCwd: repo });
-    const shared = (await createSession(a.jid, { name: 'shared' })).body.session
-      .id as string;
-    const isolated = (await createSession(a.jid, { worktree: true })).body
-      .session.id as string;
-    const other = (await createSession(b.jid, { name: 'other' })).body.session
-      .id as string;
-    const foreign = seedWorkspace({
-      executionMode: 'host',
-      customCwd: repo,
-      owner: 'admin-2',
-    });
-    db.createAgent({
-      id: `foreign-${foreign.folder}`,
-      group_folder: foreign.folder,
-      chat_jid: foreign.jid,
-      name: 'foreign',
-      prompt: '',
-      status: 'idle',
-      kind: 'conversation',
-      created_by: 'admin-2',
-      created_at: new Date().toISOString(),
-      completed_at: null,
-      result_summary: null,
-      last_im_jid: null,
-      spawned_from_jid: null,
-    });
-    queueGroups.push(
-      {
-        jid: `${a.jid}#agent:${shared}`,
-        active: true,
-        queryInFlight: true,
-        groupFolder: a.folder,
-      },
-      {
-        jid: `${b.jid}#agent:${other}`,
-        active: true,
-        queryInFlight: true,
-        groupFolder: b.folder,
-      },
-      // A lane that is no session is no peer.
-      { jid: b.jid, active: true, queryInFlight: true, groupFolder: b.folder },
-      {
-        jid: `${foreign.jid}#agent:foreign-${foreign.folder}`,
-        active: true,
-        queryInFlight: true,
-        groupFolder: foreign.folder,
-      },
-      // A warm runner between turns is not running.
-      {
-        jid: `${a.jid}#agent:${isolated}`,
-        active: true,
-        queryInFlight: false,
-        groupFolder: a.folder,
-      },
-    );
-
-    const root = await call(gitRoutes, `/${enc(a.jid)}/workdir/peers`);
-    expect(root.body.hidden_count).toBe(1);
-    expect(root.body.peers).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          workspace_jid: a.jid,
-          kind: 'session',
-          session_id: shared,
-          session_name: 'shared',
-        }),
-        expect.objectContaining({
-          workspace_jid: b.jid,
-          kind: 'session',
-          session_id: other,
-        }),
-      ]),
-    );
-    expect(root.body.peers).toHaveLength(2);
-
-    // The running session itself is not its own peer.
-    const self = await call(
-      gitRoutes,
-      `/${enc(a.jid)}/workdir/peers?agentId=${shared}`,
-    );
-    expect(self.body.peers.map((p: any) => p.session_id)).toEqual([other]);
-    expect(self.body.peers.every((p: any) => p.kind === 'session')).toBe(true);
-
-    // A worktree session works elsewhere.
-    queueGroups.push({
-      jid: `${a.jid}#agent:${isolated}`,
-      active: true,
-      queryInFlight: true,
-      groupFolder: a.folder,
-    });
-    const isolatedPeers = await call(
-      gitRoutes,
-      `/${enc(a.jid)}/workdir/peers?agentId=${isolated}`,
-    );
-    expect(isolatedPeers.body).toEqual({ peers: [], hidden_count: 0 });
-  });
-});
-
 describe('deleting worktree sessions', () => {
   test('uncommitted changes need confirmation; the branch and main checkout survive', async () => {
     const repo = makeRepo();
@@ -1003,7 +900,7 @@ describe('workspace settings', () => {
     expect(db.getRegisteredGroup(jid)?.executionMode).toBe('host');
   });
 
-  test('creating a workspace on a directory already in use warns without blocking', async () => {
+  test('creating a workspace on a directory already in use is not blocked', async () => {
     const repo = makeRepo();
     const existing = seedWorkspace({ executionMode: 'host', customCwd: repo });
     const created = await call(groupRoutes, '/', {
@@ -1011,22 +908,9 @@ describe('workspace settings', () => {
       body: { name: 'Second', execution_mode: 'host', custom_cwd: repo },
     });
     expect(created.status).toBe(200);
-    expect(created.body.warnings).toEqual([
-      expect.objectContaining({
-        code: 'shared_custom_cwd',
-        workspaces: [
-          { jid: existing.jid, name: `Workspace ${existing.folder}` },
-        ],
-      }),
-    ]);
-
-    const other = path.join(ROOT, `fresh-${++seq}`);
-    fs.mkdirSync(other);
-    const unique = await call(groupRoutes, '/', {
-      method: 'POST',
-      body: { name: 'Third', execution_mode: 'host', custom_cwd: other },
-    });
-    expect(unique.status).toBe(200);
-    expect(unique.body.warnings).toEqual([]);
+    expect(created.body.warnings).toBeUndefined();
+    expect(db.getRegisteredGroup(created.body.jid)?.customCwd).toBe(
+      db.getRegisteredGroup(existing.jid)?.customCwd,
+    );
   });
 });

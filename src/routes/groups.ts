@@ -36,7 +36,6 @@ import {
   canDeleteGroup,
 } from '../group-acl.js';
 import { MAX_GROUP_NAME_LEN } from '../group-constants.js';
-import { realpathBestEffort } from '../utils.js';
 import { sessionActivityAt } from '../session-order.js';
 import {
   dirtyWorktreesConflict,
@@ -748,43 +747,6 @@ async function releaseWorkspaceWorktrees(folder: string): Promise<void> {
   }
 }
 
-/**
- * Other Host workspaces of the same owner that already work in this exact
- * directory. Creation is not blocked: concurrent sessions are allowed, the
- * owner is only told their edits may collide.
- */
-function sharedCustomCwdWarnings(
-  ownerId: string,
-  customCwd: string | undefined,
-  excludeJid: string,
-): Array<{
-  code: 'shared_custom_cwd';
-  message: string;
-  workspaces: Array<{ jid: string; name: string }>;
-}> {
-  if (!customCwd) return [];
-  const target = realpathBestEffort(customCwd);
-  const workspaces = Object.entries(getAllRegisteredGroups())
-    .filter(
-      ([jid, group]) =>
-        jid !== excludeJid &&
-        jid.startsWith('web:') &&
-        group.created_by === ownerId &&
-        isHostExecutionGroup(group) &&
-        !!group.customCwd &&
-        realpathBestEffort(group.customCwd) === target,
-    )
-    .map(([jid, group]) => ({ jid, name: group.name }));
-  if (workspaces.length === 0) return [];
-  return [
-    {
-      code: 'shared_custom_cwd',
-      message: `工作区「${workspaces.map((w) => w.name).join('」「')}」已在使用这个目录。多个会话同时运行时改动可能互相覆盖；需要并行开发时，可以为会话开启独立 worktree。`,
-      workspaces,
-    },
-  ];
-}
-
 function toPublicContainerEnvForUser(
   config: ReturnType<typeof getContainerEnvConfig>,
   user: AuthUser,
@@ -1368,7 +1330,6 @@ groupRoutes.post('/', authMiddleware, async (c) => {
     success: true,
     jid,
     group: responseGroup,
-    warnings: sharedCustomCwdWarnings(authUser.id, group.customCwd, jid),
   });
 });
 

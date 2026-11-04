@@ -195,19 +195,6 @@ export function CreateContainerDialog({
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
 
   const createFlow = useChatStore((s) => s.createFlow);
-  // Same-directory workspaces are allowed; their edits may collide.
-  const sharedCwdNames = useChatStore((s) => {
-    const target = customCwd.trim().replace(/\/+$/, '');
-    if (!target) return '';
-    return Object.values(s.groups)
-      .filter(
-        (group) =>
-          group.execution_mode === 'host' &&
-          group.custom_cwd?.replace(/\/+$/, '') === target,
-      )
-      .map((group) => `「${group.name}」`)
-      .join('');
-  });
   const adminHostOnlyMode = useChatStore((s) => s.adminHostOnlyMode);
   const canHostExec = useAuthStore((s) => s.user?.role === 'admin');
   const profiles = useAgentProfilesStore((s) => s.profiles);
@@ -344,10 +331,6 @@ export function CreateContainerDialog({
         trimmed,
         Object.keys(options).length ? options : undefined,
       );
-      // The server compares real paths, so it also catches symlinked dirs.
-      if (created.warnings[0] && !sharedCwdNames) {
-        toast.warning(created.warnings[0].message);
-      }
       onCreated(created.jid, created.folder);
       handleClose();
     } catch (err) {
@@ -695,13 +678,6 @@ export function CreateContainerDialog({
                       description="智能体将直接在 HappyClaw 服务器上的这个目录中运行。"
                       placeholder="默认: data/groups/{folder}/"
                     />
-                    {sharedCwdNames && (
-                      <Callout tone="warning">
-                        工作区{sharedCwdNames}
-                        已在使用这个目录。多个会话同时运行时改动可能互相覆盖；需要并行开发时，可以为会话开启独立
-                        worktree。
-                      </Callout>
-                    )}
                     <Callout tone="warning">
                       宿主机模式下智能体可访问完整文件系统和工具链，请谨慎使用。
                     </Callout>
