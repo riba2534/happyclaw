@@ -207,7 +207,9 @@ guestRoutes.post('/', authMiddleware, async (c) => {
 
   const passwordHash = await hashPassword(password);
   // Re-check after the async hash: a concurrent create may have used the
-  // last slot. Nothing below yields until the row is written.
+  // last slot, or the mode switched. Nothing below yields until the row is
+  // written.
+  if (isSingleUserHost()) return singleUserHostRefusal(c);
   if (guestLimitReached(owner.id)) {
     return c.json({ error: GUEST_LIMIT_ERROR }, 409);
   }
@@ -268,13 +270,8 @@ guestRoutes.patch('/:id', authMiddleware, async (c) => {
   }
   const data = validation.data;
   // Re-enabling a guest would add a second active user.
-  if (
-    isSingleUserHost() &&
-    data.status === 'active' &&
-    guest.status !== 'active'
-  ) {
-    return singleUserHostRefusal(c);
-  }
+  const reEnables = data.status === 'active' && guest.status !== 'active';
+  if (reEnables && isSingleUserHost()) return singleUserHostRefusal(c);
 
   let workspaceJids: string[] | null = null;
   if (data.workspace_jids !== undefined) {
@@ -297,6 +294,8 @@ guestRoutes.patch('/:id', authMiddleware, async (c) => {
   }
   if (data.password !== undefined) {
     updates.password_hash = await hashPassword(data.password);
+    // The mode may have switched while the password was hashing.
+    if (reEnables && isSingleUserHost()) return singleUserHostRefusal(c);
   }
   if (Object.keys(updates).length > 0) updateUserFields(guest.id, updates);
   if (workspaceJids) {

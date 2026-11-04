@@ -536,6 +536,11 @@ authRoutes.post('/register', authJsonBodyLimit, async (c) => {
     throw err;
   }
 
+  // The mode may have switched while the password was hashing.
+  if (isSingleUserHost()) {
+    return c.json({ error: '单人宿主机模式不开放注册。' }, 403);
+  }
+
   // Branch: with invite code or without
   const withInvite = !!invite_code;
   const result = withInvite
