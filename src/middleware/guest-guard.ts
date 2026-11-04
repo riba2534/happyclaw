@@ -162,10 +162,10 @@ export const GUEST_ROUTE_ALLOWLIST: ReadonlyArray<{
   },
 
   // Deliberately absent reads: git status/diff (a diff can show the dot
-  // files the file routes hide), workdir peers (other workspaces' runs),
-  // model selection (the owner's model connections), context usage (token
-  // usage; only the composer shows it), workspace env/MCP, IM groups,
-  // delete impact, channel and runtime-session mounts, /api/status*.
+  // files the file routes hide), model selection (the owner's model
+  // connections), context usage (token usage; only the composer shows it),
+  // workspace env/MCP, IM groups, delete impact, channel and runtime-session
+  // mounts, /api/status*.
 ];
 
 export function isGuestRouteAllowed(method: string, path: string): boolean {

@@ -111,10 +111,7 @@ active 的 admin 可以为自己创建只读访客（`role=guest`），并授权
 
 ## 工作区、消息和运行控制
 
-- `GET|POST /api/groups`；`POST` 的响应带 `warnings`，`custom_cwd` 与同一用户的其他
-  宿主机工作区目录相同时为
-  `[{"code": "shared_custom_cwd", "message": "…", "workspaces": [{"jid", "name"}]}]`，
-  不阻止创建
+- `GET|POST /api/groups`；`custom_cwd` 可以与同一用户的其他宿主机工作区相同
 - `PATCH|DELETE /api/groups/:jid`
 - `PATCH /api/groups/:jid/agent-profile`
 - `POST /api/groups/:jid/stop`
@@ -471,7 +468,6 @@ owner 开放。`:path` 是工作区相对路径的 base64url。`preview` 带 `ET
 - `GET /api/groups/:jid/git/status?agentId=&scope=working|branch`
 - `GET /api/groups/:jid/git/diff?agentId=&path=&orig_path=&scope=working|branch`
 - `GET /api/groups/:jid/git/worktree-support`
-- `GET /api/groups/:jid/workdir/peers?agentId=`
 
 访问检查与文件接口相同：看不到的工作区返回 404，宿主机工作区需要宿主机执行权限
 （403）。git 只对宿主机模式的工作区执行，命令使用参数数组、有超时与输出上限。宿主机上的
@@ -542,12 +538,6 @@ hook）。HappyClaw 本身不访问网络，但 LFS 或 partial clone 仓库在 
 `git/worktree-support` 返回 `{"available": true}`，或
 `{"available": false, "reason": "container_mode" | "directory_missing" |
 "not_git_repo" | "repo_has_no_commits", "message": "…"}`。
-
-`workdir/peers` 列出与该会话共用工作目录、且正在运行一轮的其他会话（同工作区未用
-worktree 的会话，或自定义目录相同的其他工作区的会话），只提示不限制：
-`{"peers": [{"workspace_jid": "web:…", "workspace_name": "Repo", "kind": "session",
-"session_id": "…", "session_name": "…"}], "hidden_count": 0}`；
-调用者看不到的工作区只计入 `hidden_count`。
 
 ## Runtime Session 与渠道绑定
 

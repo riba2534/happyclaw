@@ -31,7 +31,6 @@ import { MessageInput } from './LazyMessageInput';
 import type { MessageInputHandle } from './MessageInput';
 import { ReadOnlyComposer } from './composer/ReadOnlyComposer';
 import { ModelSelector } from './ModelSelector';
-import { SharedWorkdirNotice, useWorkdirPeers } from './SharedWorkdirNotice';
 import { WorktreeBranchTag } from './WorktreeBranchTag';
 import { useFileStore } from '../../stores/files';
 import { RunStatusBar } from './RunStatusBar';
@@ -596,15 +595,6 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
   useEffect(() => {
     useFileStore.getState().setFileScopeSession(groupJid, worktreeSessionId);
   }, [groupJid, worktreeSessionId]);
-  // A worktree belongs to one session: nothing else runs there. Guests do
-  // not learn about other workspaces' runs.
-  const workdirPeers = useWorkdirPeers(
-    groupJid,
-    sessionId,
-    !!group && !activeWorktree && !readOnly,
-  );
-  const showWorkdirNotice =
-    workdirPeers.peers.length + workdirPeers.hiddenCount > 0;
   // Memoized so the memoized composer does not re-render with a fresh element.
   const modelSelector = useMemo(
     () =>
@@ -1392,9 +1382,7 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
           mobileSessionsVisible ? 'hidden lg:flex' : 'flex',
           // A phone's header floats over the conversation; the list keeps
           // that much room on top (a banner under it takes it instead).
-          !showImBanner &&
-            !showWorkdirNotice &&
-            'phone:[--chat-top-inset:var(--chat-header-height)]',
+          !showImBanner && 'phone:[--chat-top-inset:var(--chat-header-height)]',
         )}
       >
         {/* Header. On a phone it is transparent over the conversation, which
@@ -1612,14 +1600,6 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
               }}
             />
           </div>
-        )}
-        {showWorkdirNotice && (
-          <SharedWorkdirNotice
-            groupJid={groupJid}
-            peers={workdirPeers.peers}
-            hiddenCount={workdirPeers.hiddenCount}
-            className={cn(!showImBanner && 'phone:mt-(--chat-header-height)')}
-          />
         )}
 
         {/* The open session's conversation */}

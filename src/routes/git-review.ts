@@ -4,7 +4,6 @@
  *   GET git/status?agentId=           changed files of the session's checkout
  *   GET git/diff?agentId=&path=       unified diff of one changed file
  *   GET git/worktree-support          can a new session get its own worktree
- *   GET workdir/peers?agentId=        other running sessions in the same dir
  *
  * Access follows the file panel: the workspace must be visible to the caller
  * (404 otherwise, no admin bypass) and Host workspaces need host permission.
@@ -15,9 +14,8 @@ import { Hono, type Context } from 'hono';
 
 import { authMiddleware } from '../middleware/auth.js';
 import { canAccessGroup } from '../group-acl.js';
-import { getAgent, getRegisteredGroup } from '../db.js';
+import { getRegisteredGroup } from '../db.js';
 import {
-  getWebDeps,
   hasHostExecutionPermission,
   isHostExecutionGroup,
   type Variables,
@@ -41,11 +39,6 @@ import {
 } from '../session-worktree.js';
 import { getSessionWorktree } from '../session-worktree-store.js';
 import { logger } from '../logger.js';
-import {
-  agentIdOfJid,
-  realpathBestEffort,
-  stripVirtualJidSuffix,
-} from '../utils.js';
 
 const gitReviewRoutes = new Hono<{ Variables: Variables }>();
 
@@ -212,61 +205,6 @@ gitReviewRoutes.get('/:jid/git/worktree-support', authMiddleware, async (c) => {
     reason: support.reason,
     message: WORKTREE_UNAVAILABLE_MESSAGES[support.reason],
   });
-});
-
-/**
- * Sessions with a running turn whose working directory is the caller's.
- * Concurrency is only reported, never limited: different sessions may run
- * at once by design. Peers in workspaces the caller cannot see are counted
- * but not named. Every peer is a session (`kind: 'session'`).
- */
-gitReviewRoutes.get('/:jid/workdir/peers', authMiddleware, (c) => {
-  c.header('Cache-Control', 'private, no-store');
-  const scope = resolveReviewScope(c);
-  if (scope instanceof Response) return scope;
-  const queue = getWebDeps()?.queue;
-  // A worktree belongs to one session; nothing else runs there.
-  if (!queue || getSessionWorktree(scope.agentId)) {
-    return c.json({ peers: [], hidden_count: 0 });
-  }
-  const ownDir = realpathBestEffort(
-    resolveWorkspaceProjectRoot(scope.group, { agentId: scope.agentId }),
-  );
-  const principal = { id: scope.authUser.id, role: scope.authUser.role };
-  const peers: Array<{
-    workspace_jid: string;
-    workspace_name: string;
-    kind: 'session';
-    session_id: string;
-    session_name: string | null;
-  }> = [];
-  let hiddenCount = 0;
-  for (const entry of queue.getStatus().groups) {
-    if (!entry.active || !entry.queryInFlight) continue;
-    const agentId = agentIdOfJid(entry.jid);
-    if (!agentId) continue;
-    const workspace = getRegisteredGroup(stripVirtualJidSuffix(entry.jid));
-    if (!workspace) continue;
-    if (workspace.jid === scope.group.jid && agentId === scope.agentId) {
-      continue;
-    }
-    const dir = realpathBestEffort(
-      resolveWorkspaceProjectRoot(workspace, { agentId }),
-    );
-    if (dir !== ownDir) continue;
-    if (!canAccessGroup(principal, workspace)) {
-      hiddenCount++;
-      continue;
-    }
-    peers.push({
-      workspace_jid: workspace.jid,
-      workspace_name: workspace.name,
-      kind: 'session',
-      session_id: agentId,
-      session_name: getAgent(agentId)?.name ?? null,
-    });
-  }
-  return c.json({ peers, hidden_count: hiddenCount });
 });
 
 export default gitReviewRoutes;
