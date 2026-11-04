@@ -68,6 +68,10 @@ check_sync "$ROOT/shared/automation.ts" \
   "$ROOT/web/src/lib/automation.ts" \
   "$ROOT/container/agent-runner/src/automation.ts"
 
+# Workspace root problems
+check_sync "$ROOT/shared/workspace-root-problems.ts" \
+  "$ROOT/src/workspace-root-problems.ts" \
+  "$ROOT/web/src/lib/workspace-root-problems.ts"
 
 # Team mode shapes
 check_sync "$ROOT/shared/work-items.ts" \
