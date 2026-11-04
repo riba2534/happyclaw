@@ -48,17 +48,19 @@
 
 Public：
 
-- `GET /api/auth/status`
-- `POST /api/auth/setup`，仅用户表为空时可用
+- `GET /api/auth/status`：`{ initialized, deploymentMode }`
+- `POST /api/auth/setup`，仅用户表为空时可用；可带
+  `deployment_mode: "multi_user" | "single_user_host"`，在创建管理员的 Home 工作区之前保存，
+  不带时什么也不存
 - `POST /api/auth/login`
-- `GET /api/auth/register/status`
-- `POST /api/auth/register`
+- `GET /api/auth/register/status`：单人宿主机模式下恒为关闭
+- `POST /api/auth/register`：单人宿主机模式下 403
 - `GET /api/auth/avatars/:filename`
 
 登录后：
 
 - `POST /api/auth/logout`
-- `GET /api/auth/me`
+- `GET /api/auth/me`：顶层带 `deploymentMode`（生效值）
 - `PUT /api/auth/profile`
 - `PUT /api/auth/password`
 - `GET /api/auth/sessions`
@@ -987,6 +989,14 @@ minimalClientVersion?, availableInPlans?, serviceTiers }`（字段取自官方
 - `GET|PUT /api/config/host-integration`，仅 admin；包含
   `adminHostOnlyMode`。从 `false` 切到 `true` 时会停稳管理员工作区运行器，并把
   active admin 拥有的工作区持久迁移为 Host；普通成员数据不变
+  - `workspaceRoot`（存储值，`''` 表示未设置）以及只读的 `workspaceRootEffective`、
+    `workspaceRootSource`（`settings|env|default`）、`workspaceRootFallbackReason`、
+    `workspaceRootFallbackWarning`。保存不合格的值返回 400
+    `{ error, code: "WORKSPACE_ROOT_INVALID", reason }`；目录在第一个工作区需要时才创建
+  - `deploymentMode`（生效值）、`deploymentModeConfigured`（存储值）、`deploymentModeSource`。
+    PUT 的 `deploymentMode` 接受 `'' | multi_user | single_user_host`；还有其他启用中的账号时
+    切到单人宿主机返回 409 `{ code: "SINGLE_USER_HOST_OTHER_USERS", users: [{ id, username, role }] }`，
+    成功时执行与开启 `adminHostOnlyMode` 相同的 Host 迁移；切回多人只保存
 - `GET /api/config/external-resources`
 - `GET /api/config/external-resources/rule`
 - `GET|PUT /api/config/registration`
@@ -1299,13 +1309,14 @@ Web 和 Runtime 不再把它们当作第二个可写真相源。
 监控：
 
 - `GET /api/health`，Public
-- `GET /api/status`
+- `GET /api/status`：带 `deploymentMode`；单人宿主机模式下不做任何 Docker 探测，Docker 相关
+  字段为 `null`
 - `GET /api/status/groups`：只返回队列运行状态，供聊天页恢复运行态；可见范围与
   `/api/status` 相同，不做 Docker 与版本探测
 - `POST /api/status/groups/:folder/switch-provider`
 - `GET /api/status/channel-outbox/uncertain`
 - `POST /api/status/channel-outbox/:id/resolve`
-- `POST /api/docker/pull`
+- `POST /api/docker/pull`：单人宿主机模式下 409 `SINGLE_USER_HOST`
 
 Agent 镜像只由 `main` 分支的 GitHub Actions 构建并发布。该接口仅在运行主机上执行
 `docker pull` 更新已发布镜像，不在用户机器上编译镜像。
