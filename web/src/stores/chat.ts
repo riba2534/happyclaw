@@ -1322,12 +1322,7 @@ interface ChatState {
   createFlow: (
     name: string,
     options?: CreateWorkspaceOptions,
-  ) => Promise<{
-    jid: string;
-    folder: string;
-    /** Non-blocking notes, e.g. another workspace uses the same directory. */
-    warnings: Array<{ code: string; message: string }>;
-  }>;
+  ) => Promise<{ jid: string; folder: string }>;
   renameFlow: (jid: string, name: string) => Promise<void>;
   updateInteractionMode: (
     jid: string,
@@ -3680,7 +3675,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
         success: boolean;
         jid: string;
         group: GroupInfo;
-        warnings?: Array<{ code: string; message: string }>;
       }>('/api/groups', body, needsLongTimeout ? 120_000 : undefined);
       if (!data.success) {
         throw new Error('服务器未能创建工作区');
@@ -3692,11 +3686,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         error: null,
       }));
 
-      return {
-        jid: data.jid,
-        folder: group.folder,
-        warnings: data.warnings ?? [],
-      };
+      return { jid: data.jid, folder: group.folder };
     } catch (err) {
       set({ error: extractErrorMessage(err) });
       throw err;

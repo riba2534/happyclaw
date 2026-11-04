@@ -98,8 +98,7 @@ Agent 不含宿主机上下文与宿主机 Skills。渠道账号删除、登出�
 - 查看会话当前使用的模型配置与上下文占用（`GET /api/groups/:jid/context-usage`）
 - 发送普通消息
 - 查看 Runtime Session、绑定和项目能力
-- 读取代码改动（`GET /api/groups/:jid/git/status|diff`）、worktree 可用性和同目录
-  运行提示（`workdir/peers`，看不到的工作区只计数不具名）
+- 读取代码改动（`GET /api/groups/:jid/git/status|diff`）和 worktree 可用性
 - 打开 Web 终端前的资源检查
 
 Home 的 AgentProfile 归属也是系统不变量：只能绑定同一 owner 的 `is_default`
@@ -454,7 +453,7 @@ Agent MCP 调用没有 Cookie，但必须携带由主进程创建的运行上下
   `GET /api/automations[/:id[/runs]]`。放行的处理器仍按 `canViewGroup` 判断，
   未授权返回 404。
 - 有意不放行的读取：`/api/groups/:jid/git/*`（diff 可能包含被隐藏的点文件）、
-  `workdir/peers`（其他工作区的运行）、`model-selection`（owner 的模型连接）、
+  `model-selection`（owner 的模型连接）、
   `context-usage`（token 用量，只服务于输入框）、`env`、`mcp`、`im-groups`、
   `delete-impact`、工作区的渠道与运行会话挂载、`/api/automations/for-session`、
   `/api/status*`、用量与计费。

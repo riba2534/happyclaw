@@ -404,7 +404,6 @@ describe('guest guard: default deny', () => {
     `/api/groups/${GRANTED}/context-usage`,
     `/api/groups/${GRANTED}/git/status`,
     `/api/groups/${GRANTED}/git/diff?path=notes.txt`,
-    `/api/groups/${GRANTED}/workdir/peers`,
     `/api/groups/${GRANTED}/im-groups`,
     `/api/groups/${GRANTED}/delete-impact`,
     `/api/workspaces/${GRANTED}/channel-mounts`,
