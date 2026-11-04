@@ -189,7 +189,7 @@ import {
 import { assessContextBudget } from './context-budget.js';
 import {
   findClaudeMdExcludeLeaks,
-  resolveManagedHostClaudeMdExcludes,
+  resolveHostClaudeMdExcludes,
 } from './claude-memory-policy.js';
 import {
   escapeAttribute,
@@ -558,9 +558,9 @@ function enrichContextAudit(
     audit.claudeMdExcludes ?? [],
   );
   if (excludedMemoryLeaks.length > 0) {
-    audit.warnings.push(
-      `managed context isolation failed; SDK loaded excluded memory: ${excludedMemoryLeaks.join(', ')}`,
-    );
+    const warning = `context isolation failed; SDK loaded excluded memory: ${excludedMemoryLeaks.join(', ')}`;
+    audit.warnings.push(warning);
+    logWarn(warning);
   }
   const claudeMemory = memoryFiles.find(
     (file) =>
@@ -2984,12 +2984,13 @@ async function runQueryAttempt(
     }),
     ...webFetchPreflightSettings(containerInput.webFetchPreflightPolicy),
   };
-  const claudeMdExcludes = resolveManagedHostClaudeMdExcludes({
+  const claudeMdExcludes = resolveHostClaudeMdExcludes({
     executionMode: contextAuditBase.executionMode,
     runtimePolicy: containerInput.agentProfile?.runtimePolicy,
     externalClaudeDir: contextAuditBase.externalClaudeDir,
     homeDir: process.env.HOME,
     projectRoot: contextAuditBase.projectRoot,
+    cwd: WORKSPACE_GROUP,
   });
   if (claudeMdExcludes.length > 0) {
     flagSettings.claudeMdExcludes = claudeMdExcludes;
