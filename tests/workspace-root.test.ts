@@ -212,12 +212,12 @@ describe('checking a candidate', () => {
 
 describe('saving and creating the root', () => {
   test("'' clears the setting; a bad value is refused", () => {
-    expect(validateWorkspaceRootSetting('', [], context)).toBeNull();
-    expect(validateWorkspaceRootSetting('relative', [], context)).toBe(
+    expect(validateWorkspaceRootSetting('', {}, context)).toBeNull();
+    expect(validateWorkspaceRootSetting('relative', {}, context)).toBe(
       'not_absolute',
     );
     expect(
-      validateWorkspaceRootSetting(path.join(context.home, 'ok'), [], context),
+      validateWorkspaceRootSetting(path.join(context.home, 'ok'), {}, context),
     ).toBeNull();
   });
 
@@ -228,23 +228,52 @@ describe('saving and creating the root', () => {
     expect(
       validateWorkspaceRootSetting(
         path.join(context.home, 'work'),
-        [project],
+        { occupiedPaths: [project] },
         context,
       ),
     ).toBe('not_empty');
     expect(
       validateWorkspaceRootSetting(
         path.join(project, 'spaces'),
-        [project],
+        { occupiedPaths: [project] },
         context,
       ),
     ).toBe('overlaps_workspace_paths');
     expect(
       validateWorkspaceRootSetting(
         path.join(context.home, 'other'),
-        [project],
+        { occupiedPaths: [project] },
         context,
       ),
+    ).toBeNull();
+  });
+
+  test('a root inside another workspace or another root is refused; an old root itself is fine', () => {
+    const oldRoot = path.join(context.home, 'happyclaw-old');
+    const workdir = path.join(oldRoot, 'flow-a');
+    fs.mkdirSync(workdir, { recursive: true });
+    const occupancy = {
+      workdirs: [{ workdir, root: oldRoot }],
+      knownRoots: [oldRoot],
+    };
+    expect(
+      validateWorkspaceRootSetting(
+        path.join(workdir, 'sub'),
+        occupancy,
+        context,
+      ),
+    ).toBe('overlaps_workspace_paths');
+    expect(
+      validateWorkspaceRootSetting(
+        path.join(oldRoot, 'nested'),
+        occupancy,
+        context,
+      ),
+    ).toBe('overlaps_workspace_paths');
+    fs.writeFileSync(path.join(oldRoot, '.happyclaw-workspace-root'), '');
+    // Switching back to the old root: its own workspaces are fine there.
+    expect(
+      validateWorkspaceRootSetting(oldRoot, occupancy, context),
     ).toBeNull();
   });
 

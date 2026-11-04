@@ -93,14 +93,25 @@ function selfAndAncestors(dir: string): string[] {
 }
 
 /**
- * The first reason `candidate` cannot be a workspace root, or null.
- * `occupiedPaths` (custom directories and mount sources of existing
- * workspaces) must not overlap the root: it would become protected.
+ * What existing workspaces already use, for checking a new root: their
+ * directories, custom directories and mount sources must not overlap it
+ * (one workspace's directory inside another's would be deleted with it),
+ * and it must not sit inside or around another known root. Being one of
+ * the known roots (switching back to an old root) is fine.
  */
+export interface WorkspaceRootOccupancy {
+  /** Custom directories and mount sources of existing workspaces. */
+  occupiedPaths?: readonly string[];
+  /** Recorded workspace directories and the root each was created in. */
+  workdirs?: ReadonlyArray<{ workdir: string; root: string }>;
+  knownRoots?: readonly string[];
+}
+
+/** The first reason `candidate` cannot be a workspace root, or null. */
 export function checkWorkspaceRootCandidate(
   candidate: string,
   context: WorkspaceRootContext,
-  occupiedPaths: readonly string[] = [],
+  occupancy: WorkspaceRootOccupancy = {},
 ): WorkspaceRootProblem | null {
   const expanded = expandHome(candidate.trim(), context.home);
   if (!expanded || !path.isAbsolute(expanded)) return 'not_absolute';
@@ -136,9 +147,16 @@ export function checkWorkspaceRootCandidate(
   ) {
     return 'inside_git_repo';
   }
+  const overlaps = (other: string) =>
+    pathsOverlap(canonicalizePath(other), resolved);
+  const isThisRoot = (root: string) => canonicalizePath(root) === resolved;
   if (
-    occupiedPaths.some((occupied) =>
-      pathsOverlap(canonicalizePath(occupied), resolved),
+    (occupancy.occupiedPaths ?? []).some(overlaps) ||
+    (occupancy.workdirs ?? []).some(
+      ({ workdir, root }) => !isThisRoot(root) && overlaps(workdir),
+    ) ||
+    (occupancy.knownRoots ?? []).some(
+      (root) => !isThisRoot(root) && overlaps(root),
     )
   ) {
     return 'overlaps_workspace_paths';
@@ -156,8 +174,9 @@ export function resolveWorkspaceRoot(input: {
   configured: string;
   env: string | undefined;
   context: WorkspaceRootContext;
+  occupancy?: WorkspaceRootOccupancy;
 }): WorkspaceRootResolution {
-  const { context } = input;
+  const { context, occupancy } = input;
   const configured = input.configured.trim() || null;
   const fromEnv = input.env?.trim() || null;
   const source: WorkspaceRootSource = configured
@@ -171,7 +190,11 @@ export function resolveWorkspaceRoot(input: {
       path.join(context.home, DEFAULT_WORKSPACE_ROOT_NAME),
     context.home,
   );
-  const fallbackReason = checkWorkspaceRootCandidate(requested, context);
+  const fallbackReason = checkWorkspaceRootCandidate(
+    requested,
+    context,
+    occupancy,
+  );
   if (!fallbackReason) {
     return {
       effective: canonicalizePath(requested),
@@ -189,7 +212,7 @@ export function resolveWorkspaceRoot(input: {
     configured,
     requested,
     fallbackReason,
-    fallbackWarning: checkWorkspaceRootCandidate(fallback, context),
+    fallbackWarning: checkWorkspaceRootCandidate(fallback, context, occupancy),
   };
 }
 
@@ -197,26 +220,33 @@ export function workspaceRootContext(): WorkspaceRootContext {
   return { home: os.homedir(), installDir: path.dirname(DATA_DIR) };
 }
 
-export function getWorkspaceRootResolution(): WorkspaceRootResolution {
+/**
+ * `occupancy` (what existing workspaces use, src/workspace-dir.ts
+ * getWorkspaceRootOccupancy) lets the effective root avoid them; without it
+ * only the path itself is checked.
+ */
+export function getWorkspaceRootResolution(
+  occupancy?: WorkspaceRootOccupancy,
+): WorkspaceRootResolution {
   return resolveWorkspaceRoot({
     configured: getSystemSettings().workspaceRoot,
     env: process.env[WORKSPACE_ROOT_ENV],
     context: workspaceRootContext(),
+    occupancy,
   });
 }
 
 /**
  * Validate a value an admin wants to store. '' clears the setting. Returns
- * the problem, or null when the value can be saved. `occupiedPaths`: custom
- * directories and mount sources of existing workspaces.
+ * the problem, or null when the value can be saved.
  */
 export function validateWorkspaceRootSetting(
   value: string,
-  occupiedPaths: readonly string[] = [],
+  occupancy: WorkspaceRootOccupancy = {},
   context: WorkspaceRootContext = workspaceRootContext(),
 ): WorkspaceRootProblem | null {
   if (!value.trim()) return null;
-  return checkWorkspaceRootCandidate(value, context, occupiedPaths);
+  return checkWorkspaceRootCandidate(value, context, occupancy);
 }
 
 /** Create the effective root (0700, marked as HappyClaw's) and return it. */
