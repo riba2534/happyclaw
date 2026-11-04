@@ -22,7 +22,6 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { AccountMenuItems, GuestBadge } from './AccountMenu';
 import { filterNavItems } from './nav-items';
-import { useIsSingleUserHost } from '../../lib/deployment-mode';
 
 const BugReportDialog = lazyBugReportDialog.Component;
 
@@ -120,15 +119,14 @@ export function NavDrawer() {
   const location = useLocation();
   const user = useAuthStore((s) => s.user);
   const isGuest = useIsGuest();
-  const singleUserHost = useIsSingleUserHost();
   const billingEnabled = useBillingStore((s) => s.billingEnabled);
   const setPaletteOpen = useShellStore((s) => s.setPaletteOpen);
   const { startNewConversation, creatingSession } = useNewConversation();
   const [showBugReport, setShowBugReport] = useState(false);
   const bugReportMounted = useOpenedOnce(showBugReport);
   const navItems = useMemo(
-    () => filterNavItems(billingEnabled, isGuest, singleUserHost),
-    [billingEnabled, isGuest, singleUserHost],
+    () => filterNavItems(billingEnabled, isGuest),
+    [billingEnabled, isGuest],
   );
   const userInitial = (user?.display_name ||
     user?.username ||

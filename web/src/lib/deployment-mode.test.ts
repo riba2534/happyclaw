@@ -1,6 +1,5 @@
 import { describe, expect, test } from 'vitest';
 import { getSettingsSections } from '../components/settings/SettingsNav';
-import { filterNavItems } from '../components/layout/nav-items';
 import { isSingleUserHostHiddenPath } from './deployment-mode';
 import { parseDeploymentMode } from '../stores/auth';
 import { workspaceDirPlaceholder } from './workspace-root';
@@ -34,15 +33,8 @@ describe('deployment mode', () => {
     );
   });
 
-  test('single-user host mode drops the billing nav item even when billing is on', () => {
-    const paths = (singleUserHost: boolean) =>
-      filterNavItems(true, false, singleUserHost).map((item) => item.path);
-    expect(paths(false)).toContain('/billing');
-    expect(paths(true)).not.toContain('/billing');
-  });
-
   test('the routes it redirects', () => {
-    for (const path of ['/register', '/users', '/billing', '/users/x']) {
+    for (const path of ['/users', '/billing', '/users/x']) {
       expect(isSingleUserHostHiddenPath(path)).toBe(true);
     }
     for (const path of ['/settings', '/usage', '/userspace']) {

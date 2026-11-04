@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { api } from '../api/client';
 import { extractErrorMessage } from '../utils/error';
+import type { DeploymentMode } from './auth';
 
 export interface SystemStatus {
   activeContainers: number;
@@ -13,7 +14,7 @@ export interface SystemStatus {
   dockerImageExists: boolean | null;
   dockerRequired?: boolean | null;
   adminHostOnlyMode?: boolean;
-  deploymentMode?: 'multi_user' | 'single_user_host';
+  deploymentMode?: DeploymentMode;
   dockerPullInProgress?: boolean | null;
   claudeCodeVersions?: {
     host: string | null;

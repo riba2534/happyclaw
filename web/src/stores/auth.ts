@@ -244,12 +244,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   },
 
   setupAdmin: async (username, password, deploymentMode) => {
-    const data = await api.post<{
-      success: boolean;
-      user: UserPublic;
-      setupStatus?: SetupStatus;
-      appearance?: AppearanceConfig;
-    }>('/api/auth/setup', {
+    const data = await api.post<MeResponse>('/api/auth/setup', {
       username,
       password,
       ...(deploymentMode ? { deployment_mode: deploymentMode } : {}),

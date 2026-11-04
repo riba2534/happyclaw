@@ -223,14 +223,16 @@ export function getSettingsSections({
   const shown = (item: NavItem) =>
     !singleUserHost || !isSingleUserHostHiddenTab(item.key);
   const account = accountItems.filter(shown);
-  const system = systemItems.filter(shown).filter((item) => {
+  const system = systemItems.filter((item) => {
+    if (!shown(item)) return false;
     if (item.key === 'billing') return canManageBilling;
     if (item.key === 'main-agent' || item.key === 'host-integration') {
       return isAdmin;
     }
     return canManageSystemConfig;
   });
-  const management = managementItems.filter(shown).filter((item) => {
+  const management = managementItems.filter((item) => {
+    if (!shown(item)) return false;
     if (item.key === 'users') return canManageUsers;
     return canManageSystemConfig;
   });

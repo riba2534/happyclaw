@@ -71,8 +71,7 @@ useAuthStore.setState(
       },
 );
 useBillingStore.setState({
-  // On, so single-user host mode has to hide billing by itself.
-  billingEnabled: true,
+  billingEnabled: false,
   loadBillingStatus: async () => undefined,
 } as never);
 useGroupsStore.setState({

@@ -310,15 +310,11 @@ export function SettingsPage() {
             )}
           </>
         ) : activeTab === 'system' ? (
-          singleUserHost ? (
-            // The registration tab is hidden; its login limits still apply.
-            <div className="space-y-10">
-              <SystemSettingsSection scope="runtime" />
-              <SystemSettingsSection scope="security" />
-            </div>
-          ) : (
+          <div className="space-y-10">
             <SystemSettingsSection scope="runtime" />
-          )
+            {/* The registration tab is hidden; its login limits still apply. */}
+            {singleUserHost && <SystemSettingsSection scope="security" />}
+          </div>
         ) : activeTab === 'main-agent' ? (
           <div className="space-y-10">
             <MainAgentIdentitySection />

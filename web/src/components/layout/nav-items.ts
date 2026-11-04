@@ -43,15 +43,8 @@ export const baseNavItems: NavItem[] = [
   { path: '/settings', icon: Settings, label: '设置', guestVisible: true },
 ];
 
-export function filterNavItems(
-  billingEnabled: boolean,
-  isGuest = false,
-  /** Single-user host mode has no billing, whatever the server reports. */
-  singleUserHost = false,
-) {
+export function filterNavItems(billingEnabled: boolean, isGuest = false) {
   return baseNavItems.filter((item) =>
-    isGuest
-      ? !!item.guestVisible
-      : !item.requiresBilling || (billingEnabled && !singleUserHost),
+    isGuest ? !!item.guestVisible : !item.requiresBilling || billingEnabled,
   );
 }

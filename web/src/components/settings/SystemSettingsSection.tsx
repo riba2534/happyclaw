@@ -18,12 +18,12 @@ import {
 } from './SettingsFormControls';
 import type { HostIntegrationSettings, SystemSettings } from './types';
 import { getErrorMessage } from './types';
+import { apiErrorBody } from '../../utils/error';
 import { useIsSingleUserHost } from '../../lib/deployment-mode';
 import {
   WORKSPACE_ROOT_SOURCE_LABELS,
   workspaceRootProblemMessage,
 } from '../../lib/workspace-root';
-import type { ApiError } from '../../api/client';
 import { Callout } from '@/components/capabilities/capability-ui';
 import { DeploymentModeSettings } from './DeploymentModeSettings';
 
@@ -359,9 +359,10 @@ export function SystemSettingsSection({
 
   const fallbackModelDirty =
     scope === 'runtime' && fallbackModel.trim() !== initialFallbackModel.trim();
+  // Single-user host mode has no members to create guests.
+  const showMemberGuests = scope === 'security' && !singleUserHost;
   const allowMemberGuestsDirty =
-    scope === 'security' &&
-    !singleUserHost &&
+    showMemberGuests &&
     !!settings &&
     allowMemberGuests !== settings.allowMemberGuests;
 
@@ -395,7 +396,7 @@ export function SystemSettingsSection({
     if (scope === 'runtime') {
       payload.fallbackModel = fallbackModel.trim();
     }
-    if (scope === 'security' && !singleUserHost) {
+    if (showMemberGuests) {
       payload.allowMemberGuests = allowMemberGuests;
     }
 
@@ -484,7 +485,7 @@ export function SystemSettingsSection({
           </SettingsSection>
         ))}
 
-        {scope === 'security' && !singleUserHost && (
+        {showMemberGuests && (
           <SettingsSection
             title="访客账号"
             description="访客是只读账号，由所有者直接创建，不经过邀请码。管理员始终可以创建；每位所有者最多 20 个。"
@@ -712,7 +713,7 @@ export function HostIntegrationSettingsSection({
             : '宿主机集成设置已保存',
       );
     } catch (error) {
-      if ((error as ApiError | null)?.body?.code === 'WORKSPACE_ROOT_INVALID') {
+      if (apiErrorBody(error)?.code === 'WORKSPACE_ROOT_INVALID') {
         setWorkspaceRootError(getErrorMessage(error, '工作区根目录不可用。'));
         return;
       }
@@ -923,20 +924,8 @@ export function HostIntegrationSettingsSection({
       {settings.deploymentMode !== undefined && (
         <DeploymentModeSettings
           settings={settings}
-          onSaved={(data) => {
-            setSettings(data);
-            // Keep unsaved edits; take what the switch changed.
-            setDraft((current) =>
-              current
-                ? {
-                    ...current,
-                    deploymentMode: data.deploymentMode,
-                    deploymentModeConfigured: data.deploymentModeConfigured,
-                    deploymentModeSource: data.deploymentModeSource,
-                  }
-                : data,
-            );
-          }}
+          // The draft keeps its unsaved edits; the mode is read from settings.
+          onSaved={setSettings}
         />
       )}
 
@@ -1121,12 +1110,7 @@ function WorkspaceRootRow({
         </p>
         {fallbackReason && (
           <Callout tone="warning" role="status">
-            {source === 'settings'
-              ? '设置的'
-              : source === 'env'
-                ? '环境变量指定的'
-                : '默认的'}
-            目录不能用：{workspaceRootProblemMessage(fallbackReason)}
+            原本要用的目录不能用：{workspaceRootProblemMessage(fallbackReason)}
             已改用上面的目录。
           </Callout>
         )}

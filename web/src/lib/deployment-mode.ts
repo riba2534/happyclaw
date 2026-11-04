@@ -10,8 +10,11 @@ export function useIsSingleUserHost(): boolean {
   return useAuthStore((state) => state.deploymentMode) === 'single_user_host';
 }
 
-/** Routes single-user host mode has no use for; they redirect to /settings. */
-const SINGLE_USER_HOST_HIDDEN_PATHS = ['/register', '/users', '/billing'];
+/**
+ * Signed-in routes single-user host mode has no use for; AuthGuard sends
+ * them to /settings. The public /register redirects in RegisterPage.
+ */
+const SINGLE_USER_HOST_HIDDEN_PATHS = ['/users', '/billing'];
 
 export function isSingleUserHostHiddenPath(pathname: string): boolean {
   return SINGLE_USER_HOST_HIDDEN_PATHS.some(

@@ -95,12 +95,13 @@ export function CommandPalette({
   const commandGroups = useMemo(() => {
     const isAdmin = user?.role === 'admin';
     const isGuest = user?.role === 'guest';
+    const canManageUsers = !singleUserHost && hasPermission('manage_users');
     const built = buildCommandGroups({
-      navItems: filterNavItems(billingEnabled, isGuest, singleUserHost),
+      navItems: filterNavItems(billingEnabled, isGuest),
       settingsSections: getSettingsSections({
         canManageSystemConfig: hasPermission('manage_system_config'),
         canManageBilling: hasPermission('manage_billing'),
-        canManageUsers: hasPermission('manage_users'),
+        canManageUsers,
         isAdmin,
         isGuest,
         singleUserHost,
@@ -109,7 +110,7 @@ export function CommandPalette({
       groups,
       agents,
       canViewMonitor: hasPermission('manage_system_config'),
-      canManageUsers: !singleUserHost && hasPermission('manage_users'),
+      canManageUsers,
       theme,
       colorScheme,
       currentSession,

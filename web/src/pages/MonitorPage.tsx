@@ -2,7 +2,6 @@ import { PhoneBarButton } from '../components/layout/PhonePageHeader';
 import { useEffect, useRef, useState } from 'react';
 import { useMonitorStore } from '../stores/monitor';
 import { useAuthStore } from '../stores/auth';
-import { useIsSingleUserHost } from '../lib/deployment-mode';
 import { ContainerStatus } from '../components/monitor/ContainerStatus';
 import { QueueStatus } from '../components/monitor/QueueStatus';
 import { SystemInfo } from '../components/monitor/SystemInfo';
@@ -98,11 +97,8 @@ export function MonitorPage({ embedded = false }: MonitorPageProps) {
   const canManageSystem = useAuthStore((s) =>
     s.hasPermission('manage_system_config'),
   );
-  // Single-user host mode reports the Docker fields as null.
-  const singleUserHost =
-    useIsSingleUserHost() ||
-    status?.deploymentMode === 'single_user_host' ||
-    status?.dockerRequired === null;
+  // Single-user host mode uses no Docker and reports its fields as null.
+  const hostOnly = status?.dockerRequired === null;
   const logEndRef = useRef<HTMLDivElement>(null);
   const [claudeStatus, setClaudeStatus] = useState<{
     description: string;
@@ -263,9 +259,9 @@ export function MonitorPage({ embedded = false }: MonitorPageProps) {
       {status && (
         <>
           <div className="grid grid-cols-1 items-start gap-3 sm:grid-cols-3">
-            <ContainerStatus status={status} hostOnly={singleUserHost} />
+            <ContainerStatus status={status} hostOnly={hostOnly} />
             <QueueStatus status={status} />
-            <SystemInfo status={status} hostOnly={singleUserHost} />
+            <SystemInfo status={status} hostOnly={hostOnly} />
           </div>
 
           <SettingsSection title="服务状态">
@@ -304,7 +300,7 @@ export function MonitorPage({ embedded = false }: MonitorPageProps) {
               />
 
               {/* Docker 镜像状态：单人宿主机模式不用 Docker */}
-              {singleUserHost ? null : status.dockerRequired === false ? (
+              {hostOnly ? null : status.dockerRequired === false ? (
                 <SettingsRow
                   label="Docker 镜像"
                   description={

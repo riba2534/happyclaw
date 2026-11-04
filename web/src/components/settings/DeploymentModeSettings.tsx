@@ -3,7 +3,9 @@ import { Link } from 'react-router-dom';
 import { Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
 
-import { api, type ApiError } from '../../api/client';
+import { api } from '../../api/client';
+import { apiErrorBody } from '../../utils/error';
+import { ROLE_LABELS } from '../users/utils';
 import { useAuthStore, type DeploymentMode } from '../../stores/auth';
 import { useBillingStore } from '../../stores/billing';
 import { useChatStore } from '../../stores/chat';
@@ -15,19 +17,13 @@ import { DeploymentModeChoice } from './DeploymentModeChoice';
 import type { HostIntegrationSettings, OtherActiveUser } from './types';
 import { getErrorMessage } from './types';
 
-const ROLE_LABELS: Record<string, string> = {
-  admin: '管理员',
-  member: '成员',
-  guest: '访客',
-};
-
 interface Conflict {
   message: string;
   users: OtherActiveUser[];
 }
 
 function conflictOf(error: unknown): Conflict | null {
-  const body = (error as ApiError | null)?.body;
+  const body = apiErrorBody(error);
   if (body?.code !== 'SINGLE_USER_HOST_OTHER_USERS') return null;
   return {
     message: getErrorMessage(error, '请先停用其他账号。'),
@@ -81,11 +77,16 @@ export function DeploymentModeSettings({
         .getState()
         .setDeploymentMode(data.deploymentMode ?? 'multi_user');
       onSaved(data);
-      // Workspaces moved to the host, and billing follows the mode.
+      // Billing follows the mode; only the switch to single-user host
+      // moves workspaces (to the host).
       await Promise.allSettled([
-        useChatStore.getState().loadGroups(),
-        useGroupsStore.getState().loadGroups(),
         useBillingStore.getState().loadBillingStatus({ force: true }),
+        ...(toSingle
+          ? [
+              useChatStore.getState().loadGroups(),
+              useGroupsStore.getState().loadGroups(),
+            ]
+          : []),
       ]);
       toast.success(toSingle ? '已切换到单人宿主机模式' : '已切换到多人模式');
     } catch (error) {
