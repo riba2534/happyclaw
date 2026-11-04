@@ -5,6 +5,7 @@ import { useIsGuest } from '../../stores/auth';
 import { useScrollDirection } from '../../hooks/useScrollDirection';
 import { lightTap } from '../../hooks/useHaptic';
 import { filterNavItems } from './nav-items';
+import { useIsSingleUserHost } from '../../lib/deployment-mode';
 
 export function BottomTabBar() {
   const location = useLocation();
@@ -12,14 +13,15 @@ export function BottomTabBar() {
   const isCompact = scrollDir === 'down';
   const billingEnabled = useBillingStore((s) => s.billingEnabled);
   const isGuest = useIsGuest();
+  const singleUserHost = useIsSingleUserHost();
 
   const navItems = useMemo(
     () =>
       // Guests have few pages, so their 记忆 tab fits on phones too.
-      filterNavItems(billingEnabled, isGuest).filter(
+      filterNavItems(billingEnabled, isGuest, singleUserHost).filter(
         (item) => isGuest || !item.hideOnMobile,
       ),
-    [billingEnabled, isGuest],
+    [billingEnabled, isGuest, singleUserHost],
   );
 
   return (

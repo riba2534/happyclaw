@@ -9,10 +9,12 @@ export interface SystemStatus {
   maxConcurrentContainers: number;
   queueLength: number;
   uptime: number;
-  dockerImageExists: boolean;
-  dockerRequired?: boolean;
+  // The Docker fields are null in single-user host mode: Docker is not used.
+  dockerImageExists: boolean | null;
+  dockerRequired?: boolean | null;
   adminHostOnlyMode?: boolean;
-  dockerPullInProgress?: boolean;
+  deploymentMode?: 'multi_user' | 'single_user_host';
+  dockerPullInProgress?: boolean | null;
   claudeCodeVersions?: {
     host: string | null;
     container: string | null;

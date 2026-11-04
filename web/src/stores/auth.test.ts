@@ -74,6 +74,7 @@ beforeEach(() => {
     setupStatus: null,
     appearance: null,
     initialized: true,
+    deploymentMode: 'multi_user',
     checking: false,
   });
 });
@@ -121,5 +122,44 @@ describe('auth store sign-in from a public page', () => {
     // User-scoped stores that were loaded are reset synchronously; auth
     // never has to download them first.
     expect(mocks.resetUsage).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('auth store deployment mode', () => {
+  test('reads it from /api/auth/status, multi_user when absent', async () => {
+    mocks.apiGet.mockResolvedValueOnce({
+      initialized: true,
+      deploymentMode: 'single_user_host',
+    });
+    await useAuthStore.getState().checkStatus();
+    expect(useAuthStore.getState().deploymentMode).toBe('single_user_host');
+
+    mocks.apiGet.mockResolvedValueOnce({ initialized: true });
+    await useAuthStore.getState().checkStatus();
+    expect(useAuthStore.getState().deploymentMode).toBe('multi_user');
+  });
+
+  test('reads it from /api/auth/me', async () => {
+    mocks.apiGet.mockResolvedValueOnce({
+      user: registeredUser,
+      deploymentMode: 'single_user_host',
+    });
+    await useAuthStore.getState().checkAuth();
+    expect(useAuthStore.getState()).toMatchObject({
+      authenticated: true,
+      deploymentMode: 'single_user_host',
+    });
+  });
+
+  test('setup sends the chosen mode and applies it', async () => {
+    await useAuthStore
+      .getState()
+      .setupAdmin('admin', 'password-123', 'single_user_host');
+    expect(mocks.apiPost).toHaveBeenCalledWith('/api/auth/setup', {
+      username: 'admin',
+      password: 'password-123',
+      deployment_mode: 'single_user_host',
+    });
+    expect(useAuthStore.getState().deploymentMode).toBe('single_user_host');
   });
 });

@@ -46,6 +46,7 @@ import { cn } from '@/lib/utils';
 import { SHORTCUTS } from '@/lib/shortcuts';
 import { enterWorkspace } from '../../lib/chat-navigation';
 import { filterNavItems } from './nav-items';
+import { useIsSingleUserHost } from '../../lib/deployment-mode';
 import { withBasePath } from '../../utils/url';
 import { SidebarItem } from './sidebar/SidebarItem';
 import { WorkspaceTree } from './sidebar/WorkspaceTree';
@@ -68,6 +69,7 @@ export function UnifiedSidebar() {
 
   const user = useAuthStore((s) => s.user);
   const isGuest = useIsGuest();
+  const singleUserHost = useIsSingleUserHost();
   const appearance = useAuthStore((s) => s.appearance);
   const billingEnabled = useBillingStore((s) => s.billingEnabled);
   const width = useShellStore((s) => s.sidebarWidth);
@@ -101,8 +103,8 @@ export function UnifiedSidebar() {
     user?.username ||
     '?')[0].toUpperCase();
   const navItems = useMemo(
-    () => filterNavItems(billingEnabled, isGuest),
-    [billingEnabled, isGuest],
+    () => filterNavItems(billingEnabled, isGuest, singleUserHost),
+    [billingEnabled, isGuest, singleUserHost],
   );
 
   // 窄 selector：整 store 订阅会让侧边栏跟着流式输出每帧重渲染。

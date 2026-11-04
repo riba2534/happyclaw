@@ -32,6 +32,7 @@ import { sidebarRowClass } from '@/components/layout/sidebar/SidebarItem';
 import { cn } from '@/lib/utils';
 import type { SettingsTab } from './types';
 import { isGuestSettingsTab } from '../../lib/guest';
+import { isSingleUserHostHiddenTab } from '../../lib/deployment-mode';
 
 export interface SettingsNavItem {
   key: SettingsTab;
@@ -198,6 +199,8 @@ export interface SettingsPermissions {
   isAdmin: boolean;
   /** Read-only guests only see their own account sections. */
   isGuest?: boolean;
+  /** Single-user host mode drops the sections about other people and money. */
+  singleUserHost?: boolean;
 }
 
 /** Settings sections visible to the current user (also used by ⌘K). */
@@ -207,6 +210,7 @@ export function getSettingsSections({
   canManageUsers,
   isAdmin,
   isGuest = false,
+  singleUserHost = false,
 }: SettingsPermissions): { label: string; items: NavItem[] }[] {
   if (isGuest) {
     return [
@@ -216,19 +220,22 @@ export function getSettingsSections({
       },
     ];
   }
-  const system = systemItems.filter((item) => {
+  const shown = (item: NavItem) =>
+    !singleUserHost || !isSingleUserHostHiddenTab(item.key);
+  const account = accountItems.filter(shown);
+  const system = systemItems.filter(shown).filter((item) => {
     if (item.key === 'billing') return canManageBilling;
     if (item.key === 'main-agent' || item.key === 'host-integration') {
       return isAdmin;
     }
     return canManageSystemConfig;
   });
-  const management = managementItems.filter((item) => {
+  const management = managementItems.filter(shown).filter((item) => {
     if (item.key === 'users') return canManageUsers;
     return canManageSystemConfig;
   });
   return [
-    { label: '账户设置', items: accountItems },
+    { label: '账户设置', items: account },
     ...(system.length ? [{ label: '系统配置', items: system }] : []),
     ...(management.length ? [{ label: '管理后台', items: management }] : []),
   ];
@@ -242,6 +249,7 @@ interface SettingsNavProps {
   canManageUsers: boolean;
   isAdmin: boolean;
   isGuest?: boolean;
+  singleUserHost?: boolean;
   mustChangePassword: boolean;
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
@@ -262,6 +270,7 @@ export function SettingsNav({
   canManageUsers,
   isAdmin,
   isGuest = false,
+  singleUserHost = false,
   mustChangePassword,
   open,
   onOpenChange,
@@ -274,6 +283,7 @@ export function SettingsNav({
     canManageUsers,
     isAdmin,
     isGuest,
+    singleUserHost,
   });
 
   const keyword = query.trim().toLowerCase();

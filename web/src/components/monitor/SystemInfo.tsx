@@ -6,6 +6,8 @@ import { StatTile } from './StatTile';
 
 interface SystemInfoProps {
   status: SystemStatus;
+  /** Single-user host mode has no container image to report. */
+  hostOnly?: boolean;
 }
 
 /** Extract semver-like version number from strings like "2.1.81 (Claude Code)" */
@@ -52,7 +54,7 @@ function InfoRow({ label, children }: { label: string; children: ReactNode }) {
   );
 }
 
-export function SystemInfo({ status }: SystemInfoProps) {
+export function SystemInfo({ status, hostOnly }: SystemInfoProps) {
   const formatUptime = (seconds: number) => {
     const hours = Math.floor(seconds / 3600);
     const minutes = Math.floor((seconds % 3600) / 60);
@@ -88,19 +90,21 @@ export function SystemInfo({ status }: SystemInfoProps) {
                 latest={versions?.latest}
               />
             </InfoRow>
-            <InfoRow label="容器">
-              <span className="font-mono">
-                {versions?.container
-                  ? extractVersion(versions.container) || versions.container
-                  : '未构建'}
-              </span>
-              {versions?.container && (
-                <VersionBadge
-                  current={versions.container}
-                  latest={versions?.latest}
-                />
-              )}
-            </InfoRow>
+            {!hostOnly && (
+              <InfoRow label="容器">
+                <span className="font-mono">
+                  {versions?.container
+                    ? extractVersion(versions.container) || versions.container
+                    : '未构建'}
+                </span>
+                {versions?.container && (
+                  <VersionBadge
+                    current={versions.container}
+                    latest={versions?.latest}
+                  />
+                )}
+              </InfoRow>
+            )}
           </>
         )}
 
