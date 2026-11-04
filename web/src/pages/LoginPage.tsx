@@ -9,6 +9,7 @@ import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { withBasePath } from '../utils/url';
+import { useIsSingleUserHost } from '../lib/deployment-mode';
 
 interface RegisterStatus {
   allowRegistration: boolean;
@@ -19,9 +20,12 @@ type Tab = 'login' | 'register';
 
 export function LoginPage() {
   const [searchParams] = useSearchParams();
-  const [tab, setTab] = useState<Tab>(
+  const [requestedTab, setTab] = useState<Tab>(
     searchParams.get('tab') === 'register' ? 'register' : 'login',
   );
+  // Single-user host mode has no registration (the server refuses it too).
+  const singleUserHost = useIsSingleUserHost();
+  const tab: Tab = singleUserHost ? 'login' : requestedTab;
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
@@ -251,7 +255,7 @@ export function LoginPage() {
                   </Button>
                 </form>
 
-                {regStatus.allowRegistration && (
+                {regStatus.allowRegistration && !singleUserHost && (
                   <p className="mt-5 text-center text-body text-muted-foreground">
                     {regStatus.requireInviteCode
                       ? '有邀请码？'

@@ -4,6 +4,10 @@ import { Button } from '@/components/ui/button';
 import { type Permission, useAuthStore } from '../../stores/auth';
 import { LogoLoading } from '../common/LogoLoading';
 import { isGuestAllowedPath } from '../../lib/guest';
+import {
+  isSingleUserHostHiddenPath,
+  useIsSingleUserHost,
+} from '../../lib/deployment-mode';
 
 interface AuthGuardProps {
   children: React.ReactNode;
@@ -26,6 +30,7 @@ export function AuthGuard({
     initialized,
     hasPermission,
   } = useAuthStore();
+  const singleUserHost = useIsSingleUserHost();
   const location = useLocation();
   const navigate = useNavigate();
   const checkedRef = useRef(false);
@@ -93,6 +98,11 @@ export function AuthGuard({
 
   // Users with must_change_password go to settings
   if (user?.must_change_password && location.pathname !== '/settings') {
+    return <Navigate to="/settings" replace />;
+  }
+
+  // Single-user host mode has no other users, registration or billing.
+  if (singleUserHost && isSingleUserHostHiddenPath(location.pathname)) {
     return <Navigate to="/settings" replace />;
   }
 

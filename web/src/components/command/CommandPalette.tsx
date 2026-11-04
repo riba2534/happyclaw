@@ -28,6 +28,7 @@ import { sessionJidOf } from '../../lib/session-jid';
 import { useTheme } from '../../hooks/useTheme';
 import { useNewConversation } from '../../hooks/useNewConversation';
 import { filterNavItems } from '../layout/nav-items';
+import { useIsSingleUserHost } from '../../lib/deployment-mode';
 import { getSettingsSections } from '../settings/SettingsNav';
 import {
   buildCommandGroups,
@@ -56,6 +57,7 @@ export function CommandPalette({
   const user = useAuthStore((s) => s.user);
   const hasPermission = useAuthStore((s) => s.hasPermission);
   const billingEnabled = useBillingStore((s) => s.billingEnabled);
+  const singleUserHost = useIsSingleUserHost();
   const groups = useChatStore((s) => s.groups);
   const agents = useChatStore((s) => s.agents);
   const currentGroup = useChatStore((s) => s.currentGroup);
@@ -93,20 +95,22 @@ export function CommandPalette({
   const commandGroups = useMemo(() => {
     const isAdmin = user?.role === 'admin';
     const isGuest = user?.role === 'guest';
+    const canManageUsers = !singleUserHost && hasPermission('manage_users');
     const built = buildCommandGroups({
       navItems: filterNavItems(billingEnabled, isGuest),
       settingsSections: getSettingsSections({
         canManageSystemConfig: hasPermission('manage_system_config'),
         canManageBilling: hasPermission('manage_billing'),
-        canManageUsers: hasPermission('manage_users'),
+        canManageUsers,
         isAdmin,
         isGuest,
+        singleUserHost,
       }),
       canCreate: !isGuest,
       groups,
       agents,
       canViewMonitor: hasPermission('manage_system_config'),
-      canManageUsers: hasPermission('manage_users'),
+      canManageUsers,
       theme,
       colorScheme,
       currentSession,
@@ -125,6 +129,7 @@ export function CommandPalette({
     agents,
     currentSession,
     billingEnabled,
+    singleUserHost,
     colorScheme,
     groups,
     hasPermission,
