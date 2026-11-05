@@ -108,7 +108,15 @@ export interface StreamingStep {
    * kept on the step for the reader to answer after the turn.
    */
   questions?: StepQuestion[];
+  /**
+   * tool, task (status `error`): why it ended without a result of its own. A
+   * stop caught it in flight, or a permission denial refused it; absent for a
+   * call that failed by itself (and in steps stored before it was kept).
+   */
+  outcome?: StepOutcome;
 }
+
+export type StepOutcome = 'stopped' | 'denied';
 
 /** One question of an AskUserQuestion call, as the reader answers it. */
 export interface StepQuestion {
@@ -639,6 +647,7 @@ export function failToolStep(
     status: 'error',
     endedAt: list.steps[index].endedAt ?? at,
     resultPreview: head(reason, MAX_RESULT_PREVIEW_CHARS),
+    outcome: 'denied',
   });
 }
 
@@ -748,22 +757,19 @@ export function finishSteps(
   if (!list.steps.some((step) => step.status === 'running')) return list;
   return {
     dropped: list.dropped,
-    steps: list.steps.map((step) =>
-      step.status !== 'running'
-        ? step
-        : {
+    steps: list.steps.map((step) => {
+      if (step.status !== 'running') return step;
+      const cut = stopped && (step.kind === 'tool' || step.kind === 'task');
+      return cut
+        ? {
             ...step,
             endedAt: at,
-            status:
-              stopped && (step.kind === 'tool' || step.kind === 'task')
-                ? 'error'
-                : 'done',
-            resultPreview:
-              stopped && (step.kind === 'tool' || step.kind === 'task')
-                ? (step.resultPreview ?? '已停止')
-                : step.resultPreview,
-          },
-    ),
+            status: 'error',
+            resultPreview: step.resultPreview ?? '已停止',
+            outcome: 'stopped',
+          }
+        : { ...step, endedAt: at, status: 'done' };
+    }),
   };
 }
 

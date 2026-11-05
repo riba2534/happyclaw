@@ -638,6 +638,75 @@ describe('ProcessCard, settled', () => {
     expect(text()).toContain('被权限策略拒绝');
   });
 
+  it('says, folded, what went wrong and out of how many calls', async () => {
+    await render(
+      <ProcessCard
+        {...props({
+          steps: [
+            tool('a', 'Read'),
+            tool('b', 'Bash', { status: 'error', resultPreview: 'exit 1' }),
+            tool('c', 'Bash', {
+              status: 'error',
+              resultPreview: '被权限策略拒绝',
+              outcome: 'denied',
+            }),
+          ],
+        })}
+      />,
+    );
+    expect(header()?.textContent).toBe(
+      '已工作 1s · 3 个工具 · 1 个失败 · 1 个被拒绝',
+    );
+    const problems = header()?.querySelector('[data-hc-work-problems]');
+    expect(problems?.className).toContain('text-error');
+    expect(header()?.querySelector('svg.lucide-layers')).toBeNull();
+    expect(header()?.querySelector('[data-tool-state="error"]')).not.toBeNull();
+    // Opened, the counts under the line say it, and the line does not.
+    await click(header());
+    expect(header()?.textContent).toBe('已工作 1s');
+    expect(counts()).toBe('3 个工具 · 1 个失败 · 1 个被拒绝');
+  });
+
+  it('says a stop apart from a failure, in the warning colour', async () => {
+    await render(
+      <ProcessCard
+        {...props({
+          steps: [
+            tool('a', 'Read'),
+            // Stored before the outcome was kept: only the stop's word.
+            tool('b', 'Bash', { status: 'error', resultPreview: '已停止' }),
+          ],
+        })}
+      />,
+    );
+    expect(header()?.textContent).toBe('已工作 1s · 2 个工具 · 1 个已中断');
+    expect(
+      header()?.querySelector('[data-hc-work-problems]')?.className,
+    ).toContain('text-warning');
+    await click(header());
+    const spoken = rows()[1].querySelector('.sr-only')?.textContent ?? '';
+    expect(spoken).toContain('已中断');
+    expect(
+      rows()[1].querySelector('[data-tool-state="stopped"]'),
+    ).not.toBeNull();
+  });
+
+  it('adds nothing to the folded line when nothing went wrong', async () => {
+    await render(
+      <ProcessCard
+        {...props({
+          steps: [
+            tool('a', 'Read'),
+            // Never closed: not a failure.
+            tool('b', 'Bash', { status: 'running', endedAt: undefined }),
+          ],
+        })}
+      />,
+    );
+    expect(header()?.textContent).toMatch(/^已工作[^·]*$/);
+    expect(header()?.querySelector('svg.lucide-layers')).not.toBeNull();
+  });
+
   it('draws nothing that runs, even for a step the stop caught in flight', async () => {
     await render(
       <ProcessCard

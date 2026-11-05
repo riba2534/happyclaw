@@ -7,19 +7,10 @@ import { STREAMING_MARKDOWN_INTERVAL_MS } from '../../lib/streaming-interval';
 import { MarkdownRenderer } from './MarkdownRenderer';
 import { ThinkingBody } from './ThinkingBlock';
 import { ToolRow } from './ToolActivityCard';
+import { TOOL_STATE, ToolStateIcon, taskStatusState } from './tool-status';
 
 /** Sub-agent progress panels preview only the end of their streamed text. */
 const PROGRESS_TAIL_CHARS = 2000;
-
-export const STATUS_LABELS: Record<
-  StreamingTaskRuntimeState['status'],
-  string
-> = {
-  running: '执行中',
-  backgrounded: '后台执行',
-  completed: '已完成',
-  error: '出错',
-};
 
 /** A sub-agent with nothing to show under its title has nothing to open. */
 export function subAgentHasBody(task: StreamingTaskRuntimeState): boolean {
@@ -116,17 +107,14 @@ export const SubAgentCard = memo(function SubAgentCard({
     defaultExpanded ?? task.status === 'running',
   );
   const bodyId = useId();
-  const isRunning = task.status === 'running' || task.status === 'backgrounded';
+  const state = taskStatusState(task.status);
 
   // A card with nothing under its title (no tool yet, none of its text shown)
   // has nothing to open: its title row is a plain row, not a button.
   const hasBody = subAgentHasBody(task);
   const titleRow = (
     <>
-      <span
-        aria-hidden="true"
-        className={`size-2 shrink-0 rounded-full ${isRunning ? 'animate-pulse bg-primary' : task.status === 'error' ? 'bg-error' : 'bg-success'}`}
-      />
+      <ToolStateIcon state={state} />
       <span className="min-w-0 max-w-full truncate text-label font-medium text-foreground sm:max-w-[45%]">
         <span className="sr-only">子 Agent：</span>
         {task.title}
@@ -147,7 +135,7 @@ export const SubAgentCard = memo(function SubAgentCard({
         </span>
       )}
       <span className="ml-auto shrink-0 text-caption text-muted-foreground">
-        {STATUS_LABELS[task.status]}
+        {TOOL_STATE[state].label}
       </span>
       {hasBody &&
         (expanded ? (

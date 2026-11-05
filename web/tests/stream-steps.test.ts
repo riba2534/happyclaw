@@ -192,6 +192,7 @@ describe('tool steps', () => {
     expect(list.steps[0]).toMatchObject({
       status: 'error',
       resultPreview: '被权限策略拒绝',
+      outcome: 'denied',
     });
   });
 
@@ -399,7 +400,28 @@ describe('the end of a reply', () => {
     expect(list.steps[0]).toMatchObject({
       status: 'error',
       resultPreview: '已停止',
+      outcome: 'stopped',
     });
+  });
+
+  it('says a stop, not a failure, cut short a call that had output already', () => {
+    const started = startToolStep(
+      empty(),
+      { toolUseId: 't1', toolName: 'Bash' },
+      0,
+    );
+    const withOutput = {
+      ...started,
+      steps: [{ ...started.steps[0], resultPreview: 'half' }],
+    };
+    const list = finishSteps(withOutput, 9, true);
+    expect(list.steps[0]).toMatchObject({
+      status: 'error',
+      resultPreview: 'half',
+      outcome: 'stopped',
+    });
+    // A run that ends by itself closes what runs, with no outcome.
+    expect(finishSteps(started, 9, false).steps[0].outcome).toBeUndefined();
   });
 
   it('returns the same list when nothing runs', () => {

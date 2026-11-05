@@ -221,14 +221,17 @@ function mergeTaskStep(
 ): StreamingStep {
   const real = (title?: string) =>
     title && title !== PLACEHOLDER_TASK_TITLE ? title : undefined;
+  // How it ended is the later part's, as its status is.
+  const { outcome: _outcome, ...before } = earlier;
   return {
-    ...earlier,
+    ...before,
     status: later.status,
     endedAt: later.endedAt ?? earlier.endedAt,
     title: real(earlier.title) ?? real(later.title) ?? earlier.title,
     summary: later.summary ?? earlier.summary,
     resultPreview: later.resultPreview ?? earlier.resultPreview,
     resultFacts: later.resultFacts ?? earlier.resultFacts,
+    ...(later.outcome ? { outcome: later.outcome } : {}),
   };
 }
 
@@ -944,6 +947,9 @@ function readStep(raw: unknown): StreamingStep | null {
   if (isFiniteNumber(row.from)) step.from = row.from;
   if (row.commentary === true) step.commentary = true;
   if (row.progress === true) step.progress = true;
+  if (row.outcome === 'stopped' || row.outcome === 'denied') {
+    step.outcome = row.outcome;
+  }
   for (const key of [
     'text',
     'title',

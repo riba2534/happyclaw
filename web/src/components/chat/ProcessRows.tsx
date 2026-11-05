@@ -15,13 +15,11 @@ import {
   FileText,
   FolderSearch,
   Globe,
-  Loader2,
   MessageSquare,
   Search,
   Sparkles,
   Terminal,
   Wrench,
-  X,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -65,7 +63,17 @@ import { useTick } from '../../hooks/useTick';
 import { formatElapsedMs } from '../../utils/format-elapsed';
 import { AskUserQuestionCard } from './AskUserQuestionCard';
 import { ModelWaitRow } from './ModelWaitRow';
-import { STATUS_LABELS, SubAgentBody, subAgentHasBody } from './SubAgentCard';
+import { SubAgentBody, subAgentHasBody } from './SubAgentCard';
+import {
+  TOOL_STATE,
+  ToolStateIcon,
+  countToolStates,
+  describeProblems,
+  stepToolState,
+  taskToolState,
+  worstProblem,
+  type ToolState,
+} from './tool-status';
 import { NO_SUMMARY_EXPLANATION, ThinkingBody } from './ThinkingBlock';
 import { InfoTip } from '../common/InfoTip';
 import { ClampedDetail } from './ClampedDetail';
@@ -91,24 +99,37 @@ const ROW_BUTTON_CLASS =
   'cursor-pointer transition-colors hover:bg-surface-hover focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:outline-none';
 const ICON_CLASS = 'size-3.5 shrink-0';
 
-type Tone = 'quiet' | 'active' | 'error';
+type Tone = 'quiet' | 'active' | 'warning' | 'error';
 
 const ICON_TONE: Record<Tone, string> = {
   quiet: 'text-faint-foreground',
   active: 'text-muted-foreground',
+  warning: 'text-warning',
   error: 'text-error',
 };
 
+/** A row's tone for a call in this state. */
+function stateTone(state: ToolState): Tone {
+  if (state === 'running' || state === 'background') return 'active';
+  if (TOOL_STATE[state].quiet) return 'quiet';
+  return state === 'stopped' ? 'warning' : 'error';
+}
+
+/**
+ * A call's mark: its state's, or, when the state has nothing to say (done,
+ * never closed), the row's own mark for the kind of call it was.
+ */
+function StateIcon({ state, kind }: { state: ToolState; kind: LucideIcon }) {
+  return TOOL_STATE[state].quiet ? (
+    <RowIcon icon={kind} tone="quiet" />
+  ) : (
+    <ToolStateIcon state={state} />
+  );
+}
+
 function RowIcon({ icon: Icon, tone }: { icon: LucideIcon; tone: Tone }) {
   return (
-    <Icon
-      aria-hidden="true"
-      className={cn(
-        ICON_CLASS,
-        ICON_TONE[tone],
-        Icon === Loader2 && 'animate-spin motion-reduce:animate-none',
-      )}
-    />
+    <Icon aria-hidden="true" className={cn(ICON_CLASS, ICON_TONE[tone])} />
   );
 }
 
@@ -235,8 +256,8 @@ function RowFrame({
             className={cn(
               'min-w-0 flex-1 truncate',
               mono && 'font-mono text-caption',
-              tone === 'error'
-                ? 'text-error'
+              tone === 'error' || tone === 'warning'
+                ? ICON_TONE[tone]
                 : running
                   ? 'text-muted-foreground'
                   : 'text-faint-foreground',
@@ -462,8 +483,10 @@ const ToolStepRow = memo(function ToolStepRow({
   const { hint } = describeToolName(name, step.skillName);
   const { verb, param } = describeStepCall(step);
   const summary = cleanToolSummary(step.summary);
-  const running = step.status === 'running' && live;
+  const state = stepToolState(step, live);
+  const running = state === 'running';
   const failed = step.status === 'error';
+  const tone = stateTone(state);
   const output = toolOutput(step);
   const facts =
     step.status === 'running'
@@ -480,18 +503,10 @@ const ToolStepRow = memo(function ToolStepRow({
   // Touch has no tooltip for a command cut short: an open row says it whole.
   const coarse = useMediaQuery(COARSE_POINTER);
   const expandable = !!output || longSummary;
-  const icon = running
-    ? Loader2
-    : failed
-      ? X
-      : CATEGORY_ICON[toolCategory(name)];
   return (
     <RowFrame
       icon={
-        <RowIcon
-          icon={icon}
-          tone={failed ? 'error' : running ? 'active' : 'quiet'}
-        />
+        <StateIcon state={state} kind={CATEGORY_ICON[toolCategory(name)]} />
       }
       label={verb}
       detail={failure || param}
@@ -504,17 +519,9 @@ const ToolStepRow = memo(function ToolStepRow({
             ? undefined
             : durationLabel(step)
       }
-      tone={failed ? 'error' : running ? 'active' : 'quiet'}
+      tone={tone}
       running={running}
-      status={
-        running
-          ? '，运行中'
-          : unfinished(step, live)
-            ? '，未完成'
-            : failed
-              ? '，失败'
-              : '，已完成'
-      }
+      status={`，${TOOL_STATE[state].label}`}
       title={summary ?? hint}
       more={summary}
       open={open && expandable}
@@ -543,7 +550,7 @@ const ToolStepRow = memo(function ToolStepRow({
             tabIndex={0}
             className={cn(
               'rounded-sm font-mono text-label break-words whitespace-pre-wrap focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:outline-none',
-              failed ? 'text-error' : 'text-muted-foreground',
+              failed ? ICON_TONE[tone] : 'text-muted-foreground',
             )}
           >
             {output}
@@ -570,19 +577,17 @@ const ReadGroupRow = memo(
     const panelId = useId();
     const summary = summarizeGroup(group.steps);
     const running = live && summary.running > 0;
-    const failed = summary.failed > 0;
+    const counts = countToolStates(group.steps, live);
+    const problem = worstProblem(counts);
+    const state: ToolState = problem ?? (running ? 'running' : 'done');
     const span = processSpanMs(group.steps);
-    const label = `${describeGroup({ ...summary, running: running ? summary.running : 0 })}${
-      failed ? ` · ${summary.failed} 个失败` : ''
-    }`;
+    const label = [
+      describeGroup({ ...summary, running: running ? summary.running : 0 }),
+      ...describeProblems(counts),
+    ].join(' · ');
     return (
       <RowFrame
-        icon={
-          <RowIcon
-            icon={running ? Loader2 : failed ? X : FolderSearch}
-            tone={failed ? 'error' : running ? 'active' : 'quiet'}
-          />
-        }
+        icon={<StateIcon state={state} kind={FolderSearch} />}
         label={label}
         grow
         time={
@@ -592,14 +597,14 @@ const ReadGroupRow = memo(
               ? formatElapsedMs(span) || undefined
               : undefined
         }
-        tone={failed ? 'error' : running ? 'active' : 'quiet'}
+        tone={stateTone(state)}
         running={running}
         status={
           running
             ? '，运行中'
             : !live && summary.running > 0
               ? '，未完成'
-              : failed
+              : problem
                 ? '，有失败'
                 : '，已完成'
         }
@@ -684,14 +689,11 @@ const TaskRow = memo(function TaskRow({
   }
   // Without the sub-agent's details (a reconnect rebuilt the step but not the
   // card) it is a row of its own, with nothing to open.
-  const status = task?.status ?? step.status;
-  const running = live && (status === 'running' || status === 'backgrounded');
-  const failed = status === 'error';
+  const state = taskToolState(step, task, live);
+  const running = state === 'running' || state === 'background';
+  const failed = !running && !TOOL_STATE[state].quiet;
   const canOpen = !!task && subAgentHasBody(task);
-  // Not over, yet its card is no longer the live one.
-  const notDone =
-    !live && (task ? task.status === 'running' : step.status === 'running');
-  const tone: Tone = failed ? 'error' : running ? 'active' : 'quiet';
+  const tone = stateTone(state);
   const detail = task
     ? [task.subagentType, task.lastToolName, task.latestSummary]
         .filter(Boolean)
@@ -703,7 +705,7 @@ const TaskRow = memo(function TaskRow({
     formatTaskUsage(task?.usage);
   return (
     <RowFrame
-      icon={<RowIcon icon={running ? Loader2 : failed ? X : Bot} tone={tone} />}
+      icon={<StateIcon state={state} kind={Bot} />}
       label={task?.title ?? step.title ?? '子 Agent'}
       detail={detail}
       facts={facts ? <FactsText text={facts} plain={failed} /> : undefined}
@@ -719,15 +721,7 @@ const TaskRow = memo(function TaskRow({
       }
       tone={tone}
       running={running}
-      status={`，子 Agent，${
-        notDone
-          ? '未完成'
-          : task
-            ? STATUS_LABELS[task.status]
-            : failed
-              ? '失败'
-              : '已完成'
-      }`}
+      status={`，子 Agent，${TOOL_STATE[state].label}`}
       open={open && canOpen}
       onToggle={canOpen ? () => onToggle(step.id, !open) : undefined}
       rowId={step.id}
@@ -760,7 +754,7 @@ function FoldedRow({
   const parts = [`较早 ${folded.length + dropped} 步`];
   if (sum.tools + sum.tasks > 0) parts.push(`${sum.tools + sum.tasks} 个工具`);
   if (sum.thinking > 0) parts.push(`${sum.thinking} 段思考`);
-  if (sum.failed > 0) parts.push(`${sum.failed} 个失败`);
+  parts.push(...describeProblems(countToolStates(folded)));
   return (
     <RowFrame
       icon={
