@@ -186,22 +186,7 @@ class WsManager {
     const state = ws?.readyState;
     if (state === WebSocket.CONNECTING) return;
     if (ws && state === WebSocket.OPEN) {
-      if (!probe || this.probeTimer) return;
-      const before = this.received;
-      try {
-        ws.send(JSON.stringify({ type: 'ping' }));
-      } catch {
-        // A send that throws is as good as silence.
-      }
-      this.probeTimer = setTimeout(() => {
-        this.probeTimer = null;
-        if (this.ws !== ws || this.received !== before) return;
-        this.ws = null;
-        ws.close();
-        this.emit('disconnected', {});
-        this.reconnectDelay = 1000;
-        this.connect();
-      }, WS_PROBE_TIMEOUT_MS);
+      if (probe) this.probe(ws);
       return;
     }
     if (this.ws && !this.openedBefore) this.failedBeforeOpen = true;
@@ -210,12 +195,44 @@ class WsManager {
     this.connect();
   }
 
+  /**
+   * Ask an open socket for a pong, once at a time: a probe already in flight
+   * answers for every later request. Any message within the deadline keeps
+   * the socket; silence replaces it and reports the loss.
+   */
+  private probe(ws: WebSocket) {
+    if (this.probeTimer) return;
+    const before = this.received;
+    try {
+      ws.send(JSON.stringify({ type: 'ping' }));
+    } catch {
+      // A send that throws is as good as silence.
+    }
+    this.probeTimer = setTimeout(() => {
+      this.probeTimer = null;
+      if (this.ws !== ws || this.received !== before) return;
+      this.ws = null;
+      ws.close();
+      this.emit('disconnected', {});
+      this.reconnectDelay = 1000;
+      this.connect();
+    }, WS_PROBE_TIMEOUT_MS);
+  }
+
   /** Watch page lifecycle and network changes to recover a lost connection. */
   setupNetworkListeners() {
     // Network restored or page back in front: a socket that closed while the
     // page was frozen or offline need not wait out its backoff. Going
     // offline leaves the backoff running; nothing ever cancels it.
     window.addEventListener('online', () => this.ensureLive(true));
+    // The browser's offline flag alone is not proof: it flickers on a network
+    // handoff while the socket carries on. Only a socket that then fails its
+    // ping counts as lost.
+    window.addEventListener('offline', () => {
+      if (this.wanted && this.ws?.readyState === WebSocket.OPEN) {
+        this.probe(this.ws);
+      }
+    });
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'hidden') {
         this.hiddenAt = Date.now();
