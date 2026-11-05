@@ -7,6 +7,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { afterAll, beforeAll, describe, expect, test } from 'vitest';
 
+import { writeCliSecretFiles } from '../container/agent-runner/src/cli-secret-files.js';
 import { pinBoundProviderSettings } from '../container/agent-runner/src/provider-env-pin.js';
 import {
   buildClaudeContextPlan,
@@ -184,6 +185,9 @@ async function runTurn(options: {
   pin?: boolean;
   model?: string;
   dumpEnvTo?: string;
+  /** Writes the CLI's own command line here from inside the turn. */
+  dumpArgvTo?: string;
+  mcpServers?: Record<string, unknown>;
 }) {
   const dir = fs.mkdtempSync(path.join(scratch, 'run-'));
   const project = path.join(dir, 'workspace');
@@ -215,7 +219,16 @@ async function runTurn(options: {
   const start = hits.length;
   bashCommand = options.dumpEnvTo
     ? `env | grep -E '^(ANTHROPIC|CLAUDE_CODE|CLAUDE_AUTOCOMPACT|AWS_BEARER|CLOUD_ML)' | sort > ${options.dumpEnvTo}`
-    : undefined;
+    : options.dumpArgvTo
+      ? `ps -o command= -p $PPID > ${options.dumpArgvTo}`
+      : undefined;
+  // As the Runner does: the pin and external MCP servers reach the CLI as
+  // files, never argv.
+  const files = writeCliSecretFiles(
+    options.pin === false ? {} : pinBoundProviderSettings(env),
+    options.mcpServers ?? {},
+    dir,
+  );
   try {
     const stream = sdk.query({
       prompt: hello(),
@@ -228,9 +241,10 @@ async function runTurn(options: {
         allowDangerouslySkipPermissions: true,
         settingSources: ['project', 'user', 'local'],
         thinking: { type: 'adaptive' },
-        ...(options.pin === false
-          ? {}
-          : { settings: pinBoundProviderSettings(env) as never }),
+        settings: files.settingsPath,
+        ...(files.mcpConfigPath
+          ? { extraArgs: { 'mcp-config': files.mcpConfigPath } }
+          : {}),
       },
     });
     let result = '';
@@ -243,6 +257,7 @@ async function runTurn(options: {
     return { result, hits: hits.slice(start) };
   } finally {
     bashCommand = undefined;
+    files.dispose();
   }
 }
 
@@ -393,6 +408,31 @@ describe('the bound connection and the session choices win', () => {
     expect(toolEnv.filter((line) => line.endsWith('='))).toEqual([]);
   }, 90_000);
 
+  test('the CLI command line carries no connection key or MCP credential', async () => {
+    const dump = path.join(scratch, 'argv.txt');
+    const run = await runTurn({
+      bound: {
+        ANTHROPIC_BASE_URL: A.url,
+        ANTHROPIC_AUTH_TOKEN: 'bound-token-in-settings',
+      },
+      mcpServers: {
+        remote: {
+          type: 'http',
+          url: 'http://127.0.0.1:9/mcp',
+          headers: { 'X-API-KEY': 'mcp-header-secret' },
+        },
+      },
+      dumpArgvTo: dump,
+    });
+    expect(run.hits.every((hit) => hit.stub === 'A')).toBe(true);
+    expect(run.hits[0]?.auth).toBe('Bearer bound-token-in-settings');
+    const argv = fs.readFileSync(dump, 'utf8');
+    expect(argv).toContain('--settings ');
+    expect(argv).toContain('--mcp-config ');
+    expect(argv).not.toContain('bound-token-in-settings');
+    expect(argv).not.toContain('mcp-header-secret');
+  }, 90_000);
+
   test('the Runner passes the pin as its flag settings', () => {
     const runner = fs.readFileSync(
       path.join(runnerRoot, 'src', 'index.ts'),
@@ -404,6 +444,12 @@ describe('the bound connection and the session choices win', () => {
     expect(runner).toContain(
       '...webFetchPreflightSettings(containerInput.webFetchPreflightPolicy)',
     );
-    expect(runner).toContain('      settings: flagSettings as any,');
+    expect(runner).toContain(
+      'writeCliSecretFiles(flagSettings, externalMcpServers)',
+    );
+    expect(runner).toContain('      settings: cliSecretFiles.settingsPath,');
+    expect(runner).toContain(
+      '      mcpServers: { happyclaw: mcpServerConfig },',
+    );
   });
 });

@@ -215,6 +215,7 @@ import {
   MAX_SILENT_STOP_CONTINUES,
 } from './silent-stop.js';
 import { ToolLoopDetector } from './tool-loop-detector.js';
+import { writeCliSecretFiles } from './cli-secret-files.js';
 
 // 路径解析：优先读取环境变量，降级到容器内默认路径（保持向后兼容）
 const WORKSPACE_GROUP =
@@ -3068,6 +3069,13 @@ async function runQueryAttempt(
   const userMcpServers = activeAgentMcpPolicy.includeUserMcpServers
     ? loadUserMcpServers()
     : {};
+  // HappyClaw's own server wins a name clash, as it did when both shared one
+  // mcpServers object.
+  const { happyclaw: _shadowed, ...externalMcpServers } = userMcpServers;
+  // Flag settings carry the connection token and user MCP servers their
+  // credentials: they go to the CLI as 0600 files, not argv (see
+  // cli-secret-files.ts). Removed in the finally below.
+  const cliSecretFiles = writeCliSecretFiles(flagSettings, externalMcpServers);
 
   try {
     const agentEffort = resolveRunSdkEffort(containerInput);
@@ -3119,15 +3127,15 @@ async function runQueryAttempt(
       // stream events: the card's sub-agent transcript advances block by block
       // instead of only filling in when the subagent completes.
       forwardSubagentText: true,
-      settings: flagSettings as any,
+      settings: cliSecretFiles.settingsPath,
+      ...(cliSecretFiles.mcpConfigPath
+        ? { extraArgs: { 'mcp-config': cliSecretFiles.mcpConfigPath } }
+        : {}),
       ...(userPlugins && { plugins: userPlugins }),
       ...(activeAgentMcpPolicy.strictMcpConfig
         ? { strictMcpConfig: true }
         : {}),
-      mcpServers: {
-        ...userMcpServers,
-        happyclaw: mcpServerConfig,
-      },
+      mcpServers: { happyclaw: mcpServerConfig },
       hooks: {
         PreToolUse: [
           {
@@ -4542,6 +4550,7 @@ async function runQueryAttempt(
     // 定时器，以及旧 watcher 抢先 drain 本应进入新 query 的 IPC 消息。
     ipcPolling = false;
     ipcQueryWatcher.close();
+    cliSecretFiles.dispose();
   }
 }
 
