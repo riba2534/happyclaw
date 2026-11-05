@@ -1488,13 +1488,13 @@ describe('on a phone', () => {
     );
   });
 
-  test('the sheet opens at half height with the levels under the model in use', async () => {
+  test('the sheet opens at full height with the levels under the model in use', async () => {
     const pinned = effortSelection({ selectedModelConfigId: 'official' });
     mocks.get.mockResolvedValue(pinned);
     mocks.put.mockResolvedValue({ ...pinned, selectedEffort: 'high' });
     await render('s0');
     await open();
-    expect(sheet()?.dataset.snap).toBe('half');
+    expect(sheet()?.dataset.snap).toBe('full');
     expect(segments()?.previousElementSibling).toBe(checked()[0]);
     expect(checked()[0].getAttribute('title')).toBe('opus');
     expect(
@@ -1589,7 +1589,7 @@ describe('in a narrow window with a mouse', () => {
     expect(pill()).toBeNull();
     expect(effortTrigger()!.textContent).toBe('超高');
     await open();
-    expect(sheet()?.dataset.snap).toBe('half');
+    expect(sheet()?.dataset.snap).toBe('full');
     expect(segments()).toBeNull();
     expect(document.body.textContent).toContain('推理等级在输入框旁调整');
   });

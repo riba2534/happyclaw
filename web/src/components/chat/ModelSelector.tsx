@@ -588,7 +588,9 @@ export function ModelSelector({
   const [open, setOpen] = useDockOverlay();
   // The sheet's detent: half on open, full while searching (cindy's picker
   // makes room for the keyboard when its field gets focus).
-  const [snap, setSnap] = useState<'half' | 'full'>('half');
+  // Full, not half: the search field, connection chips and footer take
+  // most of a half sheet, which left about one model row in view.
+  const [snap, setSnap] = useState<'half' | 'full'>('full');
   const [saving, setSaving] = useState(false);
   const modelTooltip = useQuietTooltip();
   const lastRefreshAt = useRef(0);
@@ -649,7 +651,7 @@ export function ModelSelector({
       return;
     }
     modelTooltip.onMenuOpenChange(next);
-    if (next) setSnap('half');
+    if (next) setSnap('full');
     setOpen(next);
     if (next) refreshCatalog();
   };
@@ -963,7 +965,9 @@ export function ModelSelector({
             detents
             snap={snap}
             onSnapChange={setSnap}
-            className="gap-0 p-0"
+            // The sheet takes focus itself (below); that is no keyboard
+            // position, so it draws no focus ring.
+            className="gap-0 p-0 outline-none"
             // Focus the sheet, not the search field: a phone keyboard would
             // cover the list.
             onOpenAutoFocus={(event) => {
@@ -1403,17 +1407,22 @@ function ModelPanel({
             ? '切换模型会开启新的底层会话，并自动带上最近的对话记录；推理等级在输入框旁调整。'
             : '切换模型会开启新的底层会话，并自动带上最近的对话记录。'}
         </p>
-        {onAddModel && (
-          <button
-            type="button"
-            onClick={onAddModel}
-            className="-ml-1.5 inline-flex h-7 cursor-pointer items-center gap-1.5 rounded-md px-1.5 text-caption text-primary-text hover:bg-surface-hover focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:outline-none pointer-coarse:h-10"
-          >
-            <Plus className="size-3.5" aria-hidden="true" />
-            添加模型
-          </button>
+        {(onAddModel || footer) && (
+          // One row: adding a model on the left, the context use on the right.
+          <div className="flex items-center justify-between gap-3">
+            {onAddModel && (
+              <button
+                type="button"
+                onClick={onAddModel}
+                className="-ml-1.5 inline-flex h-7 shrink-0 cursor-pointer items-center gap-1.5 rounded-md px-1.5 text-caption text-primary-text hover:bg-surface-hover focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:outline-none pointer-coarse:h-10"
+              >
+                <Plus className="size-3.5" aria-hidden="true" />
+                添加模型
+              </button>
+            )}
+            <div className="min-w-0 text-right">{footer}</div>
+          </div>
         )}
-        {footer}
       </div>
     </div>
   );
