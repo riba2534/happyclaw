@@ -903,11 +903,20 @@ groupRoutes.post('/', authMiddleware, async (c) => {
   if (requestedAdditionalMounts.length > 0) {
     try {
       validatedAdditionalMounts = validateAdditionalMountsStrict(
-        requestedAdditionalMounts.map((mount) => ({
-          hostPath: mount.host_path,
-          containerPath: mount.container_path,
-          readonly: mount.readonly,
-        })),
+        requestedAdditionalMounts.map((mount) =>
+          'source' in mount
+            ? {
+                source: mount.source,
+                ...(mount.sub_path ? { subPath: mount.sub_path } : {}),
+                containerPath: mount.container_path,
+                readonly: mount.readonly,
+              }
+            : {
+                hostPath: mount.host_path,
+                containerPath: mount.container_path,
+                readonly: mount.readonly,
+              },
+        ),
         name,
         false,
       );

@@ -429,6 +429,67 @@ HTTP 状态为 409；请求不会停止现有 Runner，也不会修改绑定。
 `GET /api/browse/directories?purpose=mount` 浏览服务器目录；未配置有效 allowlist
 时该入口 fail-closed。
 
+宿主机目录位于宿主机的 NFS 挂载之下时，容器启动时不再绑定宿主机的挂载，而是由
+Docker 直接挂同一个导出子目录（`local` 卷驱动，`nfsvers=3,proto=tcp,hard,nolock`）。
+宿主机重挂 NFS（NAS 重启、断网恢复）因此不会让运行中的容器拿到失效的挂载；
+Docker Desktop 与 OrbStack 的 VM 没有挂载传播，绑定的旧挂载会一直报 `EBADF`。
+授权不变：仍按宿主机路径校验 allowlist。
+
+网络存储也可以作为存储源直接挂载。管理员在 allowlist 的 `storageSources` 中声明
+服务器与凭据，工作区只按 `id` 选择来源、来源内的子目录和是否只读：
+
+```json
+{
+  "storageSources": [
+    {
+      "id": "nas-nfs",
+      "type": "nfs",
+      "server": "nas.lan",
+      "exportPath": "/volume1/shared",
+      "nfsVersion": "3",
+      "allowReadWrite": true
+    },
+    {
+      "id": "nas-smb",
+      "type": "cifs",
+      "server": "nas.lan",
+      "share": "team",
+      "username": "happyclaw-agent",
+      "passwordFile": "config/secrets/nas-smb",
+      "smbVersion": "3.0",
+      "allowReadWrite": false
+    }
+  ]
+}
+```
+
+```json
+{
+  "additional_mounts": [
+    {
+      "source": "nas-nfs",
+      "sub_path": "projects/alpha",
+      "container_path": "alpha",
+      "readonly": false
+    }
+  ]
+}
+```
+
+- `type` 为 `nfs` 或 `cifs`（SMB）。挂载由 Docker 守护进程的内核完成，容器不需要
+  额外权限；子目录不存在时容器启动失败。
+- SMB 密码只放在 `passwordFile`（绝对路径或相对项目根，必须是服务用户所有的 600
+  普通文件，单行、不含逗号），不进 allowlist、数据库、docker 命令行或日志：
+  启动时经 Docker Engine API 的请求体建一个命名卷（`happyclaw-storage-<id>-<摘要>`，
+  标签 `io.happyclaw.storage-source`），容器按名字挂载。改密码后，没有容器使用
+  的旧卷会被替换。Docker 自己会把卷参数（含密码）存在守护进程的数据目录里，
+  `docker volume inspect` 也能看到，所以请给 HappyClaw 用一个只有所需权限的专用
+  SMB 账号。只支持本机 unix socket 的 Docker 上下文。
+- 没有 Unix 扩展的 SMB 共享没有可映射的属主，挂载按 `file_mode=0777,dir_mode=0777`
+  对容器内所有用户开放，实际权限由 SMB 账号在服务器上的权限决定。
+- 读写同时受来源的 `allowReadWrite` 与 `nonMainReadOnly` 约束；每次容器启动前都会
+  按当前 allowlist 重新校验，来源被删除后旧工作区无法启动。
+
 ## 文件
 
 - `GET|POST /api/groups/:jid/files`

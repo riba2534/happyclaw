@@ -46,6 +46,7 @@ type AllowedRootInput = {
 function writePolicy(
   roots: AllowedRootInput[],
   blockedPatterns: string[] = ['blocked'],
+  storageSources?: unknown[],
 ): void {
   fs.writeFileSync(
     allowlistPath,
@@ -53,6 +54,7 @@ function writePolicy(
       allowedRoots: roots,
       blockedPatterns,
       nonMainReadOnly: false,
+      ...(storageSources ? { storageSources } : {}),
     }),
   );
 }
@@ -265,6 +267,108 @@ describe.sequential('validateAdditionalMountsStrict', () => {
     fs.symlinkSync(outside, source, 'dir');
 
     expect(() => validate(mounts, 'replaced-workspace', false)).toThrow(
+      ValidationError,
+    );
+  });
+
+  test('resolves a storage-source mount next to a host directory', async () => {
+    const source = path.join(allowedRoot, 'beside-storage');
+    fs.mkdirSync(source, { recursive: true });
+    writePolicy(
+      [{ path: allowedRoot, allowReadWrite: false }],
+      ['blocked'],
+      [
+        {
+          id: 'nas',
+          type: 'nfs',
+          server: 'nas.lan',
+          exportPath: '/export',
+          allowReadWrite: true,
+        },
+      ],
+    );
+    const { validate } = await loadStrictValidator();
+
+    expect(
+      validate(
+        [
+          mount(source, 'local'),
+          {
+            source: 'nas',
+            subPath: 'team/a/',
+            containerPath: 'nas/team',
+            readonly: false,
+          },
+        ],
+        'storage-workspace',
+        false,
+      )[1],
+    ).toEqual({
+      hostPath: 'nfs://nas.lan/export/team/a',
+      containerPath: '/workspace/extra/nas/team',
+      readonly: false,
+      storage: {
+        type: 'nfs',
+        server: 'nas.lan',
+        device: '/export/team/a',
+        options: 'nfsvers=3,proto=tcp,hard,nolock',
+      },
+      persisted: {
+        source: 'nas',
+        subPath: 'team/a',
+        containerPath: 'nas/team',
+        readonly: false,
+      },
+    });
+  });
+
+  test.each([
+    [{ source: 'missing', containerPath: 'x' }],
+    [{ source: 'nas', containerPath: 'x', hostPath: '/tmp' }],
+    [{ source: 'nas', subPath: '../up', containerPath: 'x' }],
+    [{ source: 'nas', containerPath: '/abs' }],
+    [{ source: 'nas', subPath: 7, containerPath: 'x' }],
+  ])('rejects an invalid storage-source mount %#', async (raw) => {
+    writePolicy(
+      [{ path: allowedRoot, allowReadWrite: false }],
+      ['blocked'],
+      [
+        {
+          id: 'nas',
+          type: 'nfs',
+          server: 'nas.lan',
+          exportPath: '/export',
+          allowReadWrite: true,
+        },
+      ],
+    );
+    const { validate, ValidationError } = await loadStrictValidator();
+    expect(() => validate([raw], 'bad-storage', false)).toThrow(
+      ValidationError,
+    );
+  });
+
+  test('a storage source removed from the allowlist stops old workspaces', async () => {
+    const policy = (sources: unknown[]) =>
+      writePolicy(
+        [{ path: allowedRoot, allowReadWrite: false }],
+        ['blocked'],
+        sources,
+      );
+    policy([
+      {
+        id: 'nas',
+        type: 'nfs',
+        server: 'nas.lan',
+        exportPath: '/e',
+        allowReadWrite: false,
+      },
+    ]);
+    const { validate, ValidationError } = await loadStrictValidator();
+    const mounts = [{ source: 'nas', containerPath: 'nas' }];
+    expect(validate(mounts, 'storage-revoked', false)).toHaveLength(1);
+    policy([]);
+    expect(() => validate(mounts, 'storage-revoked', false)).toThrow(
       ValidationError,
     );
   });

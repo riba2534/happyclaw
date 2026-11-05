@@ -34,6 +34,7 @@ vi.mock('../src/logger.js', () => ({
 const {
   applyContainerProxyEnvLines,
   buildContainerArgs,
+  withNamedStorageVolumes,
   detectContainerHostIdentity,
   resolveContainerProxyConfig,
   resolveContainerHostIdentity,
@@ -192,6 +193,79 @@ describe('buildContainerArgs identity contract', () => {
   });
 });
 
+describe('buildContainerArgs storage mounts', () => {
+  test('binds host paths and mounts storage as volumes', () => {
+    const args = buildContainerArgs(
+      [
+        {
+          hostPath: '/srv/data',
+          containerPath: '/workspace/extra/data',
+          readonly: true,
+        },
+        {
+          hostPath: 'nfs://nas.lan/export/a',
+          containerPath: '/workspace/extra/nas',
+          readonly: false,
+          storage: {
+            type: 'nfs',
+            server: 'nas.lan',
+            device: '/export/a',
+            options: 'nfsvers=3,proto=tcp,hard,nolock',
+          },
+        },
+        {
+          hostPath: 'smb://192.0.2.5/team',
+          containerPath: '/workspace/extra/team',
+          readonly: true,
+          storage: { type: 'named', name: 'happyclaw-storage-team-0123' },
+        },
+      ],
+      'storage-test',
+      'UTC',
+      { mode: 'unknown' },
+    );
+    expect(args).toContain('/srv/data:/workspace/extra/data:ro');
+    expect(args).toContain(
+      'type=volume,dst=/workspace/extra/nas,volume-driver=local,volume-opt=type=nfs,volume-opt=device=:/export/a,"volume-opt=o=addr=nas.lan,nfsvers=3,proto=tcp,hard,nolock"',
+    );
+    expect(args).toContain(
+      'type=volume,src=happyclaw-storage-team-0123,dst=/workspace/extra/team,readonly',
+    );
+    expect(args.join(' ')).not.toContain('nfs://');
+  });
+});
+
+describe('withNamedStorageVolumes', () => {
+  const cifs = {
+    hostPath: 'smb://192.0.2.5/team',
+    containerPath: '/workspace/extra/team',
+    readonly: true,
+    storage: {
+      type: 'cifs' as const,
+      sourceId: 'team',
+      server: '192.0.2.5',
+      device: '//192.0.2.5/team',
+      smbVersion: '3.0',
+    },
+  };
+  const key = 'team\u0000//192.0.2.5/team';
+
+  test('points an SMB mount at its prepared volume', () => {
+    expect(
+      withNamedStorageVolumes([cifs], new Map([[key, 'vol-1']]))[0].storage,
+    ).toEqual({ type: 'named', name: 'vol-1' });
+  });
+
+  test('fails the launch with the preparation error or a missing volume', () => {
+    expect(() =>
+      withNamedStorageVolumes([cifs], new Map([[key, new Error('denied')]])),
+    ).toThrow('denied');
+    expect(() => withNamedStorageVolumes([cifs], new Map())).toThrow(
+      'not prepared',
+    );
+  });
+});
+
 describe('container proxy boundary', () => {
   const identity = { mode: 'unknown' } as const;
 
@@ -276,16 +350,16 @@ describe('container proxy boundary', () => {
     expect(
       resolveContainerProxyConfig(
         {
-          httpsProxy: 'http://user:secret@10.0.0.5:8443',
-          httpProxy: 'http://10.0.0.5:8080',
+          httpsProxy: 'http://user:secret@192.0.2.5:8443',
+          httpProxy: 'http://192.0.2.5:8080',
           noProxy: '',
         },
         'linux',
       ),
     ).toEqual({
       envLines: [
-        'HTTPS_PROXY=http://user:secret@10.0.0.5:8443',
-        'HTTP_PROXY=http://10.0.0.5:8080',
+        'HTTPS_PROXY=http://user:secret@192.0.2.5:8443',
+        'HTTP_PROXY=http://192.0.2.5:8080',
       ],
       addHostGateway: false,
     });
