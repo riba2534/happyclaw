@@ -11,7 +11,9 @@ import {
   SHARE_CARD_DEFAULT_WIDTH,
   SHARE_CARD_MAX_WIDTH,
   SHARE_CARD_PADDING,
+  SHARE_CARD_PHONE_WIDTH,
 } from './ShareCardRenderer';
+import { useIsPhone } from '../layout/phone';
 import { resolveAgentDisplayIdentity } from '../../utils/agent-identity';
 import { useAuthStore } from '../../stores/auth';
 import {
@@ -45,12 +47,18 @@ interface ImageOverlay {
 }
 
 const DEFAULT_EXPORT_PIXEL_RATIO = 2;
+// The phone card is narrower; three device pixels keep it as sharp as the
+// 720px card's two.
+const PHONE_EXPORT_PIXEL_RATIO = 3;
 const DESKTOP_CANVAS_MAX_PIXELS = 48_000_000;
 const IOS_CANVAS_MAX_PIXELS = 14_000_000;
 const IOS_CANVAS_MAX_SIDE = 14_000;
 const MIN_EXPORT_PIXEL_RATIO = 0.6;
 
-function computeExportPixelRatio(el: HTMLElement): number {
+function computeExportPixelRatio(
+  el: HTMLElement,
+  preferred = DEFAULT_EXPORT_PIXEL_RATIO,
+): number {
   const rect = el.getBoundingClientRect();
   const width = Math.ceil(
     rect.width || el.scrollWidth || SHARE_CARD_DEFAULT_WIDTH,
@@ -58,7 +66,7 @@ function computeExportPixelRatio(el: HTMLElement): number {
   const height = Math.ceil(rect.height || el.scrollHeight || 1);
   const ios = isIOSDevice();
   const maxPixels = ios ? IOS_CANVAS_MAX_PIXELS : DESKTOP_CANVAS_MAX_PIXELS;
-  let ratio = DEFAULT_EXPORT_PIXEL_RATIO;
+  let ratio = preferred;
 
   const areaAtDefault = width * height * ratio * ratio;
   if (areaAtDefault > maxPixels) {
@@ -69,10 +77,7 @@ function computeExportPixelRatio(el: HTMLElement): number {
     ratio = Math.min(ratio, IOS_CANVAS_MAX_SIDE / Math.max(width, height, 1));
   }
 
-  return Math.max(
-    MIN_EXPORT_PIXEL_RATIO,
-    Math.min(DEFAULT_EXPORT_PIXEL_RATIO, ratio),
-  );
+  return Math.max(MIN_EXPORT_PIXEL_RATIO, Math.min(preferred, ratio));
 }
 
 /**
@@ -355,6 +360,10 @@ export function ShareImageDialog({
   const [previewWidth, setPreviewWidth] = useState<number | null>(null);
   const [errorMsg, setErrorMsg] = useState('');
   const cardRef = useRef<HTMLDivElement>(null);
+  // Decided once: switching layouts mid-render would measure a stale card.
+  const isPhone = useIsPhone();
+  const [phone] = useState(isPhone);
+  const baseWidth = phone ? SHARE_CARD_PHONE_WIDTH : SHARE_CARD_DEFAULT_WIDTH;
   const appearance = useAuthStore((state) => state.appearance);
   const agentIdentity = resolveAgentDisplayIdentity({
     agentName,
@@ -411,7 +420,7 @@ export function ShareImageDialog({
 
       // Phase 2: Set card to optimal width — fits tables while capping at max
       const cardWidth = Math.max(
-        SHARE_CARD_DEFAULT_WIDTH,
+        baseWidth,
         Math.min(maxTableWidth + SHARE_CARD_PADDING, SHARE_CARD_MAX_WIDTH),
       );
       el.style.width = `${cardWidth}px`;
@@ -422,7 +431,10 @@ export function ShareImageDialog({
       setPreviewWidth(Math.ceil(previewRect.width || cardWidth));
       const imageOverlays = collectImageOverlays(el);
       const canvas = await toCanvas(el, {
-        pixelRatio: computeExportPixelRatio(el),
+        pixelRatio: computeExportPixelRatio(
+          el,
+          phone ? PHONE_EXPORT_PIXEL_RATIO : DEFAULT_EXPORT_PIXEL_RATIO,
+        ),
         cacheBust: true,
         includeQueryParams: true,
         fetchRequestInit: { credentials: 'include' },
@@ -436,7 +448,7 @@ export function ShareImageDialog({
       setState('error');
       setErrorMsg(err instanceof Error ? err.message : '生成图片失败');
     }
-  }, []);
+  }, [baseWidth, phone]);
 
   useEffect(() => {
     generate();
@@ -475,11 +487,12 @@ export function ShareImageDialog({
     <>
       <Dialog open onOpenChange={(open) => !open && onClose()}>
         {/* Hug the card: its width plus the body padding (2 × 16px) and the
-            preview ring, capped to the viewport. */}
+            preview ring, capped to the viewport. A phone's bottom sheet
+            spans the screen instead. */}
         <DialogContent
-          className="flex max-h-[88vh] max-w-none flex-col gap-0 p-0 sm:max-w-none"
+          className="flex max-h-[88vh] max-w-none flex-col gap-0 p-0 sm:max-w-none phone:w-full!"
           style={{
-            width: `min(calc(100vw - 2rem), ${(previewWidth ?? SHARE_CARD_DEFAULT_WIDTH) + 34}px)`,
+            width: `min(calc(100vw - 2rem), ${(previewWidth ?? baseWidth) + 34}px)`,
           }}
         >
           {/* Header */}
@@ -564,6 +577,7 @@ export function ShareImageDialog({
             aiImageUrl={agentIdentity.imageUrl}
             aiEmoji={agentIdentity.emoji}
             aiColor={agentIdentity.color}
+            minWidth={baseWidth}
           />
         </div>,
         document.body,
