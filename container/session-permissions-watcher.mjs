@@ -3,7 +3,10 @@
 import fs from 'node:fs';
 import process from 'node:process';
 
-import { readDescriptorMountId } from './session-permissions-mount.mjs';
+import {
+  isStaleMountEntryError,
+  readDescriptorMountId,
+} from './session-permissions-mount.mjs';
 import { createBoundedRescanScheduler } from './session-permissions-rescan-queue.mjs';
 
 const READY_FILE = '/run/happyclaw-session-watcher.ready';
@@ -130,6 +133,7 @@ if (generatedKey !== undefined) {
 
 const watchers = new Map();
 const rescanSchedulers = new Map();
+const reportedStaleEntries = new Set();
 const recoveryFailures = new Map();
 let stopping = false;
 let periodicTimer;
@@ -186,8 +190,24 @@ function openChild(parentFd, component) {
     return fs.openSync(procFdChildPath(parentFd, component), OPEN_FLAGS);
   } catch (error) {
     if (isVanishedOrSymlink(error)) return null;
+    if (isStaleMountEntryError(error, parentFd)) {
+      reportStaleEntry(component, error);
+      return null;
+    }
     throw error;
   }
+}
+
+function reportStaleEntry(component, error) {
+  // Periodic scans meet the same stale entry every 30 seconds; say it once.
+  const key = component.toString('hex');
+  if (reportedStaleEntries.has(key)) return;
+  reportedStaleEntries.add(key);
+  process.stderr.write(
+    `happyclaw: skipping stale mount entry ${JSON.stringify(
+      component.toString(),
+    )} (${error.code})\n`,
+  );
 }
 
 function mirrorMode(stat, directory) {

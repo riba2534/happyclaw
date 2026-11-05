@@ -19,3 +19,21 @@ export function readDescriptorMountId(fd, readFile = fs.readFileSync) {
   const fdInfo = readFile(`/proc/self/fdinfo/${fd}`, 'utf8');
   return parseDescriptorMountId(fdInfo);
 }
+
+// A nested bind of a network share goes stale when the host replaces the share
+// mount underneath it: every lookup of that entry then fails with ESTALE (Linux
+// NFS) or EBADF (VM file sharing such as OrbStack's virtiofs), for the Agent as
+// much as for the watcher. Nothing behind it can be read or written, so there
+// is nothing to normalize. EBADF counts only while the parent descriptor is
+// still open; a closed parent is the watcher's own bug and must still throw.
+export function isStaleMountEntryError(error, parentFd, fstat = fs.fstatSync) {
+  if (error?.code === 'ESTALE') return true;
+  if (error?.code !== 'EBADF') return false;
+  try {
+    fstat(parentFd);
+  } catch (parentError) {
+    if (parentError?.code === 'EBADF') return false;
+    throw parentError;
+  }
+  return true;
+}
