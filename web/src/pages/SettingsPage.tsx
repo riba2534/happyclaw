@@ -38,6 +38,7 @@ import {
 } from '../components/settings/SystemSettingsSection';
 import { UserChannelsSection } from '../components/settings/UserChannelsSection';
 import { GuestsSection } from '../components/settings/GuestsSection';
+import { StorageSourcesSection } from '../components/settings/StorageSourcesSection';
 import { GUEST_SCOPE_DESCRIPTION, isGuestSettingsTab } from '../lib/guest';
 import { UsersPage } from './UsersPage';
 import { MonitorPage, MonitorRefreshButton } from './MonitorPage';
@@ -52,6 +53,7 @@ const VALID_TABS: SettingsTab[] = [
   'system',
   'main-agent',
   'host-integration',
+  'storage-sources',
   'billing',
   'profile',
   'preferences',
@@ -77,6 +79,7 @@ const SYSTEM_TABS: SettingsTab[] = [
   'system',
   'main-agent',
   'host-integration',
+  'storage-sources',
 ];
 // Admin pages embedded under the settings header instead of their own frame.
 const EMBEDDED_PAGE_TABS: SettingsTab[] = ['users', 'monitor', 'billing'];
@@ -141,7 +144,9 @@ export function SettingsPage() {
       if (SYSTEM_TABS.includes(raw) && !canManageSystemConfig)
         return defaultTab;
       if (
-        (raw === 'main-agent' || raw === 'host-integration') &&
+        (raw === 'main-agent' ||
+          raw === 'host-integration' ||
+          raw === 'storage-sources') &&
         currentUser?.role !== 'admin'
       ) {
         return defaultTab;
@@ -199,6 +204,7 @@ export function SettingsPage() {
     system: '运行与容量',
     'main-agent': '主 HappyClaw',
     'host-integration': '宿主机集成',
+    'storage-sources': '存储源',
     billing: '计费管理',
     profile: '个人资料',
     preferences: '常规',
@@ -233,6 +239,8 @@ export function SettingsPage() {
       '管理主智能体的头像、系统附加能力、宿主机配置继承和上下文压缩策略。',
     'host-integration':
       '管理宿主机 Claude 目录以及共享 Plugin Catalog 的来源。',
+    'storage-sources':
+      'NAS 上的 NFS 导出和 SMB 共享，由 Docker 直接挂进 Container 工作区。',
     billing: '管理计费开关、套餐、用户账务、兑换码与计费审计。',
     users: '管理账户、邀请码与审计日志。',
     monitor: '实时监控系统状态（10秒自动刷新）。',
@@ -250,6 +258,7 @@ export function SettingsPage() {
     registration: '系统 · 全局生效',
     'main-agent': '系统 · 管理员',
     'host-integration': '系统 · 管理员',
+    'storage-sources': '系统 · 管理员',
     billing: '系统 · 全局生效',
     users: '系统 · 管理后台',
     monitor: '系统 · 管理后台',
@@ -312,6 +321,8 @@ export function SettingsPage() {
           </div>
         ) : activeTab === 'host-integration' ? (
           <HostIntegrationSettingsSection scope="host" />
+        ) : activeTab === 'storage-sources' ? (
+          <StorageSourcesSection />
         ) : (
           <>
             {activeTab === 'claude' && (

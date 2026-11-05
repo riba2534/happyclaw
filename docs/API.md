@@ -487,6 +487,8 @@ Docker Desktop 与 OrbStack 的 VM 没有挂载传播，绑定的旧挂载会一
   SMB 账号。只支持本机 unix socket 的 Docker 上下文。
 - 没有 Unix 扩展的 SMB 共享没有可映射的属主，挂载按 `file_mode=0777,dir_mode=0777`
   对容器内所有用户开放，实际权限由 SMB 账号在服务器上的权限决定。
+- 管理员也可以在 Web「设置 → 存储源」里维护这份列表（见
+  `/api/config/storage-sources`），新建 Container 工作区时在挂载编辑器里选择。
 - 读写同时受来源的 `allowReadWrite` 与 `nonMainReadOnly` 约束；每次容器启动前都会
   按当前 allowlist 重新校验，来源被删除后旧工作区无法启动。
 
@@ -1048,6 +1050,13 @@ minimalClientVersion?, availableInPlans?, serviceTiers }`（字段取自官方
 - `GET|PUT /api/config/host-integration`，仅 admin；包含
   `adminHostOnlyMode`。从 `false` 切到 `true` 时会停稳管理员工作区运行器，并把
   active admin 拥有的工作区持久迁移为 Host；普通成员数据不变
+- `GET /api/config/storage-sources`、`POST|PUT|DELETE /api/config/storage-sources/:id`，
+  仅 admin；读写挂载白名单的 `storageSources`（POST 新建、PUT 替换），白名单的其他
+  字段保持原样，写入前用运行时同一个解析器校验整份列表，不通过时文件不变。返回值带
+  `hasPassword` 与 `usedBy`（引用它的工作区数），从不返回密码或 `passwordFile`。SMB
+  密码只写：请求里的 `password` 省略表示保留、空串表示清除，写入
+  `config/secrets/storage-<id>`（600）。审计记 `storage_source_saved` /
+  `storage_source_deleted`，只含 id、类型和是否改了密码
 - `GET /api/config/external-resources`
 - `GET /api/config/external-resources/rule`
 - `GET|PUT /api/config/registration`

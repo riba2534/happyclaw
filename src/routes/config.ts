@@ -6,7 +6,13 @@ import path from 'node:path';
 import { Agent as HttpsAgent } from 'node:https';
 import { ProxyAgent } from 'proxy-agent';
 import QRCode from 'qrcode';
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
+import {
+  deleteStorageSource,
+  listStorageSources,
+  saveStorageSource,
+  StorageSourceAdminError,
+} from '../storage-source-admin.js';
 import { DATA_DIR } from '../config.js';
 import { bindSystemMainIfUnbound } from '../model-binding-backfill.js';
 import {
@@ -74,6 +80,7 @@ import {
   AppearanceConfigSchema,
   HostIntegrationSettingsSchema,
   SystemSettingsSchema,
+  StorageSourceSaveSchema,
   UnifiedProviderCreateSchema,
   UnifiedProviderPatchSchema,
   UnifiedProviderSecretsSchema,
@@ -3987,6 +3994,114 @@ configRoutes.put(
 
       return c.json(response);
     });
+  },
+);
+
+// ─── Storage sources (admin only) ───────────────────────────────────
+// NFS exports and SMB shares workspaces can mount. They live in the mount
+// allowlist; an SMB password is write-only and kept in a 0600 file.
+
+const STORAGE_SOURCE_ID_RE = /^[a-z0-9][a-z0-9-]{0,62}$/;
+
+configRoutes.get(
+  '/storage-sources',
+  authMiddleware,
+  adminRoleMiddleware,
+  (c) => {
+    try {
+      return c.json(listStorageSources());
+    } catch (err) {
+      logger.error({ err }, 'Failed to list storage sources');
+      return c.json({ error: 'Failed to list storage sources' }, 500);
+    }
+  },
+);
+
+async function saveStorageSourceRoute(
+  c: Context<{ Variables: Variables }>,
+  creating: boolean,
+) {
+  const id = c.req.param('id') ?? '';
+  if (!STORAGE_SOURCE_ID_RE.test(id)) {
+    return c.json(
+      { error: '标识只能用小写字母、数字和连字符，最长 63 个字符' },
+      400,
+    );
+  }
+  const body = await c.req.json().catch(() => ({}));
+  const validation = StorageSourceSaveSchema.safeParse(body);
+  if (!validation.success) {
+    return c.json(
+      { error: 'Invalid request body', details: validation.error.format() },
+      400,
+    );
+  }
+  try {
+    const source = await saveStorageSource(id, validation.data, creating);
+    const actor = c.get('user') as AuthUser;
+    logAuthEvent({
+      event_type: 'storage_source_saved',
+      username: actor.username,
+      actor_username: actor.username,
+      ip_address: getClientIp(c),
+      user_agent: c.req.header('user-agent') ?? null,
+      // The server and share are deployment details; record only the shape.
+      details: {
+        source_id: id,
+        type: source.type,
+        created: creating,
+        password_changed: validation.data.password !== undefined,
+      },
+    });
+    return c.json({ source }, creating ? 201 : 200);
+  } catch (err) {
+    if (err instanceof StorageSourceAdminError) {
+      return c.json({ error: err.message }, err.status);
+    }
+    logger.error({ err, sourceId: id }, 'Failed to save storage source');
+    return c.json({ error: 'Failed to save storage source' }, 500);
+  }
+}
+
+configRoutes.post(
+  '/storage-sources/:id',
+  authMiddleware,
+  adminRoleMiddleware,
+  (c) => saveStorageSourceRoute(c, true),
+);
+
+configRoutes.put(
+  '/storage-sources/:id',
+  authMiddleware,
+  adminRoleMiddleware,
+  (c) => saveStorageSourceRoute(c, false),
+);
+
+configRoutes.delete(
+  '/storage-sources/:id',
+  authMiddleware,
+  adminRoleMiddleware,
+  async (c) => {
+    const id = c.req.param('id');
+    try {
+      await deleteStorageSource(id);
+    } catch (err) {
+      if (err instanceof StorageSourceAdminError) {
+        return c.json({ error: err.message }, err.status);
+      }
+      logger.error({ err, sourceId: id }, 'Failed to delete storage source');
+      return c.json({ error: 'Failed to delete storage source' }, 500);
+    }
+    const actor = c.get('user') as AuthUser;
+    logAuthEvent({
+      event_type: 'storage_source_deleted',
+      username: actor.username,
+      actor_username: actor.username,
+      ip_address: getClientIp(c),
+      user_agent: c.req.header('user-agent') ?? null,
+      details: { source_id: id },
+    });
+    return c.json({ success: true });
   },
 );
 

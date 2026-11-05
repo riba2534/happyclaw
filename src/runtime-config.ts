@@ -66,7 +66,7 @@ const OFFICIAL_CLAUDE_PROFILE_ID = '__official__';
  * 的 ciphertext，配合 key 文件泄漏即可解密）。统一走该 helper：tmp 文件以
  * 0o600 创建，rename 后再次 chmod 防御 APFS 上 mode 不跟随 inode 的边角情况。
  */
-function writeSecretFile(targetPath: string, data: string): void {
+export function writeSecretFile(targetPath: string, data: string): void {
   const tmp = `${targetPath}.tmp`;
   // 先 unlink stale tmp，避免 fs.writeFileSync 在文件已存在时复用旧 mode
   // (Node 文档：mode 仅在 on-create 时应用)。残留 0o644 会让我们这次写入

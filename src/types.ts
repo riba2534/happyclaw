@@ -782,7 +782,9 @@ export type AuthEventType =
   | 'recovery_reset'
   | 'register_success'
   | 'system_settings_updated'
-  | 'host_integration_updated';
+  | 'host_integration_updated'
+  | 'storage_source_saved'
+  | 'storage_source_deleted';
 
 export interface AuthAuditLog {
   id: number;

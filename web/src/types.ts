@@ -49,13 +49,22 @@ export interface GroupInfo {
   agent_profile_avatar_url?: string | null;
 }
 
-export interface AdditionalMountInput {
-  host_path: string;
-  /** Relative suffix mounted below /workspace/extra/. */
-  container_path: string;
-  /** Host directory mounts are read-only in the current product contract. */
-  readonly: true;
-}
+export type AdditionalMountInput =
+  | {
+      host_path: string;
+      /** Relative suffix mounted below /workspace/extra/. */
+      container_path: string;
+      /** Host directory mounts are read-only in the current product contract. */
+      readonly: true;
+    }
+  | {
+      /** A storage source id from the mount allowlist. */
+      source: string;
+      /** Directory inside the export or share; omitted mounts its root. */
+      sub_path?: string;
+      container_path: string;
+      readonly: boolean;
+    };
 
 export interface CreateWorkspaceOptions {
   execution_mode?: 'container' | 'host';
