@@ -2,14 +2,13 @@ import { useMemo } from 'react';
 import { NavLink, useLocation } from 'react-router-dom';
 import { useBillingStore } from '../../stores/billing';
 import { useIsGuest } from '../../stores/auth';
-import { useScrollDirection } from '../../hooks/useScrollDirection';
+import { useShellScrollState } from '../../hooks/useScrollDirection';
 import { lightTap } from '../../hooks/useHaptic';
 import { filterNavItems } from './nav-items';
 
 export function BottomTabBar() {
   const location = useLocation();
-  const scrollDir = useScrollDirection();
-  const isCompact = scrollDir === 'down';
+  const isCompact = useShellScrollState() === 'compact';
   const billingEnabled = useBillingStore((s) => s.billingEnabled);
   const isGuest = useIsGuest();
 
