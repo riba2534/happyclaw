@@ -5,8 +5,8 @@ import {
   Loader2,
   ShieldX,
   X,
-  type LucideIcon,
 } from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { StreamingTaskRuntimeState } from '../../stores/chat';
 import type { StreamingStep } from '../../lib/stream-steps';
