@@ -23,7 +23,10 @@ import {
 } from 'lucide-react';
 import { useDisplayMode } from '../../hooks/useDisplayMode';
 import { useFollowGlide } from '../../hooks/useFollowGlide';
-import { measureVisualViewport } from '../../hooks/useVisualViewport';
+import {
+  layoutViewportHeight,
+  measureVisualViewport,
+} from '../../hooks/useVisualViewport';
 import { useIsPhone } from '../layout/phone';
 import { resolveSystemMessage } from '../../lib/system-message-registry';
 import {
@@ -1043,7 +1046,7 @@ export const MessageList = memo(function MessageList({
     const viewport = window.visualViewport;
     if (!isPhone || !viewport) return;
     const readInset = () =>
-      measureVisualViewport(window.innerHeight, viewport).keyboardInset;
+      measureVisualViewport(layoutViewportHeight(), viewport).keyboardInset;
     let inset = readInset();
     let frame = 0;
     const update = () => {

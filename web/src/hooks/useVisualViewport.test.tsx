@@ -5,6 +5,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import {
   measureVisualViewport,
+  undoFocusScroll,
   useKeyboardInset,
   useVisualViewportVars,
 } from './useVisualViewport';
@@ -165,5 +166,88 @@ describe('useKeyboardInset', () => {
 
     await move({ height: window.innerHeight / 2, scale: 2 });
     expect(inset).toBe(0);
+  });
+});
+
+describe('undoFocusScroll', () => {
+  function field(overflowY: string) {
+    const box = document.createElement('div');
+    box.style.overflowY = overflowY;
+    const input = document.createElement('textarea');
+    box.appendChild(input);
+    container?.appendChild(box);
+    return { box, input };
+  }
+
+  test('undoes the iOS focus scroll of a hidden box around the focused field', () => {
+    const { box, input } = field('hidden');
+    input.focus();
+    box.scrollTop = 120;
+    undoFocusScroll();
+    expect(box.scrollTop).toBe(0);
+  });
+
+  test('leaves real scrollers and unfocused boxes alone', () => {
+    const scroller = field('auto');
+    scroller.input.focus();
+    scroller.box.scrollTop = 120;
+    undoFocusScroll();
+    expect(scroller.box.scrollTop).toBe(120);
+
+    const hidden = field('hidden');
+    hidden.box.scrollTop = 80;
+    (document.activeElement as HTMLElement | null)?.blur();
+    undoFocusScroll();
+    expect(hidden.box.scrollTop).toBe(80);
+  });
+
+  test('runs on the scroll iOS fires once the shell is mounted', async () => {
+    await act(async () => root?.render(<Vars />));
+    const { box, input } = field('clip');
+    input.focus();
+    box.scrollTop = 60;
+    box.dispatchEvent(new Event('scroll'));
+    expect(box.scrollTop).toBe(0);
+  });
+});
+
+describe('installed iOS web app', () => {
+  function clientHeight(px: number) {
+    Object.defineProperty(document.documentElement, 'clientHeight', {
+      configurable: true,
+      get: () => px,
+    });
+  }
+  afterEach(() => {
+    delete (document.documentElement as { clientHeight?: number }).clientHeight;
+  });
+
+  test('measures against the layout viewport when innerHeight shrinks with the keyboard', async () => {
+    const full = window.innerHeight;
+    clientHeight(full);
+    await act(async () => root?.render(<Vars />));
+    // iOS 27 standalone: innerHeight follows the visual viewport.
+    const inner = vi
+      .spyOn(window, 'innerHeight', 'get')
+      .mockReturnValue(full - 397);
+    await move({ height: full - 397 });
+    expect(cssVar('--keyboard-inset')).toBe('397px');
+    inner.mockRestore();
+  });
+
+  test('reads again after focus leaves, when iOS dropped the viewport event', async () => {
+    vi.useFakeTimers();
+    clientHeight(window.innerHeight);
+    await act(async () => root?.render(<Vars />));
+    await move({ height: window.innerHeight - 300 });
+    expect(cssVar('--keyboard-inset')).toBe('300px');
+    // The keyboard went away while the page was in the background.
+    viewport.height = window.innerHeight;
+    await act(async () => {
+      document.dispatchEvent(new Event('focusout'));
+      vi.advanceTimersByTime(400);
+    });
+    expect(cssVar('--keyboard-inset')).toBe('0px');
+    vi.useRealTimers();
   });
 });
