@@ -35,6 +35,7 @@
 | `/api/skills`                      | `src/routes/skills.ts`           | 用户 Skills                   |
 | `/api/mcp-servers`                 | `src/routes/mcp-servers.ts`      | 用户/系统 MCP                 |
 | `/api/plugins`                     | `src/routes/plugins.ts`          | Plugin Catalog 与用户启用状态 |
+| `/api/push`                        | `src/routes/push.ts`             | Web Push 订阅与测试           |
 | `/api/usage`                       | `src/routes/usage.ts`            | Token 用量                    |
 | `/api/billing`                     | `src/routes/billing.ts`          | 订阅、余额和计费管理          |
 | `/api/admin`                       | `src/routes/admin.ts`            | 用户、邀请和审计              |
@@ -1049,6 +1050,28 @@ Legacy 渠道 facade 位于 `/api/config/user-im/*`，涵盖飞书、Telegram、
 Web 停止不会取消队列里尚未处理的派发回报；Worker 一轮结束却没有交回结果（或运行彻底
 失败、计费被拒）时，工作项结束为 `failed`，派出会话收到 `state="failed"` 的回报。
 
+## Web Push
+
+系统通知：Web 来源的回复完成或运行出错时，如果主人没有正在看该会话的可见页面，服务端
+向其浏览器订阅推送。只服务当前登录用户本人的订阅，访客 403，全部响应
+`Cache-Control: private, no-store`。
+
+- `GET /api/push/vapid-public-key` → `{ publicKey }`；密钥不可用时 503
+- `GET /api/push/status` → `{ available, subscription_count, subscriptions }`，每项
+  `{ id, user_agent, created_at, last_success_at }`，不返回 endpoint 与密钥
+- `POST /api/push/subscribe`，body 为浏览器 `PushSubscription` 的
+  `{ endpoint, keys: { p256dh, auth } }` → `{ success }`；endpoint 必须是 https 且
+  属于已知推送服务（FCM、Mozilla、Apple、Windows），否则 400；同一 endpoint 重复提交
+  是更新；每个用户最多保留最新的 20 个
+- `POST /api/push/unsubscribe`，body `{ endpoint }` → `{ success }`，幂等，只能删除本人的
+- `POST /api/push/test` → `{ success, ...summary }`，向本人所有订阅发一条测试通知
+
+VAPID 密钥首次使用时生成在 `data/config/web-push-vapid.json`（权限 600），不进入
+数据库；订阅存于 `web_push_subscriptions`。推送服务返回 404/410 的订阅会被删除。联系
+地址可用环境变量 `WEB_PUSH_SUBJECT` 设置。判定与发送在 `src/web-push.ts`，调用点在
+`src/index.ts` 的 `pushWebTurnOutcome`：只对 Web 来源的输入、最终回复或运行错误推送；
+IM 来源、自动化运行、团队模式会话和 Worker 不推送。
+
 ## Skills、MCP 和 Plugins
 
 Skills：
@@ -1336,6 +1359,8 @@ Agent 镜像只由 `main` 分支的 GitHub Actions 构建并发布。该接口�
 - `terminal_input`
 - `terminal_resize`
 - `terminal_stop`
+- `presence`，`{ visible, chatJid, agentId }`：页面是否可见、正在看哪个会话；可见时约每 25 秒
+  重发，服务端 60 秒内未收到即视为不在看。用于决定是否发系统通知，访客连接忽略
 
 服务端主要事件：
 

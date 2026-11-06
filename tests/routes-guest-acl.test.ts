@@ -40,7 +40,8 @@ const auth = await import('../src/auth.js');
 const acl = await import('../src/group-acl.js');
 const guestAccess = await import('../src/guest-access.js');
 const { SESSION_COOKIE_NAME_PLAIN } = await import('../src/config.js');
-const { invalidateUserSessions } = await import('../src/web-context.js');
+const { invalidateUserSessions, wsClients } =
+  await import('../src/web-context.js');
 const automationRoutes = await import('../src/routes/automations.js');
 const { createAutomationCore } = await import('../src/automation-service.js');
 const { insertSessionWorktree } =
@@ -910,6 +911,50 @@ describe('receive-only WebSocket', () => {
     expect(messages.map((m) => m.type)).toContain('pong');
     expect(messages.some((m) => m.type === 'ws_error')).toBe(false);
     ws.close();
+  });
+
+  test('a presence report is ignored for a guest and recorded for an account', async () => {
+    const report = {
+      type: 'presence',
+      visible: true,
+      chatJid: GRANTED,
+      agentId: 'agent-1',
+    };
+    const guest = await connect(guestCookie);
+    guest.ws.send(JSON.stringify(report));
+    guest.ws.send(JSON.stringify({ type: 'ping' }));
+    await until(() => guest.messages.some((m) => m.type === 'pong'));
+    expect(guest.messages.some((m) => m.type === 'ws_error')).toBe(false);
+    expect([...wsClients.values()].some((c) => c.presence)).toBe(false);
+    guest.ws.close();
+
+    const owner = await connect(ownerCookie);
+    const before = Date.now();
+    owner.ws.send(JSON.stringify(report));
+    await until(() => [...wsClients.values()].some((c) => c.presence));
+    const ownerClient = [...wsClients.values()].find((c) => c.userId === OWNER);
+    expect(ownerClient?.presence).toMatchObject({
+      visible: true,
+      chatJid: GRANTED,
+      agentId: 'agent-1',
+    });
+    expect(ownerClient!.presence!.at).toBeGreaterThanOrEqual(before);
+    // The latest report wins, and junk degrades to "nowhere".
+    owner.ws.send(
+      JSON.stringify({
+        type: 'presence',
+        visible: 'yes',
+        chatJid: 5,
+        agentId: '',
+      }),
+    );
+    await until(() => ownerClient?.presence?.visible === false);
+    expect(ownerClient?.presence).toMatchObject({
+      visible: false,
+      chatJid: null,
+      agentId: null,
+    });
+    owner.ws.close();
   });
 
   test('automation events of granted workspaces reach the guest, redacted', async () => {

@@ -116,6 +116,10 @@ import {
   initWorkItemStore,
 } from './work-item-store.js';
 import {
+  deleteWebPushSubscriptionsForUser,
+  initWebPushStore,
+} from './web-push-store.js';
+import {
   DEFAULT_WORK_MODE,
   parseWorkMode,
   type WorkMode,
@@ -2602,6 +2606,9 @@ export function initDatabase(
   // v88 -> v89: work_items.origin / origin_agent_id / origin_input_id
   // (multi-task mode); every existing item is a team item.
   initWorkItemStore(db);
+  // v89 -> v90: Web Push subscriptions (web_push_subscriptions). The table is
+  // new and additive, nothing is backfilled.
+  initWebPushStore(db);
 
   // v63 -> v64: early Feishu reply enrichment embedded quoted ancestors in
   // messages.content, leaking prompt scaffolding into Web history and then
@@ -10982,6 +10989,7 @@ export function deleteUser(id: string): void {
   const now = new Date().toISOString();
   const tx = db.transaction((userId: string) => {
     prepareCached('DELETE FROM user_sessions WHERE user_id = ?').run(userId);
+    deleteWebPushSubscriptionsForUser(userId);
     prepareCached(`UPDATE users
        SET status = 'deleted', deleted_at = ?, disable_reason = COALESCE(disable_reason, 'deleted_by_admin'), updated_at = ?
        WHERE id = ?`).run(now, now, userId);
@@ -13500,6 +13508,7 @@ export function closeDatabase(): void {
   initRuntimeStateStore(null);
   initAutomationStore(null);
   initWorkItemStore(null);
+  initWebPushStore(null);
   if (db) {
     db.close();
   }

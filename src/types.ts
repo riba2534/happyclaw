@@ -1139,6 +1139,17 @@ export type WsMessageIn =
   | { type: 'terminal_input'; chatJid: string; data: string }
   | { type: 'terminal_resize'; chatJid: string; cols: number; rows: number }
   | { type: 'terminal_stop'; chatJid: string }
+  /**
+   * A page saying whether it is visible and which conversation it shows. Sent
+   * on every change and periodically while visible; Web Push uses it to stay
+   * quiet for a conversation the user is looking at.
+   */
+  | {
+      type: 'presence';
+      visible: boolean;
+      chatJid: string | null;
+      agentId: string | null;
+    }
   /** A page checking that its socket still reaches the server. */
   | { type: 'ping' };
 

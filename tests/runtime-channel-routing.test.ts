@@ -177,6 +177,8 @@ function makeOutputRuntime() {
     })),
     deliverIndependentChannelSystemNotice: vi.fn(async () => true),
     broadcastNewMessage,
+    // Web Push has its own tests (web-push.test.ts); no push here.
+    pushWebTurnOutcome: vi.fn(),
     broadcastToWebClients: vi.fn(),
     clearStreamingSnapshot: vi.fn(),
     resetIdleTimer: vi.fn(),

@@ -1,0 +1,159 @@
+/**
+ * Web Push subscriptions: one row per browser push endpoint, owned by the
+ * user who registered it.
+ *
+ * db.ts binds this module to its connection; no other module touches the
+ * table directly. The endpoint is the key: it identifies one browser
+ * installation, so registering it again (a re-login, or another account on
+ * the same device) moves the row to the new owner instead of duplicating it.
+ */
+
+interface SqliteRunResult {
+  changes: number;
+}
+
+interface SqliteStatement {
+  run(...params: unknown[]): SqliteRunResult;
+  get(...params: unknown[]): unknown;
+  all(...params: unknown[]): unknown[];
+}
+
+interface SqliteDatabase {
+  exec(sql: string): void;
+  prepare(sql: string): SqliteStatement;
+}
+
+export interface WebPushSubscription {
+  endpoint: string;
+  user_id: string;
+  p256dh: string;
+  auth: string;
+  user_agent: string | null;
+  created_at: string;
+  updated_at: string;
+  last_success_at: string | null;
+}
+
+export interface WebPushSubscriptionInput {
+  endpoint: string;
+  userId: string;
+  p256dh: string;
+  auth: string;
+  userAgent?: string | null;
+}
+
+let database: SqliteDatabase | null = null;
+const statements = new Map<string, SqliteStatement>();
+
+function requireDatabase(): SqliteDatabase {
+  if (!database) throw new Error('Web push store is not initialized');
+  return database;
+}
+
+function stmt(sql: string): SqliteStatement {
+  let statement = statements.get(sql);
+  if (!statement) {
+    statement = requireDatabase().prepare(sql);
+    statements.set(sql, statement);
+  }
+  return statement;
+}
+
+/** Create the table (idempotent) and bind the store; null unbinds it. */
+export function initWebPushStore(db: SqliteDatabase | null): void {
+  database = db;
+  statements.clear();
+  if (!db) return;
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS web_push_subscriptions (
+      endpoint TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      p256dh TEXT NOT NULL,
+      auth TEXT NOT NULL,
+      user_agent TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      last_success_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_web_push_subscriptions_user
+      ON web_push_subscriptions(user_id);
+  `);
+}
+
+/** Store a subscription; an endpoint already known is re-owned and refreshed. */
+export function upsertWebPushSubscription(
+  input: WebPushSubscriptionInput,
+  now = new Date().toISOString(),
+): void {
+  stmt(
+    `INSERT INTO web_push_subscriptions
+       (endpoint, user_id, p256dh, auth, user_agent, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(endpoint) DO UPDATE SET
+       user_id = excluded.user_id,
+       p256dh = excluded.p256dh,
+       auth = excluded.auth,
+       user_agent = excluded.user_agent,
+       updated_at = excluded.updated_at`,
+  ).run(
+    input.endpoint,
+    input.userId,
+    input.p256dh,
+    input.auth,
+    input.userAgent ?? null,
+    now,
+    now,
+  );
+}
+
+export function listWebPushSubscriptions(
+  userId: string,
+): WebPushSubscription[] {
+  return stmt(
+    `SELECT * FROM web_push_subscriptions
+     WHERE user_id = ? ORDER BY created_at ASC, endpoint ASC`,
+  ).all(userId) as WebPushSubscription[];
+}
+
+export function getWebPushSubscription(
+  endpoint: string,
+): WebPushSubscription | undefined {
+  return stmt('SELECT * FROM web_push_subscriptions WHERE endpoint = ?').get(
+    endpoint,
+  ) as WebPushSubscription | undefined;
+}
+
+/** Remove one endpoint of `userId`; another user's endpoint is left alone. */
+export function deleteWebPushSubscription(
+  endpoint: string,
+  userId: string,
+): boolean {
+  return (
+    stmt(
+      'DELETE FROM web_push_subscriptions WHERE endpoint = ? AND user_id = ?',
+    ).run(endpoint, userId).changes > 0
+  );
+}
+
+/** Remove an endpoint the push service reported gone (404 / 410). */
+export function deleteWebPushSubscriptionByEndpoint(endpoint: string): boolean {
+  return (
+    stmt('DELETE FROM web_push_subscriptions WHERE endpoint = ?').run(endpoint)
+      .changes > 0
+  );
+}
+
+export function deleteWebPushSubscriptionsForUser(userId: string): number {
+  return stmt('DELETE FROM web_push_subscriptions WHERE user_id = ?').run(
+    userId,
+  ).changes;
+}
+
+export function markWebPushSuccess(
+  endpoint: string,
+  now = new Date().toISOString(),
+): void {
+  stmt(
+    'UPDATE web_push_subscriptions SET last_success_at = ? WHERE endpoint = ?',
+  ).run(now, endpoint);
+}
