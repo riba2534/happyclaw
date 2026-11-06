@@ -60,6 +60,11 @@ export const GUEST_ROUTE_ALLOWLIST: ReadonlyArray<{
     note: 'brand assets',
   },
   { method: 'GET', pattern: /^\/api\/health$/, note: 'health probe' },
+  {
+    method: 'GET',
+    pattern: /^\/api\/build$/,
+    note: 'frontend build id (stale-page prompt)',
+  },
 
   // Own account.
   { method: 'GET', pattern: /^\/api\/auth\/me$/, note: 'current user' },

@@ -1299,6 +1299,10 @@ Web 和 Runtime 不再把它们当作第二个可写真相源。
 监控：
 
 - `GET /api/health`，Public
+- `GET /api/build`，Public：返回当前部署的前端构建标识 `{ id, builtAt }`（读自
+  `web/dist/build.json`，每次请求按文件 mtime 刷新，无需重启后端）；dist 缺失或
+  损坏时两个字段为 `null`。已打开的页面在 WS 连接/重连、回到前台和每 30 分钟
+  比较一次，服务端 `builtAt` 更新时提示刷新
 - `GET /api/status`
 - `GET /api/status/groups`：只返回队列运行状态，供聊天页恢复运行态；可见范围与
   `/api/status` 相同，不做 Docker 与版本探测

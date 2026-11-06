@@ -1,5 +1,6 @@
 import path from 'path';
 import fs from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { defineConfig, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
@@ -17,6 +18,43 @@ const APP_BASE = (() => {
   if (!base.endsWith('/')) base = `${base}/`;
   return base;
 })();
+
+// 每次构建一个标识：编译进前端代码（__APP_BUILD__），同时写进 dist/build.json
+// 供后端下发。比较新旧只看 builtAt；id 带 git 短哈希，方便人工对照。
+function resolveBuildInfo(): { id: string; builtAt: number } {
+  const builtAt = Date.now();
+  let hash = 'nogit';
+  try {
+    hash =
+      execFileSync('git', ['rev-parse', '--short', 'HEAD'], {
+        cwd: __dirname,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+      }).trim() || hash;
+  } catch {
+    // 不在 git 仓库（源码包构建）：仍有 builtAt 保证唯一。
+  }
+  const { version } = JSON.parse(
+    fs.readFileSync(path.resolve(__dirname, '../package.json'), 'utf8'),
+  ) as { version: string };
+  return { id: `${version}-${hash}-${builtAt.toString(36)}`, builtAt };
+}
+
+const APP_BUILD = resolveBuildInfo();
+
+function emitBuildInfo(): Plugin {
+  return {
+    name: 'happyclaw-emit-build-info',
+    apply: 'build',
+    generateBundle() {
+      this.emitFile({
+        type: 'asset',
+        fileName: 'build.json',
+        source: JSON.stringify(APP_BUILD),
+      });
+    },
+  };
+}
 
 function katexWoff2Only(): Plugin {
   return {
@@ -85,7 +123,16 @@ function lucideDirectImports(): Plugin {
 
 export default defineConfig({
   base: APP_BASE,
-  plugins: [katexWoff2Only(), lucideDirectImports(), react(), tailwindcss()],
+  define: {
+    __APP_BUILD__: JSON.stringify(APP_BUILD),
+  },
+  plugins: [
+    katexWoff2Only(),
+    lucideDirectImports(),
+    emitBuildInfo(),
+    react(),
+    tailwindcss(),
+  ],
   server: {
     port: 5173,
     host: '0.0.0.0',
