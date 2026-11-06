@@ -372,6 +372,13 @@ preset 的身份和默认风格，只低于平台的安全、权限、工具和�
 - 工作区 `CLAUDE.md`、项目 `.claude/skills` 和项目 MCP 属于项目上下文层。项目根按 CLI
   的规则从工作目录向上找到 git 根（Host 自定义目录与会话 worktree 同样适用），运行时、
   能力预览和工作区设置共用这个根；Host 自定义目录的 `.mcp.json` 因此会被加载。
+- 普通会话（含多任务工作区的普通会话）有只读的 `session_list`、`session_get`，按需加载：
+  宿主在主进程里合成会话的 `runtime_state`（running、queued_slot、rate_limited、
+  waiting_human、warm_idle、idle、error；`active` 不等于在跑），来源是 SQLite 加
+  GroupQueue 与流式快照。非 Home 工作区只能看本工作区，Home 可以看主人的全部工作区
+  （必须写明工作区），永远不能看其他用户的；不是主人亲自发起的轮次只得到本工作区的状态
+  字段。团队会话与派发 Worker 不注册。实现和权限见 `src/session-inspect-service.ts`、
+  `docs/ACL-MATRIX.md` §10。
 - Skill、MCP、Plugin 变更会停相关 Runner 并开新 SDK 会话，下一轮自动补注近期历史；
   运行中的 Agent 自己调用 `install_skill` 时，本轮结果送达后才重置。安装、卸载 Skill
   只接受工作区主人亲自发起的轮次。

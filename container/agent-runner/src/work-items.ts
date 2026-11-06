@@ -452,6 +452,9 @@ export const TEAM_LANE_POLICY = {
     'schedule_task',
     'install_skill',
     'uninstall_skill',
+    // Reading other sessions is for ordinary sessions of the owner only.
+    'session_list',
+    'session_get',
   ],
   withheldToolPrefixes: ['automation_'],
   /** `feishu_capability` operations a team session may still run. */

@@ -427,6 +427,25 @@ Agent MCP 调用没有 Cookie，但必须携带由主进程创建的运行上下
 - 其他轮次（群成员、混合批次）只能列出。
 - 旧的 `schedule_task` 等请求一律返回错误，提示改用自动化工具。
 
+会话查询（`session_list`、`session_get`）是只读的 Agent 工具，不经过 HTTP，权限全部由宿主在 IPC
+侧（`src/session-inspect-service.ts`）判定，Runner 的参数裁剪只是少给模型看不该用的参数：
+
+- 调用者只由请求文件所在的 IPC 目录（工作区 folder 加会话 id）确定，请求体里的身份字段一律
+  忽略。团队路由会话、团队执行会话和派发 Worker 不注册这两个工具，宿主也拒绝它们的请求
+  （`TEAM_LANE_POLICY.withheldTools`）。
+- 可见范围永远是调用者所在工作区的主人（`created_by`）自己的工作区，不看 admin 角色，不能
+  查看其他用户的工作区。非 Home 工作区只能查看本工作区；Home 工作区可以查看主人的全部
+  工作区，但必须写明工作区（`workspace` 参数或 `<工作区>/<会话>` 寻址），裸会话 id 不会跨
+  工作区搜索。工作区不存在、不属于主人、会话不存在或无权查看，一律返回同一条 `not_found`，
+  不泄露存在性。
+- 本轮必须是工作区主人亲自发起的（判定与 `install_skill` 相同，用请求里的 `inputTurnId`
+  指明这一轮，过期的不借用当前轮次），才能跨工作区、读取消息正文、读取执行轨迹和
+  工具入参。群成员轮次、自动化运行、`work_item_input` 回报轮只得到本工作区会话的运行
+  状态字段（不含最新消息预览、消息、轨迹、工具入参和进展文本），跨工作区请求返回
+  `owner_turn_required`，不做任何查找。
+- 返回的会话内容经 `untrusted_session_data` 围栏作为不可信数据交给模型；消息和轨迹合计
+  最多 32 KiB。没有新增数据库列，也没有界面开关。
+
 ## 11. 访客（只读）
 
 访客（`role=guest`）属于一个 owner（`users.guest_owner_id`），只能查看 owner 在
