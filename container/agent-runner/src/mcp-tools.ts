@@ -2325,9 +2325,6 @@ Use the skills panel in the UI to find the skill ID (directory name, e.g. "memor
   const workIpc: WorkIpcCall = (request, resultPrefix, timeoutMs) =>
     pollIpcResult(TASKS_DIR, request, resultPrefix, timeoutMs);
   const kind = sessionKind(ctx);
-  if (kind === 'multi') {
-    tools.push(...createDelegationTools(workIpc, () => ctx.currentInputTurnId));
-  }
   // Ordinary conversation sessions only: a team router or worker (including a
   // delegated Worker) reaches the workspace through its work tools alone.
   if (kind === 'single' || kind === 'multi') {
@@ -2342,6 +2339,9 @@ Use the skills panel in the UI to find the skill ID (directory name, e.g. "memor
         },
       ),
     );
+  }
+  if (kind === 'multi') {
+    tools.push(...createDelegationTools(workIpc, () => ctx.currentInputTurnId));
   }
   return applyToolLoadingHints(
     ctx.teamRole ? withTeamTools(tools, ctx.teamRole, workIpc) : tools,

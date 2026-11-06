@@ -220,6 +220,9 @@ const AUTOMATION_TOOLS = [
   'automation_list_runs',
   'automation_notify_current_run',
   'automation_silence_current_run',
+  // Reading other sessions is for ordinary sessions of the owner only.
+  'session_list',
+  'session_get',
 ].map((name) => `mcp__happyclaw__${name}`);
 
 const DELEGATION_TOOLS = [

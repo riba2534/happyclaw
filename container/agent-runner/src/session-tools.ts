@@ -17,9 +17,14 @@ import { z } from 'zod';
 
 import { strict, text, type ToolResult } from './automation-tools.js';
 
+export type SessionIpcType = 'session_list' | 'session_get';
+
 /** Writes the request and resolves with the host's result; throws on timeout. */
 export type SessionIpcCall = (
-  request: Record<string, unknown> & { requestId: string },
+  request: Record<string, unknown> & {
+    type: SessionIpcType;
+    requestId: string;
+  },
   resultPrefix: string,
   timeoutMs: number,
 ) => Promise<Record<string, unknown>>;
@@ -37,7 +42,7 @@ type IpcResult = { ok: true; data?: unknown } | { ok: false; error?: string };
  */
 function sessionSender(call: SessionIpcCall, fence: (data: unknown) => string) {
   return async (
-    type: 'session_list' | 'session_get',
+    type: SessionIpcType,
     payload: Record<string, unknown>,
   ): Promise<ToolResult> => {
     let result: IpcResult;
