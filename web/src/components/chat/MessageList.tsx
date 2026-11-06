@@ -1272,7 +1272,9 @@ export const MessageList = memo(function MessageList({
     <div className="relative flex-1 overflow-hidden overflow-x-hidden">
       <div
         ref={parentRef}
-        className="h-full overflow-y-auto overflow-x-hidden pb-10"
+        // Room below the last row, unless a phone dock floating over the
+        // list already reserves it (--list-end-room, set by the dock).
+        className="h-full overflow-y-auto overflow-x-hidden pb-[var(--list-end-room,2.5rem)]"
       >
         {/* Clips the follow glide's translation of the content, which would
             otherwise add scroll range below it. A clip, unlike hidden, is

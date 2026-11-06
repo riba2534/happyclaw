@@ -881,6 +881,9 @@ export const MessageInput = memo(function MessageInput({
     );
     if (!column || !host || !phoneDock || layout === 'centered') return;
     host.style.setProperty('--composer-dock-lift', DOCK_LIFT);
+    // The list's bottom room already clears the dock; its own end room
+    // would only add a blank band above it.
+    host.style.setProperty('--list-end-room', '0px');
     let published = '';
     const update = () => {
       const height = `${column.offsetHeight + DOCK_FEATHER_PX}px`;
@@ -895,6 +898,7 @@ export const MessageInput = memo(function MessageInput({
       observer.disconnect();
       host.style.removeProperty('--composer-dock-height');
       host.style.removeProperty('--composer-dock-lift');
+      host.style.removeProperty('--list-end-room');
     };
   }, [phoneDock, layout]);
   const committedLayoutRef = useRef(layout);
