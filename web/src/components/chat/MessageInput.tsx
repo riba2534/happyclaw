@@ -165,7 +165,7 @@ const FOCUS_HANDOFF_MS = 1000;
 const SOFT_KEYBOARD_MIN_PX = 150;
 // The phone dock sits 8px above the safe area, or above the keyboard.
 const DOCK_LIFT =
-  'max(calc(env(safe-area-inset-bottom, 0px) + 8px), calc(var(--keyboard-height, 0px) + 8px))';
+  'max(calc(var(--safe-bottom, 0px) + 8px), calc(var(--keyboard-height, 0px) + 8px))';
 // Its feathered top edge (pt-6), over which the conversation fades out.
 const DOCK_FEATHER_PX = 24;
 // The docking slide covers half the window; a little longer than a fade.
@@ -1018,7 +1018,7 @@ export const MessageInput = memo(function MessageInput({
           : {
               paddingBottom: dock
                 ? DOCK_LIFT
-                : `max(0.75rem, env(safe-area-inset-bottom, 0px), var(--keyboard-height, 0px))`,
+                : `max(0.75rem, var(--safe-bottom, 0px), var(--keyboard-height, 0px))`,
             }
       }
     >

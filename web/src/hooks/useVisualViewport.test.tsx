@@ -5,6 +5,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import {
   measureVisualViewport,
+  resizedForKeyboard,
   undoFocusScroll,
   useKeyboardInset,
   useVisualViewportVars,
@@ -82,11 +83,13 @@ describe('measureVisualViewport', () => {
     expect(measureVisualViewport(844, vv(500))).toEqual({
       height: 500,
       keyboardInset: 344,
+      keyboardOpen: true,
     });
     // iOS panned the page up 100px: 100px of the gap is page, not keyboard.
     expect(measureVisualViewport(844, vv(500, 100))).toEqual({
       height: 500,
       keyboardInset: 244,
+      keyboardOpen: true,
     });
   });
 
@@ -94,6 +97,7 @@ describe('measureVisualViewport', () => {
     expect(measureVisualViewport(844, vv(422, 200, 2))).toEqual({
       height: 844,
       keyboardInset: 0,
+      keyboardOpen: false,
     });
   });
 
@@ -107,11 +111,49 @@ describe('measureVisualViewport', () => {
     expect(measureVisualViewport(700, null)).toEqual({
       height: 700,
       keyboardInset: 0,
+      keyboardOpen: false,
     });
   });
 });
 
+describe('resizedForKeyboard', () => {
+  test('counts a drop of 150px or more from the tallest height', () => {
+    // A real iPhone web app: 894 tall, 478 with the keyboard up.
+    expect(resizedForKeyboard(478, 894)).toBe(true);
+    expect(resizedForKeyboard(745, 894)).toBe(false);
+    expect(resizedForKeyboard(894, 894)).toBe(false);
+  });
+});
+
 describe('useVisualViewportVars', () => {
+  test('marks the keyboard open when iOS resizes the whole page above it', async () => {
+    const root0 = document.documentElement;
+    const full = 894;
+    Object.defineProperty(root0, 'clientHeight', {
+      configurable: true,
+      get: () => full,
+    });
+    await move({ height: full });
+    await act(async () => root?.render(<Vars />));
+    expect(root0.dataset.keyboard).toBeUndefined();
+
+    Object.defineProperty(root0, 'clientHeight', {
+      configurable: true,
+      get: () => 478,
+    });
+    await move({ height: 478 });
+    expect(cssVar('--keyboard-inset')).toBe('0px');
+    expect(root0.dataset.keyboard).toBe('open');
+
+    Object.defineProperty(root0, 'clientHeight', {
+      configurable: true,
+      get: () => full,
+    });
+    await move({ height: full });
+    expect(root0.dataset.keyboard).toBeUndefined();
+    delete (root0 as { clientHeight?: number }).clientHeight;
+  });
+
   test('publishes --vvh and --keyboard-inset and follows the viewport', async () => {
     const h = window.innerHeight;
     await act(async () => root?.render(<Vars />));

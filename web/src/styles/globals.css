@@ -227,8 +227,14 @@
      --keyboard-height is a legacy alias for callers not yet switched over. */
   --keyboard-inset: 0px;
   --keyboard-height: var(--keyboard-inset);
+  /* The bottom safe area, gone while a keyboard covers the home indicator. */
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
 
   /* Liquid Glass design tokens */
+}
+
+:root[data-keyboard='open'] {
+  --safe-bottom: 0px;
 }
 
 /* =====================================================

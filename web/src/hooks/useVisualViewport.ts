@@ -5,12 +5,21 @@ import { useEffect, useSyncExternalStore } from 'react';
 const KEYBOARD_MIN_HEIGHT_PX = 50;
 // The iOS keyboard slides in and out over about this long.
 const KEYBOARD_SETTLE_MS = 400;
+// A layout viewport this much shorter than its tallest at the same width was
+// resized for a keyboard; browser toolbars change it by less.
+const KEYBOARD_RESIZE_MIN_PX = 150;
 
 export interface VisualViewportMetrics {
   /** Visible height in CSS px (the layout height while pinch-zoomed). */
   height: number;
   /** Layout-viewport pixels covered at the bottom by the software keyboard. */
   keyboardInset: number;
+  /**
+   * A software keyboard is up, whether it covers the page (keyboardInset) or
+   * the page was resized above it. Either way the home indicator is under
+   * the keyboard and the bottom safe area no longer applies.
+   */
+  keyboardOpen: boolean;
 }
 
 type ViewportLike = Pick<VisualViewport, 'height' | 'offsetTop' | 'scale'>;
@@ -27,17 +36,31 @@ export function measureVisualViewport(
   viewport: ViewportLike | null | undefined,
 ): VisualViewportMetrics {
   if (!viewport || viewport.scale > 1.01) {
-    return { height: Math.round(layoutHeight), keyboardInset: 0 };
+    return {
+      height: Math.round(layoutHeight),
+      keyboardInset: 0,
+      keyboardOpen: false,
+    };
   }
   const covered = layoutHeight - viewport.height - viewport.offsetTop;
+  const keyboardInset =
+    covered >= KEYBOARD_MIN_HEIGHT_PX ? Math.round(covered) : 0;
   return {
     height: Math.round(viewport.height),
-    keyboardInset: covered >= KEYBOARD_MIN_HEIGHT_PX ? Math.round(covered) : 0,
+    keyboardInset,
+    keyboardOpen: keyboardInset > 0,
   };
 }
 
 const listeners = new Set<() => void>();
-let snapshot: VisualViewportMetrics = { height: 0, keyboardInset: 0 };
+let snapshot: VisualViewportMetrics = {
+  height: 0,
+  keyboardInset: 0,
+  keyboardOpen: false,
+};
+// The tallest layout viewport seen at the current width, the baseline for
+// telling a keyboard resize apart. A rotation or window resize starts over.
+let tallest = { width: 0, height: 0 };
 let detach: (() => void) | null = null;
 
 /**
@@ -52,15 +75,41 @@ export function layoutViewportHeight(): number {
   return document.documentElement.clientHeight || window.innerHeight;
 }
 
+/**
+ * On an iPhone, iOS 27 resizes the whole layout viewport of an installed web
+ * app above the keyboard, so nothing is covered (keyboardInset 0) and only
+ * the drop from its full height shows the keyboard.
+ */
+export function resizedForKeyboard(
+  layoutHeight: number,
+  tallestHeight: number,
+): boolean {
+  return tallestHeight - layoutHeight >= KEYBOARD_RESIZE_MIN_PX;
+}
+
 function read(): VisualViewportMetrics {
-  return measureVisualViewport(layoutViewportHeight(), window.visualViewport);
+  const layoutHeight = layoutViewportHeight();
+  const width = document.documentElement.clientWidth;
+  if (width !== tallest.width) tallest = { width, height: layoutHeight };
+  else if (layoutHeight > tallest.height) tallest.height = layoutHeight;
+  const metrics = measureVisualViewport(layoutHeight, window.visualViewport);
+  if (
+    !metrics.keyboardOpen &&
+    window.visualViewport &&
+    window.visualViewport.scale <= 1.01 &&
+    resizedForKeyboard(layoutHeight, tallest.height)
+  ) {
+    metrics.keyboardOpen = true;
+  }
+  return metrics;
 }
 
 function update() {
   const next = read();
   if (
     next.height === snapshot.height &&
-    next.keyboardInset === snapshot.keyboardInset
+    next.keyboardInset === snapshot.keyboardInset &&
+    next.keyboardOpen === snapshot.keyboardOpen
   ) {
     return;
   }
@@ -155,7 +204,9 @@ export function undoFocusScroll(): void {
 }
 
 /**
- * Publishes `--vvh` and `--keyboard-inset` on <html>. Mount once, from the
+ * Publishes `--vvh` and `--keyboard-inset` on <html>, and marks it
+ * `data-keyboard="open"` while a keyboard is up (globals.css then zeroes
+ * `--safe-bottom`). Mount once, from the
  * app shell; CSS everywhere reads the variables instead of measuring. Also
  * undoes the focus scroll iOS adds on top of that inset (undoFocusScroll).
  */
@@ -173,6 +224,8 @@ export function useVisualViewportVars(): void {
     const publish = () => {
       set('--vvh', snapshot.height);
       set('--keyboard-inset', snapshot.keyboardInset);
+      if (snapshot.keyboardOpen) root.dataset.keyboard = 'open';
+      else delete root.dataset.keyboard;
       undoFocusScroll();
     };
     const unsubscribe = subscribe(publish);
@@ -189,6 +242,7 @@ export function useVisualViewportVars(): void {
       unsubscribe();
       root.style.removeProperty('--vvh');
       root.style.removeProperty('--keyboard-inset');
+      delete root.dataset.keyboard;
     };
   }, []);
 }
