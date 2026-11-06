@@ -1,4 +1,5 @@
 import { toast } from 'sonner';
+import { isPushSubscribed } from './webPush';
 
 const BACKGROUND_TASK_NOTICE_TTL_MS = 15_000;
 const OWNER_KEY = 'happyclaw:bg-task-notice-owner';
@@ -39,6 +40,9 @@ export function showToast(
  */
 export function notifyIfHidden(title: string, body?: string): void {
   if (!document.hidden) return;
+  // This device is subscribed to Web Push: the server sends the notification
+  // for a page that is in the background, and a second one would repeat it.
+  if (isPushSubscribed()) return;
   if (typeof Notification === 'undefined') return;
   if (Notification.permission !== 'granted') return;
   try {

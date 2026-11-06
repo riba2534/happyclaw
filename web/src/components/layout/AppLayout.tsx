@@ -29,6 +29,7 @@ import { useWorkItemSubscription } from '../../stores/work-items';
 import { AutomationFormHost } from '../automations/AutomationFormHost';
 import { CreateWorkspaceHost } from './CreateWorkspaceHost';
 import { syncAppBadge } from '../../utils/appBadge';
+import { useWebPushLifecycle } from '../../hooks/useWebPushLifecycle';
 
 export function AppLayout() {
   const location = useLocation();
@@ -47,6 +48,8 @@ export function AppLayout() {
   // Read-only guests may only call a small GET allowlist; skip everything
   // else (billing, creating sessions) so they never see 403s.
   const isGuest = useIsGuest();
+  // Web Push: presence for the server, the subscription, tapped notifications.
+  useWebPushLifecycle({ enabled: !isGuest });
 
   // ⌘B / Ctrl+B toggles the desktop sidebar between full width and icon rail.
   const toggleSidebar = useShellStore((s) => s.toggleSidebar);

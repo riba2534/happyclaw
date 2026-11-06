@@ -35,6 +35,7 @@ import {
 } from '../../hooks/useStreamLayout';
 import { SettingsGroup, SettingsRow, SettingsSection } from './SettingsLayout';
 import { SettingsSwitchRow } from './SettingsFormControls';
+import { PushNotificationSection } from './PushNotificationSection';
 
 const THEME_OPTIONS: { value: Theme; label: string; icon: typeof Sun }[] = [
   { value: 'light', label: '浅色', icon: Sun },
@@ -349,6 +350,7 @@ export function PreferencesSection() {
       </SettingsSection>
 
       <DesktopNotificationSection />
+      <PushNotificationSection />
       <RouteRestoreSection />
     </div>
   );

@@ -13,8 +13,10 @@ if (typeof window !== 'undefined') {
 }
 
 if (typeof window !== 'undefined') {
-  // HappyClaw no longer uses a Service Worker. Clean up registrations and
-  // Cache Storage left by older releases without delaying the first render.
+  // HappyClaw caches nothing in a Service Worker. Clean up the Workbox
+  // registrations and Cache Storage left by older releases without delaying
+  // the first render. The push-only worker (push-sw.js) is registered from
+  // Settings, never here, and is kept by this cleanup.
   void cleanupLegacyPwaArtifacts();
   installStaleChunkRecovery();
 }
