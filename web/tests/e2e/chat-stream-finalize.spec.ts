@@ -732,14 +732,29 @@ test('a timeline of steps folds into the finished message and the answer does no
 
   expect(frames.at(-1)?.final).toBe(true);
   expect(frames.filter((f) => !f.whole)).toEqual([]);
-  expect(Math.max(...frames.map((f) => f.gap))).toBeLessThan(30);
   // The final message's card is as the reader left the live one, open on
-  // the same steps: the answer does not move.
+  // the same steps. On a desktop the answer does not move; on a phone the
+  // running reply holds no place for the final reply's action row (a blank
+  // band over the floating composer), so the row arrives with the final and
+  // the follow glide carries it in: the answer slides up by at most the row
+  // (44px and its 6px margin) and the reader is back at the end.
+  const onPhone = await page.evaluate(
+    () => matchMedia('(max-width: 1023px) and (pointer: coarse)').matches,
+  );
   const ys = frames.map((f) => f.anchorY);
   expect(ys.every((y) => y !== null)).toBe(true);
-  expect(
-    Math.max(...(ys as number[])) - Math.min(...(ys as number[])),
-  ).toBeLessThan(3);
+  const travel = Math.max(...(ys as number[])) - Math.min(...(ys as number[]));
+  if (onPhone) {
+    const ACTION_ROW = 44 + 6;
+    expect(Math.max(...frames.map((f) => f.gap))).toBeLessThanOrEqual(
+      ACTION_ROW + 4,
+    );
+    expect(frames.at(-1)?.gap).toBeLessThan(1);
+    expect(travel).toBeLessThanOrEqual(ACTION_ROW + 4);
+  } else {
+    expect(Math.max(...frames.map((f) => f.gap))).toBeLessThan(30);
+    expect(travel).toBeLessThan(3);
+  }
   await expect(page.getByRole('button', { name: /^回到底部/ })).toHaveCount(0);
 
   // The final message keeps the steps behind the same one summary row:
