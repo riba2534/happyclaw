@@ -614,11 +614,14 @@ import {
   broadcastUsageLimitWait,
 } from './web.js';
 import { ProactiveCommentaryRelay } from './process-commentary.js';
+import { planTeamCandidateIntake } from './team-candidate-intake.js';
+import { runImmediateTransaction, updateMessageAttachments } from './db.js';
 import {
   copiesGroupMessage,
   decideTeamInbound,
   teamInputFrameOf,
   readTeamInput,
+  withTeamInputAttachment,
   type TeamInboundDecision,
 } from './team-gate.js';
 import {
@@ -2008,7 +2011,26 @@ async function dispatchNextQueuedFollowUp(chatJid: string): Promise<void> {
   if (!reservedRunId) return;
   withdrawQueuedInputsOutsideAudience(chatJid);
   withdrawQueuedInputsOfEndedRuns(chatJid);
-  const items = claimNextQueuedFollowUpBatch(chatJid, reservedRunId);
+  let candidates: NewMessage[] | null;
+  try {
+    candidates = prepareTeamCandidateInputs(
+      chatJid,
+      listQueuedFollowUps(chatJid),
+    );
+  } catch (err) {
+    queue.releaseQueryReservation(chatJid, reservedRunId);
+    logger.error({ err, chatJid }, 'Failed to prepare team candidate intake');
+    return;
+  }
+  if (!candidates) {
+    queue.releaseQueryReservation(chatJid, reservedRunId);
+    return;
+  }
+  const items = claimNextQueuedFollowUpBatch(
+    chatJid,
+    reservedRunId,
+    candidates.length,
+  );
   if (items.length === 0) {
     queue.releaseQueryReservation(chatJid, reservedRunId);
     return;
@@ -10871,6 +10893,13 @@ async function processAgentConversation(
     virtualChatJid,
     pendingWindow.messages,
   );
+  const candidateMessages = prepareTeamCandidateInputs(
+    virtualChatJid,
+    missedMessages,
+  );
+  if (!candidateMessages) return true;
+  const candidatesDeferred = candidateMessages.length < missedMessages.length;
+  missedMessages = candidateMessages;
 
   // Owner gate for every cold start of a session (warm input passes the same
   // gate in admitWarmSessionInputs). When the owner is disabled/deleted,
@@ -10932,6 +10961,7 @@ async function processAgentConversation(
   const replyBatch = selectChannelReplyBatch(interactionBatch.messages);
   if (
     pendingWindow.truncated ||
+    candidatesDeferred ||
     interactionBatch.hasDeferredMessages ||
     replyBatch.length < interactionBatch.messages.length
   ) {
@@ -16169,6 +16199,89 @@ function runtimeJidOfSession(agentId: string): string | null {
   return workspaceJid ? `${workspaceJid}#agent:${agentId}` : null;
 }
 
+// Timers are wake-up hints only. Inputs and receipt times live in SQLite and
+// are re-evaluated by both cold-start recovery and warm queue promotion.
+const teamCandidateTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+function prepareTeamCandidateInputs(
+  laneJid: string,
+  messages: NewMessage[],
+): NewMessage[] | null {
+  const sourceJid = messages[0]?.source_jid;
+  const header = readTeamInput(messages[0]?.attachments);
+  if (
+    header?.tag !== 'team_candidate' ||
+    header.facts?.strength !== 'inferred' ||
+    !sourceJid
+  )
+    return messages;
+  const context = resolveTeamGroup(channelConversationJid(sourceJid));
+  // Only the current router can apply this group's intake policy. A worker,
+  // another account, and a delegated report never inherit this gate.
+  if (
+    !context ||
+    laneJid !== laneJidOf(context.workspaceJid, context.routerAgentId)
+  )
+    return messages;
+  const plan = planTeamCandidateIntake(
+    messages,
+    context.settings.candidateIntake,
+  );
+  const previous = teamCandidateTimers.get(laneJid);
+  if (previous) clearTimeout(previous);
+  teamCandidateTimers.delete(laneJid);
+  const wake = () => {
+    teamCandidateTimers.delete(laneJid);
+    if (shuttingDown) return;
+    if (listQueuedFollowUps(laneJid).length > 0)
+      void dispatchNextQueuedFollowUp(laneJid);
+    else buildOnAgentMessage()(context.workspaceJid, context.routerAgentId);
+  };
+  if (plan.kind === 'wait') {
+    const timer = setTimeout(wake, plan.waitMs);
+    timer.unref();
+    teamCandidateTimers.set(laneJid, timer);
+    return null;
+  }
+  if (plan.kind === 'discard') {
+    for (const message of plan.messages) {
+      if (
+        message.delivery_status === 'queued' ||
+        message.delivery_status === 'promoting'
+      )
+        withdrawQueuedInput(laneJid, message.id);
+      else completeOutOfBandMessages(laneJid, [message]);
+    }
+    logger.debug(
+      { laneJid, messageCount: plan.messages.length, reason: plan.reason },
+      'Team candidate batch filtered before model invocation',
+    );
+    // Yield instead of recursively draining a busy group's backlog.
+    const timer = setTimeout(wake, 0);
+    timer.unref();
+    teamCandidateTimers.set(laneJid, timer);
+    return null;
+  }
+  if (plan.kind === 'admit') {
+    const ids = plan.messages.map((message) => message.id);
+    runImmediateTransaction(() => {
+      for (const message of plan.messages) {
+        const item = readTeamInput(message.attachments)!;
+        // A committed batch keeps its original context on retries; a later
+        // arrival must not widen a request already shown to the model.
+        if (item.facts?.candidateBatchIds) continue;
+        const attachments = withTeamInputAttachment(message.attachments, {
+          ...item,
+          facts: { ...item.facts, candidateBatchIds: ids },
+        });
+        updateMessageAttachments(laneJid, message.id, attachments);
+        message.attachments = attachments;
+      }
+    });
+  }
+  return plan.messages;
+}
+
 /** Queue a cold run of a session lane's pending input, by its runtime JID. */
 function enqueueSessionLane(laneJid: string, taskPrefix: string): boolean {
   const agentId = agentIdOfJid(laneJid);
@@ -16281,10 +16394,15 @@ function buildOnAgentMessage(): (baseChatJid: string, agentId: string) => void {
       virtualChatJid,
       getMessagesSince(virtualChatJid, sinceCursor),
     );
+    const candidateMessages = prepareTeamCandidateInputs(
+      virtualChatJid,
+      allPendingMessages,
+    );
+    if (!candidateMessages) return;
     const { effectiveGroup } = resolveEffectiveGroup(group);
     const warmTeamRole = teamLaneOf(agent);
     const interactionBatch = selectRuntimeInteractionBatch(
-      allPendingMessages,
+      candidateMessages,
       effectiveGroup,
       homeChatJid,
       agent?.kind === 'spawn' ? 'spawn' : 'conversation',

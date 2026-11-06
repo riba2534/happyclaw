@@ -55,8 +55,97 @@ export interface TeamSettings {
   admission: AdmissionTable;
   acceptMode: TeamAcceptMode;
   rules: TeamRule[];
+  /** Optional pre-model batching/filtering of inferred candidates only. */
+  candidateIntake?: TeamCandidateIntakeSettings;
   /** Bumped on every save; recorded on each work item's mandate. */
   version: number;
+}
+
+export interface TeamCandidateIntakeSettings {
+  enabled: boolean;
+  quietMs: number;
+  maxWaitMs: number;
+  maxMessages: number;
+  /** Literal, case-insensitive substrings; never evaluated as regex. */
+  keywords: string[];
+  /** Exact provider user ids; grants no admission or execution permission. */
+  prioritySenderIds: string[];
+}
+
+export const DEFAULT_TEAM_CANDIDATE_INTAKE: TeamCandidateIntakeSettings = {
+  enabled: false,
+  quietMs: 6000,
+  maxWaitMs: 30000,
+  maxMessages: 10,
+  keywords: [
+    '待办',
+    '跟进',
+    '截止',
+    '审批',
+    '发一下',
+    '整理',
+    '下班前',
+    '明天',
+    '周一',
+    '周二',
+    '周三',
+    '周四',
+    '周五',
+    'todo',
+    'follow up',
+    'deadline',
+    'by tomorrow',
+  ],
+  prioritySenderIds: [],
+};
+
+/** Invalid persisted intake options disable it rather than changing old groups. */
+export function parseTeamCandidateIntake(
+  raw: unknown,
+): TeamCandidateIntakeSettings | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const value = raw as Record<string, unknown>;
+  const defaults = DEFAULT_TEAM_CANDIDATE_INTAKE;
+  const number = (key: string, min: number, max: number, fallback: number) => {
+    const candidate = value[key];
+    return Number.isInteger(candidate) &&
+      Number(candidate) >= min &&
+      Number(candidate) <= max
+      ? Number(candidate)
+      : fallback;
+  };
+  const strings = (
+    candidate: unknown,
+    maxItems: number,
+    maxLength: number,
+    fallback: string[],
+  ) =>
+    Array.isArray(candidate)
+      ? [
+          ...new Set(
+            candidate
+              .filter(
+                (item): item is string =>
+                  typeof item === 'string' &&
+                  item.trim().length > 0 &&
+                  item.length <= maxLength,
+              )
+              .map((item) => item.trim()),
+          ),
+        ].slice(0, maxItems)
+      : [...fallback];
+  const quietMs = number('quietMs', 1000, 30000, defaults.quietMs);
+  return {
+    enabled: value.enabled === true,
+    quietMs,
+    maxWaitMs: Math.max(
+      quietMs,
+      number('maxWaitMs', 1000, 120000, defaults.maxWaitMs),
+    ),
+    maxMessages: number('maxMessages', 1, 50, defaults.maxMessages),
+    keywords: strings(value.keywords, 100, 80, defaults.keywords),
+    prioritySenderIds: strings(value.prioritySenderIds, 100, 256, []),
+  };
 }
 
 export const DEFAULT_ADMISSION: AdmissionTable = {
@@ -124,6 +213,9 @@ export function parseTeamSettings(
     : [];
   return {
     enabled: value.enabled === true,
+    ...(parseTeamCandidateIntake(value.candidateIntake)
+      ? { candidateIntake: parseTeamCandidateIntake(value.candidateIntake) }
+      : {}),
     admission: {
       listedUnaddressed: unaddressed(admission.listedUnaddressed),
       unlistedAddressed,

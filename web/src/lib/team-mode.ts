@@ -272,6 +272,15 @@ export function toSettingsDraft(settings: TeamSettings): TeamSettingsDraft {
     admission: { ...settings.admission },
     acceptMode: settings.acceptMode,
     rules: settings.rules.map((rule) => ({ ...rule })),
+    ...(settings.candidateIntake
+      ? {
+          candidateIntake: {
+            ...settings.candidateIntake,
+            keywords: [...settings.candidateIntake.keywords],
+            prioritySenderIds: [...settings.candidateIntake.prioritySenderIds],
+          },
+        }
+      : {}),
   };
 }
 

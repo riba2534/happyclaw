@@ -10,11 +10,32 @@ import {
   subscriptionLabel,
   teamModeWorkspaceOf,
   teamSettingsProblem,
+  toSettingsDraft,
   workPermissionText,
   workStageLabel,
   workStageText,
   workStageVariant,
 } from './team-mode';
+import {
+  DEFAULT_TEAM_SETTINGS,
+  DEFAULT_TEAM_CANDIDATE_INTAKE,
+} from '../work-items';
+
+test('saving team settings preserves API-configured candidate intake without sharing mutable arrays', () => {
+  const settings = {
+    ...DEFAULT_TEAM_SETTINGS,
+    candidateIntake: {
+      ...DEFAULT_TEAM_CANDIDATE_INTAKE,
+      enabled: true,
+      keywords: ['跟进'],
+      prioritySenderIds: ['ou_lead'],
+    },
+  };
+  const draft = toSettingsDraft(settings);
+  expect(draft.candidateIntake).toEqual(settings.candidateIntake);
+  draft.candidateIntake!.keywords.push('截止');
+  expect(settings.candidateIntake.keywords).toEqual(['跟进']);
+});
 
 function item(overrides: Partial<WorkItemView>): WorkItemView {
   return {

@@ -119,6 +119,8 @@ function automationDefaults(): Record<string, unknown> {
     readTeamInput,
     copiesGroupMessage,
     onTeamMessageStored: () => {},
+    prepareTeamCandidateInputs: (_laneJid: string, messages: unknown[]) =>
+      messages,
     // Multi-task mode: no delegated work item, so nothing to keep or fail.
     isDelegatedReportInput: () => false,
     failDelegatedWorkerRun: () => {},
