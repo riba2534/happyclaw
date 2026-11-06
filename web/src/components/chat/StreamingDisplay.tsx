@@ -688,10 +688,12 @@ export function StreamingDisplay({
         </div>
       </div>
       {/* Holds the place of the final reply's action row (MessageBubble), so
-          the card and the reply that replaces it are the same height. */}
+          the card and the reply that replaces it are the same height. Not on
+          a phone: there it reads as a blank band over the composer while the
+          reply runs, and the follow glide carries the row in when it lands. */}
       <div
         aria-hidden="true"
-        className="mt-1.5 h-7 pointer-coarse:h-10 phone:h-11"
+        className="mt-1.5 h-7 pointer-coarse:h-10 phone:hidden"
       />
     </div>
   );
