@@ -22,6 +22,7 @@ import {
 import { toast } from 'sonner';
 
 import { cn } from '@/lib/utils';
+import { keepFocusThatMovedOn } from '@/lib/focus';
 import type { ModelCapabilitySource } from '@/lib/model-providers';
 import type { ConnectionModel } from '@/types';
 import {
@@ -573,16 +574,6 @@ function useQuietTooltip() {
       },
     },
   };
-}
-
-/**
- * A closed menu hands focus back to its trigger once its exit animation ends.
- * If the model panel was opened in the meantime, focus already sits there;
- * pulling it back would close the panel again.
- */
-function keepFocusThatMovedOn(event: Event) {
-  const active = document.activeElement;
-  if (active && active !== document.body) event.preventDefault();
 }
 
 interface ModelSelectorProps {

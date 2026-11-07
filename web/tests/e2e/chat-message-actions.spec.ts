@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 
 const HARNESS = '/tests/e2e/chat-render-harness.html';
 
@@ -142,4 +142,63 @@ test('copy from a menu works without the async clipboard API (plain HTTP)', asyn
     ).realClipboard.readText(),
   );
   expect(copied).toContain('export const answer = 42;');
+});
+
+/** The composer's text, and whether it holds focus. */
+async function composerState(page: Page) {
+  return page.locator('[data-hc-composer] .ProseMirror').evaluate((editor) => ({
+    text: (editor as HTMLElement).innerText.trim(),
+    focused: editor.contains(document.activeElement),
+  }));
+}
+
+/** A closed menu hands focus back on a timer once it has unmounted. */
+async function afterMenuReturnsFocus(page: Page) {
+  await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 100)));
+}
+
+test('quoting from the menu leaves the caret in the composer', async ({
+  page,
+}) => {
+  await page.goto(`${HARNESS}?scenario=facts`);
+  await expect(page.locator('[data-hc-composer]')).toBeVisible();
+  const trigger = page.getByRole('button', { name: '消息菜单' }).last();
+  // A menu closed without moving focus still hands it back to its trigger.
+  await trigger.click();
+  await page.keyboard.press('Escape');
+  await expect(trigger).toBeFocused();
+  await trigger.click();
+  await page.getByRole('menuitem', { name: '引用' }).click();
+  await expect(page.getByRole('menu')).toHaveCount(0);
+  await afterMenuReturnsFocus(page);
+  expect((await composerState(page)).focused).toBe(true);
+  await page.keyboard.type('接着说');
+  const { text } = await composerState(page);
+  expect(text.startsWith('>')).toBe(true);
+  expect(text.endsWith('\n接着说')).toBe(true);
+});
+
+test.describe('on a phone', () => {
+  test.use({
+    viewport: { width: 390, height: 844 },
+    isMobile: true,
+    hasTouch: true,
+  });
+
+  test('quoting from the action sheet leaves the caret in the composer', async ({
+    page,
+  }) => {
+    await page.goto(`${HARNESS}?scenario=facts`);
+    await expect(page.locator('[data-hc-composer]')).toBeVisible();
+    await page.getByRole('button', { name: '消息菜单' }).last().tap();
+    const sheet = page.getByRole('dialog', { name: '消息操作' });
+    await sheet.getByRole('button', { name: '引用' }).tap();
+    await expect(sheet).toHaveCount(0);
+    await afterMenuReturnsFocus(page);
+    expect((await composerState(page)).focused).toBe(true);
+    await page.keyboard.type('接着说');
+    const { text } = await composerState(page);
+    expect(text.startsWith('>')).toBe(true);
+    expect(text.endsWith('\n接着说')).toBe(true);
+  });
 });

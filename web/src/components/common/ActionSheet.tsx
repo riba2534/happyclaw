@@ -7,6 +7,7 @@ import {
   SheetTitle,
   SheetTrigger,
 } from '@/components/ui/sheet';
+import { keepFocusThatMovedOn } from '@/lib/focus';
 import { cn } from '@/lib/utils';
 import type { MenuAction } from './ResponsiveMenu';
 
@@ -46,6 +47,7 @@ export function ActionSheet({
         side="bottom"
         showCloseButton={false}
         className="gap-0 p-0"
+        onCloseAutoFocus={keepFocusThatMovedOn}
         {...(description ? {} : { 'aria-describedby': undefined })}
         {...contentProps}
       >
