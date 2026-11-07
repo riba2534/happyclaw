@@ -25,7 +25,10 @@ export function readDescriptorMountId(fd, readFile = fs.readFileSync) {
 // NFS) or EBADF (VM file sharing such as OrbStack's virtiofs), for the Agent as
 // much as for the watcher. Nothing behind it can be read or written, so there
 // is nothing to normalize. EBADF counts only while the parent descriptor is
-// still open; a closed parent is the watcher's own bug and must still throw.
+// still open, so an EBADF caused by the watcher closing the parent is not
+// taken for a stale mount. (Opening a child through /proc/self/fd/<closed fd>
+// reports ENOENT rather than EBADF, which openChild already treats as a
+// vanished entry; this check does not change that path.)
 export function isStaleMountEntryError(error, parentFd, fstat = fs.fstatSync) {
   if (error?.code === 'ESTALE') return true;
   if (error?.code !== 'EBADF') return false;

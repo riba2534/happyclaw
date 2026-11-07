@@ -191,22 +191,31 @@ function openChild(parentFd, component) {
   } catch (error) {
     if (isVanishedOrSymlink(error)) return null;
     if (isStaleMountEntryError(error, parentFd)) {
-      reportStaleEntry(component, error);
+      reportStaleEntry(parentFd, component, error);
       return null;
     }
     throw error;
   }
 }
 
-function reportStaleEntry(component, error) {
-  // Periodic scans meet the same stale entry every 30 seconds; say it once.
-  const key = component.toString('hex');
+function reportStaleEntry(parentFd, component, error) {
+  // Periodic scans meet the same stale entry every 30 seconds; say it once per
+  // path. The parent path names the mount for operators; it is best effort.
+  let parentPath = '';
+  try {
+    parentPath = fs.readlinkSync(procFdPath(parentFd));
+  } catch {
+    parentPath = '';
+  }
+  const name = component.toString();
+  const key = `${parentPath}\0${component.toString('hex')}`;
   if (reportedStaleEntries.has(key)) return;
   reportedStaleEntries.add(key);
+  const shown = parentPath ? `${parentPath}/${name}` : name;
   process.stderr.write(
-    `happyclaw: skipping stale mount entry ${JSON.stringify(
-      component.toString(),
-    )} (${error.code})\n`,
+    `happyclaw: skipping stale mount entry ${JSON.stringify(shown)} (${
+      error.code
+    })\n`,
   );
 }
 
