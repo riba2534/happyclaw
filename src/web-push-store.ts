@@ -70,6 +70,14 @@ export function initWebPushStore(db: SqliteDatabase | null): void {
   database = db;
   statements.clear();
   if (!db) return;
+  // An earlier build created the table without session_id. Its rows are not
+  // tied to a login, so they are dropped with it; browsers register again.
+  const columns = db
+    .prepare('PRAGMA table_info(web_push_subscriptions)')
+    .all() as Array<{ name: string }>;
+  if (columns.length > 0 && !columns.some((c) => c.name === 'session_id')) {
+    db.exec('DROP TABLE web_push_subscriptions');
+  }
   db.exec(`
     CREATE TABLE IF NOT EXISTS web_push_subscriptions (
       endpoint TEXT PRIMARY KEY,
