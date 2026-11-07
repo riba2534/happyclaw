@@ -9,21 +9,25 @@ import { expect, test, type Locator, type Page } from '@playwright/test';
 //              sheet    the phone's model picker sheet (composer-harness)
 //              empty    the line-drawn empty state of the automations list
 //                       (workspace-pages-harness ?automations=0)
-//   Schemes    teal (`default`), orange, neutral × light, dark
+//   Schemes    teal (`default`), orange, neutral × light, dark: 6 looks
 //   Widths     phone    390×844 at 1× (chromium-mobile): chat, sheet, empty
-//                       in all 8 looks
+//                       in all 6 looks
 //              desktop  1440×900 at 1× (chromium-desktop): chat and empty in
-//                       all 8 looks; the sheet is phone-only, a desktop
+//                       all 6 looks; the sheet is phone-only, a desktop
 //                       opens the picker as a menu
 //
+// Opt-in and macOS only. The spec runs when PLAYWRIGHT_VISUAL=1 is set, so
+// `make check` skips it; font rasterisation differs per OS, and only the
+// darwin baselines are committed, so any other platform skips it as well.
 // Chromium only: WebKit renders fonts differently, so its projects never
 // match this file. Baselines live in visual-baseline.spec.ts-snapshots/ with
-// the platform suffix (darwin); another platform records its own.
+// the platform suffix (darwin). playwright.config.ts sets updateSnapshots to
+// 'none', so a missing or changed baseline fails instead of being written.
 //
-// Update the baselines after an intended visual change (from web/):
-//   VITE_API_PROXY_TARGET=http://127.0.0.1:9 VITE_WS_PROXY_TARGET=ws://127.0.0.1:9 \
-//     PLAYWRIGHT_PORT=5186 npx playwright test tests/e2e/visual-baseline.spec.ts \
-//     --update-snapshots
+// Update the baselines after an intended visual change (on macOS, from web/):
+//   PLAYWRIGHT_VISUAL=1 VITE_API_PROXY_TARGET=http://127.0.0.1:9 \
+//     VITE_WS_PROXY_TARGET=ws://127.0.0.1:9 PLAYWRIGHT_PORT=5186 \
+//     npx playwright test tests/e2e/visual-baseline.spec.ts --update-snapshots
 // Name the file by path: a bare `visual-baseline` filter also matches a
 // checkout whose directory has that name, and runs every spec. Both widths
 // render at 1×, which keeps the set near 1.6 MB; open the changed PNGs and
@@ -52,6 +56,14 @@ const NOW = new Date('2026-11-01T02:00:00.000Z');
 
 test.use({ locale: 'zh-CN', timezoneId: 'Asia/Shanghai' });
 
+test.skip(
+  !process.env.PLAYWRIGHT_VISUAL,
+  'visual baselines are opt-in: set PLAYWRIGHT_VISUAL=1',
+);
+test.skip(
+  process.platform !== 'darwin',
+  `baselines are recorded on macOS; ${process.platform} rasterises fonts differently`,
+);
 test.skip(
   ({ browserName }) => browserName !== 'chromium',
   'baselines are recorded in Chromium',

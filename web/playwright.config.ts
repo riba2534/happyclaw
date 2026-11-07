@@ -23,6 +23,10 @@ export default defineConfig({
   fullyParallel: false,
   forbidOnly: Boolean(process.env.CI),
   retries: process.env.CI ? 1 : 0,
+  // Only visual-baseline.spec.ts takes screenshots. A missing or changed
+  // baseline fails rather than being written next to the committed ones;
+  // `--update-snapshots` on the command line still records them.
+  updateSnapshots: 'none',
   reporter: 'line',
   use: {
     baseURL: `http://127.0.0.1:${port}`,

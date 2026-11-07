@@ -715,6 +715,9 @@ npm run self-test
   测试、模型发现用同一套预设和错误分类。
 - 修改 Prompt 后确保 `scripts/check-agent-runner-prompts.sh` 通过。
 - 修改文档后运行 `npm run docs:check`。
+- 视觉基线（`web/tests/e2e/visual-baseline.spec.ts`）只提交了 macOS 的 `*-darwin.png`，只在 macOS 上
+  设置 `PLAYWRIGHT_VISUAL=1` 时运行，`make check` 跳过它；有意改动外观后在 macOS 上对该 spec 加
+  `--update-snapshots` 重录（完整命令见 spec 头部注释），逐张查看改动的 PNG 再提交。
 - SDK/CLI 升级必须显式执行 `make update-sdk`，验证后提交 package.json 与 lockfile；
   升级后重跑 `node tests/e2e/turn-context-dedup.mjs`，它固定 SessionStart(compact)
   补发的位置。preset 变了时 `tests/agent-runner-claude-preset.integration.test.ts`
