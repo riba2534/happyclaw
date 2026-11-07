@@ -44,12 +44,52 @@ describe('imSendFailurePolicy', () => {
       ),
     ).toEqual({
       retryable: true,
-      countsTowardChannelRemoval: true,
+      countsTowardChannelRemoval: false,
       outcome: 'pre_accept',
     });
     expect(classifyImSendFailure(new Error('connection reset'))).toBe(
       'uncertain',
     );
+  });
+
+  test('a failure that never reached the platform never counts toward removal', () => {
+    for (const message of [
+      'No IM channel available for feishu:oc_x',
+      'Feishu channel is not connected',
+      'Unknown channel type for jid',
+    ]) {
+      expect(imSendFailurePolicy(new Error(message))).toMatchObject({
+        retryable: true,
+        countsTowardChannelRemoval: false,
+        outcome: 'pre_accept',
+      });
+    }
+    expect(
+      imSendFailurePolicy(
+        Object.assign(new Error('dns'), { code: 'ENOTFOUND' }),
+      ),
+    ).toMatchObject({ countsTowardChannelRemoval: false });
+  });
+
+  test("only Feishu's answer that the chat is gone counts toward removal", () => {
+    const refused = (code: number) =>
+      Object.assign(new Error('Request failed with status code 400'), {
+        code: 'ERR_BAD_REQUEST',
+        response: { status: 400, data: { code, msg: 'x' } },
+      });
+    expect(imSendFailurePolicy(refused(230002))).toMatchObject({
+      retryable: false,
+      countsTowardChannelRemoval: true,
+      outcome: 'rejected',
+    });
+    // Wrapped by the delivery layer, the cause still carries the answer.
+    expect(
+      imSendFailurePolicy(new Error('send failed', { cause: refused(232009) })),
+    ).toMatchObject({ countsTowardChannelRemoval: true });
+    // A refusal about anything else (here: app disabled) is not the chat.
+    expect(imSendFailurePolicy(refused(232034))).toMatchObject({
+      countsTowardChannelRemoval: false,
+    });
   });
 
   test('does not automatically replay an accepted-but-unacknowledged delivery', () => {
