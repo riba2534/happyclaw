@@ -16,7 +16,7 @@ const ownPort = Boolean(process.env.PLAYWRIGHT_PORT);
 
 /** Specs whose composer and layout behaviour also run in a desktop window. */
 const desktopSpecs =
-  /(composer|model-selector|chat-scroll|chat-stream-render|phone-nav|reply-table|team-mode|multitask|visual-baseline)\.spec\.ts$/;
+  /(composer|model-selector|chat-scroll|chat-stream-render|phone-nav|reply-table|team-mode|multitask|single-user-host|visual-baseline)\.spec\.ts$/;
 
 export default defineConfig({
   testDir: './tests/e2e',

@@ -781,6 +781,8 @@ let loadGroupsInFlight: Promise<void> | null = null;
 interface GroupsResponse {
   groups: Record<string, GroupInfo>;
   admin_host_only_mode?: boolean;
+  /** Effective workspace root for admins; null or absent otherwise. */
+  workspace_root?: string | null;
 }
 
 /**
@@ -1219,6 +1221,8 @@ export interface ReplySteps {
 interface ChatState {
   groups: Record<string, GroupInfo>;
   adminHostOnlyMode: boolean;
+  /** Where new Host workspaces go by default (admins only). */
+  workspaceRoot: string | null;
   currentGroup: string | null;
   /** Exact GroupQueue query attempt per session runtime JID. */
   activeRuns: ClientActiveRuns;
@@ -3302,6 +3306,7 @@ function applyStreamEvent(
 export const useChatStore = create<ChatState>((set, get) => ({
   groups: {},
   adminHostOnlyMode: false,
+  workspaceRoot: null,
   currentGroup: null,
   activeRuns: {},
   pendingMessageUsage: {},
@@ -3370,6 +3375,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           return {
             groups,
             adminHostOnlyMode: data.admin_host_only_mode === true,
+            workspaceRoot: data.workspace_root ?? null,
             currentGroup: nextCurrent,
             loading: false,
             error: null,

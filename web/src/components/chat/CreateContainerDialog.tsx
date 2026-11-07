@@ -31,6 +31,8 @@ import {
 import { Callout } from '@/components/capabilities/capability-ui';
 import { cn } from '@/lib/utils';
 import { DirectoryBrowser } from '../shared/DirectoryBrowser';
+import { workspaceDirPlaceholder } from '../../lib/workspace-root';
+import { useIsSingleUserHost } from '../../lib/deployment-mode';
 import { useChatStore } from '../../stores/chat';
 import { useAuthStore } from '../../stores/auth';
 import { useAgentProfilesStore } from '../../stores/agent-profiles';
@@ -199,6 +201,8 @@ export function CreateContainerDialog({
 
   const createFlow = useChatStore((s) => s.createFlow);
   const adminHostOnlyMode = useChatStore((s) => s.adminHostOnlyMode);
+  const workspaceRoot = useChatStore((s) => s.workspaceRoot);
+  const singleUserHost = useIsSingleUserHost();
   const canHostExec = useAuthStore((s) => s.user?.role === 'admin');
   const profiles = useAgentProfilesStore((s) => s.profiles);
   const profilesLoading = useAgentProfilesStore((s) => s.loading);
@@ -568,7 +572,9 @@ export function CreateContainerDialog({
                   </div>
                   {canHostExec && adminHostOnlyMode && (
                     <Callout tone="warning" className="mt-2">
-                      管理员纯宿主机模式已开启，新工作区固定直接在服务器上运行。
+                      {singleUserHost
+                        ? '单人宿主机模式下，新工作区固定直接在服务器上运行。'
+                        : '管理员纯宿主机模式已开启，新工作区固定直接在服务器上运行。'}
                     </Callout>
                   )}
                 </fieldset>
@@ -689,7 +695,7 @@ export function CreateContainerDialog({
                       inputId="workspace-custom-cwd"
                       label="宿主机工作目录（可选）"
                       description="智能体将直接在 HappyClaw 服务器上的这个目录中运行。"
-                      placeholder="默认: data/groups/{folder}/"
+                      placeholder={workspaceDirPlaceholder(workspaceRoot)}
                     />
                     <Callout tone="warning">
                       宿主机模式下智能体可访问完整文件系统和工具链，请谨慎使用。

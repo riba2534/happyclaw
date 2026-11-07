@@ -110,6 +110,10 @@ Agent Profile（身份、四段 Prompt、能力策略）
 | `src/team-gate.ts`                 | 团队模式入站：订阅键、名单与 @ 判定、准入表            |
 | `src/work-item-service.ts`         | 工作项的路由、生命周期、回复门控，REST 与 IPC 共用     |
 | `src/work-item-runtime.ts`         | 团队输入注入各 lane、团队回复经 Outbox 投递            |
+| `src/workspace-root.ts`            | 工作区根目录的解析、回退与候选校验                     |
+| `src/workspace-dir.ts`             | 工作区目录记录、`workspaceDirOf` 与删除前的安全检查    |
+| `src/deployment-mode.ts`           | 部署方式（多人 / 单人宿主机）的解析与生效开关          |
+| `src/single-user-host-guard.ts`    | 单人宿主机模式只留一个启用账号的路由守卫               |
 
 渠道实现位于：
 
@@ -172,7 +176,9 @@ Web UI 约定：
   `autoFocusOnPhone`），`Sheet`/`Dialog` 和导航抽屉经 `useBackDismiss` 让系统返回先关
   浮层；行和页面的操作菜单用 `ResponsiveMenu`（手机为 ActionSheet），只在 Tooltip 里的
   信息用 `InfoTip`；按钮在手机上自带 44px 命中区，输入框不小于 16px（`variant="code"`
-  关闭自动大写与纠错）。键盘遮挡只读 `--keyboard-inset` / `--vvh`（`useVisualViewport`）。
+  关闭自动大写与纠错）。键盘遮挡只读 `--keyboard-inset` / `--vvh`（`useVisualViewport`）；
+  贴着键盘的底部浮层（输入框、`Dialog`、`Sheet`、toast、表单 footer）的安全区留白用
+  `--safe-bottom`，键盘打开时 `<html data-keyboard="open">` 把它置 0。
 - 安装成 PWA 后 body 关闭了 `-webkit-touch-callout`，iOS 长按图片的系统菜单（存储图像）
   按图片开启：灯箱大图只在 1× 时开启，文件面板预览图用 `touch-callout-default`，Markdown
   图片带 `data-native-image-menu`（同时开启 callout），消息附件缩略图不开（低清 data URL，
@@ -215,6 +221,12 @@ Web UI 约定：
 | --------- | ------------------------------------------------------------- | ---------------------------------------------------- |
 | Host      | Runner 作为宿主机 Node 进程运行，`customCwd` 直接作为工作目录 | 同一 Session 串行；不同 Session 不设置应用层并发上限 |
 | Container | Runner 在非 root Docker 容器运行，通过只读/读写挂载访问资源   | 受 `maxConcurrentContainers` 和用户计费配额限制      |
+
+部署方式（`deploymentMode`，`src/deployment-mode.ts`）：`multi_user`（默认，即上表）或
+`single_user_host`。单人宿主机下 `isAdminHostOnlyEffective()` 为真、`isBillingEnabled()`
+为假，所有工作区都是 Host，启动、监控和镜像拉取都不调用 Docker；存储的
+`adminHostOnlyMode`、注册配置和 `billingEnabled` 不被改写，切回多人即恢复。还有其他启用中的
+账号（含访客）时拒绝切到单人宿主机；切换时走与开启 `adminHostOnlyMode` 相同的 Host 迁移。
 
 共同约束：
 
@@ -372,6 +384,12 @@ preset 的身份和默认风格，只低于平台的安全、权限、工具和�
 - 工作区 `CLAUDE.md`、项目 `.claude/skills` 和项目 MCP 属于项目上下文层。项目根按 CLI
   的规则从工作目录向上找到 git 根（Host 自定义目录与会话 worktree 同样适用），运行时、
   能力预览和工作区设置共用这个根；Host 自定义目录的 `.mcp.json` 因此会被加载。
+- CLI 找 `CLAUDE.md` 时一直走到 `/`。Host 运行的工作目录位于安装目录的 `data/` 下时
+  （旧工作区 `data/groups/<folder>`、`data/worktrees/...`），Runner 用 `claudeMdExcludes`
+  排除安装目录自己的 `CLAUDE.md`、`CLAUDE.local.md`、`.claude/CLAUDE.md` 和
+  `.claude/rules/**`，与上下文来源无关（`container/agent-runner/src/claude-memory-policy.ts`）；
+  自定义目录指向 HappyClaw 仓库本身时保留它。`host_claude` 只决定是否继承宿主用户的
+  `~/.claude` 记忆。
 - Skill、MCP、Plugin 变更会停相关 Runner 并开新 SDK 会话，下一轮自动补注近期历史；
   运行中的 Agent 自己调用 `install_skill` 时，本轮结果送达后才重置。安装、卸载 Skill
   只接受工作区主人亲自发起的轮次。
@@ -579,13 +597,25 @@ cancelled 结束且游标前进。批次含其他输入时不中断。回复锚�
 
 ## 7. 数据与目录
 
-运行时数据默认位于 `data/`，不进入 Git：
+运行时数据默认位于 `data/`，不进入 Git。新建的 Host 工作区（未指定自定义目录）在工作区
+根目录下：`<workspaceRoot>/<folder>`，默认 `~/happyclaw`（`src/workspace-root.ts`：系统
+设置 > `HAPPYCLAW_WORKSPACE_ROOT` > 默认；位于安装目录内、上层有 `CLAUDE.md`、位于别的 git
+仓库内或不可写时回退到 `~/happyclaw-workspaces`，它也不能用时新工作区留在
+`data/groups/{folder}`，接口和设置页报告的就是这个实际位置（`rootForNewWorkspaces`）；设置
+接口直接拒绝这样的值）。每个工作区的
+目录记在 `workspace_workdirs`（按 folder），一律经 `workspaceDirOf(folder)`（`src/workspace-dir.ts`）
+读取，不要再拼 `GROUPS_DIR` 与 folder；没有记录的（已有工作区、Container 工作区）就是
+`data/groups/{folder}`。修改根目录只影响之后新建的工作区。这些工作区的运行日志写在
+`data/logs/{folder}`；删除和重建前校验目录名等于 folder、位于已知根目录下且没有经符号链接
+逃逸，任何一项不满足就拒绝（根目录被移走后用链接接回原位、真实位置仍带
+`.happyclaw-workspace-root` 标记时按真实位置校验）；工作区根目录不在 `make backup` 范围内。
 
 ```text
 data/
 ├── db/messages.db
 ├── config/
 ├── groups/{folder}/
+├── logs/{folder}/
 ├── worktrees/{folder}/{sessionId}/
 ├── sessions/{folder}/agents/{sessionId}/.claude/
 ├── ipc/{folder}/agents/{sessionId}/
@@ -645,6 +675,9 @@ Channel Reliability 的 Inbox/Turn/Outbox/Card 表由
 - 系统配置、用户、邀请、审计和计费使用独立 Permission Middleware。
 - 敏感写操作必须先停止或暂停相关 Runner，并在提交失败时恢复队列。
 - API 返回资源不存在时通常使用 404 隐藏其他用户资源是否存在。
+- 单人宿主机模式下后端自己拒绝多用户入口，不只靠界面隐藏：注册（403）、建用户、建邀请码、
+  重新启用或提升为 admin、建访客或重新启用访客、`POST /api/docker/pull`（409
+  `SINGLE_USER_HOST`）。读取、停用和删除仍然允许。
 - 只读访客（`role=guest`）由 admin 通过 `/api/guests` 创建并授权查看自己的部分
   工作区；member 只有在系统设置 `allowMemberGuests` 开启时可以（默认关闭，关闭时
   member 的访客一并失效），每个 owner 最多 20 个。不要放宽 `canAccessGroup`：读取
@@ -683,6 +716,8 @@ Web 持久设置 > 环境变量 > 代码默认值
 | `CORS_ALLOWED_ORIGINS`               | 仅 localhost                      | WebSocket Origin 白名单                                               |
 | `TRUST_PROXY`                        | `false`                           | 是否信任反向代理来源头                                                |
 | `TZ`                                 | 系统时区                          | 调度时区；无效值回退并告警                                            |
+| `HAPPYCLAW_DEPLOYMENT_MODE`          | `multi_user`                      | 部署方式；Web 设置保存过的值优先（逐键）                              |
+| `HAPPYCLAW_WORKSPACE_ROOT`           | `~/happyclaw`                     | 新建 Host 工作区的根目录；Web 设置保存过的值优先（逐键）              |
 | `OFFICE_PREVIEW_STIRLING_URL`        | 未设置                            | Office 预览转换服务（Stirling-PDF 兼容），设置后优先使用              |
 | `OFFICE_PREVIEW_SOFFICE_BIN`         | 未设置                            | 本机 soffice 绝对路径；只有显式设置才启用，在宿主机以服务身份解析文档 |
 

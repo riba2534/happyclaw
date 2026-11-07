@@ -776,6 +776,9 @@ export const HostIntegrationSettingsSchema = z
     externalClaudeDir: z.string().max(512).optional(),
     pluginAutoScan: z.boolean().optional(),
     adminHostOnlyMode: z.boolean().optional(),
+    // '' clears the stored value; validated by src/workspace-root.ts.
+    workspaceRoot: z.string().max(1024).optional(),
+    deploymentMode: z.enum(['', 'multi_user', 'single_user_host']).optional(),
     mainAgentContextSource: z.enum(['managed', 'host_claude']).optional(),
     mainAgentAutoCompactWindow: z
       .number()

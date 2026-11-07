@@ -462,6 +462,19 @@ import { resolveChannelAccountFallbackWorkspace } from './channel-account-routin
 import { testChannelAccountCredentials } from './channel-account-connectivity.js';
 import { hasAgentProfilePrompts } from './agent-profile-prompts.js';
 import { toRunnerAgentProfile } from './runner-agent-profile.js';
+import { listOtherActiveUsers } from './single-user-host-guard.js';
+import {
+  isAdminHostOnlyEffective,
+  isSingleUserHost,
+} from './deployment-mode.js';
+import {
+  assignWorkspaceRootDirIfNew,
+  ensureWorkspaceDirs,
+  getWorkspaceRootOccupancy,
+  setWorkspaceRootResolver,
+  workspaceDirOf,
+} from './workspace-dir.js';
+import { getRootForNewWorkspaces } from './workspace-root.js';
 import {
   getFeishuProviderConfigWithSource,
   getTelegramProviderConfig,
@@ -526,7 +539,7 @@ import {
 import {
   checkBillingAccessFresh,
   formatBillingAccessDeniedMessage,
-  checkAndExpireSubscriptions,
+  runScheduledSubscriptionExpiry,
   isBillingEnabled,
   getUserConcurrentContainerLimit,
   reconcileMonthlyUsage,
@@ -3054,7 +3067,8 @@ function extractFeishuCardText(text: string): string | null {
 /**
  * The directory a run of workspace `folder` (as session `agentId`) works in,
  * where relative paths the Agent reports and IM files handed to it resolve:
- * a worktree session's worktree, a Host custom directory, or data/groups.
+ * a worktree session's worktree, a Host custom directory, or the workspace's
+ * own directory.
  */
 function agentWorkingRoot(folder: string, agentId?: string | null): string {
   const workspaceJid = findWebJidForFolder(folder);
@@ -3066,7 +3080,7 @@ function agentWorkingRoot(folder: string, agentId?: string | null): string {
         resolveEffectiveGroup(workspace).effectiveGroup,
         { agentId },
       )
-    : path.join(GROUPS_DIR, folder);
+    : workspaceDirOf(folder);
 }
 
 /**
@@ -4967,7 +4981,9 @@ async function clearSessionRuntimeFiles(
     );
   }
 
-  if (!cleared) {
+  // Single-user host mode never runs Docker; the files a container left
+  // behind stay until an admin removes them.
+  if (!cleared && !isSingleUserHost()) {
     try {
       await execFileAsync(
         'docker',
@@ -5256,7 +5272,7 @@ async function handleFreshCommand(
       getRegisteredGroup(target.baseChatJid);
     const snapshotCwd = targetGroup
       ? resolveWorkspaceProjectRoot(targetGroup, { agentId: target.agentId })
-      : path.join(GROUPS_DIR, target.folder);
+      : workspaceDirOf(target.folder);
     const snapshot = await captureWorkspaceSnapshot(snapshotCwd);
     const handoff = formatFreshWindowHandoff({
       notes: rawNotes,
@@ -5479,7 +5495,7 @@ function handleUnbindCommand(chatJid: string): string {
 }
 
 function isAdminHostOnlyOwner(ownerId: string | null | undefined): boolean {
-  if (!ownerId || !getSystemSettings().adminHostOnlyMode) return false;
+  if (!ownerId || !isAdminHostOnlyEffective()) return false;
   return canExecuteOnHost(getUserById(ownerId));
 }
 
@@ -6782,7 +6798,7 @@ function loadState(): void {
 
   // Repair persisted runtime rows on every startup as well as on the settings
   // transition. This also makes ADMIN_HOST_ONLY_MODE=true safe on first boot.
-  if (getSystemSettings().adminHostOnlyMode) {
+  if (isAdminHostOnlyEffective()) {
     const migration = forceActiveAdminRuntimesToHost();
     if (migration.affectedGroups.length > 0) {
       registeredGroups = getAllRegisteredGroups();
@@ -6792,6 +6808,18 @@ function loadState(): void {
       logger.info(
         { migratedGroups: migration.affectedGroups.length },
         'Repaired administrator runtimes for host-only mode',
+      );
+    }
+  }
+  // The settings route refuses this state; an environment variable alone
+  // can still reach it. Other users keep their accounts and Container
+  // workspaces, which cannot run while Docker is not used.
+  if (isSingleUserHost()) {
+    const activeUsers = listOtherActiveUsers('');
+    if (activeUsers.length > 1) {
+      logger.warn(
+        { users: activeUsers.map((user) => user.username) },
+        'Single-user host mode with more than one active user; deactivate the others',
       );
     }
   }
@@ -6899,9 +6927,11 @@ function registerGroup(jid: string, group: RegisteredGroup): void {
   registeredGroups[jid] = group;
   setRegisteredGroup(jid, group);
 
-  // Create group folder
-  const groupDir = path.join(GROUPS_DIR, group.folder);
-  fs.mkdirSync(path.join(groupDir, 'logs'), { recursive: true });
+  // A new Host workspace without a custom directory lives in the workspace
+  // root; everything else (Container workspaces, IM chat rows sharing a
+  // workspace folder) uses the folder's directory as it is.
+  assignWorkspaceRootDirIfNew(jid, group);
+  ensureWorkspaceDirs(group.folder);
 
   logger.info(
     // `name` is pino's logger-name field; it would replace the log prefix.
@@ -7019,8 +7049,12 @@ function buildExpandContext(
       (group.executionMode || 'container') === 'host'
         ? resolveWorkspaceProjectRoot(group, { agentId: resolvedAgentId })
         : group.customCwd,
-    groupsDir: GROUPS_DIR,
-    containerName: queue.getActiveContainerName(chatJid),
+    workspaceDir: workspaceDirOf(group.folder),
+    // Single-user host mode never runs `docker exec`: with no container
+    // the expander answers instead of running a container `!` command.
+    containerName: isSingleUserHost()
+      ? null
+      : queue.getActiveContainerName(chatJid),
   });
 }
 
@@ -15158,6 +15192,12 @@ function recoverStartupTypedIpcDeliveries(): void {
 }
 
 async function ensureDockerRunning(): Promise<void> {
+  // Single-user host mode never uses Docker: no probe, no cleanup, whatever
+  // execution mode a leftover row still has.
+  if (isSingleUserHost()) {
+    logger.info('Single-user host mode, skipping Docker checks');
+    return;
+  }
   // Skip all Docker checks when no groups use container mode
   if (!hasContainerModeGroups()) {
     logger.info('All groups use host execution mode, skipping Docker checks');
@@ -18216,6 +18256,15 @@ function migrateDataDirectories(): void {
 
 async function main(): Promise<void> {
   migrateDataDirectories();
+  // New Host workspaces (home workspaces included, created during loadState
+  // and setup) get their directory in the workspace root.
+  // The root must avoid what existing workspaces use, so a new
+  // workspace's directory can never land inside another's.
+  // A fallback that has a problem of its own is not used: the workspace
+  // stays in data/groups rather than claim a doubtful directory.
+  setWorkspaceRootResolver(() =>
+    getRootForNewWorkspaces(getWorkspaceRootOccupancy()),
+  );
   initDatabase();
   logger.info('Database initialized');
   installSystemMainModelConfigResolver();
@@ -18781,10 +18830,11 @@ async function main(): Promise<void> {
     10 * 60 * 1000,
   );
 
-  // Billing: check expired subscriptions every hour
+  // Billing: check expired subscriptions every hour (not in single-user
+  // host mode).
   setInterval(
     () => {
-      checkAndExpireSubscriptions();
+      runScheduledSubscriptionExpiry();
     },
     60 * 60 * 1000,
   );

@@ -40,7 +40,7 @@ describe('makeExpandContext — P2-bug-4 customCwd honored in host mode', () => 
       ownerId: 'alice',
       executionMode: 'host',
       customCwd: '/Users/alice/projects/repo',
-      groupsDir: '/data/groups',
+      workspaceDir: '/data/groups/home-alice',
       containerName: null,
     });
     expect(ctx).not.toBeNull();
@@ -55,7 +55,7 @@ describe('makeExpandContext — P2-bug-4 customCwd honored in host mode', () => 
       ownerId: 'alice',
       executionMode: 'host',
       customCwd: null,
-      groupsDir: '/data/groups',
+      workspaceDir: '/data/groups/home-alice',
       containerName: null,
     });
     expect(ctx?.cwd).toBe('/data/groups/home-alice');
@@ -68,7 +68,7 @@ describe('makeExpandContext — P2-bug-4 customCwd honored in host mode', () => 
       ownerId: 'bob',
       executionMode: 'container',
       customCwd: '/host/path/should/be/ignored',
-      groupsDir: '/data/groups',
+      workspaceDir: '/data/groups/home-bob',
       containerName: 'c-bob',
     });
     expect(ctx?.cwd).toBe('/workspace/group');
@@ -80,7 +80,7 @@ describe('makeExpandContext — P2-bug-4 customCwd honored in host mode', () => 
       groupFolder: 'home-orphan',
       ownerId: null,
       executionMode: 'host',
-      groupsDir: '/data/groups',
+      workspaceDir: '/data/groups/home-orphan',
       containerName: null,
     });
     expect(ctx).toBeNull();
@@ -297,7 +297,7 @@ describe('makeExpandContext — P2-bug-3 sibling-resolved customCwd propagates',
       ownerId: 'admin',
       executionMode: 'host', // inherited from sibling
       customCwd: '/Users/admin/repo', // inherited from sibling
-      groupsDir: '/data/groups',
+      workspaceDir: '/data/groups/main',
       containerName: 'c-main',
     });
     expect(ctx?.cwd).toBe('/Users/admin/repo');
@@ -317,7 +317,7 @@ describe('makeExpandContext — P2-bug-3 sibling-resolved customCwd propagates',
       ownerId: 'admin',
       executionMode: undefined,
       customCwd: '/Users/admin/repo',
-      groupsDir: '/data/groups',
+      workspaceDir: '/data/groups/main',
       containerName: null,
     });
     expect(ctx?.executionMode).toBe('container');

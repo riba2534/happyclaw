@@ -48,17 +48,21 @@
 
 Public：
 
-- `GET /api/auth/status`
-- `POST /api/auth/setup`，仅用户表为空时可用
+- `GET /api/auth/status`：`{ initialized, deploymentMode, deploymentModeSource }`，
+  `deploymentModeSource` 为 `settings|env|default`；初始化向导据此预选环境变量给出的方式，
+  不改选就不提交
+- `POST /api/auth/setup`，仅用户表为空时可用；可带
+  `deployment_mode: "multi_user" | "single_user_host"`，在创建管理员的 Home 工作区之前保存。
+  只写入这一项，其他系统设置仍按环境变量生效；不带时什么也不存
 - `POST /api/auth/login`
-- `GET /api/auth/register/status`
-- `POST /api/auth/register`
+- `GET /api/auth/register/status`：单人宿主机模式下恒为关闭
+- `POST /api/auth/register`：单人宿主机模式下 403
 - `GET /api/auth/avatars/:filename`
 
 登录后：
 
 - `POST /api/auth/logout`
-- `GET /api/auth/me`
+- `GET /api/auth/me`：顶层带 `deploymentMode`（生效值）
 - `PUT /api/auth/profile`
 - `PUT /api/auth/password`
 - `GET /api/auth/sessions`
@@ -111,7 +115,10 @@ active 的 admin 可以为自己创建只读访客（`role=guest`），并授权
 
 ## 工作区、消息和运行控制
 
-- `GET|POST /api/groups`；`custom_cwd` 可以与同一用户的其他宿主机工作区相同
+- `GET|POST /api/groups`；`custom_cwd` 可以与同一用户的其他宿主机工作区相同。`GET` 另带
+  `workspace_root`：没有自定义目录的新宿主机工作区建在它下面的同名子目录；只返回给 admin，
+  其他角色为 `null`。工作区根目录和备用目录都不可用时也为 `null`，新工作区放在
+  `data/groups/{folder}`
 - `PATCH|DELETE /api/groups/:jid`
 - `PATCH /api/groups/:jid/agent-profile`
 - `POST /api/groups/:jid/stop`
@@ -120,10 +127,15 @@ active 的 admin 可以为自己创建只读访客（`role=guest`），并授权
 - `GET|PUT /api/groups/:jid/model-selection`，聊天输入框的会话级模型与推理档位选择
 - `GET /api/groups/:jid/context-usage`，会话当前的上下文占用（输入框旁的圆环）
 - `POST /api/groups/:jid/clear-history`，重建工作区内容：永久清除聊天、
-  Runtime Session、`data/groups/{folder}` 工作目录、会话 worktree 目录及
-  Workspace Memory（含版本历史和 Home Owner Profile）；自动化保留，重建期间暂停，
-  排队或运行中的运行记为已终止，绑定已删会话的自动化保持暂停；保留工作区外壳、
+  Runtime Session、工作区目录（工作区根目录下记录的目录，否则 `data/groups/{folder}`）、
+  会话 worktree 目录及 Workspace Memory（含版本历史和 Home Owner Profile）；自动化保留，
+  重建期间暂停，排队或运行中的运行记为已终止，绑定已删会话的自动化保持暂停；保留工作区外壳、
   `data/extra/`、自动化运行历史、worktree 分支和宿主机模式的自定义工作目录
+- `DELETE /api/groups/:jid` 和 `clear-history` 删除或移走有记录的工作区目录之前先做安全检查
+  （目录必须正是记录的根目录下的同名子目录、自身不是链接、不与安装目录重叠、不包含其他工作区
+  的目录或自定义目录；根目录被移走后用链接接回原位、真实位置仍带 `.happyclaw-workspace-root`
+  标记时按真实位置检查）。不通过时返回 409 `{ error, code: "WORKSPACE_DIR_UNSAFE", reason }`，
+  不删除任何文件
 - `POST /api/groups/:jid/reset-owner`，admin break-glass
 - `GET /api/groups/:jid/messages`
 - `GET /api/groups/:jid/turn-traces/:turnId`，已结算回合的思考摘要、执行轨迹与有序步骤
@@ -987,6 +999,18 @@ minimalClientVersion?, availableInPlans?, serviceTiers }`（字段取自官方
 - `GET|PUT /api/config/host-integration`，仅 admin；包含
   `adminHostOnlyMode`。从 `false` 切到 `true` 时会停稳管理员工作区运行器，并把
   active admin 拥有的工作区持久迁移为 Host；普通成员数据不变
+  - `workspaceRoot`（存储值，`''` 表示未设置）以及只读的 `workspaceRootEffective`、
+    `workspaceRootSource`（`settings|env|default`）、`workspaceRootFallbackReason`、
+    `workspaceRootFallbackWarning`。`workspaceRootEffective` 是新工作区实际使用的根目录；
+    备用目录也不可用（`workspaceRootFallbackWarning` 非空）时为 `null`，新工作区放在
+    `data/groups/{folder}`。保存不合格的值返回 400
+    `{ error, code: "WORKSPACE_ROOT_INVALID", reason }`；目录在第一个工作区需要时才创建
+  - `deploymentMode`（生效值）、`deploymentModeConfigured`（存储值）、`deploymentModeSource`。
+    PUT 的 `deploymentMode` 接受 `'' | multi_user | single_user_host`；还有其他启用中的账号时
+    切到单人宿主机返回 409 `{ code: "SINGLE_USER_HOST_OTHER_USERS", users: [{ id, username, role }] }`，
+    成功时执行与开启 `adminHostOnlyMode` 相同的 Host 迁移（已存的 `adminHostOnlyMode` 为
+    `true` 时没有要迁移的工作区，不停运行器、不清会话）；切回多人只保存这一项，存储的
+    `adminHostOnlyMode`、注册和计费设置原样生效，不迁回 Docker
 - `GET /api/config/external-resources`
 - `GET /api/config/external-resources/rule`
 - `GET|PUT /api/config/registration`
@@ -1299,13 +1323,14 @@ Web 和 Runtime 不再把它们当作第二个可写真相源。
 监控：
 
 - `GET /api/health`，Public
-- `GET /api/status`
+- `GET /api/status`：带 `deploymentMode`；单人宿主机模式下不做任何 Docker 探测，Docker 相关
+  字段为 `null`
 - `GET /api/status/groups`：只返回队列运行状态，供聊天页恢复运行态；可见范围与
   `/api/status` 相同，不做 Docker 与版本探测
 - `POST /api/status/groups/:folder/switch-provider`
 - `GET /api/status/channel-outbox/uncertain`
 - `POST /api/status/channel-outbox/:id/resolve`
-- `POST /api/docker/pull`
+- `POST /api/docker/pull`：单人宿主机模式下 409 `SINGLE_USER_HOST`
 
 Agent 镜像只由 `main` 分支的 GitHub Actions 构建并发布。该接口仅在运行主机上执行
 `docker pull` 更新已发布镜像，不在用户机器上编译镜像。
@@ -1323,7 +1348,8 @@ Agent 镜像只由 `main` 分支的 GitHub Actions 构建并发布。该接口�
 
 目录浏览：
 
-- `GET|POST /api/browse/directories`
+- `GET|POST /api/browse/directories`；目标在工作区根目录（当前的或有工作区记录的旧根目录）
+  里面时返回 403 `{ error, code: "WORKSPACE_ROOT_FORBIDDEN" }`
 
 ## WebSocket
 

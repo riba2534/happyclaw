@@ -179,9 +179,12 @@ format-check: ## 检查代码格式
 
 # ─── Docker Image ─────────────────────────────────────────────
 
-_ensure-docker-image: ## (内部) 从镜像仓库拉取 GitHub Actions 发布的容器镜像
-	@if command -v docker >/dev/null 2>&1; then \
-	  $(MAKE) --no-print-directory docker-pull; \
+_ensure-docker-image: ## (内部) 拉取容器镜像；单人宿主机模式跳过，拉取失败不中断启动
+	@if [ "$$(node scripts/deployment-mode.mjs 2>/dev/null)" = "single_user_host" ]; then \
+	  echo "🏠 单人宿主机模式：不使用 Docker，跳过镜像拉取"; \
+	elif command -v docker >/dev/null 2>&1; then \
+	  $(MAKE) --no-print-directory docker-pull || \
+	    echo "⚠️  Docker 镜像拉取失败（Docker 未运行或网络不通）：Docker 模式的工作区需要它，宿主机模式不受影响"; \
 	fi
 
 docker-pull: ## 拉取 GitHub Actions 发布的 Agent 镜像
