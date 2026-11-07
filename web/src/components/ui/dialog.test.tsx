@@ -139,7 +139,7 @@ describe('DialogContent on a phone', () => {
     render(form());
     const footer = document.querySelector('[data-slot="dialog-footer"]')!;
     expect(footer.className).toContain(
-      'phone:pb-[calc(1rem+env(safe-area-inset-bottom))]',
+      'phone:pb-[calc(1rem+var(--safe-bottom,0px))]',
     );
     const close = document.querySelector('[data-slot="dialog-close"]')!;
     expect(close.className).toContain('phone:size-11');
