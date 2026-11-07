@@ -1423,6 +1423,12 @@ Web 和 Runtime 不再把它们当作第二个可写真相源。
 监控：
 
 - `GET /api/health`，Public
+- `GET /api/build`，Public：返回当前部署的前端构建标识 `{ id, builtAt }`（读自
+  前端构建产物中的 build.json，由 `web/vite.config.ts` 写入，每次请求按文件 mtime
+  刷新，无需重启后端）；构建产物缺失或损坏时两个字段为 `null`。`id` 是构建产物
+  的内容哈希，同一份前端源码重新构建时不变，不含版本号或提交。已打开的页面在
+  WS 连接/重连、回到前台和每 30 分钟比较一次，`id` 不同且服务端 `builtAt` 更新
+  时提示刷新
 - `GET /api/status`：带 `deploymentMode`；单人宿主机模式下不做任何 Docker 探测，Docker 相关
   字段为 `null`
 - `GET /api/status/groups`：只返回队列运行状态，供聊天页恢复运行态；可见范围与

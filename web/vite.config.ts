@@ -1,8 +1,10 @@
 import path from 'path';
 import fs from 'node:fs';
+import { createHash } from 'node:crypto';
 import { defineConfig, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
+import { BUILD_META_NAME } from './src/utils/versionCheck';
 
 const API_PROXY_TARGET =
   process.env.VITE_API_PROXY_TARGET || 'http://127.0.0.1:3000';
@@ -17,6 +19,56 @@ const APP_BASE = (() => {
   if (!base.endsWith('/')) base = `${base}/`;
   return base;
 })();
+
+// Lets open tabs notice that a different frontend is deployed. The id must
+// stay out of the JS module graph: anything compiled into the entry chunk
+// renames every chunk on every build. So the plugin hashes the build output
+// (every bundle file name plus the final index.html), which gives the same id
+// for the same source, and builtAt only orders builds. Both go into a meta tag
+// in index.html (served no-store, not part of any chunk hash) and into
+// dist/build.json, which GET /api/build serves (src/build-info.ts). The page
+// reads the tag in web/src/utils/versionCheck.ts.
+export const BUILD_INFO_FILE = 'build.json';
+
+export function buildInfo(): Plugin {
+  let serialized: string | null = null;
+  return {
+    name: 'happyclaw-build-info',
+    apply: 'build',
+    buildStart() {
+      serialized = null;
+    },
+    transformIndexHtml: {
+      // 'post' is where the finished bundle is available.
+      order: 'post',
+      handler(html, ctx) {
+        if (!ctx.bundle || ctx.path !== '/index.html') return;
+        const hash = createHash('sha256');
+        for (const fileName of Object.keys(ctx.bundle).sort()) {
+          hash.update(fileName).update('\0');
+        }
+        hash.update(html);
+        serialized = JSON.stringify({
+          id: hash.digest('hex').slice(0, 16),
+          builtAt: Date.now(),
+        });
+        return [
+          {
+            tag: 'meta',
+            attrs: { name: BUILD_META_NAME, content: serialized },
+            injectTo: 'head',
+          },
+        ];
+      },
+    },
+    writeBundle(options) {
+      // After index.html is on disk, so the server never advertises a build
+      // whose shell is not there yet.
+      if (!serialized || !options.dir) return;
+      fs.writeFileSync(path.join(options.dir, BUILD_INFO_FILE), serialized);
+    },
+  };
+}
 
 function katexWoff2Only(): Plugin {
   return {
@@ -85,7 +137,13 @@ function lucideDirectImports(): Plugin {
 
 export default defineConfig({
   base: APP_BASE,
-  plugins: [katexWoff2Only(), lucideDirectImports(), react(), tailwindcss()],
+  plugins: [
+    katexWoff2Only(),
+    lucideDirectImports(),
+    buildInfo(),
+    react(),
+    tailwindcss(),
+  ],
   server: {
     port: 5173,
     host: '0.0.0.0',

@@ -1,4 +1,5 @@
 import { execFile, spawn } from 'child_process';
+import path from 'path';
 import readline from 'readline';
 import { promisify } from 'util';
 
@@ -37,6 +38,7 @@ import { getSystemSettings, getProviders } from '../runtime-config.js';
 import { logger } from '../logger.js';
 import { singleUserHostRefusal } from '../single-user-host-guard.js';
 import { stripVirtualJidSuffix } from '../utils.js';
+import { createBuildInfoReader } from '../build-info.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -217,6 +219,17 @@ export function injectMonitorDeps(deps: {
 }
 
 const monitorRoutes = new Hono<{ Variables: Variables }>();
+
+// 与 web.ts 的静态资源根一致（按进程 cwd 解析）。
+const buildInfoReader = createBuildInfoReader(path.resolve('./web/dist'));
+
+// GET /api/build - 当前部署的前端构建标识（无认证）
+// 已打开的旧页面据此发现「前端已更新」。每次请求都读 dist/build.json 的最新
+// 状态，不在启动时固定：本机部署只重建前端、不重启后端。
+monitorRoutes.get('/build', (c) => {
+  c.header('Cache-Control', 'no-store');
+  return c.json(buildInfoReader.read() ?? { id: null, builtAt: null });
+});
 
 // GET /api/health - 健康检查（无认证）
 monitorRoutes.get('/health', async (c) => {
