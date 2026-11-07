@@ -16,7 +16,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { NFS_VOLUME_OPTIONS } from './host-nfs-mounts.js';
+import { nfsVolumeOptions } from './host-nfs-mounts.js';
 import type {
   AdditionalMount,
   CifsStorageSource,
@@ -244,10 +244,14 @@ export type ResolvedStorage =
       smbVersion: string;
     };
 
+/**
+ * NFSv3 sources get `nolock`: the daemon may have no rpc.statd (the VM of
+ * Docker Desktop and OrbStack has none), so locks stay local to the
+ * container. NFSv4 locks through the protocol itself.
+ */
 export function nfsMountOptions(version: string | undefined): string {
-  return version && version !== '3'
-    ? NFS_VOLUME_OPTIONS.replace('nfsvers=3', `nfsvers=${version}`)
-    : NFS_VOLUME_OPTIONS;
+  const resolved = version ?? '3';
+  return nfsVolumeOptions(resolved, resolved === '3');
 }
 
 export function resolveStorage(
@@ -348,9 +352,11 @@ export function readPasswordFile(
   const resolved = path.isAbsolute(passwordFile)
     ? passwordFile
     : path.join(projectRoot, passwordFile);
+  // O_NONBLOCK: opening a FIFO for reading would otherwise wait for a
+  // writer before the regular-file check below could reject it.
   const fd = fs.openSync(
     resolved,
-    fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW,
+    fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK,
   );
   try {
     const stat = fs.fstatSync(fd);

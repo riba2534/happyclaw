@@ -163,8 +163,8 @@ import {
 } from './session-worktree.js';
 import { getSessionWorktree } from './session-worktree-store.js';
 import {
-  NFS_VOLUME_OPTIONS,
-  resolveNfsVolumeSources,
+  resolveNfsDirectMounts,
+  type NfsDirectMountResolution,
 } from './host-nfs-mounts.js';
 import {
   ensureCifsVolume,
@@ -997,6 +997,8 @@ export interface VolumeMount {
   readonly: boolean;
   /** Mounted by Docker as a volume (NFS/SMB) instead of bound from the host. */
   storage?: VolumeMountStorage;
+  /** Allowed root whose `nfsDirectMount` covers this host directory. */
+  nfsDirectMountRoot?: string;
 }
 
 export type AgentRunnerMode = 'image' | 'development';
@@ -2541,35 +2543,49 @@ function prepareVolumeMounts(
 }
 
 /**
- * A host directory on an NFS share is mounted by Docker from the same export
- * directory instead of bound from the host mount, so a host remount cannot
- * leave the container with a stale handle (see host-nfs-mounts.ts).
+ * A host directory on an NFS share whose allowed root sets `nfsDirectMount`
+ * is mounted by Docker from the same export directory instead of bound from
+ * the host mount, so a host remount cannot leave the container with a stale
+ * handle (see host-nfs-mounts.ts). Every other host directory stays a bind.
+ * An opted-in directory that cannot be mounted directly fails the launch.
  */
-export function withHostNfsSources(mounts: VolumeMount[]): VolumeMount[] {
-  const binds = mounts.filter((mount) => !mount.storage);
-  const sources = resolveNfsVolumeSources(binds.map((mount) => mount.hostPath));
-  const byMount = new Map(binds.map((mount, index) => [mount, sources[index]]));
-  return mounts.map((mount) => {
-    const source = byMount.get(mount);
-    if (!source) return mount;
+export function withHostNfsSources(
+  mounts: VolumeMount[],
+  resolve: (
+    hostPaths: string[],
+  ) => NfsDirectMountResolution[] = resolveNfsDirectMounts,
+): VolumeMount[] {
+  const candidates = mounts.filter(
+    (mount) => !mount.storage && mount.nfsDirectMountRoot,
+  );
+  if (candidates.length === 0) return mounts;
+  const results = resolve(candidates.map((mount) => mount.hostPath));
+  const byMount = new Map(
+    candidates.map((mount, index) => [mount, results[index]]),
+  );
+  const issues: string[] = [];
+  const converted = mounts.map((mount) => {
+    const result = byMount.get(mount);
+    if (!result || result.kind === 'bind') return mount;
+    if (result.kind === 'error') {
+      issues.push(
+        `${mount.hostPath} cannot be mounted directly from NFS: ${result.reason}. Set nfsDirectMount to false on allowed root "${mount.nfsDirectMountRoot}" to bind it from the host instead`,
+      );
+      return mount;
+    }
     logger.info(
       {
         hostPath: mount.hostPath,
-        nfs: `${source.server}:${source.device}`,
+        nfs: `${result.source.server}:${result.source.device}`,
+        options: result.source.options,
         containerPath: mount.containerPath,
       },
       'Host directory is on NFS; mounting its export directly',
     );
-    return {
-      ...mount,
-      storage: {
-        type: 'nfs',
-        server: source.server,
-        device: source.device,
-        options: NFS_VOLUME_OPTIONS,
-      },
-    };
+    return { ...mount, storage: { type: 'nfs' as const, ...result.source } };
   });
+  if (issues.length > 0) throw new AdditionalMountValidationError(issues);
+  return converted;
 }
 
 /** Named SMB volumes for a launch, keyed by the share path they mount. */

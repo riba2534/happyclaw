@@ -34,6 +34,7 @@ vi.mock('../src/logger.js', () => ({
 const {
   applyContainerProxyEnvLines,
   buildContainerArgs,
+  withHostNfsSources,
   withNamedStorageVolumes,
   detectContainerHostIdentity,
   resolveContainerProxyConfig,
@@ -232,6 +233,65 @@ describe('buildContainerArgs storage mounts', () => {
       'type=volume,src=happyclaw-storage-team-0123,dst=/workspace/extra/team,readonly',
     );
     expect(args.join(' ')).not.toContain('nfs://');
+  });
+});
+
+describe('withHostNfsSources', () => {
+  const plain = {
+    hostPath: '/mnt/nas/plain',
+    containerPath: '/workspace/extra/plain',
+    readonly: true,
+  };
+  const optedIn = {
+    hostPath: '/mnt/nas/proj',
+    containerPath: '/workspace/extra/proj',
+    readonly: false,
+    nfsDirectMountRoot: '/mnt/nas',
+  };
+
+  test('is off unless the allowed root opts in', () => {
+    const resolve = vi.fn(() => {
+      throw new Error('must not read the mount table');
+    });
+    const mounts = [plain];
+    expect(withHostNfsSources(mounts, resolve)).toBe(mounts);
+    expect(resolve).not.toHaveBeenCalled();
+  });
+
+  test('mounts an opted-in NFS directory from its export and binds the rest', () => {
+    const resolve = vi.fn((hostPaths: string[]) =>
+      hostPaths.map(() => ({
+        kind: 'nfs' as const,
+        source: {
+          server: 'nas',
+          device: '/export/proj',
+          options: 'nfsvers=4.2,proto=tcp,hard',
+        },
+      })),
+    );
+    const [first, second] = withHostNfsSources([plain, optedIn], resolve);
+    expect(resolve).toHaveBeenCalledWith(['/mnt/nas/proj']);
+    expect(first).toBe(plain);
+    expect(second.storage).toEqual({
+      type: 'nfs',
+      server: 'nas',
+      device: '/export/proj',
+      options: 'nfsvers=4.2,proto=tcp,hard',
+    });
+    const local = { ...optedIn, hostPath: '/mnt/local/proj' };
+    expect(withHostNfsSources([local], () => [{ kind: 'bind' }])).toEqual([
+      local,
+    ]);
+  });
+
+  test('fails the launch with the way back to a bind when it cannot mount directly', () => {
+    expect(() =>
+      withHostNfsSources([optedIn], () => [
+        { kind: 'error', reason: '/mnt/nas uses sec=krb5' },
+      ]),
+    ).toThrow(
+      /mnt\/nas\/proj cannot be mounted directly from NFS: \/mnt\/nas uses sec=krb5\. Set nfsDirectMount to false on allowed root "\/mnt\/nas"/,
+    );
   });
 });
 
