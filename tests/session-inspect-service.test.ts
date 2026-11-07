@@ -646,12 +646,22 @@ describe('session_list', () => {
     ).toMatch(/message_limit/);
   });
 
-  test('an ambiguous name lists the candidates by short id', () => {
+  test('an ambiguous name lists the candidates as data, not in the error text', () => {
     createSession('abababab-0000-4000-8000-00000000000a', PROJ, 'twin');
     createSession('abababab-1111-4000-8000-00000000000b', PROJ, 'twin2');
-    expect(
-      error(call(projCaller(), 'session_get', { session: 'abababab' })),
-    ).toMatch(/匹配到多个会话[\s\S]*twin/);
+    const result = call(projCaller(), 'session_get', { session: 'abababab' });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toMatch(/^ambiguous: 匹配到多个会话/);
+    // Session names can come from anyone's messages: the Runner fences the
+    // data, never the error text.
+    expect(result.error).not.toContain('twin');
+    expect(result.data).toEqual({
+      candidates: expect.arrayContaining([
+        { id: 'abababab', name: 'twin' },
+        { id: 'abababab', name: 'twin2' },
+      ]),
+    });
   });
 });
 

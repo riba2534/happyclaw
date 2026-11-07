@@ -81,6 +81,8 @@ const NOT_FOUND =
 const OWNER_TURN_REQUIRED =
   'owner_turn_required: 本轮不是工作区主人亲自发起的，只能查看本工作区会话的运行状态，不能跨工作区，也不能读取消息和执行轨迹。';
 const UNAVAILABLE = 'unavailable: 当前会话不能使用会话查询。';
+const AMBIGUOUS =
+  'ambiguous: 匹配到多个会话，请写更长的短 ID。候选会话在下面的数据里。';
 
 // ── Types ───────────────────────────────────────────────────────────────
 
@@ -121,7 +123,11 @@ export interface SessionInspectCaller {
 
 export type SessionInspectResult =
   | { ok: true; data: unknown }
-  | { ok: false; error: string };
+  /**
+   * `data`, when present, is shown fenced as untrusted beside the error: the
+   * session names of an ambiguous match.
+   */
+  | { ok: false; error: string; data?: unknown };
 
 export type SessionRuntimeState =
   | 'running'
@@ -132,10 +138,18 @@ export type SessionRuntimeState =
   | 'idle'
   | 'error';
 
-class InspectError extends Error {}
+class InspectError extends Error {
+  constructor(
+    message: string,
+    /** Shown fenced as untrusted beside the error (session names). */
+    readonly data?: unknown,
+  ) {
+    super(message);
+  }
+}
 
-function fail(message: string): never {
-  throw new InspectError(message);
+function fail(message: string, data?: unknown): never {
+  throw new InspectError(message, data);
 }
 
 interface WorkspaceRef {
@@ -591,12 +605,14 @@ function resolveSession(
     );
     if (matches.length === 0) fail(NOT_FOUND);
     if (matches.length > 1) {
-      fail(
-        [
-          '匹配到多个会话，请写更长的短 ID：',
-          ...matches.map((item) => `· ${item.name} [${shortId(item.id)}]`),
-        ].join('\n'),
-      );
+      // Names can come from anyone's messages: they travel as data, which
+      // the Runner fences as untrusted, never in the error text.
+      fail(AMBIGUOUS, {
+        candidates: matches.map((item) => ({
+          id: shortId(item.id),
+          name: item.name,
+        })),
+      });
     }
     return matches[0];
   };
@@ -794,8 +810,13 @@ export function handleSessionInspectIpc(
         return { ok: false, error: 'Unknown session tool.' };
     }
   } catch (error) {
-    if (error instanceof InspectError)
-      return { ok: false, error: error.message };
+    if (error instanceof InspectError) {
+      return {
+        ok: false,
+        error: error.message,
+        ...(error.data !== undefined ? { data: error.data } : {}),
+      };
+    }
     logger.error(
       { err: error, type: request.type, agentId: caller.agentId },
       'Session inspection failed unexpectedly',

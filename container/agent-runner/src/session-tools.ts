@@ -34,11 +34,15 @@ const TIMEOUT_MS = 30_000;
 /** Message text and traces of one `session_get`, at most, in bytes. */
 export const SESSION_GET_BODY_KIB = 32;
 
-type IpcResult = { ok: true; data?: unknown } | { ok: false; error?: string };
+type IpcResult =
+  | { ok: true; data?: unknown }
+  | { ok: false; error?: string; data?: unknown };
 
 /**
  * Sends one request and returns the host's answer as tool text. `fence` wraps
- * the data as untrusted: it holds other sessions' messages and names.
+ * the data as untrusted: it holds other sessions' messages and names. An
+ * error may carry data too (the names of an ambiguous match); it is fenced
+ * the same way below the error text.
  */
 function sessionSender(call: SessionIpcCall, fence: (data: unknown) => string) {
   return async (
@@ -55,7 +59,15 @@ function sessionSender(call: SessionIpcCall, fence: (data: unknown) => string) {
     } catch {
       return text('等待宿主响应超时，请稍后再试。', true);
     }
-    if (!result.ok) return text(result.error || `${type} failed`, true);
+    if (!result.ok) {
+      const message = result.error || `${type} failed`;
+      return text(
+        result.data === undefined
+          ? message
+          : `${message}\n${fence(result.data)}`,
+        true,
+      );
+    }
     return text(fence(result.data ?? null));
   };
 }
