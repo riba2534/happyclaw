@@ -10,13 +10,15 @@ vi.mock('../src/logger.js', () => ({
 
 import {
   parseBsdMountTable,
+  parseDarwinNfsStat,
   parseLinuxMountInfo,
   parseNfsSource,
-  resolveNfsVolumeSource,
-  resolveNfsVolumeSources,
+  resolveNfsDirectMount,
+  resolveNfsDirectMounts,
 } from '../src/host-nfs-mounts.js';
 import {
   cifsDriverOptions,
+  nfsMountOptions,
   normalizeStorageSubPath,
   parseStorageSources,
   readPasswordFile,
@@ -106,6 +108,14 @@ describe('storage source allowlist', () => {
     for (const bad of ['/a', 'a/../b', '..', 'a//b', ' a', 'a\\b', 'a\nb']) {
       expect(() => normalizeStorageSubPath(bad)).toThrow();
     }
+  });
+});
+
+describe('NFS storage source options', () => {
+  test('locks locally on NFSv3 only; NFSv4 locks through the protocol', () => {
+    expect(nfsMountOptions(undefined)).toBe('nfsvers=3,proto=tcp,hard,nolock');
+    expect(nfsMountOptions('3')).toBe('nfsvers=3,proto=tcp,hard,nolock');
+    expect(nfsMountOptions('4.1')).toBe('nfsvers=4.1,proto=tcp,hard');
   });
 });
 
@@ -225,68 +235,408 @@ describe('SMB credentials', () => {
   });
 });
 
+function mountInfo(...lines: string[]) {
+  return { mounts: parseLinuxMountInfo(lines.join('\n')) };
+}
+
+const NFS3_OPTIONS =
+  'rw,vers=3,rsize=1048576,wsize=1048576,hard,proto=tcp,sec=sys,mountaddr=192.0.2.10,mountvers=3,local_lock=none,addr=192.0.2.10';
+
 describe('host NFS mount detection', () => {
-  test('parses macOS and Linux mount tables', () => {
+  test('parses every entry of the macOS and Linux mount tables', () => {
     expect(
       parseBsdMountTable(
         [
           '/dev/disk3s1s1 on / (apfs, sealed, local, read-only, journaled)',
           'nas.lan:/volume1/shared on /Users/me/nas ssd (nfs, nodev, nosuid, mounted by me)',
-          'OrbStack:/OrbStack on /Users/me/OrbStack (nfs, nodev, nosuid, noatime, mounted by me)',
           '//me@nas.lan/team on /Volumes/team (smbfs, nodev, nosuid, mounted by me)',
+          'map auto_home on /System/Volumes/Data/home (autofs, automounted, nobrowse)',
         ].join('\n'),
       ),
     ).toEqual([
       {
-        server: 'nas.lan',
-        exportPath: '/volume1/shared',
-        mountPoint: '/Users/me/nas ssd',
+        fstype: 'apfs',
+        source: '/dev/disk3s1s1',
+        mountPoint: '/',
+        root: '/',
+        options: null,
       },
       {
-        server: 'OrbStack',
-        exportPath: '/OrbStack',
-        mountPoint: '/Users/me/OrbStack',
+        fstype: 'nfs',
+        source: 'nas.lan:/volume1/shared',
+        mountPoint: '/Users/me/nas ssd',
+        root: '/',
+        options: null,
+      },
+      {
+        fstype: 'smbfs',
+        source: '//me@nas.lan/team',
+        mountPoint: '/Volumes/team',
+        root: '/',
+        options: null,
+      },
+      {
+        fstype: 'autofs',
+        source: 'map auto_home',
+        mountPoint: '/System/Volumes/Data/home',
+        root: '/',
+        options: null,
       },
     ]);
     expect(
       parseLinuxMountInfo(
         [
           '29 1 8:1 / / rw,relatime shared:1 - ext4 /dev/sda1 rw',
-          '40 29 0:50 / /mnt/nas\\040data rw,relatime shared:20 - nfs4 [2001:db8::5]:/export rw,vers=4.2',
+          '40 29 0:50 / /mnt/nas\\040data rw,relatime shared:20 - nfs4 [2001:db8::5]:/export rw,vers=4.2,sec=sys',
+          '41 29 0:50 /team /srv/team rw,relatime - nfs nas:/export rw,vers=3',
         ].join('\n'),
       ),
     ).toEqual([
       {
-        server: '2001:db8::5',
-        exportPath: '/export',
+        fstype: 'ext4',
+        source: '/dev/sda1',
+        mountPoint: '/',
+        root: '/',
+        options: ['rw'],
+      },
+      {
+        fstype: 'nfs4',
+        source: '[2001:db8::5]:/export',
         mountPoint: '/mnt/nas data',
+        root: '/',
+        options: ['rw', 'vers=4.2', 'sec=sys'],
+      },
+      {
+        fstype: 'nfs',
+        source: 'nas:/export',
+        mountPoint: '/srv/team',
+        root: '/team',
+        options: ['rw', 'vers=3'],
       },
     ]);
     expect(parseNfsSource('no-export')).toBeNull();
   });
 
-  test('picks the innermost mount and appends the path below it', () => {
-    const mounts = [
-      { server: 'a', exportPath: '/outer', mountPoint: '/mnt' },
-      { server: 'b', exportPath: '/inner', mountPoint: '/mnt/deep' },
-    ];
-    expect(resolveNfsVolumeSource('/mnt/deep/x/y', mounts)).toEqual({
-      server: 'b',
-      device: '/inner/x/y',
-    });
-    expect(resolveNfsVolumeSource('/mnt', mounts)).toEqual({
-      server: 'a',
-      device: '/outer',
-    });
-    expect(resolveNfsVolumeSource('/mntx', mounts)).toBeNull();
+  test('reads negotiated parameters from macOS nfsstat -m', () => {
+    const parameters = parseDarwinNfsStat(
+      [
+        '/Users/me/nas ssd from nas.lan:/volume1/shared',
+        '  -- Original mount options:',
+        '     General mount flags: 0x0',
+        '     NFS parameters: vers=4,soft',
+        '     File system locations:',
+        '       /volume1/shared @ nas.lan (192.0.2.10)',
+        '  -- Current mount parameters:',
+        '     General mount flags: 0x4000018 nodev,nosuid,multilabel',
+        '     NFS parameters: vers=4.0,tcp,port=2049,hard,sec=sys',
+        '     File system locations:',
+        '       /volume1/shared @ nas.lan (192.0.2.10)',
+        '     Status flags: 0x0',
+        '/Volumes/v3 from nas.lan:/volume1/v3',
+        '  -- Original mount options:',
+        '     NFS parameters: vers=3,tcp',
+      ].join('\n'),
+    );
+    expect(parameters.get('/Users/me/nas ssd')).toEqual([
+      'vers=4.0',
+      'tcp',
+      'port=2049',
+      'hard',
+      'sec=sys',
+    ]);
+    expect(parameters.get('/Volumes/v3')).toEqual(['vers=3', 'tcp']);
   });
 
-  test('keeps every path a bind when the mount table cannot be read', () => {
+  test('keeps an NFSv3 mount on v3 and locks the way the host mount does', () => {
+    const line = (options: string) =>
+      `40 29 0:50 / /mnt/nas rw,relatime - nfs nas:/export ${options}`;
     expect(
-      resolveNfsVolumeSources(['/a', '/b'], () => {
+      resolveNfsDirectMount(
+        '/mnt/nas/team/proj',
+        mountInfo(line(NFS3_OPTIONS)),
+        'linux',
+      ),
+    ).toEqual({
+      kind: 'nfs',
+      source: {
+        server: 'nas',
+        device: '/export/team/proj',
+        options: 'nfsvers=3,proto=tcp,hard',
+      },
+    });
+    expect(
+      resolveNfsDirectMount(
+        '/mnt/nas/proj',
+        mountInfo(
+          line(
+            `${NFS3_OPTIONS.replace('local_lock=none', 'nolock,local_lock=all')}`,
+          ),
+        ),
+        'linux',
+      ),
+    ).toMatchObject({
+      source: { options: 'nfsvers=3,proto=tcp,hard,nolock' },
+    });
+    // The daemon's VM on macOS runs no rpc.statd.
+    expect(
+      resolveNfsDirectMount(
+        '/Volumes/nas/proj',
+        {
+          mounts: parseBsdMountTable(
+            'nas.lan:/volume1 on /Volumes/nas (nfs, nodev, nosuid, mounted by me)',
+          ),
+          nfsParameters: () => ['vers=3', 'tcp', 'hard'],
+        },
+        'darwin',
+      ),
+    ).toEqual({
+      kind: 'nfs',
+      source: {
+        server: 'nas.lan',
+        device: '/volume1/proj',
+        options: 'nfsvers=3,proto=tcp,hard,nolock',
+      },
+    });
+  });
+
+  test('keeps an NFSv4 mount on v4 with its own (pseudo-root) path', () => {
+    expect(
+      resolveNfsDirectMount(
+        '/mnt/v4/proj',
+        mountInfo(
+          '40 29 0:50 / /mnt/v4 rw,relatime - nfs4 srv:/data rw,vers=4.2,hard,proto=tcp,sec=sys,clientaddr=192.0.2.2,local_lock=none,addr=192.0.2.10',
+        ),
+        'linux',
+      ),
+    ).toEqual({
+      kind: 'nfs',
+      source: {
+        server: 'srv',
+        device: '/data/proj',
+        options: 'nfsvers=4.2,proto=tcp,hard',
+      },
+    });
+    expect(
+      resolveNfsDirectMount(
+        '/Volumes/nas/proj',
+        {
+          mounts: parseBsdMountTable(
+            'nas.lan:/shared on /Volumes/nas (nfs, nodev, nosuid, mounted by me)',
+          ),
+          nfsParameters: () => ['vers=4.0', 'tcp'],
+        },
+        'darwin',
+      ),
+    ).toMatchObject({ source: { options: 'nfsvers=4.0,proto=tcp,hard' } });
+  });
+
+  test.each([
+    [
+      'Kerberos',
+      '40 29 0:50 / /mnt/nas rw - nfs4 nas:/export rw,vers=4.1,sec=krb5p',
+      'sec=krb5p',
+    ],
+    [
+      'NFSv2',
+      '40 29 0:50 / /mnt/nas rw - nfs nas:/export rw,vers=2',
+      'version 2',
+    ],
+    [
+      'no version',
+      '40 29 0:50 / /mnt/nas rw - nfs nas:/export rw,hard',
+      'not listed',
+    ],
+    ['no server', '40 29 0:50 / /mnt/nas rw - nfs /dev/x rw,vers=3', 'source'],
+  ])(
+    'refuses a direct mount it cannot reproduce: %s',
+    (_label, line, message) => {
+      const result = resolveNfsDirectMount(
+        '/mnt/nas/p',
+        mountInfo(line),
+        'linux',
+      );
+      expect(result.kind).toBe('error');
+      expect(result.kind === 'error' && result.reason).toContain(message);
+    },
+  );
+
+  test('a mount nested inside NFS holds the path, not the NFS share below it', () => {
+    const nfs = `40 29 0:50 / /mnt/nas rw - nfs nas:/export ${NFS3_OPTIONS}`;
+    for (const nested of [
+      '41 40 8:17 / /mnt/nas/local rw - ext4 /dev/sdb1 rw',
+      '41 40 0:60 / /mnt/nas/local rw - tmpfs tmpfs rw',
+      '41 40 0:61 / /mnt/nas/local rw - cifs //nas/share rw,vers=3.0',
+    ]) {
+      expect(
+        resolveNfsDirectMount(
+          '/mnt/nas/local/proj',
+          mountInfo(nfs, nested),
+          'linux',
+        ),
+      ).toEqual({ kind: 'bind' });
+    }
+    expect(
+      resolveNfsDirectMount(
+        '/Volumes/nas/inner/p',
+        {
+          mounts: parseBsdMountTable(
+            [
+              'nas:/volume1/share on /Volumes/nas (nfs, nodev, nosuid, mounted by me)',
+              '//me@nas/inner on /Volumes/nas/inner (smbfs, nodev, nosuid, mounted by me)',
+            ].join('\n'),
+          ),
+          nfsParameters: () => ['vers=3'],
+        },
+        'darwin',
+      ),
+    ).toEqual({ kind: 'bind' });
+    // NFS mounted below a local directory is still found.
+    expect(
+      resolveNfsDirectMount(
+        '/mnt/nas/deep/x',
+        mountInfo(
+          '29 1 8:1 / / rw - ext4 /dev/sda1 rw',
+          nfs,
+          `42 40 0:52 / /mnt/nas/deep rw - nfs other:/inner ${NFS3_OPTIONS}`,
+        ),
+        'linux',
+      ),
+    ).toMatchObject({ source: { server: 'other', device: '/inner/x' } });
+    // The mount point itself is the export.
+    expect(
+      resolveNfsDirectMount('/mnt/nas', mountInfo(nfs), 'linux'),
+    ).toMatchObject({ source: { device: '/export' } });
+    expect(
+      resolveNfsDirectMount(
+        '/mnt/nasx',
+        mountInfo('29 1 8:1 / / rw - ext4 /dev/sda1 rw', nfs),
+        'linux',
+      ),
+    ).toEqual({ kind: 'bind' });
+  });
+
+  test('the last mount on a mount point covers the ones before it', () => {
+    expect(
+      resolveNfsDirectMount(
+        '/mnt/nas/x',
+        mountInfo(
+          `40 29 0:50 / /mnt/nas rw - nfs old:/exportA ${NFS3_OPTIONS}`,
+          `41 40 0:51 / /mnt/nas rw - nfs new:/exportB ${NFS3_OPTIONS}`,
+        ),
+        'linux',
+      ),
+    ).toMatchObject({ source: { server: 'new', device: '/exportB/x' } });
+    expect(
+      resolveNfsDirectMount(
+        '/mnt/nas/x',
+        mountInfo(
+          `40 29 0:50 / /mnt/nas rw - nfs old:/exportA ${NFS3_OPTIONS}`,
+          '41 40 0:60 / /mnt/nas rw - tmpfs tmpfs rw',
+        ),
+        'linux',
+      ),
+    ).toEqual({ kind: 'bind' });
+  });
+
+  test('a bind of an NFS subdirectory maps to that subdirectory', () => {
+    // mountinfo field 4 carries the directory of the filesystem a bind shows.
+    expect(
+      resolveNfsDirectMount(
+        '/srv/team/proj',
+        mountInfo(
+          `41 29 0:50 /team /srv/team rw - nfs nas:/export ${NFS3_OPTIONS}`,
+        ),
+        'linux',
+      ),
+    ).toMatchObject({ source: { device: '/export/team/proj' } });
+    // Linux's NFS client reports root "/" and folds the directory into the
+    // source instead; both forms resolve to the same export directory.
+    expect(
+      resolveNfsDirectMount(
+        '/srv/team/proj',
+        mountInfo(
+          `41 29 0:50 / /srv/team rw - nfs nas:/export/team ${NFS3_OPTIONS}`,
+        ),
+        'linux',
+      ),
+    ).toMatchObject({ source: { device: '/export/team/proj' } });
+  });
+
+  test('matches macOS mount points through firmlink and /private aliases', () => {
+    const table = {
+      mounts: parseBsdMountTable(
+        [
+          'nas:/a on /System/Volumes/Data/Users/me/NAS (nfs, nodev, mounted by me)',
+          'nas:/b on /private/tmp/share (nfs, nodev, mounted by me)',
+        ].join('\n'),
+      ),
+      nfsParameters: () => ['vers=3'],
+    };
+    expect(
+      resolveNfsDirectMount('/Users/me/nas/Proj', table, 'darwin'),
+    ).toMatchObject({ source: { device: '/a/Proj' } });
+    expect(
+      resolveNfsDirectMount('/private/tmp/share/x', table, 'darwin'),
+    ).toMatchObject({ source: { device: '/b/x' } });
+    expect(resolveNfsDirectMount('/Users/me/nas/Proj', table, 'linux')).toEqual(
+      { kind: 'bind' },
+    );
+  });
+
+  test('never looks up a mount point on the filesystem', () => {
+    // A hard NFS mount whose server is gone blocks any stat of it in the
+    // kernel; the mount table must be matched against the path literally.
+    const spies = (
+      [
+        'realpathSync',
+        'statSync',
+        'lstatSync',
+        'existsSync',
+        'accessSync',
+      ] as const
+    ).map((name) => vi.spyOn(fs, name));
+    const realpathNative = vi.spyOn(fs.realpathSync, 'native');
+    try {
+      const results = resolveNfsDirectMounts(
+        ['/home/u/work/proj', '/mnt/nas/proj'],
+        () =>
+          mountInfo(
+            '29 1 8:1 / / rw - ext4 /dev/sda1 rw',
+            `40 29 0:50 / /mnt/backup rw - nfs backup-nas:/backup ${NFS3_OPTIONS}`,
+            `41 29 0:51 / /srv/other rw - nfs4 other:/x rw,vers=4.2`,
+            `42 29 0:52 / /mnt/nas rw - nfs nas:/export ${NFS3_OPTIONS}`,
+          ),
+        'linux',
+      );
+      expect(results.map((result) => result.kind)).toEqual(['bind', 'nfs']);
+      for (const spy of [...spies, realpathNative]) {
+        expect(spy).not.toHaveBeenCalled();
+      }
+    } finally {
+      for (const spy of [...spies, realpathNative]) spy.mockRestore();
+    }
+  });
+
+  test('fails every path when the mount table cannot be read', () => {
+    expect(
+      resolveNfsDirectMounts(['/a', '/b'], () => {
         throw new Error('no mount table');
       }),
-    ).toEqual([null, null]);
+    ).toEqual([
+      {
+        kind: 'error',
+        reason: 'could not read the host mount table: no mount table',
+      },
+      {
+        kind: 'error',
+        reason: 'could not read the host mount table: no mount table',
+      },
+    ]);
+    expect(
+      resolveNfsDirectMounts([], () => {
+        throw new Error('never read');
+      }),
+    ).toEqual([]);
   });
 });
 

@@ -429,11 +429,37 @@ HTTP 状态为 409；请求不会停止现有 Runner，也不会修改绑定。
 `GET /api/browse/directories?purpose=mount` 浏览服务器目录；未配置有效 allowlist
 时该入口 fail-closed。
 
-宿主机目录位于宿主机的 NFS 挂载之下时，容器启动时不再绑定宿主机的挂载，而是由
-Docker 直接挂同一个导出子目录（`local` 卷驱动，`nfsvers=3,proto=tcp,hard,nolock`）。
-宿主机重挂 NFS（NAS 重启、断网恢复）因此不会让运行中的容器拿到失效的挂载；
-Docker Desktop 与 OrbStack 的 VM 没有挂载传播，绑定的旧挂载会一直报 `EBADF`。
-授权不变：仍按宿主机路径校验 allowlist。
+位于宿主机 NFS 挂载之下的目录默认仍按普通绑定挂进容器。allowlist 的根目录设置
+`nfsDirectMount: true` 后，该根下位于 NFS 上的目录改由 Docker 直接挂同一个导出
+子目录（`local` 卷驱动）。宿主机重挂 NFS（NAS 重启、断网恢复）因此不会让运行中的
+容器拿到失效的挂载；Docker Desktop 与 OrbStack 的 VM 没有挂载传播，绑定的旧挂载会
+一直报 `EBADF`。授权不变：仍按宿主机路径校验 allowlist，开关取匹配到的最具体的根；
+根下不在 NFS 上的目录照常绑定。
+
+```json
+{
+  "allowedRoots": [
+    { "path": "/Volumes/nas", "allowReadWrite": true, "nfsDirectMount": true }
+  ]
+}
+```
+
+- 协议跟随宿主机挂载：NFSv4 仍用 v4（含次版本）和宿主机挂载的原路径（包括 v4
+  伪根下的路径），NFSv3 仍用 v3，选项为 `proto=tcp,hard`。macOS 的版本取自
+  `nfsstat -m`，Linux 取自挂载表。
+- 只有 NFSv3 且守护进程用不了 NLM 时才加 `nolock`：Docker Desktop 与 OrbStack 的
+  VM 不跑 rpc.statd，v3 加锁会报 `ENOLCK`，加 `nolock` 后锁只在容器内生效；Linux
+  上守护进程与宿主机共用内核的 lockd 和 rpc.statd，跟随宿主机挂载是否 `nolock`。
+  NFSv4 的锁在协议内完成，不加 `nolock`。
+- 无法按宿主机挂载重建时容器启动失败并说明原因，不会悄悄退回绑定：宿主机挂载用了
+  Kerberos（`sec=krb5*`）、版本不是 3 或 4.x、读不到挂载表或版本。把该根的
+  `nfsDirectMount` 去掉即恢复绑定。
+- 挂载由守护进程完成，需要：守护进程能直接连到 NAS（NFS 端口，v3 还需要 rpcbind
+  与 mountd）；rootless Docker 不能挂 NFS，不要开启；导出要求特权源端口（Linux
+  knfsd 默认的 `secure`、群晖默认设置）时，经用户态 NAT 出网的 Docker Desktop 与
+  OrbStack 可能被拒。NAS 看到的 uid 是容器内进程的 uid：Linux 上与服务用户一致，
+  Docker Desktop 与 OrbStack 下是容器内 `node` 的 1000，而不是 Mac 用户的 uid，
+  NAS 没有 `all_squash` 一类映射时请先确认文件权限。
 
 网络存储也可以作为存储源直接挂载。管理员在 allowlist 的 `storageSources` 中声明
 服务器与凭据，工作区只按 `id` 选择来源、来源内的子目录和是否只读：

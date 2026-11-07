@@ -102,10 +102,19 @@ function validateAllowlistShape(raw: unknown): MountAllowlist {
     ) {
       throw new Error(`allowedRoots[${index}].description must be a string`);
     }
+    if (
+      entry.nfsDirectMount !== undefined &&
+      typeof entry.nfsDirectMount !== 'boolean'
+    ) {
+      throw new Error(
+        `allowedRoots[${index}].nfsDirectMount must be a boolean`,
+      );
+    }
     return {
       path: entry.path.trim(),
       allowReadWrite: entry.allowReadWrite,
       description: entry.description,
+      ...(entry.nfsDirectMount === true ? { nfsDirectMount: true } : {}),
     };
   });
 
@@ -486,6 +495,8 @@ export interface MountValidationResult {
   realHostPath?: string;
   resolvedContainerPath?: string;
   effectiveReadonly?: boolean;
+  /** The allowed root (as configured) that opts this path into NFS direct mounting. */
+  nfsDirectMountRoot?: string;
 }
 
 export function validateMount(
@@ -600,6 +611,9 @@ export function validateMount(
     realHostPath: realPath,
     resolvedContainerPath: containerPath,
     effectiveReadonly: !requestedReadWrite,
+    ...(allowedRoot.nfsDirectMount
+      ? { nfsDirectMountRoot: allowedRoot.path }
+      : {}),
   };
 }
 
@@ -610,6 +624,8 @@ export interface ValidatedAdditionalMount {
   readonly: boolean;
   /** Set for storage-source mounts: what Docker mounts instead of a bind. */
   storage?: ResolvedStorage;
+  /** Host directories only: the allowed root that opts into NFS direct mounting. */
+  nfsDirectMountRoot?: string;
   persisted: AdditionalMount;
 }
 
@@ -709,6 +725,9 @@ export function validateAdditionalMountsStrict(
       hostPath: result.realHostPath,
       containerPath: `${ADDITIONAL_MOUNT_CONTAINER_ROOT}/${suffix}`,
       readonly: result.effectiveReadonly,
+      ...(result.nfsDirectMountRoot
+        ? { nfsDirectMountRoot: result.nfsDirectMountRoot }
+        : {}),
       persisted: {
         hostPath: result.realHostPath,
         containerPath: suffix,
@@ -759,13 +778,15 @@ export function validateAdditionalMounts(
   containerPath: string;
   readonly: boolean;
   storage?: ResolvedStorage;
+  nfsDirectMountRoot?: string;
 }> {
   return validateAdditionalMountsStrict(mounts, groupName, isMain).map(
-    ({ hostPath, containerPath, readonly, storage }) => ({
+    ({ hostPath, containerPath, readonly, storage, nfsDirectMountRoot }) => ({
       hostPath,
       containerPath,
       readonly,
       ...(storage ? { storage } : {}),
+      ...(nfsDirectMountRoot ? { nfsDirectMountRoot } : {}),
     }),
   );
 }

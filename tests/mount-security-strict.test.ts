@@ -41,6 +41,7 @@ type AllowedRootInput = {
   path: string;
   allowReadWrite: boolean;
   description?: string;
+  nfsDirectMount?: unknown;
 };
 
 function writePolicy(
@@ -371,5 +372,44 @@ describe.sequential('validateAdditionalMountsStrict', () => {
     expect(() => validate(mounts, 'storage-revoked', false)).toThrow(
       ValidationError,
     );
+  });
+
+  test('host directories stay binds unless their allowed root opts into NFS direct mounts', async () => {
+    const plain = path.join(allowedRoot, 'nfs-plain');
+    const direct = path.join(allowedRoot, 'nfs-direct', 'proj');
+    fs.mkdirSync(plain, { recursive: true });
+    fs.mkdirSync(direct, { recursive: true });
+    const directRoot = path.join(allowedRoot, 'nfs-direct');
+    writePolicy([
+      { path: allowedRoot, allowReadWrite: false },
+      { path: directRoot, allowReadWrite: false, nfsDirectMount: true },
+    ]);
+    const { validate } = await loadStrictValidator();
+
+    const [plainMount, directMount] = validate(
+      [mount(plain, 'plain'), mount(direct, 'direct')],
+      'nfs-direct-workspace',
+      false,
+    );
+    expect(plainMount).not.toHaveProperty('nfsDirectMountRoot');
+    expect(directMount.nfsDirectMountRoot).toBe(directRoot);
+    // The switch lives in the allowlist only, never in the workspace config.
+    expect(directMount.persisted).toEqual({
+      hostPath: fs.realpathSync(direct),
+      containerPath: 'direct',
+      readonly: true,
+    });
+  });
+
+  test('rejects an allowlist whose nfsDirectMount is not a boolean', async () => {
+    const source = path.join(allowedRoot, 'nfs-flag');
+    fs.mkdirSync(source, { recursive: true });
+    writePolicy([
+      { path: allowedRoot, allowReadWrite: false, nfsDirectMount: 'yes' },
+    ]);
+    const { validate, ValidationError } = await loadStrictValidator();
+    expect(() =>
+      validate([mount(source, 'flag')], 'nfs-flag-workspace', false),
+    ).toThrow(ValidationError);
   });
 });

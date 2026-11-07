@@ -68,6 +68,9 @@ export interface AllowedRoot {
   allowReadWrite: boolean;
   // Optional description for documentation
   description?: string;
+  // Host directories under this root that sit on an NFS mount are mounted by
+  // Docker straight from the export instead of bound (default false)
+  nfsDirectMount?: boolean;
 }
 
 export interface ContainerConfig {
