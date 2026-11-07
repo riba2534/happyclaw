@@ -45,6 +45,7 @@ import {
 } from './runtime-state-store.js';
 import { getSessionWorktree } from './session-worktree-store.js';
 import { presentTurnTrace, resolveTurnTraceExposure } from './turn-trace.js';
+import { STOPPED_PREVIEW } from './stream-steps.js';
 import { getWorkItemsByAgents } from './work-item-store.js';
 import { laneJidOf } from './work-item-runtime.js';
 import {
@@ -815,9 +816,19 @@ function turnTraces(
     if (!presented) continue;
     const tools: TraceTool[] = presented.steps
       .filter((step) => step.kind === 'tool' && step.toolName)
-      .map((step) => ({
+      .map((step) => {
+        // A stopped or denied call is stored as `error` with an outcome (or,
+        // before outcomes were kept, the stopped preview); it did not fail.
+        const ended =
+          step.status === 'error'
+            ? (step.outcome ??
+              (step.resultPreview === STOPPED_PREVIEW ? 'stopped' : undefined))
+            : undefined;
+        return { step, status: ended ?? step.status };
+      })
+      .map(({ step, status }) => ({
         tool: step.toolName as string,
-        status: step.status,
+        status,
         duration_ms:
           step.endedAt !== undefined
             ? Math.max(0, step.endedAt - step.at)
@@ -825,7 +836,7 @@ function turnTraces(
         ...(step.summary
           ? { input: oneLine(step.summary, TRACE_TEXT_CHARS) }
           : {}),
-        ...(step.status === 'error' && step.resultPreview
+        ...(status === 'error' && step.resultPreview
           ? { error: oneLine(step.resultPreview, TRACE_TEXT_CHARS) }
           : {}),
       }))
