@@ -76,7 +76,7 @@ describe('problems', () => {
       false,
     );
     expect(counts.done).toBe(1);
-    expect(describeProblems(counts)).toEqual(['2 个失败', '1 个已中断']);
+    expect(describeProblems(counts)).toEqual(['2 个失败', '1 个已停止']);
     expect(worstProblem(counts)).toBe('error');
     expect(describeProblems(countToolStates([tool()]))).toEqual([]);
     expect(worstProblem(countToolStates([tool()]))).toBeUndefined();

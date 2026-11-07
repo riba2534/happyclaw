@@ -605,7 +605,7 @@ const ReadGroupRow = memo(
             : !live && summary.running > 0
               ? '，未完成'
               : problem
-                ? '，有失败'
+                ? `，${TOOL_STATE[problem].label}`
                 : '，已完成'
         }
         open={open}

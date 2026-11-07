@@ -679,13 +679,15 @@ describe('ProcessCard, settled', () => {
         })}
       />,
     );
-    expect(header()?.textContent).toBe('已工作 1s · 2 个工具 · 1 个已中断');
+    expect(header()?.textContent).toBe('已工作 1s · 2 个工具 · 1 个已停止');
     expect(
       header()?.querySelector('[data-hc-work-problems]')?.className,
     ).toContain('text-warning');
     await click(header());
+    // One word for it: folded, spoken and in the row itself.
     const spoken = rows()[1].querySelector('.sr-only')?.textContent ?? '';
-    expect(spoken).toContain('已中断');
+    expect(spoken).toContain('已停止');
+    expect(text()).not.toContain('已中断');
     expect(
       rows()[1].querySelector('[data-tool-state="stopped"]'),
     ).not.toBeNull();
@@ -701,7 +703,7 @@ describe('ProcessCard, settled', () => {
       />,
     );
     expect(header()?.textContent).not.toContain('失败');
-    expect(header()?.textContent).toContain('1 个已中断');
+    expect(header()?.textContent).toContain('1 个已停止');
     await click(header());
     expect(
       rows()[0].querySelector('[data-tool-state="stopped"]'),
@@ -861,6 +863,35 @@ describe('ProcessCard, the rows', () => {
     );
     expect(rows()[0].textContent).toContain('1 个失败');
     expect(rows()[0].innerHTML).toContain('text-error');
+
+    // A group whose calls were only stopped or denied does not say it failed.
+    const stopped = [
+      tool('a', 'Read', {
+        status: 'error',
+        resultPreview: '已停止',
+        outcome: 'stopped',
+      }),
+      tool('b', 'Read'),
+    ];
+    await render(
+      <ProcessCard {...props({ steps: stopped, defaultOpen: true })} />,
+    );
+    expect(rows()[0].textContent).toContain('1 个已停止');
+    expect(rows()[0].textContent).toContain('，已停止');
+    expect(rows()[0].textContent).not.toContain('失败');
+    const denied = [
+      tool('a', 'Grep', {
+        status: 'error',
+        resultPreview: '被权限策略拒绝',
+        outcome: 'denied',
+      }),
+      tool('b', 'Read'),
+    ];
+    await render(
+      <ProcessCard {...props({ steps: denied, defaultOpen: true })} />,
+    );
+    expect(rows()[0].textContent).toContain('，已拒绝');
+    expect(rows()[0].textContent).not.toContain('失败');
 
     const running = [
       tool('a', 'Read'),

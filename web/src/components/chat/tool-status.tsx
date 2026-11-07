@@ -9,7 +9,7 @@ import {
 import type { LucideIcon } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { StreamingTaskRuntimeState } from '../../stores/chat';
-import type { StreamingStep } from '../../lib/stream-steps';
+import { STOPPED_PREVIEW, type StreamingStep } from '../../lib/stream-steps';
 
 /**
  * The states a tool call or a sub-agent is drawn in, each with one mark, one
@@ -55,7 +55,7 @@ export const TOOL_STATE: Record<ToolState, ToolStateLook> = {
   },
   done: { icon: Check, tone: 'text-success', label: '已完成', quiet: true },
   error: { icon: X, tone: 'text-error', label: '失败' },
-  stopped: { icon: CircleStop, tone: 'text-warning', label: '已中断' },
+  stopped: { icon: CircleStop, tone: 'text-warning', label: STOPPED_PREVIEW },
   denied: { icon: ShieldX, tone: 'text-error', label: '已拒绝' },
   unfinished: {
     icon: CircleDashed,
@@ -72,7 +72,7 @@ export const PROBLEM_STATES = ['error', 'denied', 'stopped'] as const;
 function failureState(step: StreamingStep): ToolState {
   if (step.outcome) return step.outcome;
   // Steps stored before the outcome was kept: a stop left only its word.
-  return step.resultPreview === '已停止' ? 'stopped' : 'error';
+  return step.resultPreview === STOPPED_PREVIEW ? 'stopped' : 'error';
 }
 
 /**
@@ -161,10 +161,10 @@ export function countToolStates(
 const PROBLEM_WORDS: Record<(typeof PROBLEM_STATES)[number], string> = {
   error: '个失败',
   denied: '个被拒绝',
-  stopped: '个已中断',
+  stopped: `个${STOPPED_PREVIEW}`,
 };
 
-/** "2 个失败 · 1 个已中断": what went wrong, worst first; empty when nothing did. */
+/** "2 个失败 · 1 个已停止": what went wrong, worst first; empty when nothing did. */
 export function describeProblems(
   counts: Readonly<Record<ToolState, number>>,
 ): string[] {

@@ -118,6 +118,13 @@ export interface StreamingStep {
 
 export type StepOutcome = 'stopped' | 'denied';
 
+/**
+ * What a call a stop caught in flight says it returned, and the word every
+ * view uses for a stopped call. Steps stored before `outcome` was kept are
+ * recognised by it.
+ */
+export const STOPPED_PREVIEW = '已停止';
+
 /** One question of an AskUserQuestion call, as the reader answers it. */
 export interface StepQuestion {
   question: string;
@@ -778,7 +785,7 @@ export function finishSteps(
             ...step,
             endedAt: at,
             status: 'error',
-            resultPreview: step.resultPreview ?? '已停止',
+            resultPreview: step.resultPreview ?? STOPPED_PREVIEW,
             outcome: 'stopped',
           }
         : { ...step, endedAt: at, status: 'done' };
