@@ -44,17 +44,28 @@ vi.mock('../src/middleware/auth.ts', async (importOriginal) => {
     },
   };
 });
-const sendNotification = vi.fn();
+const postPushMessage = vi.fn();
+vi.mock('../src/web-push-transport.js', () => ({
+  postPushMessage: (...args: unknown[]) => postPushMessage(...args),
+}));
+const generateRequestDetails = vi.fn();
 vi.mock('web-push', async (importOriginal) => {
-  const actual = await importOriginal<{ default: Record<string, unknown> }>();
+  const actual = await importOriginal<{ default: Record<string, any> }>();
   return {
-    default: { ...actual.default, sendNotification },
+    default: {
+      ...actual.default,
+      generateRequestDetails: (...args: unknown[]) => {
+        generateRequestDetails(...args);
+        return actual.default.generateRequestDetails(...args);
+      },
+    },
   };
 });
 
 const db = await import('../src/db.js');
 const routes = (await import('../src/routes/push.js')).default;
 const store = await import('../src/web-push-store.js');
+const push = await import('../src/web-push.js');
 const { MAX_PUSH_SUBSCRIPTIONS_PER_USER } =
   await import('../src/routes/push.js');
 
@@ -94,8 +105,9 @@ beforeAll(() => {
 
 beforeEach(() => {
   as('alice');
-  sendNotification.mockReset();
-  sendNotification.mockResolvedValue({ statusCode: 201 });
+  postPushMessage.mockReset();
+  postPushMessage.mockResolvedValue({ statusCode: 201, body: '' });
+  generateRequestDetails.mockReset();
 });
 
 afterAll(() => {
@@ -177,6 +189,29 @@ describe('/api/push', () => {
       { endpoint: 'http://fcm.googleapis.com/x', keys: KEYS },
     ],
     ['a loopback endpoint', { endpoint: 'https://127.0.0.1/x', keys: KEYS }],
+    [
+      'a host url.parse reads as loopback',
+      { endpoint: 'https://127.0.0.1;.fcm.googleapis.com/x', keys: KEYS },
+    ],
+    [
+      'a host url.parse reads as a private address',
+      { endpoint: 'https://10.0.0.5;.fcm.googleapis.com/admin', keys: KEYS },
+    ],
+    [
+      'a host url.parse reads as another site',
+      {
+        endpoint: 'https://attacker.example{.web.push.apple.com/y',
+        keys: KEYS,
+      },
+    ],
+    [
+      'a backtick host',
+      { endpoint: 'https://localhost`.notify.windows.com/z', keys: KEYS },
+    ],
+    [
+      'any Google API host',
+      { endpoint: 'https://storage.googleapis.com/x', keys: KEYS },
+    ],
     ['missing keys', { endpoint: endpoint(2) }],
     [
       'malformed keys',
@@ -190,6 +225,26 @@ describe('/api/push', () => {
     const res = await call('POST', '/api/push/subscribe', body);
     expect(res.status).toBe(400);
     expect(store.getWebPushSubscription(endpoint(2))).toBeUndefined();
+  });
+
+  test('stores the endpoint in its normalized form', async () => {
+    as('frank');
+    expect(
+      (
+        await call('POST', '/api/push/subscribe', {
+          endpoint: 'https://FCM.googleapis.com:443/fcm/send/device-norm',
+          keys: KEYS,
+        })
+      ).status,
+    ).toBe(200);
+    expect(
+      store.listWebPushSubscriptions('frank').map((r) => r.endpoint),
+    ).toEqual(['https://fcm.googleapis.com/fcm/send/device-norm']);
+    // Unsubscribing with the browser's spelling finds the same row.
+    await call('POST', '/api/push/unsubscribe', {
+      endpoint: 'https://FCM.googleapis.com:443/fcm/send/device-norm',
+    });
+    expect(store.listWebPushSubscriptions('frank')).toEqual([]);
   });
 
   test('another account registering the same device takes it over', async () => {
@@ -253,14 +308,24 @@ describe('/api/push', () => {
       endpoint: endpoint(200),
       keys: KEYS,
     });
+    as('dave-other');
+    await call('POST', '/api/push/subscribe', {
+      endpoint: endpoint(201),
+      keys: KEYS,
+    });
+    as('dave');
     const res = await call('POST', '/api/push/test');
     expect(res.body).toMatchObject({
       success: true,
       attempted: 1,
       delivered: 1,
     });
-    expect(sendNotification).toHaveBeenCalledTimes(1);
-    const [target, payload, options] = sendNotification.mock.calls[0];
+    expect(postPushMessage).toHaveBeenCalledTimes(1);
+    const [request] = postPushMessage.mock.calls[0];
+    expect(request.endpoint).toBe(endpoint(200));
+    expect(request.headers.Authorization).toMatch(/^vapid t=/);
+    expect(Buffer.isBuffer(request.body)).toBe(true);
+    const [target, payload, options] = generateRequestDetails.mock.calls[0];
     expect(target.endpoint).toBe(endpoint(200));
     expect(JSON.parse(payload)).toMatchObject({
       kind: 'test',
@@ -275,11 +340,70 @@ describe('/api/push', () => {
       endpoint: endpoint(300),
       keys: KEYS,
     });
-    sendNotification.mockRejectedValueOnce(
-      Object.assign(new Error('gone'), { statusCode: 410 }),
-    );
+    postPushMessage.mockResolvedValueOnce({ statusCode: 410, body: '' });
     const res = await call('POST', '/api/push/test');
     expect(res.body).toMatchObject({ success: false, removed: 1 });
     expect(store.getWebPushSubscription(endpoint(300))).toBeUndefined();
+  });
+});
+
+describe('sendWebPush', () => {
+  const row = (endpointValue: string) => ({
+    endpoint: endpointValue,
+    user_id: 'judy',
+    session_id: 's-judy',
+    p256dh: KEYS.p256dh,
+    auth: KEYS.auth,
+    user_agent: null,
+    created_at: '2026-11-05T00:00:00.000Z',
+    updated_at: '2026-11-05T00:00:00.000Z',
+    last_success_at: null,
+  });
+  const payload = {
+    title: 't',
+    body: 'b',
+    tag: 'conv:x',
+    path: '/chat',
+    kind: 'reply' as const,
+  };
+
+  test('posts to the normalized endpoint and reads the status', async () => {
+    expect(await push.sendWebPush(row(endpoint(600)), payload)).toEqual({
+      ok: true,
+    });
+    expect(postPushMessage.mock.calls[0][0].endpoint).toBe(endpoint(600));
+    postPushMessage.mockResolvedValueOnce({ statusCode: 404, body: '' });
+    expect(await push.sendWebPush(row(endpoint(600)), payload)).toMatchObject({
+      ok: false,
+      gone: true,
+      statusCode: 404,
+    });
+    postPushMessage.mockResolvedValueOnce({ statusCode: 429, body: '' });
+    expect(await push.sendWebPush(row(endpoint(600)), payload)).toMatchObject({
+      ok: false,
+      gone: false,
+      statusCode: 429,
+    });
+  });
+
+  test('a stored endpoint outside the push services is never contacted', async () => {
+    expect(
+      await push.sendWebPush(
+        row('https://127.0.0.1;.fcm.googleapis.com/x'),
+        payload,
+      ),
+    ).toMatchObject({ ok: false, gone: true });
+    expect(postPushMessage).not.toHaveBeenCalled();
+  });
+
+  test('a failed or oversized response is a failure, not an exception', async () => {
+    postPushMessage.mockRejectedValueOnce(
+      new Error('push service response exceeded 16384 bytes'),
+    );
+    expect(await push.sendWebPush(row(endpoint(601)), payload)).toEqual({
+      ok: false,
+      gone: false,
+      error: 'push service response exceeded 16384 bytes',
+    });
   });
 });

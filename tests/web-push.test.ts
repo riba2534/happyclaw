@@ -7,6 +7,10 @@ import { afterAll, beforeEach, describe, expect, test, vi } from 'vitest';
 vi.mock('../src/logger.js', () => ({
   logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
+const postPushMessage = vi.fn();
+vi.mock('../src/web-push-transport.js', () => ({
+  postPushMessage: (...args: unknown[]) => postPushMessage(...args),
+}));
 
 const push = await import('../src/web-push.js');
 type Subscription = import('../src/web-push-store.js').WebPushSubscription;
@@ -134,12 +138,37 @@ describe('isAllowedPushEndpoint', () => {
     'https://evil.example.com/x',
     'https://fcm.googleapis.com.evil.example.com/x',
     'https://evilgoogleapis.com/x',
+    // Only FCM's own host, not every Google API.
+    'https://android.googleapis.com/gcm/send/abc',
+    'https://storage.googleapis.com/x',
+    'https://push.apple.com/x',
+    'https://evil.push.apple.com/x',
+    'https://push.services.mozilla.com/x',
+    'https://.notify.windows.com/x',
     'https://user:pw@fcm.googleapis.com/x',
     'https://fcm.googleapis.com:8443/x',
+    // WHATWG URL and url.parse (used by web-push) read different hosts.
+    'https://127.0.0.1;.fcm.googleapis.com/x',
+    'https://10.0.0.5;.fcm.googleapis.com/admin',
+    'https://attacker.example{.web.push.apple.com/y',
+    'https://localhost`.notify.windows.com/z',
+    'https://127.0.0.1;.updates.push.services.mozilla.com/x',
+    `https://fcm.googleapis.com/${'x'.repeat(2048)}`,
     'not a url',
     '',
   ])('rejects %s', (endpoint) => {
     expect(push.isAllowedPushEndpoint(endpoint)).toBe(false);
+  });
+
+  test('normalizes to the one form that is stored and posted to', () => {
+    expect(
+      push.normalizePushEndpoint('https://FCM.googleapis.com:443/fcm/send/a'),
+    ).toBe('https://fcm.googleapis.com/fcm/send/a');
+    // Both parsers read the backslash as a path separator: still FCM's host.
+    expect(
+      push.normalizePushEndpoint('https://fcm.googleapis.com\\@127.0.0.1/x'),
+    ).toBe('https://fcm.googleapis.com/@127.0.0.1/x');
+    expect(push.normalizePushEndpoint(42)).toBeNull();
   });
 });
 

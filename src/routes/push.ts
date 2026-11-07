@@ -18,10 +18,12 @@ import {
   upsertWebPushSubscription,
 } from '../web-push-store.js';
 import {
+  PUSH_ENDPOINT_MAX_LENGTH,
   deliverToUser,
   endpointId,
   getVapidPublicKey,
   isAllowedPushEndpoint,
+  normalizePushEndpoint,
   type WebPushPayload,
 } from '../web-push.js';
 
@@ -37,13 +39,13 @@ const base64Url = z
 export const PushSubscribeSchema = z.object({
   endpoint: z
     .string()
-    .max(2048)
+    .max(PUSH_ENDPOINT_MAX_LENGTH)
     .refine(isAllowedPushEndpoint, 'Unsupported push service endpoint'),
   keys: z.object({ p256dh: base64Url, auth: base64Url }),
 });
 
 export const PushUnsubscribeSchema = z.object({
-  endpoint: z.string().min(1).max(2048),
+  endpoint: z.string().min(1).max(PUSH_ENDPOINT_MAX_LENGTH),
 });
 
 const pushRoutes = new Hono<{ Variables: Variables }>();
@@ -97,9 +99,10 @@ pushRoutes.post('/subscribe', async (c) => {
       400,
     );
   }
+  const endpoint = normalizePushEndpoint(parsed.data.endpoint)!;
   const userAgent = c.req.header('user-agent')?.slice(0, 256) ?? null;
   upsertWebPushSubscription({
-    endpoint: parsed.data.endpoint,
+    endpoint,
     userId: user.id,
     p256dh: parsed.data.keys.p256dh,
     auth: parsed.data.keys.auth,
@@ -122,7 +125,10 @@ pushRoutes.post('/unsubscribe', async (c) => {
   const body = await c.req.json().catch(() => null);
   const parsed = PushUnsubscribeSchema.safeParse(body);
   if (!parsed.success) return c.json({ error: 'Invalid request' }, 400);
-  deleteWebPushSubscription(parsed.data.endpoint, user.id);
+  deleteWebPushSubscription(
+    normalizePushEndpoint(parsed.data.endpoint) ?? parsed.data.endpoint,
+    user.id,
+  );
   return c.json({ success: true });
 });
 

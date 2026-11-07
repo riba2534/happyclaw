@@ -15,6 +15,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { parse as parseLegacyUrl } from 'node:url';
 
 import webpush from 'web-push';
 
@@ -27,6 +28,7 @@ import {
 } from './web-push-store.js';
 import { logger } from './logger.js';
 import { wsClients, type WsClientInfo } from './web-context.js';
+import { postPushMessage } from './web-push-transport.js';
 
 // ─── VAPID identity ────────────────────────────────────────────────────
 
@@ -124,24 +126,74 @@ export function getVapidPublicKey(): string | null {
  * endpoint a client registers, so anything else would let an account make it
  * send requests to an arbitrary address.
  */
+const PUSH_SERVICE_HOSTS = new Set([
+  'fcm.googleapis.com', // FCM: Chrome, Edge, Brave, Samsung Internet, Android
+  'web.push.apple.com', // Safari and Home Screen apps
+]);
 const PUSH_SERVICE_HOST_SUFFIXES = [
-  '.googleapis.com', // FCM: Chrome, Edge, Brave, Samsung Internet, Android
   '.push.services.mozilla.com', // Firefox
-  '.push.apple.com', // Safari and Home Screen apps
   '.notify.windows.com', // Windows Notification Service
 ];
 
-export function isAllowedPushEndpoint(endpoint: string): boolean {
+export const PUSH_ENDPOINT_MAX_LENGTH = 2048;
+
+function isPushServiceHost(host: string): boolean {
+  return (
+    PUSH_SERVICE_HOSTS.has(host) ||
+    PUSH_SERVICE_HOST_SUFFIXES.some(
+      (suffix) => host.length > suffix.length && host.endsWith(suffix),
+    )
+  );
+}
+
+/** The host Node's legacy parser (web-push uses it) reads from `value`. */
+function legacyHostname(value: string): string | null {
+  try {
+    return parseLegacyUrl(value).hostname ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The endpoint in the one form the server stores and posts to, or null when
+ * it is not a push service's. WHATWG URL and Node's legacy `url.parse` (which
+ * web-push uses for the VAPID audience) disagree on characters such as `;`,
+ * `{` and `` ` `` in a host, so the host must be plain `[a-z0-9.-]`, both
+ * parsers must read the same host, and only the WHATWG serialisation is kept.
+ */
+export function normalizePushEndpoint(endpoint: unknown): string | null {
+  if (
+    typeof endpoint !== 'string' ||
+    endpoint.length > PUSH_ENDPOINT_MAX_LENGTH
+  ) {
+    return null;
+  }
   let url: URL;
   try {
     url = new URL(endpoint);
   } catch {
-    return false;
+    return null;
   }
-  if (url.protocol !== 'https:' || url.username || url.password) return false;
-  if (url.port && url.port !== '443') return false;
-  const host = url.hostname.toLowerCase();
-  return PUSH_SERVICE_HOST_SUFFIXES.some((suffix) => host.endsWith(suffix));
+  // `:443` is the default and serialises away; any other port stays.
+  if (url.protocol !== 'https:' || url.username || url.password || url.port) {
+    return null;
+  }
+  const host = url.hostname;
+  if (!/^[a-z0-9.-]+$/.test(host) || !isPushServiceHost(host)) return null;
+  const normalized = url.href;
+  if (
+    normalized.length > PUSH_ENDPOINT_MAX_LENGTH ||
+    legacyHostname(endpoint) !== host ||
+    legacyHostname(normalized) !== host
+  ) {
+    return null;
+  }
+  return normalized;
+}
+
+export function isAllowedPushEndpoint(endpoint: unknown): boolean {
+  return normalizePushEndpoint(endpoint) !== null;
 }
 
 /** A short stable id for an endpoint, safe to show and log. */
@@ -327,7 +379,6 @@ export function isWebOriginTurn(facts: TurnOriginFacts): boolean {
 // ─── Delivery ──────────────────────────────────────────────────────────
 
 const PUSH_TTL_SECONDS = 4 * 60 * 60;
-const PUSH_REQUEST_TIMEOUT_MS = 10_000;
 
 export type PushSendResult =
   | { ok: true }
@@ -338,24 +389,23 @@ export type PushSender = (
   payload: WebPushPayload,
 ) => Promise<PushSendResult>;
 
-function pushProxy(): string | undefined {
-  return (
-    process.env.HTTPS_PROXY ||
-    process.env.https_proxy ||
-    process.env.HTTP_PROXY ||
-    process.env.http_proxy ||
-    undefined
-  );
-}
-
-/** Send one payload with the server's VAPID identity. */
+/**
+ * Send one payload with the server's VAPID identity. web-push encrypts and
+ * signs it; the request itself is ours (web-push-transport.ts), bounded in
+ * time and response size, and always to the normalised endpoint.
+ */
 export const sendWebPush: PushSender = async (subscription, payload) => {
   const keys = getVapidKeys();
   if (!keys) return { ok: false, gone: false, error: 'vapid_unavailable' };
+  const endpoint = normalizePushEndpoint(subscription.endpoint);
+  // Never stored by the routes; a row like this can only be dropped.
+  if (!endpoint) {
+    return { ok: false, gone: true, error: 'unsupported_endpoint' };
+  }
   try {
-    await webpush.sendNotification(
+    const details = webpush.generateRequestDetails(
       {
-        endpoint: subscription.endpoint,
+        endpoint,
         keys: { p256dh: subscription.p256dh, auth: subscription.auth },
       },
       JSON.stringify(payload),
@@ -369,8 +419,6 @@ export const sendWebPush: PushSender = async (subscription, payload) => {
           .update(payload.tag)
           .digest('base64url')
           .slice(0, 32),
-        timeout: PUSH_REQUEST_TIMEOUT_MS,
-        proxy: pushProxy(),
         vapidDetails: {
           subject: process.env.WEB_PUSH_SUBJECT || DEFAULT_VAPID_SUBJECT,
           publicKey: keys.publicKey,
@@ -378,14 +426,24 @@ export const sendWebPush: PushSender = async (subscription, payload) => {
         },
       },
     );
-    return { ok: true };
-  } catch (err) {
-    const statusCode = (err as { statusCode?: number }).statusCode;
+    const response = await postPushMessage({
+      endpoint,
+      headers: details.headers as Record<string, string | number>,
+      body: details.body,
+    });
+    const statusCode = response.statusCode;
+    if (statusCode >= 200 && statusCode <= 299) return { ok: true };
     return {
       ok: false,
       // The push service no longer knows the subscription.
       gone: statusCode === 404 || statusCode === 410,
       statusCode,
+      error: `push service answered ${statusCode}`,
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      gone: false,
       error: err instanceof Error ? err.message : String(err),
     };
   }
