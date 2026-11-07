@@ -2620,7 +2620,7 @@ export function initDatabase(
   // v88 -> v89: work_items.origin / origin_agent_id / origin_input_id
   // (multi-task mode); every existing item is a team item.
   initWorkItemStore(db);
-  // v89 -> v90: Web Push subscriptions (web_push_subscriptions). The table is
+  // v90 -> v91: Web Push subscriptions (web_push_subscriptions). The table is
   // new and additive, nothing is backfilled.
   initWebPushStore(db);
 

@@ -5,7 +5,7 @@ import path from 'node:path';
 import Database from 'better-sqlite3';
 import { afterAll, beforeAll, describe, expect, test, vi } from 'vitest';
 
-const root = fs.mkdtempSync(path.join(os.tmpdir(), 'schema-v90-web-push-'));
+const root = fs.mkdtempSync(path.join(os.tmpdir(), 'schema-v91-web-push-'));
 const storeDir = path.join(root, 'store');
 const groupsDir = path.join(root, 'groups');
 const dataDir = path.join(root, 'data');
@@ -80,7 +80,7 @@ function tableNames(conn: Database.Database): string[] {
   ).map((row) => row.name);
 }
 
-/** Build a current database, then rewind it to the v89 shape on disk. */
+/** Build a current database, then rewind it to the v90 shape on disk. */
 beforeAll(() => {
   process.env.HAPPYCLAW_SKIP_MIGRATION_BACKUP = '1';
   try {
@@ -99,7 +99,7 @@ beforeAll(() => {
   `);
   legacy
     .prepare(
-      "UPDATE router_state SET value = '89' WHERE key = 'schema_version'",
+      "UPDATE router_state SET value = '90' WHERE key = 'schema_version'",
     )
     .run();
   legacy.close();
@@ -111,9 +111,9 @@ afterAll(() => {
   fs.rmSync(root, { recursive: true, force: true });
 });
 
-describe('schema v90 web push subscriptions', () => {
+describe('schema v91 web push subscriptions', () => {
   test('a new database has the table and the index', () => {
-    const fresh = fs.mkdtempSync(path.join(os.tmpdir(), 'schema-v90-new-'));
+    const fresh = fs.mkdtempSync(path.join(os.tmpdir(), 'schema-v91-new-'));
     try {
       const conn = new Database(path.join(fresh, 'fresh.db'));
       try {
@@ -164,17 +164,17 @@ describe('schema v90 web push subscriptions', () => {
     }
   });
 
-  test('backs up the v89 database and creates the table', () => {
+  test('backs up the v90 database and creates the table', () => {
     process.env.HAPPYCLAW_MIGRATION_BACKUP_DIR = backupDir;
     db.initDatabase();
     expect(db.getRouterState('schema_version')).toBe(
       String(db.CURRENT_SCHEMA_VERSION),
     );
-    expect(db.CURRENT_SCHEMA_VERSION).toBeGreaterThanOrEqual(90);
+    expect(db.CURRENT_SCHEMA_VERSION).toBeGreaterThanOrEqual(91);
     const backupName = fs
       .readdirSync(backupDir)
       .find((name) =>
-        name.startsWith(`messages-v89-to-v${db.CURRENT_SCHEMA_VERSION}-`),
+        name.startsWith(`messages-v90-to-v${db.CURRENT_SCHEMA_VERSION}-`),
       );
     expect(backupName).toBeDefined();
     const backup = new Database(path.join(backupDir, backupName!), {
