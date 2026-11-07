@@ -126,9 +126,37 @@ describe('resizedForKeyboard', () => {
 });
 
 describe('useVisualViewportVars', () => {
+  test('a shorter window with nothing focused is not a keyboard', async () => {
+    const root0 = document.documentElement;
+    const full = 894;
+    Object.defineProperty(root0, 'clientHeight', {
+      configurable: true,
+      get: () => full,
+    });
+    await move({ height: full });
+    await act(async () => root?.render(<Vars />));
+
+    Object.defineProperty(root0, 'clientHeight', {
+      configurable: true,
+      get: () => 600,
+    });
+    await move({ height: 600 });
+    expect(root0.dataset.keyboard).toBeUndefined();
+
+    Object.defineProperty(root0, 'clientHeight', {
+      configurable: true,
+      get: () => full,
+    });
+    await move({ height: full });
+    delete (root0 as { clientHeight?: number }).clientHeight;
+  });
+
   test('marks the keyboard open when iOS resizes the whole page above it', async () => {
     const root0 = document.documentElement;
     const full = 894;
+    const field = document.createElement('textarea');
+    document.body.appendChild(field);
+    field.focus();
     Object.defineProperty(root0, 'clientHeight', {
       configurable: true,
       get: () => full,
@@ -152,6 +180,7 @@ describe('useVisualViewportVars', () => {
     await move({ height: full });
     expect(root0.dataset.keyboard).toBeUndefined();
     delete (root0 as { clientHeight?: number }).clientHeight;
+    field.remove();
   });
 
   test('publishes --vvh and --keyboard-inset and follows the viewport', async () => {

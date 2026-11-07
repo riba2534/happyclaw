@@ -87,6 +87,35 @@ export function resizedForKeyboard(
   return tallestHeight - layoutHeight >= KEYBOARD_RESIZE_MIN_PX;
 }
 
+const NON_TEXT_INPUT_TYPES = new Set([
+  'button',
+  'checkbox',
+  'color',
+  'file',
+  'hidden',
+  'image',
+  'radio',
+  'range',
+  'reset',
+  'submit',
+]);
+
+/**
+ * Whether the focused element brings up a software keyboard. Only then can a
+ * drop of the layout height mean a keyboard; without it the window itself got
+ * shorter (Android split screen, a resized desktop window).
+ */
+export function editableHasFocus(): boolean {
+  const el = document.activeElement;
+  if (!(el instanceof HTMLElement)) return false;
+  if (el.isContentEditable || el.closest('[contenteditable="true"]')) {
+    return true;
+  }
+  if (el instanceof HTMLTextAreaElement) return true;
+  if (el instanceof HTMLInputElement) return !NON_TEXT_INPUT_TYPES.has(el.type);
+  return false;
+}
+
 function read(): VisualViewportMetrics {
   const layoutHeight = layoutViewportHeight();
   const width = document.documentElement.clientWidth;
@@ -97,7 +126,8 @@ function read(): VisualViewportMetrics {
     !metrics.keyboardOpen &&
     window.visualViewport &&
     window.visualViewport.scale <= 1.01 &&
-    resizedForKeyboard(layoutHeight, tallest.height)
+    resizedForKeyboard(layoutHeight, tallest.height) &&
+    editableHasFocus()
   ) {
     metrics.keyboardOpen = true;
   }
