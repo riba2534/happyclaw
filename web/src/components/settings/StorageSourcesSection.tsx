@@ -139,6 +139,22 @@ function toPayload(draft: Draft, hadPassword: boolean): StorageSourceSave {
   };
 }
 
+/** The read-write user count when the server refused to revoke it. */
+function readWriteInUse(err: unknown): number | null {
+  const body = (err as { body?: Record<string, unknown> } | null)?.body;
+  if (body?.code !== 'STORAGE_SOURCE_READ_WRITE_IN_USE') return null;
+  return typeof body.readWriteUsedBy === 'number' ? body.readWriteUsedBy : 1;
+}
+
+function confirmReadWriteRevoke(id: string, count: number): Promise<boolean> {
+  return confirmDialog({
+    title: '关闭读写挂载',
+    message: `有 ${count} 个工作区以读写方式挂载了 ${id}。关闭后，这些工作区将无法启动，直到重新允许读写。确定关闭吗？`,
+    confirmText: '关闭读写',
+    variant: 'danger',
+  });
+}
+
 function StorageSourceDialog({
   open,
   source,
@@ -172,12 +188,34 @@ function StorageSourceDialog({
       setError(invalid);
       return;
     }
+    const revokesReadWrite =
+      !creating && source.allowReadWrite && !draft.allowReadWrite;
+    let force = false;
+    if (revokesReadWrite && source.readWriteUsedBy > 0) {
+      if (!(await confirmReadWriteRevoke(source.id, source.readWriteUsedBy))) {
+        return;
+      }
+      force = true;
+    }
     setSaving(true);
     setError(null);
+    const payload = toPayload(draft, !!source?.hasPassword);
+    const save = (withForce: boolean) => {
+      const body = withForce ? { ...payload, force: true } : payload;
+      return creating
+        ? createStorageSource(draft.id, body)
+        : updateStorageSource(source.id, body);
+    };
     try {
-      const payload = toPayload(draft, !!source?.hasPassword);
-      if (creating) await createStorageSource(draft.id, payload);
-      else await updateStorageSource(source.id, payload);
+      try {
+        await save(force);
+      } catch (err) {
+        // The list was stale: someone mounted it read-write meanwhile.
+        const count = readWriteInUse(err);
+        if (force || count === null) throw err;
+        if (!(await confirmReadWriteRevoke(draft.id, count))) return;
+        await save(true);
+      }
       toast.success(creating ? `已添加存储源 ${draft.id}` : '存储源已保存');
       onOpenChange(false);
       onSaved();
@@ -407,7 +445,7 @@ function StorageSourceDialog({
                 允许读写挂载
               </span>
               <span className="block text-caption text-muted-foreground">
-                关闭时所有工作区只能只读挂载这个存储源。
+                关闭后只能只读挂载；已经以读写方式挂载它的工作区将无法启动。
               </span>
             </span>
             <Switch

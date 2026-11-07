@@ -44,6 +44,18 @@ const smb = {
   usedBy: 2,
   readWriteUsedBy: 0,
 };
+const nfsRw = {
+  id: 'nas-nfs',
+  type: 'nfs',
+  server: 'nas.lan',
+  exportPath: '/volume1/shared',
+  nfsVersion: '3',
+  allowReadWrite: true,
+  hasPassword: false,
+  origin: 'web',
+  usedBy: 2,
+  readWriteUsedBy: 1,
+};
 
 function listing(sources: unknown[]) {
   return {
@@ -165,6 +177,64 @@ describe('StorageSourcesSection', () => {
     await flush();
     expect(mocks.confirm.mock.calls[0][0].message).toContain('2 个工作区');
     expect(mocks.delete).toHaveBeenCalledWith(`${BASE}/nas-smb`);
+  });
+
+  test('asks before revoking read-write from workspaces that mount it read-write', async () => {
+    mocks.get.mockResolvedValue(listing([nfsRw]));
+    await render();
+    mocks.confirm.mockResolvedValueOnce(false);
+    await menuAction('编辑', 'nas-nfs');
+    expect(document.body.textContent).toContain(
+      '已经以读写方式挂载它的工作区将无法启动',
+    );
+    await click(document.querySelector('#storage-source-rw'));
+    await click(button('保存'));
+    await flush();
+    expect(mocks.confirm).toHaveBeenCalledTimes(1);
+    expect(mocks.confirm.mock.calls[0][0].message).toContain(
+      '1 个工作区以读写方式挂载了 nas-nfs',
+    );
+    expect(mocks.confirm.mock.calls[0][0].message).toContain('无法启动');
+    expect(mocks.put).not.toHaveBeenCalled();
+
+    await click(button('保存'));
+    await flush();
+    expect(mocks.put).toHaveBeenCalledWith(`${BASE}/nas-nfs`, {
+      type: 'nfs',
+      server: 'nas.lan',
+      exportPath: '/volume1/shared',
+      nfsVersion: '3',
+      allowReadWrite: false,
+      force: true,
+    });
+  });
+
+  test('revoking read-write nobody uses needs no confirmation', async () => {
+    mocks.get.mockResolvedValue(listing([{ ...nfsRw, readWriteUsedBy: 0 }]));
+    await render();
+    await menuAction('编辑', 'nas-nfs');
+    await click(document.querySelector('#storage-source-rw'));
+    await click(button('保存'));
+    await flush();
+    expect(mocks.confirm).not.toHaveBeenCalled();
+    expect(mocks.put.mock.calls[0][1]).not.toHaveProperty('force');
+  });
+
+  test('confirms and retries when the server finds read-write users the list missed', async () => {
+    mocks.get.mockResolvedValue(listing([{ ...nfsRw, readWriteUsedBy: 0 }]));
+    mocks.put.mockRejectedValueOnce({
+      status: 409,
+      message: 'in use',
+      body: { code: 'STORAGE_SOURCE_READ_WRITE_IN_USE', readWriteUsedBy: 3 },
+    });
+    await render();
+    await menuAction('编辑', 'nas-nfs');
+    await click(document.querySelector('#storage-source-rw'));
+    await click(button('保存'));
+    await flush();
+    expect(mocks.confirm.mock.calls[0][0].message).toContain('3 个工作区');
+    expect(mocks.put).toHaveBeenCalledTimes(2);
+    expect(mocks.put.mock.calls[1][1]).toMatchObject({ force: true });
   });
 
   test('sources from the allowlist file are read-only', async () => {

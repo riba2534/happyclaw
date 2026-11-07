@@ -1107,8 +1107,15 @@ minimalClientVersion?, availableInPlans?, serviceTiers }`（字段取自官方
   409；`storage-sources.json` 无法解析时带 `managedError`。返回值还带 `hasPassword`、
   `usedBy`（挂载它的工作区数）与 `readWriteUsedBy`（其中以读写方式挂载的），从不返回
   密码或 `passwordFile`。SMB 密码只写：请求里的 `password` 省略表示保留、空串表示清除，
-  写入 `data/config/secrets/storage-<id>`（600，目录 700）。审计记
-  `storage_source_saved` / `storage_source_deleted`，只含 id、类型和是否改了密码
+  写入 `data/config/secrets/storage-<id>`（600，目录 700）；NFS 请求里的 `password`
+  被忽略。PUT 把 `allowReadWrite` 从 `true` 改为 `false` 且有工作区以读写方式挂载它时
+  返回 409（`code: STORAGE_SOURCE_READ_WRITE_IN_USE`、`readWriteUsedBy`），请求体带
+  `force: true` 才执行。DELETE，以及改动服务器、导出路径、共享、版本、凭据或收回读写的
+  PUT，会先停下挂载该来源的工作区的运行器再写入（只改 `description` 或打开读写不停）；
+  停不下来时返回 503，带 `persisted` 与 `retryable`，`persisted: true` 表示改动已经生效、
+  这些工作区暂停接活，重试同一请求（DELETE 也一样）完成清理后恢复。审计记
+  `storage_source_saved` / `storage_source_deleted`，只含 id、类型和是否实际写入或删除了
+  密码，不含服务器与共享
 - `GET /api/config/external-resources`
 - `GET /api/config/external-resources/rule`
 - `GET|PUT /api/config/registration`

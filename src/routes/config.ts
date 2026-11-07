@@ -8,10 +8,12 @@ import { ProxyAgent } from 'proxy-agent';
 import QRCode from 'qrcode';
 import { Hono, type Context } from 'hono';
 import {
-  deleteStorageSource,
   listStorageSources,
-  saveStorageSource,
+  listStorageSourceUsers,
+  planStorageSourceDelete,
+  planStorageSourceSave,
   StorageSourceAdminError,
+  withStorageSourceWriteLock,
 } from '../storage-source-admin.js';
 import { DATA_DIR } from '../config.js';
 import { bindSystemMainIfUnbound } from '../model-binding-backfill.js';
@@ -3998,10 +4000,139 @@ configRoutes.put(
 );
 
 // ─── Storage sources (admin only) ───────────────────────────────────
-// NFS exports and SMB shares workspaces can mount. They live in the mount
-// allowlist; an SMB password is write-only and kept in a 0600 file.
+// NFS exports and SMB shares workspaces can mount. Sources added here live
+// under data/config/ and are merged with the mount allowlist's own, which
+// stay read-only; an SMB password is write-only and kept in a 0600 file.
 
 const STORAGE_SOURCE_ID_RE = /^[a-z0-9][a-z0-9-]{0,62}$/;
+
+/**
+ * Sources whose change persisted while a runner using them could not be
+ * stopped, with the runtimes blocked since. They stay blocked until the same
+ * request is retried.
+ */
+const storageSourceCleanupPending = new Map<string, string[]>();
+
+function storageSourceSafetySource(id: string): string {
+  return `storage_source:${id}`;
+}
+
+class StorageSourceRuntimeError extends Error {
+  constructor(readonly persisted: boolean) {
+    super('storage source runtime cleanup failed');
+  }
+}
+
+/**
+ * Commits a storage source change with every runner that mounts the source
+ * stopped (CLAUDE.md §8): Docker fixes a mount when the container is created,
+ * so a warm runner would keep the old share, credentials or write access.
+ */
+async function commitStorageSourceChange<T>(
+  id: string,
+  quiesce: boolean,
+  reason: string,
+  commit: () => T,
+): Promise<T> {
+  const needsQuiesce = quiesce || storageSourceCleanupPending.has(id);
+  const targets = needsQuiesce
+    ? listStorageSourceUsers(id).map(({ jid, folder }) => ({
+        folder,
+        primaryJid: jid,
+      }))
+    : [];
+  const safetySource = storageSourceSafetySource(id);
+  const releaseBlocked = (runtimeJids: string[]) => {
+    const blocked = storageSourceCleanupPending.get(id) ?? [];
+    storageSourceCleanupPending.delete(id);
+    const jids = [...new Set([...blocked, ...runtimeJids])];
+    if (deps && jids.length > 0) {
+      deps.queue.unblockGroupsForRuntimeSafety?.(jids, safetySource);
+    }
+  };
+  if (!deps || targets.length === 0) {
+    const value = commit();
+    releaseBlocked([]);
+    return value;
+  }
+  try {
+    const result = await quiesceWorkspaceRunnersAroundCommit(
+      deps,
+      targets,
+      {
+        reason,
+        onPostCommitFailure: (runtimeJids) => {
+          storageSourceCleanupPending.set(id, [
+            ...new Set([
+              ...(storageSourceCleanupPending.get(id) ?? []),
+              ...runtimeJids,
+            ]),
+          ]);
+          deps.queue.blockGroupsForRuntimeSafety?.(
+            runtimeJids,
+            `${reason}: runtime cleanup failed after commit`,
+            safetySource,
+          );
+        },
+      },
+      commit,
+    );
+    releaseBlocked(result.runtimeJids);
+    return result.value;
+  } catch (err) {
+    if (err instanceof WorkspaceRuntimeQuiesceError) {
+      throw new StorageSourceRuntimeError(err.persisted);
+    }
+    throw err;
+  }
+}
+
+function storageSourceRuntimeErrorResponse(
+  c: Context<{ Variables: Variables }>,
+  err: StorageSourceRuntimeError,
+) {
+  return c.json(
+    {
+      error: err.persisted
+        ? '存储源已保存，但没能停下使用它的工作区，请重试同一请求'
+        : '没能停下使用该存储源的工作区，存储源未修改',
+      persisted: err.persisted,
+      retryable: true,
+    },
+    503,
+  );
+}
+
+function storageSourceAdminErrorResponse(
+  c: Context<{ Variables: Variables }>,
+  err: StorageSourceAdminError,
+) {
+  return c.json(
+    {
+      error: err.message,
+      ...(err.code ? { code: err.code } : {}),
+      ...err.details,
+    },
+    err.status,
+  );
+}
+
+function logStorageSourceAudit(
+  c: Context<{ Variables: Variables }>,
+  eventType: 'storage_source_saved' | 'storage_source_deleted',
+  details: Record<string, unknown>,
+): void {
+  const actor = c.get('user') as AuthUser;
+  logAuthEvent({
+    event_type: eventType,
+    username: actor.username,
+    actor_username: actor.username,
+    ip_address: getClientIp(c),
+    user_agent: c.req.header('user-agent') ?? null,
+    // The server and share are deployment details; record only the shape.
+    details,
+  });
+}
 
 configRoutes.get(
   '/storage-sources',
@@ -4036,30 +4167,50 @@ async function saveStorageSourceRoute(
       400,
     );
   }
+  const { force, ...input } = validation.data;
+  let audit: Record<string, unknown> | undefined;
   try {
-    const source = await saveStorageSource(id, validation.data, creating);
-    const actor = c.get('user') as AuthUser;
-    logAuthEvent({
-      event_type: 'storage_source_saved',
-      username: actor.username,
-      actor_username: actor.username,
-      ip_address: getClientIp(c),
-      user_agent: c.req.header('user-agent') ?? null,
-      // The server and share are deployment details; record only the shape.
-      details: {
-        source_id: id,
-        type: source.type,
-        created: creating,
-        password_changed: validation.data.password !== undefined,
-      },
+    const source = await withStorageSourceWriteLock(async () => {
+      const plan = planStorageSourceSave(id, input, creating);
+      if (plan.revokedReadWriteUsers > 0 && !force) {
+        throw new StorageSourceAdminError(
+          `有 ${plan.revokedReadWriteUsers} 个工作区以读写方式挂载了 ${id}，关闭读写后它们将无法启动`,
+          409,
+          'STORAGE_SOURCE_READ_WRITE_IN_USE',
+          { readWriteUsedBy: plan.revokedReadWriteUsers },
+        );
+      }
+      return commitStorageSourceChange(
+        id,
+        plan.changesMounts,
+        `Storage source ${id} updated`,
+        () => {
+          const view = plan.commit();
+          audit = {
+            source_id: id,
+            type: view.type,
+            created: creating,
+            password_changed:
+              plan.passwordAction === 'set' ||
+              plan.passwordAction === 'removed',
+          };
+          return view;
+        },
+      );
     });
     return c.json({ source }, creating ? 201 : 200);
   } catch (err) {
+    if (err instanceof StorageSourceRuntimeError) {
+      return storageSourceRuntimeErrorResponse(c, err);
+    }
     if (err instanceof StorageSourceAdminError) {
-      return c.json({ error: err.message }, err.status);
+      return storageSourceAdminErrorResponse(c, err);
     }
     logger.error({ err, sourceId: id }, 'Failed to save storage source');
     return c.json({ error: 'Failed to save storage source' }, 500);
+  } finally {
+    // Recorded whenever the change persisted, including a 503 after it.
+    if (audit) logStorageSourceAudit(c, 'storage_source_saved', audit);
   }
 }
 
@@ -4083,24 +4234,46 @@ configRoutes.delete(
   adminRoleMiddleware,
   async (c) => {
     const id = c.req.param('id');
+    let audit: Record<string, unknown> | undefined;
     try {
-      await deleteStorageSource(id);
+      await withStorageSourceWriteLock(async () => {
+        let plan: ReturnType<typeof planStorageSourceDelete> | undefined;
+        try {
+          plan = planStorageSourceDelete(id);
+        } catch (err) {
+          // A retry after a 503 finds the source gone: finish stopping the
+          // runners that still use it instead of answering 404.
+          if (
+            !(err instanceof StorageSourceAdminError) ||
+            err.status !== 404 ||
+            !storageSourceCleanupPending.has(id)
+          ) {
+            throw err;
+          }
+        }
+        await commitStorageSourceChange(
+          id,
+          true,
+          `Storage source ${id} deleted`,
+          () => {
+            if (!plan) return;
+            plan.commit();
+            audit = { source_id: id, type: plan.source.type };
+          },
+        );
+      });
     } catch (err) {
+      if (err instanceof StorageSourceRuntimeError) {
+        return storageSourceRuntimeErrorResponse(c, err);
+      }
       if (err instanceof StorageSourceAdminError) {
-        return c.json({ error: err.message }, err.status);
+        return storageSourceAdminErrorResponse(c, err);
       }
       logger.error({ err, sourceId: id }, 'Failed to delete storage source');
       return c.json({ error: 'Failed to delete storage source' }, 500);
+    } finally {
+      if (audit) logStorageSourceAudit(c, 'storage_source_deleted', audit);
     }
-    const actor = c.get('user') as AuthUser;
-    logAuthEvent({
-      event_type: 'storage_source_deleted',
-      username: actor.username,
-      actor_username: actor.username,
-      ip_address: getClientIp(c),
-      user_agent: c.req.header('user-agent') ?? null,
-      details: { source_id: id },
-    });
     return c.json({ success: true });
   },
 );

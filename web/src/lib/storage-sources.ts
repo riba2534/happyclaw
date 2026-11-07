@@ -48,6 +48,8 @@ export interface StorageSourceSave {
   description?: string;
   /** Omitted keeps the stored password; '' removes it. */
   password?: string;
+  /** Confirms revoking read-write from workspaces that mount it read-write. */
+  force?: boolean;
 }
 
 export const STORAGE_SOURCE_ID_RE = /^[a-z0-9][a-z0-9-]{0,62}$/;

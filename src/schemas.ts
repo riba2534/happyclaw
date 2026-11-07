@@ -260,6 +260,8 @@ export const StorageSourceSaveSchema = z
     description: z.string().max(200).optional(),
     // Write-only: omitted keeps the stored password, '' removes it.
     password: z.string().max(1024).optional(),
+    // Confirms revoking read-write from workspaces that mount it read-write.
+    force: z.boolean().optional(),
   })
   .strict();
 
