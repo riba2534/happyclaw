@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -26,6 +27,8 @@ import {
   type ResolvedStorage,
 } from '../src/storage-sources.js';
 import {
+  cifsVolumeName,
+  createEngineRequest,
   ensureCifsVolume,
   STORAGE_VOLUME_LABEL,
   storageMountArg,
@@ -685,10 +688,19 @@ describe('docker storage mounts', () => {
     return { calls, request };
   }
 
+  const key = 'server-secret';
+  const deps = (request: EngineRequest, password = 'pw') => ({
+    request,
+    readPassword: () => password,
+    credentialKey: key,
+  });
+
   test('creates the SMB volume through the Engine API with the password in the body only', async () => {
     const { calls, request } = fakeEngine({ status: 404 });
-    const name = await ensureCifsVolume(cifsStorage(), request, () => 'pw');
-    expect(name).toMatch(/^happyclaw-storage-nas-smb-[0-9a-f]{16}$/);
+    const name = await ensureCifsVolume(cifsStorage(), deps(request));
+    expect(name).toMatch(
+      /^happyclaw-storage-nas-smb-[0-9a-f]{16}-[0-9a-f]{8}$/,
+    );
     expect(name).not.toContain('pw');
     expect(calls.map((call) => call.method)).toEqual(['GET', 'POST']);
     expect(calls[1].body).toEqual({
@@ -699,46 +711,176 @@ describe('docker storage mounts', () => {
     });
   });
 
-  test('reuses a matching volume and replaces one with an old password', async () => {
-    const current = cifsDriverOptions(cifsStorage(), 'pw');
-    const same = fakeEngine({ status: 200, options: current });
-    await ensureCifsVolume(cifsStorage(), same.request, () => 'pw');
-    expect(same.calls.map((call) => call.method)).toEqual(['GET']);
-
-    const stale = fakeEngine({
+  test('reuses a matching volume', async () => {
+    const same = fakeEngine({
       status: 200,
-      options: cifsDriverOptions(cifsStorage(), 'old'),
+      options: cifsDriverOptions(cifsStorage(), 'pw'),
     });
-    const name = await ensureCifsVolume(
-      cifsStorage(),
-      stale.request,
-      () => 'pw',
+    await ensureCifsVolume(cifsStorage(), deps(same.request));
+    expect(same.calls.map((call) => call.method)).toEqual(['GET']);
+  });
+
+  test('a new password gets a new volume instead of replacing the one in use', async () => {
+    const before = cifsVolumeName(cifsStorage(), 'old', key);
+    const after = cifsVolumeName(cifsStorage(), 'new', key);
+    expect(after).not.toBe(before);
+    // Same share and options up to the credential version.
+    expect(after.slice(0, -9)).toBe(before.slice(0, -9));
+    expect(cifsVolumeName(cifsStorage(), 'new', 'other-secret')).not.toBe(
+      after,
     );
-    expect(stale.calls.map((call) => call.method)).toEqual([
+
+    const { calls, request } = fakeEngine({ status: 404 });
+    expect(await ensureCifsVolume(cifsStorage(), deps(request, 'new'))).toBe(
+      after,
+    );
+    expect(calls.map((call) => `${call.method} ${call.path}`)).toEqual([
+      `GET /volumes/${after}`,
+      'POST /volumes/create',
+    ]);
+  });
+
+  test('replaces a free volume whose options are not the share', async () => {
+    // What Docker leaves when `docker run` found the volume missing.
+    const empty = fakeEngine({ status: 200, options: null });
+    await ensureCifsVolume(cifsStorage(), deps(empty.request));
+    expect(empty.calls.map((call) => call.method)).toEqual([
       'GET',
       'DELETE',
       'POST',
     ]);
-    expect(name).toBe(
-      await ensureCifsVolume(
-        cifsStorage(),
-        fakeEngine({ status: 404 }).request,
-        () => 'pw',
-      ),
-    );
   });
 
-  test('keeps an in-use volume until its container exits', async () => {
-    const inUse = fakeEngine({
-      status: 200,
-      options: cifsDriverOptions(cifsStorage(), 'old'),
-    });
-    // The fake answers DELETE with 409 only when GET did; emulate in-use.
+  test('refuses an in-use volume whose options are not the share', async () => {
+    const empty = fakeEngine({ status: 200, options: null });
     const request: EngineRequest = async (method, requestPath, body) =>
       method === 'DELETE'
         ? { status: 409, body: '{"message":"volume is in use"}' }
-        : inUse.request(method, requestPath, body);
-    await ensureCifsVolume(cifsStorage(), request, () => 'pw');
-    expect(inUse.calls.map((call) => call.method)).toEqual(['GET']);
+        : empty.request(method, requestPath, body);
+    await expect(
+      ensureCifsVolume(cifsStorage(), deps(request)),
+    ).rejects.toThrow(/is in use, so it is not the share/);
+    expect(empty.calls.map((call) => call.method)).toEqual(['GET']);
+  });
+
+  test('serializes concurrent launches for the same volume', async () => {
+    let options: unknown = null;
+    const methods: string[] = [];
+    const request: EngineRequest = async (method, _requestPath, body) => {
+      methods.push(method);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      if (method === 'GET') {
+        return { status: 200, body: JSON.stringify({ Options: options }) };
+      }
+      if (method === 'DELETE') {
+        options = undefined;
+        return { status: 204, body: '' };
+      }
+      options = (body as { DriverOpts: unknown }).DriverOpts;
+      return { status: 201, body: '{}' };
+    };
+    const [left, right] = await Promise.all([
+      ensureCifsVolume(cifsStorage(), deps(request)),
+      ensureCifsVolume(cifsStorage(), deps(request)),
+    ]);
+    expect(left).toBe(right);
+    // The second launch sees the volume the first one made.
+    expect(methods).toEqual(['GET', 'DELETE', 'POST', 'GET']);
+  });
+});
+
+describe('Docker Engine API transport', () => {
+  function engineServer(
+    handler: (req: http.IncomingMessage, res: http.ServerResponse) => void,
+  ) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'happyclaw-engine-'));
+    const socketPath = path.join(dir, 'docker.sock');
+    const requests: string[] = [];
+    const server = http.createServer((req, res) => {
+      requests.push(`${req.method} ${req.url}`);
+      handler(req, res);
+    });
+    return new Promise<{
+      socketPath: string;
+      requests: string[];
+      close: () => Promise<void>;
+    }>((resolve) => {
+      server.listen(socketPath, () =>
+        resolve({
+          socketPath,
+          requests,
+          close: () =>
+            new Promise((done) => {
+              server.closeAllConnections();
+              server.close(() => done());
+            }),
+        }),
+      );
+    });
+  }
+
+  test('creates each volume on the daemon of the context current at that time', async () => {
+    const handler = (req: http.IncomingMessage, res: http.ServerResponse) => {
+      req.resume();
+      req.on('end', () => {
+        if (req.method === 'GET') {
+          res.writeHead(404).end('{"message":"no such volume"}');
+        } else {
+          res.writeHead(201).end('{}');
+        }
+      });
+    };
+    const first = await engineServer(handler);
+    const second = await engineServer(handler);
+    let socket = first.socketPath;
+    try {
+      const options = {
+        resolveSocket: async () => socket,
+        readPassword: () => 'pw',
+        credentialKey: 'k',
+      };
+      await ensureCifsVolume(cifsStorage(), options);
+      // `docker context use` while HappyClaw runs.
+      socket = second.socketPath;
+      await ensureCifsVolume(
+        cifsStorage({ device: '//192.0.2.5/team/other' }),
+        options,
+      );
+      expect(first.requests).toHaveLength(2);
+      expect(second.requests).toHaveLength(2);
+      expect(second.requests[1]).toBe('POST /volumes/create');
+    } finally {
+      await first.close();
+      await second.close();
+    }
+  });
+
+  test('rejects when the daemon hangs up in the middle of a response', async () => {
+    const server = await engineServer((req, res) => {
+      res.writeHead(200, {
+        'content-type': 'application/json',
+        'content-length': '1000',
+      });
+      res.write('{"Name":');
+      setTimeout(() => req.socket.destroy(), 10);
+    });
+    try {
+      await expect(
+        createEngineRequest(server.socketPath)('GET', '/volumes/x'),
+      ).rejects.toThrow();
+    } finally {
+      await server.close();
+    }
+  });
+
+  test('rejects when the daemon stops answering', async () => {
+    const server = await engineServer(() => {});
+    try {
+      await expect(
+        createEngineRequest(server.socketPath, 50)('GET', '/volumes/x'),
+      ).rejects.toThrow('timed out');
+    } finally {
+      await server.close();
+    }
   });
 });

@@ -13,11 +13,11 @@
  * dedicated one with no more rights than the mounts need; the Agent never
  * gets the Docker socket.
  */
-import { execFileSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import crypto from 'node:crypto';
 import http from 'node:http';
 
-import { logger } from './logger.js';
+import { WEB_SESSION_SECRET } from './config.js';
 import {
   cifsDriverOptions,
   readPasswordFile,
@@ -76,59 +76,96 @@ export type EngineRequest = (
   body?: unknown,
 ) => Promise<EngineResponse>;
 
-let cachedSocketPath: string | null = null;
-
-/** The current Docker context's unix socket (honours DOCKER_HOST/DOCKER_CONTEXT). */
-function dockerSocketPath(): string {
-  if (cachedSocketPath) return cachedSocketPath;
-  const host = execFileSync(
-    'docker',
-    ['context', 'inspect', '--format', '{{.Endpoints.docker.Host}}'],
-    { encoding: 'utf8', timeout: 10_000 },
-  ).trim();
-  if (!host.startsWith('unix://')) {
-    throw new Error(
-      `SMB storage sources need a local Docker socket; the current context uses ${host || 'no endpoint'}`,
+/**
+ * The current Docker context's unix socket (honours DOCKER_HOST and
+ * DOCKER_CONTEXT). Resolved for every volume, never cached: the docker CLI
+ * that starts the container follows the current context, and a volume
+ * created on another daemon would leave `docker run` to create an empty local
+ * volume of the same name in place of the share.
+ */
+export function currentDockerSocket(): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execFile(
+      'docker',
+      ['context', 'inspect', '--format', '{{.Endpoints.docker.Host}}'],
+      { encoding: 'utf8', timeout: 10_000 },
+      (err, stdout) => {
+        if (err) {
+          reject(
+            new Error(`Could not resolve the Docker context: ${err.message}`),
+          );
+          return;
+        }
+        const host = stdout.trim();
+        if (!host.startsWith('unix://')) {
+          reject(
+            new Error(
+              `SMB storage sources need a local Docker socket; the current context uses ${host || 'no endpoint'}`,
+            ),
+          );
+          return;
+        }
+        resolve(host.slice('unix://'.length));
+      },
     );
-  }
-  cachedSocketPath = host.slice('unix://'.length);
-  return cachedSocketPath;
+  });
 }
 
-const engineRequest: EngineRequest = (method, path, body) =>
-  new Promise((resolve, reject) => {
-    const payload = body === undefined ? undefined : JSON.stringify(body);
-    const request = http.request(
-      {
-        socketPath: dockerSocketPath(),
-        path,
-        method,
-        headers: payload
-          ? {
-              'content-type': 'application/json',
-              'content-length': Buffer.byteLength(payload),
-            }
-          : {},
-        timeout: 30_000,
-      },
-      (response) => {
-        const chunks: Buffer[] = [];
-        response.on('data', (chunk: Buffer) => chunks.push(chunk));
-        response.on('end', () =>
-          resolve({
-            status: response.statusCode ?? 0,
-            body: Buffer.concat(chunks).toString('utf8'),
-          }),
-        );
-      },
-    );
-    request.on('timeout', () =>
-      request.destroy(new Error('Docker Engine API request timed out')),
-    );
-    request.on('error', reject);
-    if (payload) request.write(payload);
-    request.end();
-  });
+/** Engine API requests over a unix socket; settles even if the daemon hangs up. */
+export function createEngineRequest(
+  socketPath: string,
+  timeoutMs = 30_000,
+): EngineRequest {
+  return (method, requestPath, body) =>
+    new Promise((resolve, reject) => {
+      let settled = false;
+      const fail = (err: Error) => {
+        if (settled) return;
+        settled = true;
+        reject(err);
+      };
+      const payload = body === undefined ? undefined : JSON.stringify(body);
+      const request = http.request(
+        {
+          socketPath,
+          path: requestPath,
+          method,
+          headers: payload
+            ? {
+                'content-type': 'application/json',
+                'content-length': Buffer.byteLength(payload),
+              }
+            : {},
+          timeout: timeoutMs,
+        },
+        (response) => {
+          const chunks: Buffer[] = [];
+          const cutOff = () =>
+            fail(new Error('Docker Engine API response was cut off'));
+          response.on('data', (chunk: Buffer) => chunks.push(chunk));
+          response.on('aborted', cutOff);
+          response.on('error', (err) => fail(err));
+          response.on('close', () => {
+            if (!response.complete) cutOff();
+          });
+          response.on('end', () => {
+            if (settled) return;
+            settled = true;
+            resolve({
+              status: response.statusCode ?? 0,
+              body: Buffer.concat(chunks).toString('utf8'),
+            });
+          });
+        },
+      );
+      request.on('timeout', () =>
+        request.destroy(new Error('Docker Engine API request timed out')),
+      );
+      request.on('error', fail);
+      if (payload) request.write(payload);
+      request.end();
+    });
+}
 
 function engineMessage(response: EngineResponse): string {
   try {
@@ -153,69 +190,119 @@ function sameOptions(
 }
 
 /**
- * Creates (or reuses) the named volume for an SMB mount. The name hashes the
- * share, directory and options without the password, so a changed password
- * finds the same volume and replaces it once no container still uses it.
+ * The named volume for an SMB mount. The first digest covers the share,
+ * directory and options without the password; the second is the credential
+ * version, an HMAC of the password under a server-side key, so a new password
+ * gets a new volume while containers still holding the old one keep it.
+ */
+export function cifsVolumeName(
+  storage: Extract<ResolvedStorage, { type: 'cifs' }>,
+  password: string | undefined,
+  credentialKey: string,
+): string {
+  const identity = crypto
+    .createHash('sha256')
+    .update(JSON.stringify(cifsDriverOptions(storage, undefined)))
+    .digest('hex')
+    .slice(0, 16);
+  const credential = crypto
+    .createHmac('sha256', credentialKey)
+    .update(`happyclaw-storage-volume-credential\u0000${password ?? ''}`)
+    .digest('hex')
+    .slice(0, 8);
+  return `happyclaw-storage-${storage.sourceId}-${identity}-${credential}`;
+}
+
+const volumeQueues = new Map<string, Promise<unknown>>();
+
+/** Runs ensure steps for one volume name one at a time within this process. */
+function serializedByVolume<T>(name: string, run: () => Promise<T>) {
+  const previous = volumeQueues.get(name) ?? Promise.resolve();
+  const current = previous.then(run, run);
+  const settled = current.then(
+    () => undefined,
+    () => undefined,
+  );
+  volumeQueues.set(name, settled);
+  void settled.then(() => {
+    if (volumeQueues.get(name) === settled) volumeQueues.delete(name);
+  });
+  return current;
+}
+
+export interface EnsureCifsVolumeDeps {
+  /** Engine API transport; defaults to the current Docker context's socket. */
+  request?: EngineRequest;
+  resolveSocket?: () => Promise<string>;
+  readPassword?: (file: string) => string;
+  /** Key for the credential version in the volume name. */
+  credentialKey?: string;
+}
+
+/**
+ * Creates (or reuses) the named volume for an SMB mount, on the daemon of the
+ * current Docker context. A volume of that name whose options differ is not
+ * one HappyClaw made (most likely Docker created it empty because it was
+ * missing when a container started): it is replaced when free and fails the
+ * launch while in use, never mounted in place of the share.
  */
 export async function ensureCifsVolume(
   storage: Extract<ResolvedStorage, { type: 'cifs' }>,
-  request: EngineRequest = engineRequest,
-  readPassword: (file: string) => string = readPasswordFile,
+  deps: EnsureCifsVolumeDeps = {},
 ): Promise<string> {
+  const readPassword = deps.readPassword ?? readPasswordFile;
   const password = storage.passwordFile
     ? readPassword(storage.passwordFile)
     : undefined;
   const options = cifsDriverOptions(storage, password);
-  const identity = cifsDriverOptions(storage, undefined);
-  const digest = crypto
-    .createHash('sha256')
-    .update(JSON.stringify(identity))
-    .digest('hex')
-    .slice(0, 16);
-  const name = `happyclaw-storage-${storage.sourceId}-${digest}`;
+  const name = cifsVolumeName(
+    storage,
+    password,
+    deps.credentialKey ?? WEB_SESSION_SECRET,
+  );
   const volumePath = `/volumes/${encodeURIComponent(name)}`;
 
-  const existing = await request('GET', volumePath);
-  if (existing.status === 200) {
-    let current: unknown;
-    try {
-      current = (JSON.parse(existing.body) as { Options?: unknown }).Options;
-    } catch {
-      current = undefined;
-    }
-    if (sameOptions(current, options)) return name;
-    const removed = await request('DELETE', volumePath);
-    if (removed.status === 409) {
-      // A running container still has the share mounted with the old
-      // credentials; it keeps working, and the next launch after it exits
-      // picks up the new ones.
-      logger.warn(
-        { volume: name },
-        'SMB credentials changed while the volume is in use; reusing it until it is free',
-      );
-      return name;
-    }
-    if (removed.status !== 204 && removed.status !== 404) {
+  return serializedByVolume(name, async () => {
+    const request =
+      deps.request ??
+      createEngineRequest(await (deps.resolveSocket ?? currentDockerSocket)());
+    const existing = await request('GET', volumePath);
+    if (existing.status === 200) {
+      let current: unknown;
+      try {
+        current = (JSON.parse(existing.body) as { Options?: unknown }).Options;
+      } catch {
+        current = undefined;
+      }
+      if (sameOptions(current, options)) return name;
+      const removed = await request('DELETE', volumePath);
+      if (removed.status === 409) {
+        throw new Error(
+          `Docker volume ${name} exists without the SMB mount options and is in use, so it is not the share. Remove the containers that use it (docker ps -a --filter volume=${name}) and then the volume (docker volume rm ${name})`,
+        );
+      }
+      if (removed.status !== 204 && removed.status !== 404) {
+        throw new Error(
+          `Could not replace SMB volume ${name}: ${engineMessage(removed)}`,
+        );
+      }
+    } else if (existing.status !== 404) {
       throw new Error(
-        `Could not replace SMB volume ${name}: ${engineMessage(removed)}`,
+        `Could not inspect SMB volume ${name}: ${engineMessage(existing)}`,
       );
     }
-  } else if (existing.status !== 404) {
-    throw new Error(
-      `Could not inspect SMB volume ${name}: ${engineMessage(existing)}`,
-    );
-  }
 
-  const created = await request('POST', '/volumes/create', {
-    Name: name,
-    Driver: 'local',
-    DriverOpts: options,
-    Labels: { [STORAGE_VOLUME_LABEL]: storage.sourceId },
+    const created = await request('POST', '/volumes/create', {
+      Name: name,
+      Driver: 'local',
+      DriverOpts: options,
+      Labels: { [STORAGE_VOLUME_LABEL]: storage.sourceId },
+    });
+    if (created.status !== 201 && created.status !== 200) {
+      throw new Error(
+        `Could not create SMB volume ${name}: ${engineMessage(created)}`,
+      );
+    }
+    return name;
   });
-  if (created.status !== 201 && created.status !== 200) {
-    throw new Error(
-      `Could not create SMB volume ${name}: ${engineMessage(created)}`,
-    );
-  }
-  return name;
 }

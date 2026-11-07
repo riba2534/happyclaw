@@ -506,11 +506,19 @@ HTTP 状态为 409；请求不会停止现有 Runner，也不会修改绑定。
   额外权限；子目录不存在时容器启动失败。
 - SMB 密码只放在 `passwordFile`（绝对路径或相对项目根，必须是服务用户所有的 600
   普通文件，单行、不含逗号），不进 allowlist、数据库、docker 命令行或日志：
-  启动时经 Docker Engine API 的请求体建一个命名卷（`happyclaw-storage-<id>-<摘要>`，
-  标签 `io.happyclaw.storage-source`），容器按名字挂载。改密码后，没有容器使用
-  的旧卷会被替换。Docker 自己会把卷参数（含密码）存在守护进程的数据目录里，
+  启动时经 Docker Engine API 的请求体建一个命名卷
+  （`happyclaw-storage-<id>-<摘要>-<凭据版本>`，标签 `io.happyclaw.storage-source`），
+  容器按名字挂载。凭据版本是用服务端密钥（`WEB_SESSION_SECRET`）对密码做 HMAC 后取
+  的 8 位十六进制：改密码后新启动的容器用新卷，仍在运行的容器继续用旧卷，旧卷不会被
+  删除。Docker 自己会把卷参数（含密码）存在守护进程的数据目录里，
   `docker volume inspect` 也能看到，所以请给 HappyClaw 用一个只有所需权限的专用
-  SMB 账号。只支持本机 unix socket 的 Docker 上下文。
+  SMB 账号。只支持本机 unix socket 的 Docker 上下文；每次启动都按当前 Docker 上下文
+  建卷，与随后的 `docker run` 落在同一个守护进程。同名卷的参数不对（例如卷缺失时
+  `docker run` 自动建出的空本地卷）时，空闲则重建，在用则启动失败，不会把它当成共享
+  挂进容器。
+- 不再使用的 SMB 卷（改密码、改来源或删除工作区之后）目前不会自动回收，参数里仍有
+  旧密码。可以用 `docker volume ls --filter label=io.happyclaw.storage-source`
+  列出，确认没有容器在用后 `docker volume rm` 删除。
 - 没有 Unix 扩展的 SMB 共享没有可映射的属主，挂载按 `file_mode=0777,dir_mode=0777`
   对容器内所有用户开放，实际权限由 SMB 账号在服务器上的权限决定。
 - 读写同时受来源的 `allowReadWrite` 与 `nonMainReadOnly` 约束；每次容器启动前都会
