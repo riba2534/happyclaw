@@ -645,9 +645,12 @@ describe('exact Web run state sequences', () => {
     expect(state.unreadReplies[jid]).toBe(1);
     expect(state.agentWaiting[sid]).toBe(true);
     expect(state.agentStreaming[sid]?.systemStatus).toBe('requesting');
+    // An utterance announced without web_push is not pushed: the page still
+    // notifies on a device subscribed to Web Push.
     expect(notifyIfHiddenMock).toHaveBeenCalledWith(
       '主动调研',
       utterance.content,
+      { pushCovered: false },
     );
     expect(showNotificationPromptToastMock).not.toHaveBeenCalled();
 

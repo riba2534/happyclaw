@@ -7,6 +7,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
@@ -46,8 +47,13 @@ import { useAuthStore, type UserPublic } from './stores/auth';
   globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
 ).IS_REACT_ACT_ENVIRONMENT = true;
 
+// Next to this file, whichever directory vitest runs from. (The test
+// environment's URL global does not resolve file: URLs, hence the string.)
 const workerSource = fs.readFileSync(
-  path.join(process.cwd(), 'public/push-sw.js'),
+  path.resolve(
+    path.dirname(fileURLToPath(import.meta.url)),
+    '../public/push-sw.js',
+  ),
   'utf-8',
 );
 

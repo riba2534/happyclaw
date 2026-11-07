@@ -328,6 +328,11 @@ describe('input cumulative display projection', () => {
       // Turn traces are covered by turn-trace.test.ts; the final's usage is
       // what matters here.
       turnTraces: { persist: () => false },
+      // Web Push has its own tests (web-push.test.ts, runtime-channel-routing).
+      isGenuineReplyResult: () => true,
+      webTurnPushNotice: () => null,
+      automationTurns: { runOf: () => null },
+      outputAgentReplySourceJid: null,
       agentId: 'projection-agent',
     };
     db.ensureChatExists(args.virtualChatJid);
