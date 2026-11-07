@@ -691,6 +691,24 @@ describe('ProcessCard, settled', () => {
     ).not.toBeNull();
   });
 
+  it('says a sub-agent a stop killed is stopped, not failed', async () => {
+    await render(
+      <ProcessCard
+        {...props({
+          steps: [{ ...taskStep, status: 'error', outcome: 'stopped' }],
+          taskStates: { 'task-1': { ...task, status: 'stopped' } },
+        })}
+      />,
+    );
+    expect(header()?.textContent).not.toContain('失败');
+    expect(header()?.textContent).toContain('1 个已中断');
+    await click(header());
+    expect(
+      rows()[0].querySelector('[data-tool-state="stopped"]'),
+    ).not.toBeNull();
+    expect(rows()[0].querySelector('[data-tool-state="error"]')).toBeNull();
+  });
+
   it('adds nothing to the folded line when nothing went wrong', async () => {
     await render(
       <ProcessCard

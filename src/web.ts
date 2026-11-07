@@ -2765,7 +2765,7 @@ interface StreamingSnapshotEntry {
     {
       id: string;
       title: string;
-      status: 'running' | 'completed' | 'error' | 'backgrounded';
+      status: 'running' | 'completed' | 'error' | 'stopped' | 'backgrounded';
       subagentType?: string;
       taskType?: string;
       workflowName?: string;
@@ -3047,24 +3047,32 @@ function updateSnapshotTask(
   } else if (event.eventType === 'task_updated') {
     const patch = event.taskPatch;
     if (patch?.status === 'completed') task.status = 'completed';
-    else if (
-      patch?.status === 'failed' ||
-      patch?.status === 'killed' ||
-      patch?.status === 'stopped' ||
-      patch?.status === 'aborted'
-    )
+    // A stop (the CLI's interrupt kills running sub-agents) is no failure.
+    else if (patch?.status === 'killed' || patch?.status === 'stopped')
+      task.status = 'stopped';
+    else if (patch?.status === 'failed' || patch?.status === 'aborted')
       task.status = 'error';
     else if (patch?.is_backgrounded) task.status = 'backgrounded';
     task.latestSummary =
       event.summary || patch?.description || patch?.error || task.latestSummary;
   } else if (event.eventType === 'task_notification') {
-    task.status = event.taskStatus === 'completed' ? 'completed' : 'error';
+    task.status =
+      event.taskStatus === 'completed'
+        ? 'completed'
+        : event.taskStatus === 'stopped' || event.taskStatus === 'killed'
+          ? 'stopped'
+          : 'error';
     task.latestSummary =
       event.taskSummary || event.summary || task.latestSummary;
     if (task.workflowRun) {
       task.workflowRun = {
         ...task.workflowRun,
-        status: event.taskStatus === 'completed' ? 'completed' : 'failed',
+        status:
+          task.status === 'completed'
+            ? 'completed'
+            : task.status === 'stopped'
+              ? 'stopped'
+              : 'failed',
         completedAt: task.workflowRun.completedAt ?? Date.now(),
       };
     }

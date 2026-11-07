@@ -6,6 +6,7 @@ import {
   countToolStates,
   describeProblems,
   stepToolState,
+  taskStatusState,
   taskToolState,
   worstProblem,
 } from '../src/components/chat/tool-status';
@@ -55,6 +56,10 @@ describe('stepToolState', () => {
       ),
     ).toBe('stopped');
     expect(taskToolState(step, undefined, true)).toBe('done');
+    // A stop killed it: its lifecycle says so even where the step does not.
+    const stopped = { status: 'stopped' } as StreamingTaskRuntimeState;
+    expect(taskStatusState(stopped.status)).toBe('stopped');
+    expect(taskToolState(step, stopped, false)).toBe('stopped');
   });
 });
 

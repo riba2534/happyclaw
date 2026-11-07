@@ -248,6 +248,25 @@ describe('sub-agent steps', () => {
     expect(list.steps[0]).toMatchObject({ kind: 'task', taskId: 'wf-1' });
   });
 
+  it('keeps why a stop ended a sub-agent, until it runs or finishes again', () => {
+    let list = ensureTaskStep(empty(), { taskId: 'task-1' }, 0);
+    list = setTaskStepStatus(list, 'task-1', 'error', 50, undefined, 'stopped');
+    expect(list.steps[0]).toMatchObject({
+      status: 'error',
+      endedAt: 50,
+      outcome: 'stopped',
+    });
+    // A failure that reports no outcome of its own leaves the stop's.
+    list = setTaskStepStatus(list, 'task-1', 'error', 60);
+    expect(list.steps[0].outcome).toBe('stopped');
+    list = setTaskStepStatus(list, 'task-1', 'running', 70);
+    expect(list.steps[0]).not.toHaveProperty('outcome');
+    list = setTaskStepStatus(list, 'task-1', 'error', 80, undefined, 'stopped');
+    list = setTaskStepStatus(list, 'task-1', 'done', 90);
+    expect(list.steps[0].status).toBe('done');
+    expect(list.steps[0]).not.toHaveProperty('outcome');
+  });
+
   it('marks a failed Task tool result as an error', () => {
     let list = startToolStep(
       empty(),
@@ -516,6 +535,23 @@ describe('rebuilding after a reconnect', () => {
     expect(list.steps[2].status).toBe('running');
     expect(list.steps[0].title).toBe('计划');
     expect(answerStart(list.steps, 0)).toBe(0);
+  });
+
+  it('keeps a stopped sub-agent stopped, not failed', () => {
+    const list = rebuildSteps({
+      thinkingText: '',
+      isThinking: false,
+      partialText: '',
+      activeTools: [],
+      tasks: [{ id: 'task-1', status: 'stopped', title: '检查' }],
+      tracedTools: [],
+      now: 1000,
+    });
+    expect(list.steps[0]).toMatchObject({
+      kind: 'task',
+      status: 'error',
+      outcome: 'stopped',
+    });
   });
 });
 

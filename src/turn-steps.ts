@@ -77,7 +77,12 @@ const NON_AGENT_TASK_TYPES: ReadonlySet<string> = new Set([
   'mcp_task',
 ]);
 
-type TaskRuntimeStatus = 'running' | 'completed' | 'error' | 'backgrounded';
+type TaskRuntimeStatus =
+  | 'running'
+  | 'completed'
+  | 'error'
+  | 'stopped'
+  | 'backgrounded';
 
 /** What the Web's StreamingTaskRuntimeState contributes to a task's step. */
 interface TaskRuntime {
@@ -114,9 +119,17 @@ function taskIdFromEvent(event: StreamEvent): string | null {
   );
 }
 
+/** A task_notification's status: done, stopped (killed by a stop), or failed. */
+function taskStatusOfNotification(
+  status: string | undefined,
+): TaskRuntimeStatus {
+  if (status === 'completed') return 'completed';
+  return status === 'stopped' || status === 'killed' ? 'stopped' : 'error';
+}
+
 function stepStatusOfTask(status: TaskRuntimeStatus): StepStatus {
   if (status === 'completed') return 'done';
-  return status === 'error' ? 'error' : 'running';
+  return status === 'error' || status === 'stopped' ? 'error' : 'running';
 }
 
 /** Keep the end of an over-long reply, off a surrogate pair. */
@@ -631,12 +644,10 @@ export class TurnStepRecorder {
     } else if (event.eventType === 'task_updated') {
       const patch = event.taskPatch;
       if (patch?.status === 'completed') task.status = 'completed';
-      else if (
-        patch?.status === 'failed' ||
-        patch?.status === 'killed' ||
-        patch?.status === 'stopped' ||
-        patch?.status === 'aborted'
-      )
+      // A stop (the CLI's interrupt kills running sub-agents) is no failure.
+      else if (patch?.status === 'killed' || patch?.status === 'stopped')
+        task.status = 'stopped';
+      else if (patch?.status === 'failed' || patch?.status === 'aborted')
         task.status = 'error';
       else if (patch?.is_backgrounded) task.status = 'backgrounded';
       else if (patch?.status === 'running' || patch?.status === 'pending')
@@ -647,7 +658,7 @@ export class TurnStepRecorder {
         patch?.error ||
         task.latestSummary;
     } else if (event.eventType === 'task_notification') {
-      task.status = event.taskStatus === 'completed' ? 'completed' : 'error';
+      task.status = taskStatusOfNotification(event.taskStatus);
       task.latestSummary =
         event.taskSummary || event.summary || task.latestSummary;
     }
@@ -698,6 +709,7 @@ export class TurnStepRecorder {
         stepStatusOfTask(task.status),
         now,
         task.latestSummary,
+        task.status === 'stopped' ? 'stopped' : undefined,
       );
     }
     this.list = list;

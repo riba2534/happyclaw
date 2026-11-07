@@ -722,13 +722,17 @@ export function ensureTaskStep(
   });
 }
 
-/** The sub-agent's own lifecycle moved. */
+/**
+ * The sub-agent's own lifecycle moved. `outcome` says why an `error` ended it
+ * (a stop killed it); running again or done clears it.
+ */
 export function setTaskStepStatus(
   list: StepList,
   taskId: string,
   status: StepStatus,
   at: number,
   summary?: string,
+  outcome?: StepOutcome,
 ): StepList {
   const index = taskIndex(list, taskId);
   if (index < 0) return list;
@@ -739,7 +743,16 @@ export function setTaskStepStatus(
     if (status !== 'running') patch.endedAt = step.endedAt ?? at;
   }
   if (summary && summary !== step.summary) patch.summary = summary;
-  return Object.keys(patch).length > 0 ? replaceAt(list, index, patch) : list;
+  if (status === 'error' && outcome && outcome !== step.outcome) {
+    patch.outcome = outcome;
+  }
+  const clearOutcome = status !== 'error' && step.outcome !== undefined;
+  if (Object.keys(patch).length === 0 && !clearOutcome) return list;
+  if (!clearOutcome) return replaceAt(list, index, patch);
+  const { outcome: _outcome, ...rest } = step;
+  const steps = list.steps.slice();
+  steps[index] = { ...rest, ...patch };
+  return { steps, dropped: list.dropped };
 }
 
 // ── the end of a reply ──────────────────────────────────────────────────
@@ -932,9 +945,10 @@ export function rebuildSteps(input: SnapshotSteps): StepList {
       status:
         task.status === 'completed'
           ? 'done'
-          : task.status === 'error'
+          : task.status === 'error' || task.status === 'stopped'
             ? 'error'
             : 'running',
+      ...(task.status === 'stopped' ? { outcome: 'stopped' as const } : {}),
       taskId: task.id,
       toolUseId: task.id,
       toolName: 'Task',

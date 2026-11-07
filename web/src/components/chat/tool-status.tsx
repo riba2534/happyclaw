@@ -96,6 +96,8 @@ export function taskStatusState(
       return live ? 'background' : 'unfinished';
     case 'error':
       return 'error';
+    case 'stopped':
+      return 'stopped';
     case 'completed':
       return 'done';
   }

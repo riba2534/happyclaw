@@ -275,7 +275,8 @@ export interface StreamingTraceEvent {
 export interface StreamingTaskRuntimeState {
   id: string;
   title: string;
-  status: 'running' | 'completed' | 'error' | 'backgrounded';
+  /** `stopped`: a stop killed it (the CLI's interrupt ends sub-agents). */
+  status: 'running' | 'completed' | 'error' | 'stopped' | 'backgrounded';
   subagentType?: string;
   taskType?: string;
   workflowName?: string;
@@ -2730,12 +2731,9 @@ function updateTaskRuntime(
   } else if (event.eventType === 'task_updated') {
     const patch = event.taskPatch;
     if (patch?.status === 'completed') task.status = 'completed';
-    else if (
-      patch?.status === 'failed' ||
-      patch?.status === 'killed' ||
-      patch?.status === 'stopped' ||
-      patch?.status === 'aborted'
-    )
+    else if (patch?.status === 'killed' || patch?.status === 'stopped')
+      task.status = 'stopped';
+    else if (patch?.status === 'failed' || patch?.status === 'aborted')
       task.status = 'error';
     else if (patch?.is_backgrounded) task.status = 'backgrounded';
     else if (patch?.status === 'running' || patch?.status === 'pending')
@@ -2743,13 +2741,18 @@ function updateTaskRuntime(
     task.latestSummary =
       event.summary || patch?.description || patch?.error || task.latestSummary;
   } else if (event.eventType === 'task_notification') {
-    task.status = event.taskStatus === 'completed' ? 'completed' : 'error';
+    task.status = taskStatusOfNotification(event.taskStatus);
     task.latestSummary =
       event.taskSummary || event.summary || task.latestSummary;
     if (task.workflowRun) {
       task.workflowRun = {
         ...task.workflowRun,
-        status: event.taskStatus === 'completed' ? 'completed' : 'failed',
+        status:
+          task.status === 'completed'
+            ? 'completed'
+            : task.status === 'stopped'
+              ? 'stopped'
+              : 'failed',
         completedAt: task.workflowRun.completedAt ?? Date.now(),
       };
     }
@@ -2807,11 +2810,19 @@ const TOOLS_ENDED_BY_LIFECYCLE = new Set(['Task', 'Agent', 'Skill']);
 /** SDK task types that are not sub-agents (e.g. backgrounded Bash, monitors). */
 const NON_AGENT_TASK_TYPES = new Set(['local_bash', 'monitor', 'mcp_task']);
 
+/** A task_notification's status: done, stopped (killed by a stop), or failed. */
+function taskStatusOfNotification(
+  status: string | undefined,
+): StreamingTaskRuntimeState['status'] {
+  if (status === 'completed') return 'completed';
+  return status === 'stopped' || status === 'killed' ? 'stopped' : 'error';
+}
+
 function stepStatusOfTask(
   status: StreamingTaskRuntimeState['status'],
 ): StepStatus {
   if (status === 'completed') return 'done';
-  return status === 'error' ? 'error' : 'running';
+  return status === 'error' || status === 'stopped' ? 'error' : 'running';
 }
 
 /**
@@ -2865,6 +2876,7 @@ function applyTaskToSteps(
       stepStatusOfTask(task.status),
       at,
       task.latestSummary,
+      task.status === 'stopped' ? 'stopped' : undefined,
     );
   }
   setSteps(next, list);
