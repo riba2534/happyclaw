@@ -32,8 +32,16 @@ describe('parseBuildInfo', () => {
     { id: 'a', builtAt: 0 },
     { id: 'a', builtAt: '5' },
     { id: '', builtAt: 5 },
+    { id: 'x'.repeat(201), builtAt: 5 },
   ])('rejects %j', (raw) => {
     expect(parseBuildInfo(raw)).toBeNull();
+  });
+
+  test('applies the server-side id length limit', () => {
+    expect(parseBuildInfo({ id: 'x'.repeat(200), builtAt: 5 })).toEqual({
+      id: 'x'.repeat(200),
+      builtAt: 5,
+    });
   });
 });
 

@@ -14,10 +14,11 @@ export const VERSION_CHECK_INTERVAL_MS = 30 * 60_000;
 
 export const UPDATE_TOAST_ID = 'app-update-available';
 
+// Same rules as parseBuildInfo in src/build-info.ts; keep the two in sync.
 export function parseBuildInfo(raw: unknown): BuildInfo | null {
   if (!raw || typeof raw !== 'object') return null;
   const { id, builtAt } = raw as Record<string, unknown>;
-  if (typeof id !== 'string' || !id) return null;
+  if (typeof id !== 'string' || !id || id.length > 200) return null;
   if (typeof builtAt !== 'number' || !Number.isFinite(builtAt) || builtAt <= 0)
     return null;
   return { id, builtAt };

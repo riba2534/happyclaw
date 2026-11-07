@@ -17,6 +17,8 @@ export interface BuildInfo {
 
 export const BUILD_INFO_FILE = 'build.json';
 
+// Same rules as parseBuildInfo in web/src/utils/versionCheck.ts; keep the two
+// in sync.
 export function parseBuildInfo(raw: unknown): BuildInfo | null {
   if (!raw || typeof raw !== 'object') return null;
   const { id, builtAt } = raw as Record<string, unknown>;
