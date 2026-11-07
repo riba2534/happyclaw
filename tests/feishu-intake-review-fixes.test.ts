@@ -1361,6 +1361,20 @@ describe('chat reachability probe (binding health check)', () => {
       response: { status: 400, data: { code: 232011, msg: 'not in chat' } },
     });
     expect(await connection.probeChat('oc_probe_gone')).toBe('gone');
+
+    // A refusal the SDK resolves instead of throwing is read the same way.
+    controls.chatGet.mockResolvedValueOnce({
+      code: 232011,
+      msg: 'not in chat',
+    });
+    expect(await connection.probeChat('oc_probe_gone_resolved')).toBe('gone');
+    controls.chatGet.mockResolvedValueOnce({ code: 232034, msg: 'disabled' });
+    expect(await connection.probeChat('oc_probe_app_off')).toBe('unknown');
+    controls.chatGet.mockRejectedValueOnce({
+      code: 'ERR_BAD_REQUEST',
+      response: { status: 407, data: '<html>proxy</html>' },
+    });
+    expect(await connection.probeChat('oc_probe_proxy')).toBe('unknown');
   });
 });
 

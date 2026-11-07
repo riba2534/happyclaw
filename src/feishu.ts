@@ -5937,6 +5937,10 @@ export function createFeishuConnection(
       const res = await client.im.v1.chat.get({
         path: { chat_id: target.chatId },
       });
+      // A refusal the SDK resolved instead of throwing carries its code too.
+      if (typeof res.code === 'number' && res.code !== 0) {
+        throw feishuApiFailure('chat.get', res);
+      }
       if (!res.data) return { info: null };
       const info = {
         avatar: res.data.avatar,
