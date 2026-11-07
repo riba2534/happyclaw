@@ -71,9 +71,10 @@ import {
   invalidateSessionCache,
   invalidateUserSessions,
 } from '../web-context.js';
-import { getSystemSettings, saveSystemSettings } from '../runtime-config.js';
+import { getSystemSettings, saveSystemSettingKeys } from '../runtime-config.js';
 import {
   getDeploymentMode,
+  getDeploymentModeResolution,
   isSingleUserHost,
   parseDeploymentMode,
 } from '../deployment-mode.js';
@@ -157,10 +158,16 @@ function buildSetupStatus() {
 
 // --- Routes ---
 
-// Public: check if system is initialized (any user exists)
+// Public: check if system is initialized (any user exists). The mode's
+// source lets the setup wizard keep a mode the environment already chose.
 authRoutes.get('/status', (c) => {
   const initialized = getUserCount(true) > 0;
-  return c.json({ initialized, deploymentMode: getDeploymentMode() });
+  const mode = getDeploymentModeResolution();
+  return c.json({
+    initialized,
+    deploymentMode: mode.mode,
+    deploymentModeSource: mode.source,
+  });
 });
 
 // Public: initial admin setup (only when no users exist)
@@ -231,8 +238,9 @@ authRoutes.post('/setup', authJsonBodyLimit, async (c) => {
   });
 
   // Saved before the home workspace exists, so a single-user host install
-  // creates it under that mode.
-  if (deploymentMode) saveSystemSettings({ deploymentMode });
+  // creates it under that mode. Only this key: every other setting keeps
+  // following its environment variable.
+  if (deploymentMode) saveSystemSettingKeys({ deploymentMode });
 
   // Create admin home group (web:main, folder=main, host mode)
   try {

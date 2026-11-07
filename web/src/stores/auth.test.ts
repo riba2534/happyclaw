@@ -75,6 +75,7 @@ beforeEach(() => {
     appearance: null,
     initialized: true,
     deploymentMode: 'multi_user',
+    deploymentModeSource: null,
     checking: false,
   });
 });
@@ -130,13 +131,20 @@ describe('auth store deployment mode', () => {
     mocks.apiGet.mockResolvedValueOnce({
       initialized: true,
       deploymentMode: 'single_user_host',
+      deploymentModeSource: 'env',
     });
     await useAuthStore.getState().checkStatus();
-    expect(useAuthStore.getState().deploymentMode).toBe('single_user_host');
+    expect(useAuthStore.getState()).toMatchObject({
+      deploymentMode: 'single_user_host',
+      deploymentModeSource: 'env',
+    });
 
     mocks.apiGet.mockResolvedValueOnce({ initialized: true });
     await useAuthStore.getState().checkStatus();
-    expect(useAuthStore.getState().deploymentMode).toBe('multi_user');
+    expect(useAuthStore.getState()).toMatchObject({
+      deploymentMode: 'multi_user',
+      deploymentModeSource: null,
+    });
   });
 
   test('reads it from /api/auth/me', async () => {

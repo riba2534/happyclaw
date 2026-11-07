@@ -19,10 +19,24 @@ import { Button } from '@/components/ui/button';
 
 export function SetupPage() {
   const navigate = useNavigate();
-  const { initialized, authenticated, setupAdmin, checkStatus } =
-    useAuthStore();
-  const [deploymentMode, setDeploymentMode] =
-    useState<DeploymentMode>('single_user_host');
+  const {
+    initialized,
+    authenticated,
+    setupAdmin,
+    checkStatus,
+    deploymentMode: serverMode,
+    deploymentModeSource,
+  } = useAuthStore();
+  // A mode the environment (or a settings file) already chose is preselected
+  // and only sent when changed, so the wizard never overrides it unasked.
+  // Otherwise the recommended single-user host is preselected and sent.
+  const inherited =
+    deploymentModeSource === 'env' || deploymentModeSource === 'settings';
+  const [picked, setPicked] = useState<DeploymentMode | null>(null);
+  const deploymentMode =
+    picked ?? (inherited ? serverMode : 'single_user_host');
+  const modeToSend =
+    inherited && deploymentMode === serverMode ? undefined : deploymentMode;
 
   // Check initialization status on mount (this is a public page, no AuthGuard)
   useEffect(() => {
@@ -74,8 +88,20 @@ export function SetupPage() {
             <DeploymentModeChoice
               legend="使用方式"
               value={deploymentMode}
-              onChange={setDeploymentMode}
+              onChange={setPicked}
               recommendSingleUser
+              hint={
+                inherited && (
+                  <p
+                    data-testid="setup-deployment-mode-source"
+                    className="mt-2 text-caption text-muted-foreground"
+                  >
+                    {deploymentModeSource === 'env'
+                      ? '已按环境变量 HAPPYCLAW_DEPLOYMENT_MODE 选好；改选后以这里的选择为准。'
+                      : '已按现有的系统设置选好。'}
+                  </p>
+                )
+              }
             />
           </SettingsGroup>
         </SettingsSection>
@@ -83,7 +109,7 @@ export function SetupPage() {
         <CreateAdminStep
           onDone={() => navigate('/setup/providers', { replace: true })}
           setupAdmin={(username, password) =>
-            setupAdmin(username, password, deploymentMode)
+            setupAdmin(username, password, modeToSend)
           }
         />
       </div>

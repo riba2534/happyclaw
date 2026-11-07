@@ -72,6 +72,17 @@ export function parseDeploymentMode(value: unknown): DeploymentMode {
   return value === 'single_user_host' ? 'single_user_host' : 'multi_user';
 }
 
+/** Where the effective mode comes from: the stored setting, the environment or the default. */
+export type DeploymentModeSource = 'settings' | 'env' | 'default';
+
+function parseDeploymentModeSource(
+  value: unknown,
+): DeploymentModeSource | null {
+  return value === 'settings' || value === 'env' || value === 'default'
+    ? value
+    : null;
+}
+
 export interface SetupStatus {
   needsSetup: boolean;
   claudeConfigured: boolean;
@@ -86,6 +97,8 @@ interface AuthState {
   initialized: boolean | null; // null = not checked yet
   /** From /api/auth/me and /api/auth/status; kept across sign-out. */
   deploymentMode: DeploymentMode;
+  /** From /api/auth/status; null until it is read (or on an older server). */
+  deploymentModeSource: DeploymentModeSource | null;
   /** Applies a deployment mode switched in settings. */
   setDeploymentMode: (mode: DeploymentMode) => void;
   checking: boolean;
@@ -156,6 +169,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   appearance: null,
   initialized: null,
   deploymentMode: 'multi_user',
+  deploymentModeSource: null,
   checking: true,
 
   setDeploymentMode: (mode) => set({ deploymentMode: mode }),
@@ -232,10 +246,14 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       const data = await api.get<{
         initialized: boolean;
         deploymentMode?: unknown;
+        deploymentModeSource?: unknown;
       }>('/api/auth/status');
       set({
         initialized: data.initialized,
         deploymentMode: parseDeploymentMode(data.deploymentMode),
+        deploymentModeSource: parseDeploymentModeSource(
+          data.deploymentModeSource,
+        ),
       });
     } catch {
       // If status endpoint fails, assume initialized (safe default)
@@ -253,7 +271,9 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     set({
       authenticated: true,
       user: data.user,
-      ...(deploymentMode ? { deploymentMode } : {}),
+      ...(deploymentMode
+        ? { deploymentMode, deploymentModeSource: 'settings' as const }
+        : {}),
       setupStatus: data.setupStatus ?? null,
       appearance: data.appearance ?? null,
       initialized: true,

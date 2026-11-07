@@ -9,6 +9,8 @@ const mocks = vi.hoisted(() => ({
   state: {
     initialized: false as boolean | null,
     authenticated: false,
+    deploymentMode: 'multi_user' as 'multi_user' | 'single_user_host',
+    deploymentModeSource: 'default' as 'settings' | 'env' | 'default' | null,
     checkStatus: vi.fn(),
     setupAdmin: vi.fn(async () => undefined),
   },
@@ -26,6 +28,8 @@ let root: Root;
 let container: HTMLDivElement;
 beforeEach(() => {
   mocks.state.setupAdmin.mockClear();
+  mocks.state.deploymentMode = 'multi_user';
+  mocks.state.deploymentModeSource = 'default';
   container = document.createElement('div');
   document.body.append(container);
   root = createRoot(container);
@@ -92,5 +96,37 @@ describe('setup: 你打算怎么用？', () => {
       'password-123',
       'multi_user',
     );
+  });
+
+  test('keeps a mode from the environment and does not send it', async () => {
+    mocks.state.deploymentModeSource = 'env';
+    await renderAndSubmit();
+    expect(modeRadio('multi_user').checked).toBe(true);
+    expect(
+      container.querySelector('[data-testid="setup-deployment-mode-source"]')
+        ?.textContent,
+    ).toContain('HAPPYCLAW_DEPLOYMENT_MODE');
+    expect(mocks.state.setupAdmin).toHaveBeenCalledWith(
+      'admin',
+      'password-123',
+      undefined,
+    );
+  });
+
+  test('sends the mode when the environment one is changed', async () => {
+    mocks.state.deploymentModeSource = 'env';
+    await renderAndSubmit('single_user_host');
+    expect(mocks.state.setupAdmin).toHaveBeenCalledWith(
+      'admin',
+      'password-123',
+      'single_user_host',
+    );
+  });
+
+  test('shows no source note when the mode is only the default', async () => {
+    await renderAndSubmit();
+    expect(
+      container.querySelector('[data-testid="setup-deployment-mode-source"]'),
+    ).toBeNull();
   });
 });

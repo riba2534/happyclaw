@@ -124,10 +124,27 @@ describe('setup with a deployment mode', () => {
     expect(await response.json()).toEqual({
       initialized: false,
       deploymentMode: 'multi_user',
+      deploymentModeSource: 'default',
     });
   });
 
+  test('status says when the mode comes from the environment', async () => {
+    process.env[DEPLOYMENT_MODE_ENV] = 'multi_user';
+    try {
+      const response = await app.request('/api/auth/status');
+      expect(await response.json()).toEqual({
+        initialized: false,
+        deploymentMode: 'multi_user',
+        deploymentModeSource: 'env',
+      });
+    } finally {
+      delete process.env[DEPLOYMENT_MODE_ENV];
+    }
+  });
+
   test('single_user_host is stored and the home workspace is a Host one', async () => {
+    // Set before setup: setup must not freeze it into the settings file.
+    process.env.CONTAINER_TIMEOUT = '1234567';
     const response = await app.request(
       '/api/auth/setup',
       json({
@@ -136,6 +153,7 @@ describe('setup with a deployment mode', () => {
         deployment_mode: 'single_user_host',
       }),
     );
+    delete process.env.CONTAINER_TIMEOUT;
     expect(response.status).toBe(201);
     const { user } = (await response.json()) as { user: { id: string } };
     expect(runtimeConfig.getSystemSettings().deploymentMode).toBe(
@@ -150,8 +168,38 @@ describe('setup with a deployment mode', () => {
     expect(await status.json()).toEqual({
       initialized: true,
       deploymentMode: 'single_user_host',
+      deploymentModeSource: 'settings',
     });
     process.env.HAPPYCLAW_TEST_USER_ID = user.id;
+  });
+
+  test('setup stores only the mode; the other settings keep following the environment', async () => {
+    const file = path.join(dataDir, 'config', 'system-settings.json');
+    expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toEqual({
+      deploymentMode: 'single_user_host',
+    });
+    // An operator edits .env and restarts: the file is read again.
+    let bump = 0;
+    const reload = () => {
+      bump += 1;
+      const later = new Date(Date.now() + bump * 2000);
+      fs.utimesSync(file, later, later);
+    };
+    process.env.CONTAINER_TIMEOUT = '7654321';
+    process.env.IDLE_TIMEOUT = '2345678';
+    try {
+      reload();
+      expect(runtimeConfig.getSystemSettings()).toMatchObject({
+        containerTimeout: 7654321,
+        idleTimeout: 2345678,
+        deploymentMode: 'single_user_host',
+      });
+    } finally {
+      delete process.env.CONTAINER_TIMEOUT;
+      delete process.env.IDLE_TIMEOUT;
+      reload();
+    }
+    expect(runtimeConfig.getSystemSettings().containerTimeout).toBe(1800000);
   });
 });
 
