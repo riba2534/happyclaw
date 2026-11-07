@@ -214,6 +214,7 @@ describe('inbound wiring', () => {
     const { resolveWorkspaceProjectRoot } =
       await import('../src/session-worktree.js');
     const { agentIdOfJid } = await import('../src/utils.js');
+    const { workspaceDirOf } = await import('../src/workspace-dir.js');
     const groups: Record<string, any> = {
       'web:host-cwd': {
         folder: 'host-cwd',
@@ -235,7 +236,7 @@ describe('inbound wiring', () => {
       resolveWorkspaceProjectRoot,
       agentIdOfJid,
       path,
-      GROUPS_DIR,
+      workspaceDirOf,
     };
     const harness = createRuntimeSourceHarness(globals);
     harness.install('agentWorkingRoot');

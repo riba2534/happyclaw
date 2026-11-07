@@ -3,6 +3,12 @@ import fs from 'fs';
 import { spawnSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import { DATA_DIR, GROUPS_DIR, MAX_FILE_SIZE } from './config.js';
+import {
+  checkRecordedWorkdirRemoval,
+  recordedWorkdirLogsDir,
+  type RecordedWorkdir,
+  workspaceDirOf,
+} from './workspace-dir.js';
 import { deleteContainerEnvConfig } from './runtime-config.js';
 import { logger } from './logger.js';
 
@@ -220,7 +226,7 @@ export function getFileRoot(folder: string, rootOverride?: string): string {
   if (rootOverride && path.isAbsolute(rootOverride)) {
     return rootOverride;
   }
-  return path.join(GROUPS_DIR, folder);
+  return workspaceDirOf(folder);
 }
 
 /**
@@ -533,8 +539,31 @@ function calculateDirSize(dirPath: string, depth = 0): number {
   return total;
 }
 
-/** Remove all runtime artifacts for a group folder (workspace, sessions, ipc, env, memory). */
-export function removeFlowArtifacts(folder: string): void {
+/**
+ * Remove all runtime artifacts for a group folder (workspace, sessions, ipc,
+ * env, memory). `recorded` is the folder's directory record, read before the
+ * database row went away; it is checked again here and its directory left in
+ * place (logged) when the check fails, never removed on doubt.
+ */
+export function removeFlowArtifacts(
+  folder: string,
+  recorded: RecordedWorkdir | null = null,
+): void {
+  if (recorded) {
+    const unsafe = checkRecordedWorkdirRemoval(recorded);
+    if (unsafe) {
+      logger.error(
+        { folder, workdir: recorded.workdir, reason: unsafe },
+        'Kept a deleted workspace directory that failed the safety check',
+      );
+    } else {
+      fs.rmSync(recorded.workdir, { recursive: true, force: true });
+    }
+    fs.rmSync(recordedWorkdirLogsDir(folder), {
+      recursive: true,
+      force: true,
+    });
+  }
   fs.rmSync(path.join(GROUPS_DIR, folder), { recursive: true, force: true });
   fs.rmSync(path.join(DATA_DIR, 'sessions', folder), {
     recursive: true,

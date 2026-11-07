@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { api } from '../api/client';
 import { extractErrorMessage } from '../utils/error';
+import type { DeploymentMode } from './auth';
 
 export interface SystemStatus {
   activeContainers: number;
@@ -9,10 +10,12 @@ export interface SystemStatus {
   maxConcurrentContainers: number;
   queueLength: number;
   uptime: number;
-  dockerImageExists: boolean;
-  dockerRequired?: boolean;
+  // The Docker fields are null in single-user host mode: Docker is not used.
+  dockerImageExists: boolean | null;
+  dockerRequired?: boolean | null;
   adminHostOnlyMode?: boolean;
-  dockerPullInProgress?: boolean;
+  deploymentMode?: DeploymentMode;
+  dockerPullInProgress?: boolean | null;
   claudeCodeVersions?: {
     host: string | null;
     container: string | null;
