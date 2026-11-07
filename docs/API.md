@@ -1060,17 +1060,32 @@ Web 停止不会取消队列里尚未处理的派发回报；Worker 一轮结束
 - `GET /api/push/status` → `{ available, subscription_count, subscriptions }`，每项
   `{ id, user_agent, created_at, last_success_at }`，不返回 endpoint 与密钥
 - `POST /api/push/subscribe`，body 为浏览器 `PushSubscription` 的
-  `{ endpoint, keys: { p256dh, auth } }` → `{ success }`；endpoint 必须是 https 且
-  属于已知推送服务（FCM、Mozilla、Apple、Windows），否则 400；同一 endpoint 重复提交
-  是更新；每个用户最多保留最新的 20 个
+  `{ endpoint, keys: { p256dh, auth } }` → `{ success }`；endpoint 必须是 https、不带端口
+  和账号，主机只能是 `fcm.googleapis.com`、`web.push.apple.com`、
+  `*.push.services.mozilla.com`、`*.notify.windows.com`，且只含 `[a-z0-9.-]`，WHATWG URL
+  与 web-push 使用的 `url.parse` 解析出的主机必须相同，否则 400；只保存规范化后的
+  `new URL(endpoint).href`。订阅记在提交它的登录会话上，同一用户重复提交是更新（并改记到
+  当前会话）；endpoint 已属于其他用户时不改归属：删除那条记录并返回
+  409 `{ code: 'push_subscription_conflict' }`，浏览器须退订，本用户重新开启才会得到新订阅。
+  每个用户最多保留最近登记的 20 个（按最后一次登记时间淘汰）
 - `POST /api/push/unsubscribe`，body `{ endpoint }` → `{ success }`，幂等，只能删除本人的
-- `POST /api/push/test` → `{ success, ...summary }`，向本人所有订阅发一条测试通知
+- `POST /api/push/test` → `{ success, ...summary }`，只向本人的订阅发一条测试通知；每个
+  用户每分钟最多 3 次，超出 429（带 `Retry-After`）
+
+订阅随登记它的登录会话结束而删除：退出登录、吊销会话、改密或管理员重置密码、禁用或删除
+用户、会话过期（`user_sessions` 上的触发器）。Web 退出登录前先注销并退订本浏览器的订阅；
+浏览器另记本机由哪个用户开启，换了账号的浏览器不会把旧订阅登记给新用户，而是退订，设置页
+显示未开启。
 
 VAPID 密钥首次使用时生成在 `data/config/web-push-vapid.json`（权限 600），不进入
 数据库；订阅存于 `web_push_subscriptions`。推送服务返回 404/410 的订阅会被删除。联系
-地址可用环境变量 `WEB_PUSH_SUBJECT` 设置。判定与发送在 `src/web-push.ts`，调用点在
-`src/index.ts` 的 `pushWebTurnOutcome`：只对 Web 来源的输入、最终回复或运行错误推送；
-IM 来源、自动化运行、团队模式会话和 Worker 不推送。
+地址可用环境变量 `WEB_PUSH_SUBJECT` 设置。单次投递由 `src/web-push-transport.ts` 发出：
+总时长不超过 10 秒，响应体超过 16 KiB 即断开，走与其他出站请求相同的 `HTTPS_PROXY` /
+`NO_PROXY`。判定与发送在 `src/web-push.ts`，调用点在 `src/index.ts` 的
+`webTurnPushNotice`：只对 Web 来源的输入、最终回复或运行错误推送；IM 来源、自动化运行、
+团队模式会话和 Worker 不推送。会被推送的回复在 WebSocket `new_message` 里带
+`web_push: true`（不入库、不出现在历史接口）；已订阅推送的页面只对这类回复不再弹页面通知，
+其他回复与后台任务完成仍照常弹出。
 
 ## Skills、MCP 和 Plugins
 

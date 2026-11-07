@@ -342,10 +342,13 @@ HappyClaw 优先通过 Web 设置管理配置，不要求用户维护一组庞�
 | `TZ`                                 | 系统时区                          | 日志与自动化时区（建议 IANA 名称，如 `Asia/Shanghai`）；无效值回退并告警           |
 | `HTTPS_PROXY` / `HTTP_PROXY`         | 未设置                            | 独立配置 HTTPS/HTTP 出站代理；主进程与每个智能体容器都会使用，也接受对应的小写变量 |
 | `NO_PROXY`                           | 未设置                            | 独立配置不走代理的地址列表，也接受 `no_proxy`                                      |
+| `WEB_PUSH_SUBJECT`                   | 本项目 GitHub 地址                | Web Push 的 VAPID 联系地址，填本实例的 `mailto:` 或 `https://` 地址，见下文        |
 
 Provider 与渠道凭据建议只在 Web 设置中填写。它们使用 AES-256-GCM 加密存储，相关 API 只返回是否已配置，不返回密钥明文。
 
 容器代理值（包括 URL 中的用户名和密码）通过权限为 `0600` 的每容器运行时环境文件注入，不会出现在 `docker run` 参数或容器参数调试日志中。macOS 的 Docker Desktop/OrbStack 与 Windows Docker Desktop 会把代理 URL 中的 `localhost`、`127.0.0.1`、`::1` 改写为 `host.docker.internal`。Linux bridge 容器无法访问宿主机仅绑定在回环地址的代理；请将代理绑定到 Docker bridge 可达接口，并在代理变量中使用该接口的 IP 或 DNS 名称，否则容器会在启动前给出错误。
+
+Web 推送通知（设置 → 常规 → 推送通知）要求页面通过 HTTPS 访问（本机 `localhost` 除外），HTTP 局域网地址上浏览器不提供推送；iPhone 和 iPad 只有添加到主屏幕的应用能收到。服务器需要能访问浏览器的推送服务（`fcm.googleapis.com`、`web.push.apple.com`、`*.push.services.mozilla.com`、`*.notify.windows.com`），大陆部署通常要设置上面的 `HTTPS_PROXY`。推送签名密钥在 `data/config/web-push-vapid.json`，迁移或重装时随 `data/` 一起保留；丢失后所有设备需要重新开启推送。详见 [DEPLOYMENT.md](DEPLOYMENT.md) 第 7 节。
 
 `CONTAINER_MEMORY_LIMIT` 只对 Container 模式生效，Host 模式的 Runner 不受限。写法同 `docker run --memory`，必须带单位（如 `512m`、`1.5g`、`3GiB`），建议不低于 `256m`；纯数字或无法识别的值在启动时告警并按不限制处理。同一个值也设为 `--memory-swap`，容器不额外使用 swap；所有容器合计最多约 `MAX_CONCURRENT_CONTAINERS` × 该值。运行超过上限会被终止并照常重试，同一会话连续两次超限时提示用户本轮超过了内存上限，不会像未设上限时那样自动清空会话上下文。
 
