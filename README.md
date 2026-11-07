@@ -115,6 +115,30 @@ HappyClaw 使用统一的 `智能体 → Workspace → Runtime Session` 层级�
 工作区会统一迁移为 Host，后续也不能再选择 Docker；普通成员继续使用 Docker
 隔离。关闭开关只恢复混合模式的选择能力，不会自动迁回已有工作区。
 
+### 部署方式
+
+| 方式           | 适用                        | 行为                                                                                |
+| -------------- | --------------------------- | ----------------------------------------------------------------------------------- |
+| **单人宿主机** | 只有自己使用，不想装 Docker | 所有工作区都在宿主机运行；不调用 Docker、不拉镜像；关闭注册、用户、邀请、访客与计费 |
+| **多人**       | 需要邀请他人或容器隔离      | 现有行为：普通成员使用 Docker 隔离，管理员可选 Host 或 Container                    |
+
+首次访问的初始化向导会先问部署方式，之后可在 **设置 → 宿主机集成** 切换。还有其他启用中的
+账号（成员、管理员或访客）时不能切到单人宿主机，需要先停用它们。切到单人宿主机会把剩余的
+Docker 工作区迁移为 Host；切回多人只保存设置，注册、计费等恢复为原来的配置。单人宿主机
+模式下 Agent 可以访问宿主机的完整文件系统，只适合本人信任的部署；登录仍然需要。
+
+### 工作区目录
+
+新建的 Host 工作区（未指定自定义目录时）放在**工作区根目录**下的 `<根目录>/<文件夹>`，默认
+`~/happyclaw`，可在 **设置 → 宿主机集成** 或环境变量 `HAPPYCLAW_WORKSPACE_ROOT` 修改。
+工作区放在 HappyClaw 安装目录之外，Agent 不会读到安装目录里给开发者看的 `CLAUDE.md`。
+根目录位于安装目录里、上层目录有 `CLAUDE.md`、位于别的 git 仓库里或不可写时，会改用
+`~/happyclaw-workspaces` 并在设置页说明原因；这个目录也不能用时，新工作区暂时放在安装目录的
+`data/groups/<文件夹>`，设置页同样会显示。在设置里直接保存这样的路径会被拒绝。
+
+每个工作区记住自己的目录：修改根目录只影响之后新建的工作区。已有工作区和 Container 工作区
+仍在 `data/groups/<文件夹>`。
+
 ## 智能体与能力治理
 
 ### 智能体配置（Agent Profile）
@@ -235,7 +259,7 @@ REST 接口见 [API 文档](docs/API.md#自动化)。
 - macOS 或 Linux；Windows 推荐使用 WSL2。
 - [Node.js](https://nodejs.org/) 20 或更高版本，推荐使用 Node.js 24。
 - npm 与 GNU Make。
-- [Docker](https://www.docker.com/)：普通成员和 Container 工作区需要；仅使用管理员 Host 工作区时可不安装。
+- [Docker](https://www.docker.com/)：多人部署（普通成员和 Container 工作区）需要；单人宿主机部署不需要安装。
 
 macOS 可以使用 [OrbStack](https://orbstack.dev/) 或 Docker Desktop，Linux 可以使用 Docker Engine。
 
@@ -249,13 +273,13 @@ cd happyclaw
 make start
 ```
 
-首次启动会自动安装三端依赖、编译后端/Web/Agent Runner，并在 Docker 可用时拉取最新的多架构智能体镜像。启动完成后打开：
+首次启动会自动安装三端依赖、编译后端/Web/Agent Runner，并在 Docker 可用时拉取最新的多架构智能体镜像（单人宿主机部署跳过；拉取失败只告警，不影响启动）。启动完成后打开：
 
 <http://localhost:3000>
 
 首次访问按照向导完成：
 
-1. 创建第一个管理员账户。
+1. 选择部署方式（单人宿主机或多人），并创建第一个管理员账户。
 2. 配置 Anthropic 官方账号或第三方 Claude 兼容 Provider。
 3. 可选添加飞书、Telegram、QQ、钉钉、微信、企业微信、Discord 或 WhatsApp 渠道账号。
 4. 进入工作台创建智能体、工作区和会话。
@@ -311,15 +335,15 @@ HappyClaw 优先通过 Web 设置管理配置，不要求用户维护一组庞�
 
 ### Web 设置入口
 
-| 页面                    | 内容                                              |
-| ----------------------- | ------------------------------------------------- |
-| **设置 → 模型配置**     | 添加和维护模型连接、每个连接的模型、连接测试      |
-| **设置 → 消息渠道**     | 渠道账号、扫码登录、连接状态和会话绑定            |
-| **设置 → 主 HappyClaw** | 默认智能体的 Skills 与 MCP                        |
-| **设置 → 执行与容量**   | 超时、并发、上下文窗口和运行限制                  |
-| **设置 → 宿主机集成**   | 管理员纯宿主机模式、Host 目录与 Claude 上下文来源 |
-| **设置 → 注册策略**     | 开放注册、邀请码注册或关闭注册                    |
-| **设置 → 用户与访问**   | 用户、权限、邀请码与审计日志                      |
+| 页面                    | 内容                                                                      |
+| ----------------------- | ------------------------------------------------------------------------- |
+| **设置 → 模型配置**     | 添加和维护模型连接、每个连接的模型、连接测试                              |
+| **设置 → 消息渠道**     | 渠道账号、扫码登录、连接状态和会话绑定                                    |
+| **设置 → 主 HappyClaw** | 默认智能体的 Skills 与 MCP                                                |
+| **设置 → 执行与容量**   | 超时、并发、上下文窗口和运行限制                                          |
+| **设置 → 宿主机集成**   | 部署方式、工作区根目录、管理员纯宿主机模式、Host 目录与 Claude 上下文来源 |
+| **设置 → 注册策略**     | 开放注册、邀请码注册或关闭注册                                            |
+| **设置 → 用户与访问**   | 用户、权限、邀请码与审计日志                                              |
 
 ### 可选环境变量
 
@@ -333,6 +357,8 @@ HappyClaw 优先通过 Web 设置管理配置，不要求用户维护一组庞�
 | `IDLE_TIMEOUT`                       | `1800000`                         | 容器空闲保活时间，毫秒                                                             |
 | `STUCK_RUNNER_FORCE_RESTART_MINUTES` | `10`                              | IPC 债务强制恢复上限（整数分钟，范围 4–120；非法值回退默认）                       |
 | `ADMIN_HOST_ONLY_MODE`               | `false`                           | 管理员工作区与任务强制使用宿主机                                                   |
+| `HAPPYCLAW_DEPLOYMENT_MODE`          | `multi_user`                      | 部署方式：`multi_user` 或 `single_user_host`；Web 设置中保存过的值优先             |
+| `HAPPYCLAW_WORKSPACE_ROOT`           | `~/happyclaw`                     | 新建 Host 工作区的根目录；Web 设置中保存过的值优先                                 |
 | `MAX_CONCURRENT_CONTAINERS`          | `20`                              | 最大并发容器数                                                                     |
 | `CONTAINER_MEMORY_LIMIT`             | 不限制                            | 单个 Agent 容器内存上限，须带单位，如 `3g`；仅 Container 模式，见下文              |
 | `MAX_FILE_SIZE_MB`                   | `50`                              | Web 和 IM 入站文件大小上限                                                         |
@@ -342,10 +368,13 @@ HappyClaw 优先通过 Web 设置管理配置，不要求用户维护一组庞�
 | `TZ`                                 | 系统时区                          | 日志与自动化时区（建议 IANA 名称，如 `Asia/Shanghai`）；无效值回退并告警           |
 | `HTTPS_PROXY` / `HTTP_PROXY`         | 未设置                            | 独立配置 HTTPS/HTTP 出站代理；主进程与每个智能体容器都会使用，也接受对应的小写变量 |
 | `NO_PROXY`                           | 未设置                            | 独立配置不走代理的地址列表，也接受 `no_proxy`                                      |
+| `WEB_PUSH_SUBJECT`                   | 本项目 GitHub 地址                | Web Push 的 VAPID 联系地址，填本实例的 `mailto:` 或 `https://` 地址，见下文        |
 
 Provider 与渠道凭据建议只在 Web 设置中填写。它们使用 AES-256-GCM 加密存储，相关 API 只返回是否已配置，不返回密钥明文。
 
 容器代理值（包括 URL 中的用户名和密码）通过权限为 `0600` 的每容器运行时环境文件注入，不会出现在 `docker run` 参数或容器参数调试日志中。macOS 的 Docker Desktop/OrbStack 与 Windows Docker Desktop 会把代理 URL 中的 `localhost`、`127.0.0.1`、`::1` 改写为 `host.docker.internal`。Linux bridge 容器无法访问宿主机仅绑定在回环地址的代理；请将代理绑定到 Docker bridge 可达接口，并在代理变量中使用该接口的 IP 或 DNS 名称，否则容器会在启动前给出错误。
+
+Web 推送通知（设置 → 常规 → 推送通知）要求页面通过 HTTPS 访问（本机 `localhost` 除外），HTTP 局域网地址上浏览器不提供推送；iPhone 和 iPad 只有添加到主屏幕的应用能收到。服务器需要能访问浏览器的推送服务（`fcm.googleapis.com`、`web.push.apple.com`、`*.push.services.mozilla.com`、`*.notify.windows.com`），大陆部署通常要设置上面的 `HTTPS_PROXY`。推送签名密钥在 `data/config/web-push-vapid.json`，迁移或重装时随 `data/` 一起保留；丢失后所有设备需要重新开启推送。详见 [DEPLOYMENT.md](DEPLOYMENT.md) 第 7 节。
 
 `CONTAINER_MEMORY_LIMIT` 只对 Container 模式生效，Host 模式的 Runner 不受限。写法同 `docker run --memory`，必须带单位（如 `512m`、`1.5g`、`3GiB`），建议不低于 `256m`；纯数字或无法识别的值在启动时告警并按不限制处理。同一个值也设为 `--memory-swap`，容器不额外使用 swap；所有容器合计最多约 `MAX_CONCURRENT_CONTAINERS` × 该值。运行超过上限会被终止并照常重试，同一会话连续两次超限时提示用户本轮超过了内存上限，不会像未设上限时那样自动清空会话上下文。
 
@@ -357,7 +386,8 @@ Provider 与渠道凭据建议只在 Web 设置中填写。它们使用 AES-256-
 data/
 ├── db/messages.db     # SQLite 主数据库（含 Workspace Memory v2）
 ├── config/            # 加密配置、密钥、系统设置与 Web 添加的存储源
-├── groups/            # 工作区目录和项目文件
+├── groups/            # 已有工作区与 Container 工作区的目录
+├── logs/              # 工作区根目录下工作区的运行日志
 ├── memory/            # 旧版文件记忆，仅供离线迁移/归档
 ├── sessions/          # 每个 Runtime Session 的 Claude 数据
 ├── ipc/               # Runner 输入、工具请求和回执
@@ -368,7 +398,7 @@ data/
 └── extra/             # Container 工作区持久工具数据
 ```
 
-不要把 `data/` 提交到 Git。迁移实例时优先使用 `make backup` 和 `make restore`；恢复流程会检查归档路径、文件类型、符号链接、清单和数据库完整性。
+不要把 `data/` 提交到 Git。迁移实例时优先使用 `make backup` 和 `make restore`；恢复流程会检查归档路径、文件类型、符号链接、清单和数据库完整性。工作区根目录（默认 `~/happyclaw`）在 `data/` 之外，不在 `make backup` 范围内，需要单独备份。
 
 ## 系统架构
 

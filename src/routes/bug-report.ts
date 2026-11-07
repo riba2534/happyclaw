@@ -6,18 +6,15 @@ import { promisify } from 'util';
 
 import { Hono } from 'hono';
 
-import { DATA_DIR } from '../config.js';
 import { getUserHomeGroup } from '../db.js';
 import { getClaudeProviderConfig } from '../runtime-config.js';
 import { sdkQuery } from '../sdk-query.js';
 import { logger } from '../logger.js';
 import { authMiddleware } from '../middleware/auth.js';
-import {
-  BugReportGenerateSchema,
-  BugReportSubmitSchema,
-} from '../schemas.js';
+import { BugReportGenerateSchema, BugReportSubmitSchema } from '../schemas.js';
 import type { AuthUser } from '../types.js';
 import { type Variables, getWebDeps } from '../web-context.js';
+import { workspaceLogsDirOf } from '../workspace-dir.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -31,7 +28,11 @@ const COOLDOWN_MS = 60_000;
 const generateCooldowns = new Map<string, number>();
 const GENERATE_COOLDOWN_MS = 30_000;
 
-function checkCooldown(userId: string, map: Map<string, number> = cooldowns, cooldownMs: number = COOLDOWN_MS): string | null {
+function checkCooldown(
+  userId: string,
+  map: Map<string, number> = cooldowns,
+  cooldownMs: number = COOLDOWN_MS,
+): string | null {
   const last = map.get(userId);
   if (last) {
     const remaining = cooldownMs - (Date.now() - last);
@@ -72,20 +73,33 @@ async function checkCapabilities(): Promise<{
   ]);
   // Claude availability is determined by provider config, not CLI presence
   const providerConfig = getClaudeProviderConfig();
-  const claude = !!(providerConfig.anthropicApiKey || providerConfig.claudeCodeOauthToken || providerConfig.claudeOAuthCredentials);
+  const claude = !!(
+    providerConfig.anthropicApiKey ||
+    providerConfig.claudeCodeOauthToken ||
+    providerConfig.claudeOAuthCredentials
+  );
 
   // Get gh username if available
   let ghUsername: string | null = null;
   if (gh) {
     try {
-      const { stdout } = await execFileAsync('gh', ['api', 'user', '--jq', '.login'], { timeout: 5000 });
+      const { stdout } = await execFileAsync(
+        'gh',
+        ['api', 'user', '--jq', '.login'],
+        { timeout: 5000 },
+      );
       ghUsername = stdout.trim() || null;
     } catch {
       // gh available but can't get username
     }
   }
 
-  capCache = { ghAvailable: gh, ghUsername, claudeAvailable: claude, checkedAt: Date.now() };
+  capCache = {
+    ghAvailable: gh,
+    ghUsername,
+    claudeAvailable: claude,
+    checkedAt: Date.now(),
+  };
   return { ghAvailable: gh, ghUsername, claudeAvailable: claude };
 }
 
@@ -103,7 +117,7 @@ function getVersion(): string {
 }
 
 function readRecentLogs(folder: string, maxLines = 50): string {
-  const logsDir = path.join(DATA_DIR, 'groups', folder, 'logs');
+  const logsDir = workspaceLogsDirOf(folder);
   try {
     if (!fs.existsSync(logsDir)) return '(no logs directory)';
     const files = fs
@@ -170,17 +184,17 @@ export function sanitizeLogs(text: string): string {
   // regardless of the keyword that precedes it.
 
   // Authorization scheme values: `Bearer <token>` / `Basic <creds>`.
-  result = result.replace(
-    /\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]+/gi,
-    '$1 ***',
-  );
+  result = result.replace(/\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]+/gi, '$1 ***');
 
   // Known credential formats with no surrounding keyword (raw tokens dumped in
   // logs): Anthropic/OpenAI keys, GitHub tokens, JWTs, AWS access key ids.
   result = result
     .replace(/\bsk-[A-Za-z0-9_-]{8,}/g, 'sk-***')
     .replace(/\bgh[pousr]_[A-Za-z0-9]{20,}/g, 'gh_***')
-    .replace(/\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]+/g, 'eyJ***')
+    .replace(
+      /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]+/g,
+      'eyJ***',
+    )
     .replace(/\bAKIA[0-9A-Z]{16}\b/g, 'AKIA***');
 
   // Generic pattern matching any env var name containing sensitive keywords.
@@ -305,7 +319,9 @@ ${logs.slice(0, 3000)}
 }
 
 /** Try multiple strategies to extract JSON { title, body } from Claude output */
-function tryParseJsonOutput(raw: string): { title?: string; body?: string } | null {
+function tryParseJsonOutput(
+  raw: string,
+): { title?: string; body?: string } | null {
   const candidates: string[] = [];
 
   // Strategy 1: strip markdown fencing (greedy to handle nested backticks)
@@ -351,7 +367,11 @@ bugReportRoutes.post('/generate', authMiddleware, async (c) => {
   const user = c.get('user') as AuthUser;
 
   // Rate limiting — 30s cooldown per user for generate
-  const generateCooldownMsg = checkCooldown(user.id, generateCooldowns, GENERATE_COOLDOWN_MS);
+  const generateCooldownMsg = checkCooldown(
+    user.id,
+    generateCooldowns,
+    GENERATE_COOLDOWN_MS,
+  );
   if (generateCooldownMsg) {
     return c.json({ error: generateCooldownMsg }, 429);
   }
@@ -392,12 +412,19 @@ bugReportRoutes.post('/generate', authMiddleware, async (c) => {
   // Try Claude analysis
   const caps = await checkCapabilities();
   if (!caps.claudeAvailable) {
-    logger.info('bug-report: claude CLI not available, using fallback template');
+    logger.info(
+      'bug-report: claude CLI not available, using fallback template',
+    );
     const fallback = buildFallbackReport(description, systemInfo, logs);
     return c.json({ ...fallback, systemInfo });
   }
 
-  const prompt = buildGeneratePrompt(description, systemInfo, logs, screenshots?.length || 0);
+  const prompt = buildGeneratePrompt(
+    description,
+    systemInfo,
+    logs,
+    screenshots?.length || 0,
+  );
 
   try {
     logger.info(
@@ -424,7 +451,9 @@ bugReportRoutes.post('/generate', authMiddleware, async (c) => {
     }
 
     // Claude didn't return valid JSON, use raw output as body
-    logger.info('bug-report: claude output was not valid JSON, using as raw body');
+    logger.info(
+      'bug-report: claude output was not valid JSON, using as raw body',
+    );
     return c.json({
       title: `Bug: ${description.slice(0, 70)}`,
       body: result,
@@ -469,7 +498,10 @@ bugReportRoutes.post('/submit', authMiddleware, async (c) => {
   const caps = await checkCapabilities();
   if (caps.ghAvailable) {
     try {
-      logger.info({ userId: user.id }, 'bug-report: attempting gh issue create');
+      logger.info(
+        { userId: user.id },
+        'bug-report: attempting gh issue create',
+      );
       const result = await new Promise<string>((resolve, reject) => {
         const child = execFile(
           'gh',
@@ -522,7 +554,8 @@ bugReportRoutes.post('/submit', authMiddleware, async (c) => {
   const maxBodyLen = 6000; // conservative limit for URL length
   const truncatedBody =
     fullBody.length > maxBodyLen
-      ? fullBody.slice(0, maxBodyLen) + '\n\n...(内容过长已截断，请补充完整信息)'
+      ? fullBody.slice(0, maxBodyLen) +
+        '\n\n...(内容过长已截断，请补充完整信息)'
       : fullBody;
 
   const url = `https://github.com/riba2534/happyclaw/issues/new?title=${encodeURIComponent(title)}&body=${encodeURIComponent(truncatedBody)}`;

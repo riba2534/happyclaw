@@ -56,6 +56,8 @@ const {
   rememberRecentModel,
   readRecentModels,
 } = await import('./ModelSelector');
+const { modelPinsKey, readModelPins, toggleModelPin } =
+  await import('./modelPins');
 
 (
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }
@@ -1488,14 +1490,16 @@ describe('on a phone', () => {
     );
   });
 
-  test('the sheet opens at half height with the levels under the model in use', async () => {
+  test('the sheet opens at full height with the levels under the model in use', async () => {
     const pinned = effortSelection({ selectedModelConfigId: 'official' });
     mocks.get.mockResolvedValue(pinned);
     mocks.put.mockResolvedValue({ ...pinned, selectedEffort: 'high' });
     await render('s0');
     await open();
-    expect(sheet()?.dataset.snap).toBe('half');
-    expect(segments()?.previousElementSibling).toBe(checked()[0]);
+    expect(sheet()?.dataset.snap).toBe('full');
+    expect(segments()?.previousElementSibling?.contains(checked()[0])).toBe(
+      true,
+    );
     expect(checked()[0].getAttribute('title')).toBe('opus');
     expect(
       [...segments()!.querySelectorAll('button')].map(
@@ -1536,7 +1540,9 @@ describe('on a phone', () => {
     await open();
     expect(checked()[0].getAttribute('title')).toBe('跟随主 HappyClaw');
     expect(detail('跟随主 HappyClaw')).toBe('Claude 官方 · opus');
-    expect(segments()?.previousElementSibling).toBe(checked()[0]);
+    expect(segments()?.previousElementSibling?.contains(checked()[0])).toBe(
+      true,
+    );
     await click(segment('最高'));
     expect(mocks.put).toHaveBeenCalledWith(
       '/api/groups/web%3Aws/model-selection',
@@ -1589,7 +1595,7 @@ describe('in a narrow window with a mouse', () => {
     expect(pill()).toBeNull();
     expect(effortTrigger()!.textContent).toBe('超高');
     await open();
-    expect(sheet()?.dataset.snap).toBe('half');
+    expect(sheet()?.dataset.snap).toBe('full');
     expect(segments()).toBeNull();
     expect(document.body.textContent).toContain('推理等级在输入框旁调整');
   });
@@ -1706,6 +1712,180 @@ describe('recently used models', () => {
     storage.set(recentModelsKey('user-1'), '{not json');
     expect(readRecentModels('user-1')).toEqual([]);
     expect(readRecentModels(undefined)).toEqual([]);
+  });
+});
+
+describe('pinned models', () => {
+  const pinButton = (label: string) =>
+    document.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`);
+  const headings = () =>
+    [...document.querySelectorAll('[role="radiogroup"] p')].map(
+      (item) => item.textContent,
+    );
+  const storedPins = () =>
+    JSON.parse(storage.get(modelPinsKey('user-1')) ?? '[]') as unknown;
+
+  test('a pin moves a model to 置顶 at the top, per user; unpinning puts it back', async () => {
+    mocks.get.mockResolvedValue(connectionSelection());
+    await render('s0');
+    await open();
+    expect(titles()).toEqual([
+      '未选择模型',
+      'opus',
+      'sonnet',
+      'haiku',
+      'glm-5.3',
+      'glm-4.6',
+    ]);
+    expect(headings()).toEqual([]);
+    // The default is no model to pin.
+    expect(pinButton('置顶「未选择模型」')).toBeNull();
+
+    await click(pinButton('置顶「GLM · glm-4.6」'));
+    await click(pinButton('置顶「Claude 官方 · sonnet」'));
+    // In the order they were pinned, above the default.
+    expect(titles()).toEqual([
+      'glm-4.6',
+      'sonnet',
+      '未选择模型',
+      'opus',
+      'haiku',
+      'glm-5.3',
+    ]);
+    expect(headings()).toEqual(['置顶', '其他模型']);
+    expect(
+      pinButton('取消置顶「GLM · glm-4.6」')?.getAttribute('aria-pressed'),
+    ).toBe('true');
+    expect(storedPins()).toEqual([
+      { modelConfigId: 'glm', model: 'glm-4.6' },
+      { modelConfigId: 'official', model: 'sonnet' },
+    ]);
+    expect(readModelPins('user-2')).toEqual([]);
+    // Pinning is no pick: nothing is saved and the panel stays open.
+    expect(mocks.put).not.toHaveBeenCalled();
+    expect(checked().map((item) => item.getAttribute('title'))).toEqual([
+      '未选择模型',
+    ]);
+
+    await click(pinButton('取消置顶「GLM · glm-4.6」'));
+    expect(titles()).toEqual([
+      'sonnet',
+      '未选择模型',
+      'opus',
+      'haiku',
+      'glm-5.3',
+      'glm-4.6',
+    ]);
+
+    await rerender();
+    await open();
+    expect(titles()[0]).toBe('sonnet');
+  });
+
+  test('pinned models lead a connection and a search; 最近 keeps its order', async () => {
+    toggleModelPin('user-1', { modelConfigId: 'glm', model: 'glm-4.6' });
+    toggleModelPin('user-1', { modelConfigId: 'official', model: 'haiku' });
+    rememberRecentModel('user-1', {
+      modelConfigId: 'official',
+      model: 'haiku',
+    });
+    rememberRecentModel('user-1', { modelConfigId: 'glm', model: 'glm-5.3' });
+    mocks.get.mockResolvedValue(connectionSelection());
+    await render('s0');
+    await open();
+
+    await click(railButton('GLM'));
+    expect(titles()).toEqual(['glm-4.6', 'glm-5.3']);
+    expect(headings()).toEqual(['置顶', '其他模型']);
+
+    await search('glm');
+    expect(titles()).toEqual(['glm-4.6', 'glm-5.3']);
+
+    await search('');
+    await click(railButton('最近'));
+    expect(titles()).toEqual(['glm-5.3', 'haiku']);
+    expect(headings()).toEqual([]);
+  });
+
+  test('a model gone or that cannot run is not shown as pinned', async () => {
+    for (const pin of [
+      { modelConfigId: 'gone', model: 'old' },
+      { modelConfigId: 'official', model: 'retired' },
+      { modelConfigId: 'glm', model: 'glm-5.3' },
+    ]) {
+      toggleModelPin('user-1', pin);
+    }
+    const base = connectionSelection({
+      // Still selected, so listed with its note, but no longer offered.
+      selectedModelConfigId: 'official',
+      selectedModel: 'retired',
+    });
+    mocks.get.mockResolvedValue({
+      ...base,
+      options: [base.options[0], { ...base.options[1], usable: false }],
+    });
+    await render('s0');
+    await open();
+    expect(headings()).toEqual([]);
+    expect(titles()).toEqual([
+      '未选择模型',
+      'retired',
+      'opus',
+      'sonnet',
+      'haiku',
+      'glm-5.3',
+      'glm-4.6',
+    ]);
+    // A row without credentials cannot be pinned, but a pin on it can go.
+    expect(pinButton('置顶「GLM · glm-4.6」')).toBeNull();
+    await click(pinButton('取消置顶「GLM · glm-5.3」'));
+    expect(storedPins()).toEqual([
+      { modelConfigId: 'gone', model: 'old' },
+      { modelConfigId: 'official', model: 'retired' },
+    ]);
+  });
+
+  describe('on a phone', () => {
+    beforeEach(() => emulate(PHONE, NARROW));
+    afterEach(() => vi.restoreAllMocks());
+
+    async function longPress(element: HTMLElement | undefined) {
+      if (!element) throw new Error('element not found');
+      await act(async () => {
+        element.dispatchEvent(
+          new PointerEvent('pointerdown', {
+            bubbles: true,
+            pointerId: 1,
+            pointerType: 'touch',
+            isPrimary: true,
+          }),
+        );
+        await new Promise((resolve) => setTimeout(resolve, 550));
+      });
+    }
+    const action = (label: string) =>
+      [...document.querySelectorAll<HTMLButtonElement>('button')].find(
+        (button) => button.textContent === label,
+      );
+
+    test('a long press in the sheet unpins, the sheet stays', async () => {
+      toggleModelPin('user-1', { modelConfigId: 'glm', model: 'glm-4.6' });
+      mocks.get.mockResolvedValue(connectionSelection());
+      await render('s0');
+      await open();
+      expect(titles()[0]).toBe('glm-4.6');
+      // No hover button on a phone: the pin is shown on the row.
+      expect(
+        row('glm-4.6')?.querySelector('[aria-label="已置顶"]'),
+      ).not.toBeNull();
+
+      await longPress(row('glm-4.6'));
+      await click(action('取消置顶「glm-4.6」'));
+      expect(sheet()).not.toBeNull();
+      expect(readModelPins('user-1')).toEqual([]);
+      expect(headings()).toEqual([]);
+      expect(titles()[0]).toBe('未选择模型');
+    });
   });
 });
 

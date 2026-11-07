@@ -33,7 +33,8 @@ import {
   safeWriteWorkspaceFile,
 } from '../file-manager.js';
 import { checkStorageLimit, isBillingEnabled } from '../billing.js';
-import { GROUPS_DIR, MAX_FILE_SIZE_MB } from '../config.js';
+import { MAX_FILE_SIZE_MB } from '../config.js';
+import { workspaceDirOf } from '../workspace-dir.js';
 import { createUploadBodyLimit } from '../http-upload-policy.js';
 import {
   assertOfficePreviewAvailable,
@@ -195,20 +196,20 @@ const SAFE_PREVIEW_MIME_TYPES = new Set(
 /**
  * 获取文件操作的根目录覆盖：与该会话运行时的工作目录一致。
  * 会话有独立 worktree 时以 worktree 为根；宿主机模式设置了 customCwd 时
- * 以 customCwd 为根；否则为 data/groups/{folder}（返回 undefined）。
+ * 以 customCwd 为根；否则为工作区自己的目录（返回 undefined）。
  */
 function getFileRootOverride(
   group: RegisteredGroup,
   agentId: string | null,
 ): string | undefined {
   const root = resolveWorkspaceProjectRoot(group, { agentId });
-  return root === path.join(GROUPS_DIR, group.folder) ? undefined : root;
+  return root === workspaceDirOf(group.folder) ? undefined : root;
 }
 
 /**
  * 计算 Agent 视角的绝对路径（供前端"复制路径"功能使用）。
  * - container 模式：容器内挂载路径 /workspace/group/<relative>
- * - host 模式：宿主机绝对路径（worktree、customCwd 或 data/groups/{folder}）+ relative
+ * - host 模式：宿主机绝对路径（worktree、customCwd 或工作区目录）+ relative
  */
 function getAgentAbsolutePath(
   group: RegisteredGroup,

@@ -177,6 +177,10 @@ function makeOutputRuntime() {
     })),
     deliverIndependentChannelSystemNotice: vi.fn(async () => true),
     broadcastNewMessage,
+    // Web Push has its own tests (web-push.test.ts); no push here.
+    pushWebTurnOutcome: vi.fn(),
+    webTurnPushNotice: vi.fn(() => null),
+    notifyWebTurn: vi.fn(),
     broadcastToWebClients: vi.fn(),
     clearStreamingSnapshot: vi.fn(),
     resetIdleTimer: vi.fn(),
@@ -265,6 +269,36 @@ describe('actual runtime callbacks preserve per-input reply destinations', () =>
       'routing-fixture',
       'session',
     );
+  });
+
+  test('announces a Web final as pushed exactly when it is pushed', async () => {
+    const fixture = makeOutputRuntime();
+    const notice = { kind: 'reply', text: 'Answer to the Web follow-up.' };
+    fixture.globals.webTurnPushNotice.mockReturnValueOnce(notice);
+    await fixture.emit(finalOutput(fixture.inputId));
+    expect(fixture.globals.webTurnPushNotice).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'reply',
+        text: 'Answer to the Web follow-up.',
+        imSourceJid: null,
+        automationRunId: null,
+      }),
+    );
+    expect(fixture.broadcastNewMessage).toHaveBeenCalledWith(
+      fixture.virtualChatJid,
+      expect.objectContaining({ turn_id: fixture.inputId, web_push: true }),
+      'session',
+    );
+    expect(fixture.globals.notifyWebTurn).toHaveBeenCalledExactlyOnceWith(
+      notice,
+    );
+
+    // A turn that is not pushed is announced without the mark.
+    const quiet = makeOutputRuntime();
+    await quiet.emit(finalOutput(quiet.inputId));
+    const announced = quiet.broadcastNewMessage.mock.calls[0][1];
+    expect(announced).not.toHaveProperty('web_push');
+    expect(quiet.globals.notifyWebTurn).not.toHaveBeenCalled();
   });
 
   test('keeps a late initial IM final on its own scope after Web admission', async () => {

@@ -40,6 +40,10 @@ import { UserChannelsSection } from '../components/settings/UserChannelsSection'
 import { GuestsSection } from '../components/settings/GuestsSection';
 import { StorageSourcesSection } from '../components/settings/StorageSourcesSection';
 import { GUEST_SCOPE_DESCRIPTION, isGuestSettingsTab } from '../lib/guest';
+import {
+  isSingleUserHostHiddenTab,
+  useIsSingleUserHost,
+} from '../lib/deployment-mode';
 import { UsersPage } from './UsersPage';
 import { MonitorPage, MonitorRefreshButton } from './MonitorPage';
 import type { SettingsTab } from '../components/settings/types';
@@ -106,6 +110,7 @@ export function SettingsPage() {
   const navigate = useNavigate();
   const location = useLocation();
   const isPhone = useIsPhone();
+  const singleUserHost = useIsSingleUserHost();
 
   const hasSystemConfigPermission =
     currentUser?.role === 'admin' ||
@@ -151,6 +156,7 @@ export function SettingsPage() {
       ) {
         return defaultTab;
       }
+      if (singleUserHost && isSingleUserHostHiddenTab(raw)) return defaultTab;
       if (raw === 'monitor' && !canManageSystemConfig) return defaultTab;
       if (raw === 'billing' && !canManageBilling) return defaultTab;
       if (raw === 'users' && !canManageUsers) return defaultTab;
@@ -166,6 +172,7 @@ export function SettingsPage() {
     defaultTab,
     currentUser?.role,
     isGuest,
+    singleUserHost,
   ]);
 
   // A phone shows the section list until a section is picked (the URL names
@@ -312,7 +319,11 @@ export function SettingsPage() {
             )}
           </>
         ) : activeTab === 'system' ? (
-          <SystemSettingsSection scope="runtime" />
+          <div className="space-y-10">
+            <SystemSettingsSection scope="runtime" />
+            {/* The registration tab is hidden; its login limits still apply. */}
+            {singleUserHost && <SystemSettingsSection scope="security" />}
+          </div>
         ) : activeTab === 'main-agent' ? (
           <div className="space-y-10">
             <MainAgentIdentitySection />
@@ -358,6 +369,7 @@ export function SettingsPage() {
     canManageUsers: !!canManageUsers,
     isAdmin: currentUser?.role === 'admin',
     isGuest,
+    singleUserHost,
     mustChangePassword,
   };
 

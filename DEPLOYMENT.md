@@ -180,3 +180,25 @@ LibreOffice 的解析漏洞因此会以服务身份执行，能读到服务能�
 多用户部署推荐 Stirling-PDF：把它作为独立容器运行在只有 HappyClaw 能访问的地址上，
 配置 `OFFICE_PREVIEW_STIRLING_URL` 和密钥文件，文档在它的容器里解析。两者都设置时使用
 Stirling。配置后在文件面板打开一个 docx 确认能预览；第二次打开应立即显示（命中缓存）。
+
+## 7. Web 推送通知（可选）
+
+用户在「设置 → 常规 → 推送通知」为当前设备开启后，Web 来源的回复完成或运行出错时，
+如果没有正在看该会话的可见页面，服务端会向这台设备发系统通知。部署侧需要确认：
+
+- 页面必须通过 HTTPS 访问（本机 `localhost` 除外）。HTTP 局域网地址不是安全上下文，浏览器
+  不提供推送，设置页无法开启。iPhone 和 iPad 只有添加到主屏幕的应用能收到推送。
+- 服务器要能访问推送服务：`fcm.googleapis.com`（Chrome、Edge、Android）、
+  `web.push.apple.com`（Safari、主屏幕应用）、`*.push.services.mozilla.com`（Firefox）、
+  `*.notify.windows.com`。大陆部署通常要在 `.env` 设置 `HTTPS_PROXY`；推送请求与其他出站
+  请求一样遵守 `NO_PROXY`。单次投递最长 10 秒。
+- 在 `.env` 设置 `WEB_PUSH_SUBJECT` 为本实例的联系地址（`mailto:ops@example.com` 或
+  `https://` 地址），推送服务在出现问题时用它联系部署方；未设置时使用本项目的 GitHub
+  地址。修改后重启服务生效。
+- 签名密钥在首次使用时生成到 `data/config/web-push-vapid.json`（权限 600）。迁移、恢复时
+  随 `data/` 保留；文件损坏时推送会被停用并在日志里报错，删除它会生成新密钥，所有设备都要
+  重新开启推送。
+
+验证：在 HTTPS 地址上开启推送后点「发送测试通知」（每个账号每分钟最多 3 次），应在几秒
+内收到一条通知；把页面切到后台再发一条消息，回复完成时应收到通知。退出登录会注销这台设备
+的推送订阅。

@@ -286,6 +286,24 @@ import {
   markAdminHostOnlyCleanupPending,
   restorePendingAdminHostOnlyRuntimeSafetyBlocks,
 } from '../admin-host-only-runtime.js';
+import {
+  DEPLOYMENT_MODE_ENV,
+  getDeploymentModeResolution,
+  isSingleUserHost,
+  resolveDeploymentMode,
+} from '../deployment-mode.js';
+import {
+  getWorkspaceRootResolution,
+  rootForNewWorkspaces,
+  validateWorkspaceRootSetting,
+  WORKSPACE_ROOT_PROBLEM_MESSAGES,
+} from '../workspace-root.js';
+import {
+  listOtherActiveUsers,
+  SingleUserHostConflictError,
+  type OtherActiveUser,
+} from '../single-user-host-guard.js';
+import { getWorkspaceRootOccupancy } from '../workspace-dir.js';
 const configRoutes = new Hono<{ Variables: Variables }>();
 
 configRoutes.use('/user-im/*', async (c, next) => {
@@ -3718,16 +3736,51 @@ configRoutes.put(
 
 // ─── Host integration settings (admin role only) ───────────────────
 
-function toHostIntegrationResponse(
+/** The stored host-integration settings, as configured. */
+function toStoredHostIntegration(
   settings: ReturnType<typeof getSystemSettings>,
 ) {
   return {
     externalClaudeDir: settings.externalClaudeDir,
     pluginAutoScan: settings.pluginAutoScan,
     adminHostOnlyMode: settings.adminHostOnlyMode,
+    workspaceRoot: settings.workspaceRoot,
+    deploymentMode: settings.deploymentMode,
     mainAgentContextSource: settings.mainAgentContextSource,
     mainAgentAutoCompactWindow: settings.mainAgentAutoCompactWindow,
     mainAgentAutoCompactPercentage: settings.mainAgentAutoCompactPercentage,
+  };
+}
+
+/** Stored values plus how the workspace root and deployment mode resolve. */
+function otherActiveUsersConflict(c: Context, users: OtherActiveUser[]) {
+  return c.json(
+    {
+      error: '单人宿主机模式只允许一个用户；请先停用其他账号。',
+      code: 'SINGLE_USER_HOST_OTHER_USERS',
+      users,
+    },
+    409,
+  );
+}
+
+function toHostIntegrationResponse(
+  settings: ReturnType<typeof getSystemSettings>,
+) {
+  // The same occupancy the server uses to pick the root (index.ts).
+  const root = getWorkspaceRootResolution(getWorkspaceRootOccupancy());
+  const mode = getDeploymentModeResolution();
+  return {
+    ...toStoredHostIntegration(settings),
+    // Where new Host workspaces go; null when no root is usable and they
+    // stay in data/groups/<folder>.
+    workspaceRootEffective: rootForNewWorkspaces(root),
+    workspaceRootSource: root.source,
+    workspaceRootFallbackReason: root.fallbackReason,
+    workspaceRootFallbackWarning: root.fallbackWarning,
+    deploymentMode: mode.mode,
+    deploymentModeConfigured: settings.deploymentMode,
+    deploymentModeSource: mode.source,
   };
 }
 
@@ -3768,9 +3821,46 @@ configRoutes.put(
         );
       }
     }
+    // The directory itself is created when the first workspace needs it.
+    const rootProblem =
+      validation.data.workspaceRoot !== undefined
+        ? validateWorkspaceRootSetting(
+            validation.data.workspaceRoot,
+            getWorkspaceRootOccupancy(),
+          )
+        : null;
+    if (rootProblem) {
+      return c.json(
+        {
+          error: WORKSPACE_ROOT_PROBLEM_MESSAGES[rootProblem],
+          code: 'WORKSPACE_ROOT_INVALID',
+          reason: rootProblem,
+        },
+        400,
+      );
+    }
 
     return withCapabilityScopeLocks([SYSTEM_CAPABILITY_LOCK_KEY], async () => {
-      const before = toHostIntegrationResponse(getSystemSettings());
+      const before = toStoredHostIntegration(getSystemSettings());
+      const singleUserHostBefore = isSingleUserHost();
+      const singleUserHostAfter =
+        resolveDeploymentMode({
+          configured: validation.data.deploymentMode ?? before.deploymentMode,
+          env: process.env[DEPLOYMENT_MODE_ENV],
+        }).mode === 'single_user_host';
+      const enablingSingleUserHost =
+        !singleUserHostBefore && singleUserHostAfter;
+      const actorId = (c.get('user') as AuthUser).id;
+      if (enablingSingleUserHost) {
+        const others = listOtherActiveUsers(actorId);
+        if (others.length > 0) return otherActiveUsersConflict(c, others);
+      }
+      // Single-user host mode makes admin host-only effective without
+      // touching the stored switch, so it migrates the same way enabling it.
+      const hostOnlyBefore = before.adminHostOnlyMode || singleUserHostBefore;
+      const hostOnlyAfter =
+        (validation.data.adminHostOnlyMode ?? before.adminHostOnlyMode) ||
+        singleUserHostAfter;
       const mainContextSourceChanged =
         validation.data.mainAgentContextSource !== undefined &&
         validation.data.mainAgentContextSource !==
@@ -3780,19 +3870,16 @@ configRoutes.put(
         validation.data.externalClaudeDir !== before.externalClaudeDir;
       const hostContextChanged =
         mainContextSourceChanged || externalClaudeDirChanged;
-      const adminHostOnlyModeChanged =
-        validation.data.adminHostOnlyMode !== undefined &&
-        validation.data.adminHostOnlyMode !== before.adminHostOnlyMode;
-      const enablingAdminHostOnlyMode =
-        adminHostOnlyModeChanged && validation.data.adminHostOnlyMode === true;
+      // Effective host-only turning on: the stored switch, or single-user
+      // host mode. Already on (stored true, then single-user host), there is
+      // nothing to migrate and no runner or session to reset.
+      const enablingAdminHostOnlyMode = !hostOnlyBefore && hostOnlyAfter;
       const pendingRuntimeCleanupFolders =
         getPendingAdminHostOnlyCleanupFolders();
       const repairingRuntimeCleanup = pendingRuntimeCleanupFolders.length > 0;
       const enforcingAdminHostOnlyMode =
         enablingAdminHostOnlyMode ||
-        (repairingRuntimeCleanup &&
-          before.adminHostOnlyMode &&
-          validation.data.adminHostOnlyMode !== false);
+        (repairingRuntimeCleanup && hostOnlyBefore && hostOnlyAfter);
       const defaultCompactChanged =
         (validation.data.mainAgentAutoCompactWindow !== undefined &&
           validation.data.mainAgentAutoCompactWindow !==
@@ -3896,6 +3983,13 @@ configRoutes.put(
         | ReturnType<typeof forceActiveAdminRuntimesToHost>
         | undefined;
       const commit = () => {
+        // An account may have been added while runners were quiescing.
+        // Checked before the first write, so nothing has changed yet when
+        // it fails (the stopped runners restart on demand).
+        if (enablingSingleUserHost) {
+          const others = listOtherActiveUsers(actorId);
+          if (others.length > 0) throw new SingleUserHostConflictError(others);
+        }
         if (enforcingAdminHostOnlyMode) {
           hostOnlyMigration = forceActiveAdminRuntimesToHost();
           if (deps) {
@@ -3951,6 +4045,9 @@ configRoutes.put(
             ADMIN_HOST_ONLY_RUNTIME_SAFETY_SOURCE,
           );
         } catch (err) {
+          if (err instanceof SingleUserHostConflictError) {
+            return otherActiveUsersConflict(c, err.users);
+          }
           if (!(err instanceof WorkspaceRuntimeQuiesceError)) throw err;
           return c.json(
             {
@@ -3964,12 +4061,17 @@ configRoutes.put(
           );
         }
       } else {
-        saved = commit();
+        try {
+          saved = commit();
+        } catch (err) {
+          if (!(err instanceof SingleUserHostConflictError)) throw err;
+          return otherActiveUsersConflict(c, err.users);
+        }
       }
       const response = toHostIntegrationResponse(saved);
       const changedFields = changedSettingFields(
         before,
-        response,
+        toStoredHostIntegration(saved),
         validation.data,
       );
       const actor = c.get('user') as AuthUser;

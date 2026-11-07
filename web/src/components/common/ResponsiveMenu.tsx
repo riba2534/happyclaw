@@ -1,4 +1,9 @@
-import { Fragment, type JSX, type ReactElement } from 'react';
+import {
+  Fragment,
+  type JSX,
+  type PointerEvent,
+  type ReactElement,
+} from 'react';
 import { useControllableState } from 'radix-ui/internal';
 import type { LucideIcon } from 'lucide-react';
 
@@ -10,6 +15,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { useIsPhone } from '@/components/layout/phone';
+import { keepFocusThatMovedOn } from '@/lib/focus';
 import { ActionSheet } from './ActionSheet';
 
 export interface MenuAction {
@@ -64,10 +70,23 @@ export function ResponsiveMenu({
     );
   }
 
+  // A closed menu stays on screen through its exit animation. A mouse
+  // leaving or crossing one of its items then would focus the menu again,
+  // taking focus from wherever the chosen action moved it (the composer a
+  // quote fills), and the menu would hand it to its trigger on unmount.
+  const whileClosing = open
+    ? undefined
+    : (event: PointerEvent) => event.preventDefault();
+
   return (
     <DropdownMenu open={open} onOpenChange={setOpen}>
       <DropdownMenuTrigger asChild>{trigger}</DropdownMenuTrigger>
-      <DropdownMenuContent align={align} aria-label={title} className="w-auto">
+      <DropdownMenuContent
+        align={align}
+        aria-label={title}
+        className="w-auto"
+        onCloseAutoFocus={keepFocusThatMovedOn}
+      >
         {groups
           .filter((group) => group.length > 0)
           .map((group, index) => (
@@ -80,6 +99,8 @@ export function ResponsiveMenu({
                     disabled={disabled}
                     variant={destructive ? 'destructive' : 'default'}
                     onSelect={onSelect}
+                    onPointerMove={whileClosing}
+                    onPointerLeave={whileClosing}
                   >
                     {Icon && <Icon aria-hidden="true" />}
                     {label}

@@ -226,6 +226,10 @@ describe('schema version head', () => {
     // v89: multi-task mode, workspace_agent_profiles.work_mode and
     // work_items.origin / origin_agent_id / origin_input_id
     // (schema-v89-multitask-mode.test.ts).
-    expect(db.CURRENT_SCHEMA_VERSION).toBe(89);
+    // v90: workspace_workdirs, the recorded directory of a Host workspace in
+    // the workspace root (schema-v90-workspace-workdirs.test.ts).
+    // v91: Web Push subscriptions, web_push_subscriptions, created by
+    // web-push-store.ts (schema-v91-web-push.test.ts).
+    expect(db.CURRENT_SCHEMA_VERSION).toBe(91);
   });
 });

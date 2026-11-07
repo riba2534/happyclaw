@@ -5,6 +5,10 @@
  * The shared reducer (`stream-steps`) owns the steps themselves.
  */
 import { describeToolCall } from '../components/chat/ToolActivityCard';
+import {
+  countToolStates,
+  describeProblems,
+} from '../components/chat/tool-status';
 import { SPEECH_TOOL_NAME, isProgressStep } from './process-visibility';
 import { formatRunElapsed } from './run-phase';
 import {
@@ -349,7 +353,7 @@ export function describeWorkCounts(
       parts.push(`${counts.commentary - progress} 条过程说明`);
     }
   }
-  if (counts.failed > 0) parts.push(`${counts.failed} 个失败`);
+  parts.push(...describeProblems(countToolStates(listed, false)));
   if (dropped > 0) parts.push(`另有较早 ${dropped} 步`);
   return parts.join(' · ');
 }

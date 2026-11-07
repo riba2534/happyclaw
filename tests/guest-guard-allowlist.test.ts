@@ -14,6 +14,7 @@ describe('guest route allowlist', () => {
   test.each([
     ['GET', '/api/auth/status'],
     ['GET', '/api/auth/me'],
+    ['GET', '/api/build'],
     ['PUT', '/api/auth/password'],
     ['POST', '/api/auth/logout'],
     ['GET', '/api/groups'],
@@ -75,6 +76,12 @@ describe('guest route allowlist', () => {
     ['GET', '/api/billing/me'],
     ['GET', '/api/agent-profiles'],
     ['GET', '/api/guests'],
+    // Web Push belongs to a full account.
+    ['GET', '/api/push/vapid-public-key'],
+    ['GET', '/api/push/status'],
+    ['POST', '/api/push/subscribe'],
+    ['POST', '/api/push/unsubscribe'],
+    ['POST', '/api/push/test'],
     // Shape near-misses and unknown routes.
     ['GET', `/api/groups/${WS}/files/download/a/b`],
     ['GET', `/api/groups/${WS}/messages/extra`],

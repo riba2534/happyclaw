@@ -3,6 +3,7 @@ import type {
   ProviderModelEntry,
   ProviderTestRecord,
 } from '@/lib/model-providers';
+import type { DeploymentMode } from '../../stores/auth';
 
 // ─── 统一供应商类型 (V4) ─────────────────────────────────────
 
@@ -103,6 +104,29 @@ export interface HostIntegrationSettings {
   mainAgentAutoCompactPercentage: number;
   externalClaudeDir: string;
   pluginAutoScan: boolean;
+  // The rest are absent on servers older than the workspace root setting.
+  /** Stored root of new Host workspaces; '' = unset. */
+  workspaceRoot?: string;
+  /** Where new Host workspaces go; null: no usable root, so data/groups/<folder>. */
+  workspaceRootEffective?: string | null;
+  workspaceRootSource?: SettingSource;
+  /** Why the requested root is not used (a problem code), or null. */
+  workspaceRootFallbackReason?: string | null;
+  workspaceRootFallbackWarning?: string | null;
+  /** Effective mode. */
+  deploymentMode?: DeploymentMode;
+  /** Stored mode; '' = unset. */
+  deploymentModeConfigured?: '' | DeploymentMode;
+  deploymentModeSource?: SettingSource;
+}
+
+export type SettingSource = 'settings' | 'env' | 'default';
+
+/** The user list of a 409 `SINGLE_USER_HOST_OTHER_USERS`. */
+export interface OtherActiveUser {
+  id: string;
+  username: string;
+  role: string;
 }
 
 // ─── OAuth Usage ────────────────────────────────────────────

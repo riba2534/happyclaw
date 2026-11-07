@@ -115,6 +115,7 @@ async function firstMainRequest(
     fs.mkdirSync(dir, { recursive: true });
   }
   let captured: MainRequest | undefined;
+  let mcpConnected = false;
   const server = http.createServer((request, response) => {
     const chunks: Buffer[] = [];
     request.on('data', (chunk) => chunks.push(Buffer.from(chunk)));
@@ -129,18 +130,25 @@ async function firstMainRequest(
       } catch {
         // Not a message request.
       }
-      // The main loop offers Bash; a side query may carry only Skill.
+      // The main loop offers Bash; a side query may carry only Skill. Under
+      // a loaded machine the CLI can send its first request before the
+      // HappyClaw MCP server has connected, without its tools; the failed
+      // call is retried, so keep the latest request until one carries them.
       if (
-        !captured &&
+        !mcpConnected &&
         Array.isArray(body.tools) &&
         body.tools.some((tool) => tool.name === 'Bash')
       ) {
+        const tools = body.tools.map((tool) => tool.name);
         captured = {
           system: systemText(body.system),
-          tools: body.tools.map((tool) => tool.name),
+          tools,
           messages: JSON.stringify(body.messages ?? []),
         };
-        fs.writeFileSync(path.join(inputDir, '_close'), '');
+        if (tools.some((tool) => tool.startsWith('mcp__happyclaw__'))) {
+          mcpConnected = true;
+          fs.writeFileSync(path.join(inputDir, '_close'), '');
+        }
       }
       // Fail every call: only the request matters, and the runner exits.
       response.writeHead(500, { 'content-type': 'application/json' });
@@ -220,6 +228,9 @@ const AUTOMATION_TOOLS = [
   'automation_list_runs',
   'automation_notify_current_run',
   'automation_silence_current_run',
+  // Reading other sessions is for ordinary sessions of the owner only.
+  'session_list',
+  'session_get',
 ].map((name) => `mcp__happyclaw__${name}`);
 
 const DELEGATION_TOOLS = [

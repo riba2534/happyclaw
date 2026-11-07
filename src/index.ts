@@ -103,7 +103,7 @@ import {
 } from './channel-delivery-failure.js';
 import { setImDownloadRootResolver } from './im-downloader.js';
 import { escapeFeishuPanelInline } from './feishu-cards/sections.js';
-import { resolveFollowUpMode } from './follow-up-policy.js';
+import { isCancelledInput, resolveFollowUpMode } from './follow-up-policy.js';
 import {
   discardStartupTypedIpcDeliveries,
   isIpcInputPayloadFilename,
@@ -400,6 +400,8 @@ import {
   StreamingCardController,
 } from './feishu-streaming-card.js';
 import {
+  findSessionsBySpec,
+  findWorkspaceBySpec,
   formatContextMessages,
   formatWorkspaceList,
   formatSystemStatus,
@@ -417,6 +419,11 @@ import { resolveImGroupDefaults } from './im-group-defaults.js';
 import { canSendCrossGroupMessage as canSendCrossGroupMessagePure } from './cross-group-acl.js';
 import { resolveIpcDeliveryTargetGroup } from './ipc-delivery-routing.js';
 import { invalidateSessionCache, type WebDeps } from './web-context.js';
+import {
+  isWebOriginTurn,
+  notifyWebTurn,
+  type WebTurnNotice,
+} from './web-push.js';
 import { StreamingBuffer } from './streaming-buffer.js';
 import { resolveEffectiveAgentProfile } from './agent-profile-runtime.js';
 import {
@@ -462,6 +469,19 @@ import { resolveChannelAccountFallbackWorkspace } from './channel-account-routin
 import { testChannelAccountCredentials } from './channel-account-connectivity.js';
 import { hasAgentProfilePrompts } from './agent-profile-prompts.js';
 import { toRunnerAgentProfile } from './runner-agent-profile.js';
+import { listOtherActiveUsers } from './single-user-host-guard.js';
+import {
+  isAdminHostOnlyEffective,
+  isSingleUserHost,
+} from './deployment-mode.js';
+import {
+  assignWorkspaceRootDirIfNew,
+  ensureWorkspaceDirs,
+  getWorkspaceRootOccupancy,
+  setWorkspaceRootResolver,
+  workspaceDirOf,
+} from './workspace-dir.js';
+import { getRootForNewWorkspaces } from './workspace-root.js';
 import {
   getFeishuProviderConfigWithSource,
   getTelegramProviderConfig,
@@ -526,7 +546,7 @@ import {
 import {
   checkBillingAccessFresh,
   formatBillingAccessDeniedMessage,
-  checkAndExpireSubscriptions,
+  runScheduledSubscriptionExpiry,
   isBillingEnabled,
   getUserConcurrentContainerLimit,
   reconcileMonthlyUsage,
@@ -612,7 +632,13 @@ import {
   broadcastFollowUpUpdate,
   broadcastMessageTrace,
   broadcastUsageLimitWait,
+  getSessionLiveActivity,
 } from './web.js';
+import {
+  handleSessionInspectIpc,
+  isSessionInspectIpcType,
+  type SessionInspectDeps,
+} from './session-inspect-service.js';
 import { ProactiveCommentaryRelay } from './process-commentary.js';
 import {
   copiesGroupMessage,
@@ -1377,6 +1403,11 @@ let ipcWatcherManager: IpcWatcherManager | null = null;
 const shutdownSavedJids = new Set<string>();
 
 const queue = new GroupQueue();
+/** Live state `session_list` / `session_get` read besides the database. */
+const sessionInspectDeps: SessionInspectDeps = {
+  queueStatus: () => queue.getStatus(),
+  liveActivity: getSessionLiveActivity,
+};
 const EMPTY_CURSOR: MessageCursor = { timestamp: '', id: '', sequence: 0 };
 const terminalWarmupInFlight = new Set<string>();
 const STUCK_RUNNER_CHECK_INTERVAL_MS = 30_000;
@@ -3054,7 +3085,8 @@ function extractFeishuCardText(text: string): string | null {
 /**
  * The directory a run of workspace `folder` (as session `agentId`) works in,
  * where relative paths the Agent reports and IM files handed to it resolve:
- * a worktree session's worktree, a Host custom directory, or data/groups.
+ * a worktree session's worktree, a Host custom directory, or the workspace's
+ * own directory.
  */
 function agentWorkingRoot(folder: string, agentId?: string | null): string {
   const workspaceJid = findWebJidForFolder(folder);
@@ -3066,7 +3098,7 @@ function agentWorkingRoot(folder: string, agentId?: string | null): string {
         resolveEffectiveGroup(workspace).effectiveGroup,
         { agentId },
       )
-    : path.join(GROUPS_DIR, folder);
+    : workspaceDirOf(folder);
 }
 
 /**
@@ -4662,6 +4694,61 @@ function normalizeCursor(value: unknown): MessageCursor {
   return { ...EMPTY_CURSOR };
 }
 
+/**
+ * Web Push: the notice that tells the conversation's owner, on their other
+ * devices, that a Web-typed input finished or failed; null when the turn is
+ * not one that is pushed. `imSourceJid` is the IM chat the input came from,
+ * when it did: that IM notifies by itself. Never throws.
+ */
+function webTurnPushNotice(input: {
+  agentId: string;
+  kind: 'reply' | 'error';
+  text: string;
+  imSourceJid: string | null;
+  automationRunId: string | null;
+}): WebTurnNotice | null {
+  try {
+    const agent = getAgent(input.agentId);
+    if (!agent) return null;
+    const group = getRegisteredGroup(agent.chat_jid);
+    if (!group) return null;
+    if (
+      !isWebOriginTurn({
+        imSourceJid: input.imSourceJid,
+        automationRunId: input.automationRunId,
+        teamLane: teamLaneOf(agent) !== null,
+        sessionKind: agent.kind,
+        sessionSourceKind: agent.source_kind,
+      })
+    ) {
+      return null;
+    }
+    return {
+      ownerUserId: group.created_by,
+      kind: input.kind,
+      workspaceName: group.name,
+      sessionName: agent.name,
+      text: input.text,
+      conversation: {
+        chatJid: agent.chat_jid,
+        folder: group.folder,
+        agentId: agent.id,
+      },
+    };
+  } catch (err) {
+    logger.warn({ err, agentId: input.agentId }, 'Web push dispatch failed');
+    return null;
+  }
+}
+
+/** Push a turn outcome when it is one that is pushed. Never throws. */
+function pushWebTurnOutcome(
+  input: Parameters<typeof webTurnPushNotice>[0],
+): void {
+  const notice = webTurnPushNotice(input);
+  if (notice) void notifyWebTurn(notice);
+}
+
 function sendSystemMessage(jid: string, type: string, detail: string): void {
   const msgId = crypto.randomUUID();
   const timestamp = new Date().toISOString();
@@ -4967,7 +5054,9 @@ async function clearSessionRuntimeFiles(
     );
   }
 
-  if (!cleared) {
+  // Single-user host mode never runs Docker; the files a container left
+  // behind stay until an admin removes them.
+  if (!cleared && !isSingleUserHost()) {
     try {
       await execFileAsync(
         'docker',
@@ -5256,7 +5345,7 @@ async function handleFreshCommand(
       getRegisteredGroup(target.baseChatJid);
     const snapshotCwd = targetGroup
       ? resolveWorkspaceProjectRoot(targetGroup, { agentId: target.agentId })
-      : path.join(GROUPS_DIR, target.folder);
+      : workspaceDirOf(target.folder);
     const snapshot = await captureWorkspaceSnapshot(snapshotCwd);
     const handoff = formatFreshWindowHandoff({
       notes: rawNotes,
@@ -5340,29 +5429,18 @@ function resolveBindingTarget(
   | string {
   const spec = rawSpec.trim();
   const slash = spec.indexOf('/');
-  const workspaceSpec = (slash < 0 ? spec : spec.slice(0, slash))
-    .trim()
-    .toLowerCase();
-  const workspace = collectWorkspaces(userId).find(
-    (ws) =>
-      ws.folder.toLowerCase() === workspaceSpec ||
-      ws.name.trim().toLowerCase() === workspaceSpec,
+  const workspace = findWorkspaceBySpec(
+    collectWorkspaces(userId),
+    slash < 0 ? spec : spec.slice(0, slash),
   );
   if (!workspace) return BIND_TARGET_NOT_FOUND;
   if (slash < 0) return { workspace, session: null };
 
-  const sessionSpec = spec
-    .slice(slash + 1)
-    .trim()
-    .toLowerCase();
+  const sessionSpec = spec.slice(slash + 1).trim();
   if (!sessionSpec) {
     return '请在 / 后写会话短 ID 或名称：/bind <工作区>/<会话短ID>';
   }
-  const matches = workspace.agents.filter(
-    (item) =>
-      item.id.toLowerCase().startsWith(sessionSpec) ||
-      item.name.trim().toLowerCase() === sessionSpec,
-  );
+  const matches = findSessionsBySpec(workspace.agents, sessionSpec);
   if (matches.length === 0) return BIND_TARGET_NOT_FOUND;
   if (matches.length > 1) {
     return [
@@ -5479,7 +5557,7 @@ function handleUnbindCommand(chatJid: string): string {
 }
 
 function isAdminHostOnlyOwner(ownerId: string | null | undefined): boolean {
-  if (!ownerId || !getSystemSettings().adminHostOnlyMode) return false;
+  if (!ownerId || !isAdminHostOnlyEffective()) return false;
   return canExecuteOnHost(getUserById(ownerId));
 }
 
@@ -5919,8 +5997,11 @@ async function handleRecallCommand(
 
   const header = `🧠 ${locationLine}`;
 
-  // Fetch recent messages for summarization
-  const messages = getMessagesPage(targetJid, undefined, 10);
+  // Fetch recent messages for summarization. A cancelled input (recalled,
+  // cut by /break) is not part of the history the summary describes.
+  const messages = getMessagesPage(targetJid, undefined, 10).filter(
+    (msg) => !isCancelledInput(msg),
+  );
   logger.info(
     { chatJid, targetJid, messageCount: messages.length },
     '/recall: fetched messages',
@@ -6553,6 +6634,8 @@ interface SendMessageOptions {
    * later message of the same held reply sequence.
    */
   turnTrace?: { tracker: TurnTraceTracker; inputId: string; keep?: boolean };
+  /** Announce the message with `web_push` (the server pushes this reply). */
+  webPush?: boolean;
   /** Metadata used to preserve Claude SDK turn semantics for persisted messages. */
   messageMeta?: {
     turnId?: string;
@@ -6782,7 +6865,7 @@ function loadState(): void {
 
   // Repair persisted runtime rows on every startup as well as on the settings
   // transition. This also makes ADMIN_HOST_ONLY_MODE=true safe on first boot.
-  if (getSystemSettings().adminHostOnlyMode) {
+  if (isAdminHostOnlyEffective()) {
     const migration = forceActiveAdminRuntimesToHost();
     if (migration.affectedGroups.length > 0) {
       registeredGroups = getAllRegisteredGroups();
@@ -6792,6 +6875,18 @@ function loadState(): void {
       logger.info(
         { migratedGroups: migration.affectedGroups.length },
         'Repaired administrator runtimes for host-only mode',
+      );
+    }
+  }
+  // The settings route refuses this state; an environment variable alone
+  // can still reach it. Other users keep their accounts and Container
+  // workspaces, which cannot run while Docker is not used.
+  if (isSingleUserHost()) {
+    const activeUsers = listOtherActiveUsers('');
+    if (activeUsers.length > 1) {
+      logger.warn(
+        { users: activeUsers.map((user) => user.username) },
+        'Single-user host mode with more than one active user; deactivate the others',
       );
     }
   }
@@ -6899,9 +6994,11 @@ function registerGroup(jid: string, group: RegisteredGroup): void {
   registeredGroups[jid] = group;
   setRegisteredGroup(jid, group);
 
-  // Create group folder
-  const groupDir = path.join(GROUPS_DIR, group.folder);
-  fs.mkdirSync(path.join(groupDir, 'logs'), { recursive: true });
+  // A new Host workspace without a custom directory lives in the workspace
+  // root; everything else (Container workspaces, IM chat rows sharing a
+  // workspace folder) uses the folder's directory as it is.
+  assignWorkspaceRootDirIfNew(jid, group);
+  ensureWorkspaceDirs(group.folder);
 
   logger.info(
     // `name` is pino's logger-name field; it would replace the log prefix.
@@ -7019,8 +7116,12 @@ function buildExpandContext(
       (group.executionMode || 'container') === 'host'
         ? resolveWorkspaceProjectRoot(group, { agentId: resolvedAgentId })
         : group.customCwd,
-    groupsDir: GROUPS_DIR,
-    containerName: queue.getActiveContainerName(chatJid),
+    workspaceDir: workspaceDirOf(group.folder),
+    // Single-user host mode never runs `docker exec`: with no container
+    // the expander answers instead of running a container `!` command.
+    containerName: isSingleUserHost()
+      ? null
+      : queue.getActiveContainerName(chatJid),
   });
 }
 
@@ -7537,6 +7638,7 @@ async function sendMessageWithOutcome(
         source_kind: options.messageMeta?.sourceKind ?? null,
         finalization_reason: options.messageMeta?.finalizationReason ?? null,
         workflow_runs: options.workflowRuns,
+        ...(options.webPush ? { web_push: true } : {}),
       },
       undefined,
       options.source,
@@ -7850,6 +7952,9 @@ function startIpcWatcher(): void {
             if (data.type === 'message' && data.chatJid && data.text) {
               const targetGroup = getIpcDeliveryTargetGroup(data.chatJid);
               let messageDelivered = false;
+              // Set when the session has no IM route for this input: the
+              // canonical Web copy is the only delivery.
+              let webOnlyInput = false;
               let messageStaged = false;
               let messageDeliveryError: string | undefined;
               let messageDeliveryUncertain = false;
@@ -8169,6 +8274,7 @@ function startIpcWatcher(): void {
                     // durable persistence/broadcast below; it has no native
                     // provider side effect to acknowledge first.
                     messageDelivered = true;
+                    webOnlyInput = true;
                   }
                 }
 
@@ -8283,6 +8389,30 @@ function startIpcWatcher(): void {
                   }
                 }
                 if (messageDelivered) {
+                  // A Proactive session answers with a final send_message;
+                  // that is the reply a Web-typed input waits for.
+                  let finalPush: WebTurnNotice | null = null;
+                  if (
+                    webOnlyInput &&
+                    ipcInteractionMode === 'proactive' &&
+                    hostOutputRoute.deliveryRole === 'final' &&
+                    typeof data.inputTurnId === 'string' &&
+                    data.inputTurnId
+                  ) {
+                    const finalInput = getAgentBuilderInputMessage(
+                      effectiveChatJid,
+                      data.inputTurnId,
+                    );
+                    finalPush = webTurnPushNotice({
+                      agentId: ipcAgentId,
+                      kind: 'reply',
+                      text: webText,
+                      imSourceJid: null,
+                      automationRunId: finalInput
+                        ? automationRunIdOf(finalInput)
+                        : null,
+                    });
+                  }
                   const sendOutcome = await sendMessageWithOutcome(
                     effectiveChatJid,
                     webText,
@@ -8292,6 +8422,7 @@ function startIpcWatcher(): void {
                       // session, using a replay-stable id.
                       sendToIM: false,
                       messageId: projectionMessageId,
+                      webPush: finalPush !== null,
                       messageMeta: {
                         turnId:
                           typeof data.inputTurnId === 'string'
@@ -8306,6 +8437,9 @@ function startIpcWatcher(): void {
                     },
                   );
                   messageDelivered = sendOutcome.targetDelivered;
+                  if (messageDelivered && finalPush) {
+                    void notifyWebTurn(finalPush);
+                  }
                   if (!messageDelivered && nativeDeliveryAcknowledged) {
                     // The provider side effect already ACKed. Reporting a tool
                     // failure would invite a duplicate retry; preserve the ACK
@@ -8696,7 +8830,8 @@ function startIpcWatcher(): void {
               parsedData?.requestId &&
               (isAutomationIpcType(parsedData.type) ||
                 isLegacyTaskIpcType(parsedData.type) ||
-                isWorkIpcType(parsedData.type))
+                isWorkIpcType(parsedData.type) ||
+                isSessionInspectIpcType(parsedData.type))
             ) {
               const error = 'Internal error while processing task request.';
               writeTaskResult(
@@ -8704,7 +8839,8 @@ function startIpcWatcher(): void {
                 parsedData.type ?? '',
                 parsedData.requestId,
                 // Team tools answer in the `{ ok, error }` shape.
-                isWorkIpcType(parsedData.type)
+                isWorkIpcType(parsedData.type) ||
+                  isSessionInspectIpcType(parsedData.type)
                   ? { ok: false, error }
                   : { success: false, error },
               );
@@ -9459,6 +9595,29 @@ async function processTaskIpc(
     ).then((result) =>
       writeTaskResult(tasksDir, type, data.requestId, { ...result }),
     );
+    return;
+  }
+  if (isSessionInspectIpcType(data.type)) {
+    // Read-only. The caller is the IPC namespace the request was read from,
+    // never the body; whether the turn is the owner's own is judged by the
+    // input it names, as for work_delegate.
+    writeTaskResult(tasksDir, data.type, data.requestId, {
+      ...handleSessionInspectIpc(
+        sessionInspectDeps,
+        {
+          folder: sourceGroup,
+          agentId: ipcAgentId,
+          ownerTurn: (inputTurnId) =>
+            !!ownerTurnOf(
+              sourceGroup,
+              sourceGroupEntry,
+              ipcAgentId,
+              inputTurnId,
+            ),
+        },
+        data as unknown as { type: string } & Record<string, unknown>,
+      ),
+    });
     return;
   }
   if (isLegacyTaskIpcType(data.type)) {
@@ -12447,6 +12606,13 @@ async function processAgentConversation(
   ): Promise<void> => {
     const inputTurnId = activeAgentInputTurnId;
     sendSystemMessage(virtualChatJid, webType, text);
+    pushWebTurnOutcome({
+      agentId,
+      kind: 'error',
+      text,
+      imSourceJid: replySourceImJid,
+      automationRunId: automationTurns.runOf(inputTurnId),
+    });
     failDelegatedWorkerRun(agentId, text);
     agentDeterministicTerminalError = terminalError;
     automationTurns.settle(inputTurnId, {
@@ -12623,6 +12789,13 @@ async function processAgentConversation(
       );
     } else {
       sendSystemMessage(virtualChatJid, 'agent_error', errorDetail);
+      pushWebTurnOutcome({
+        agentId,
+        kind: 'error',
+        text: errorDetail,
+        imSourceJid: replySourceImJid,
+        automationRunId: automationTurns.runOf(inputTurnId),
+      });
       failDelegatedWorkerRun(agentId, errorDetail);
     }
     return true;
@@ -13568,6 +13741,20 @@ async function processAgentConversation(
           heldAgentDbMsgId = null;
           heldAgentDbTurnId = null;
         }
+        // Decided before the announcement, which says whether it is pushed.
+        const replyPush = isGenuineReplyResult({
+          holdReason,
+          sourceKind: output.sourceKind,
+          finalizationReason: output.finalizationReason,
+        })
+          ? webTurnPushNotice({
+              agentId,
+              kind: output.status === 'error' ? 'error' : 'reply',
+              text: dbText,
+              imSourceJid: outputAgentReplySourceJid ?? null,
+              automationRunId: automationTurns.runOf(outputAgentScope.inputId),
+            })
+          : null;
         broadcastNewMessage(
           virtualChatJid,
           {
@@ -13594,6 +13781,7 @@ async function processAgentConversation(
             workflow_runs: holdReason
               ? activeAgentWorkflowRuns
               : completedAgentWorkflowRuns,
+            ...(replyPush ? { web_push: true } : {}),
           },
           agentId,
         );
@@ -13602,6 +13790,7 @@ async function processAgentConversation(
         // its canonical DB/Web checkpoint must still block a trailing
         // session-only success from resurrecting the same SDK candidate.
         agentAnyReplyProjectedByInput.set(outputAgentScope.inputId, true);
+        if (replyPush) void notifyWebTurn(replyPush);
         if (!holdReason) {
           activeAgentWorkflowRuns = [];
           completedAgentWorkflowRuns = [];
@@ -15158,6 +15347,12 @@ function recoverStartupTypedIpcDeliveries(): void {
 }
 
 async function ensureDockerRunning(): Promise<void> {
+  // Single-user host mode never uses Docker: no probe, no cleanup, whatever
+  // execution mode a leftover row still has.
+  if (isSingleUserHost()) {
+    logger.info('Single-user host mode, skipping Docker checks');
+    return;
+  }
   // Skip all Docker checks when no groups use container mode
   if (!hasContainerModeGroups()) {
     logger.info('All groups use host execution mode, skipping Docker checks');
@@ -18216,6 +18411,15 @@ function migrateDataDirectories(): void {
 
 async function main(): Promise<void> {
   migrateDataDirectories();
+  // New Host workspaces (home workspaces included, created during loadState
+  // and setup) get their directory in the workspace root.
+  // The root must avoid what existing workspaces use, so a new
+  // workspace's directory can never land inside another's.
+  // A fallback that has a problem of its own is not used: the workspace
+  // stays in data/groups rather than claim a doubtful directory.
+  setWorkspaceRootResolver(() =>
+    getRootForNewWorkspaces(getWorkspaceRootOccupancy()),
+  );
   initDatabase();
   logger.info('Database initialized');
   installSystemMainModelConfigResolver();
@@ -18781,10 +18985,11 @@ async function main(): Promise<void> {
     10 * 60 * 1000,
   );
 
-  // Billing: check expired subscriptions every hour
+  // Billing: check expired subscriptions every hour (not in single-user
+  // host mode).
   setInterval(
     () => {
-      checkAndExpireSubscriptions();
+      runScheduledSubscriptionExpiry();
     },
     60 * 60 * 1000,
   );

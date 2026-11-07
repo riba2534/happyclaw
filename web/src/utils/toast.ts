@@ -1,4 +1,5 @@
 import { toast } from 'sonner';
+import { isPushSubscribed } from './webPush';
 
 const BACKGROUND_TASK_NOTICE_TTL_MS = 15_000;
 const OWNER_KEY = 'happyclaw:bg-task-notice-owner';
@@ -31,14 +32,30 @@ export function showToast(
   });
 }
 
+export interface PageNotificationOptions {
+  /**
+   * The server sends this event as a Web Push (a reply announced with
+   * `web_push`). Only then does a subscribed device leave it to the push;
+   * everything else the server does not push still notifies from the page.
+   */
+  pushCovered?: boolean;
+}
+
 /**
  * Send a browser Notification when the page is in the background.
  * Only fires if permission was already granted — never prompts the user
  * from a passive event handler. Permission should be requested via a
  * user-initiated action (e.g. a settings toggle).
  */
-export function notifyIfHidden(title: string, body?: string): void {
+export function notifyIfHidden(
+  title: string,
+  body?: string,
+  options: PageNotificationOptions = {},
+): void {
   if (!document.hidden) return;
+  // This device is subscribed to Web Push and the server pushes this event:
+  // a second notification from the page would repeat it.
+  if (options.pushCovered && isPushSubscribed()) return;
   if (typeof Notification === 'undefined') return;
   if (Notification.permission !== 'granted') return;
   try {

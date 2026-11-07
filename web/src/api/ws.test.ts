@@ -230,6 +230,83 @@ describe('wsManager', () => {
     expect(latest().closeCalls).toBe(0);
   });
 
+  test('reconnect attempts back off 1s, 2s, 4s… up to 30s, one at a time', () => {
+    vi.spyOn(Math, 'random').mockReturnValue(0.5); // no jitter
+    manager.connect();
+    latest().close();
+    const gaps: number[] = [];
+    for (let i = 0; i < 7; i++) {
+      const count = sockets().length;
+      let waited = 0;
+      while (sockets().length === count) {
+        vi.advanceTimersByTime(100);
+        waited += 100;
+      }
+      expect(sockets()).toHaveLength(count + 1);
+      gaps.push(waited);
+      latest().close();
+    }
+    expect(gaps).toEqual([1000, 2000, 4000, 8000, 16000, 30000, 30000]);
+    vi.mocked(Math.random).mockRestore();
+  });
+
+  test('the browser going offline pings an open socket, and keeps it if it answers', () => {
+    const disconnected = vi.fn();
+    manager.on('disconnected', disconnected);
+    manager.connect();
+    latest().open();
+    window.dispatchEvent(new Event('offline'));
+    // Online while the probe is out reuses it.
+    window.dispatchEvent(new Event('online'));
+    expect(latest().sent).toEqual([JSON.stringify({ type: 'ping' })]);
+    latest().receive({ type: 'pong' });
+    vi.advanceTimersByTime(ws.WS_PROBE_TIMEOUT_MS);
+    expect(sockets()).toHaveLength(1);
+    expect(disconnected).not.toHaveBeenCalled();
+  });
+
+  test('an answer from before the browser went offline does not keep the socket', () => {
+    const disconnected = vi.fn();
+    manager.on('disconnected', disconnected);
+    manager.connect();
+    const stale = latest();
+    stale.open();
+    window.dispatchEvent(new Event('online'));
+    stale.receive({ type: 'pong' });
+    vi.advanceTimersByTime(1000);
+    // The probe the online event sent is still out, already answered.
+    window.dispatchEvent(new Event('offline'));
+    expect(stale.sent).toEqual([
+      JSON.stringify({ type: 'ping' }),
+      JSON.stringify({ type: 'ping' }),
+    ]);
+    vi.advanceTimersByTime(ws.WS_PROBE_TIMEOUT_MS);
+    expect(stale.closeCalls).toBe(1);
+    expect(disconnected).toHaveBeenCalledTimes(1);
+    expect(sockets()).toHaveLength(2);
+  });
+
+  test('the browser going offline replaces an open socket that stays silent', () => {
+    const disconnected = vi.fn();
+    manager.on('disconnected', disconnected);
+    manager.connect();
+    const stale = latest();
+    stale.open();
+    window.dispatchEvent(new Event('offline'));
+    vi.advanceTimersByTime(ws.WS_PROBE_TIMEOUT_MS - 1);
+    expect(disconnected).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
+    expect(stale.closeCalls).toBe(1);
+    expect(disconnected).toHaveBeenCalledTimes(1);
+    expect(sockets()).toHaveLength(2);
+  });
+
+  test('the browser going offline with no socket wanted does nothing', () => {
+    window.dispatchEvent(new Event('offline'));
+    vi.advanceTimersByTime(60_000);
+    expect(sockets()).toHaveLength(0);
+  });
+
   test('stays down after disconnect() even when the page returns', () => {
     manager.connect();
     latest().open();

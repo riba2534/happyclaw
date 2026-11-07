@@ -20,6 +20,7 @@ import {
   resolveStorageSourceMount,
   type ResolvedStorage,
 } from './storage-sources.js';
+import { workspaceRootDirs } from './workspace-dir.js';
 import type {
   AdditionalMount,
   AllowedRoot,
@@ -393,39 +394,55 @@ export function findAllowedRoot(
   return selected?.root ?? null;
 }
 
-function getProtectedHostPaths(): string[] {
-  return [
-    '/proc',
-    '/sys',
-    '/dev',
-    '/run',
-    '/var/run',
-    '/var/lib/docker',
-    '/var/lib/containerd',
-    '/var/lib/containers',
-    DATA_DIR,
-    path.join(process.cwd(), '.env'),
-    path.join(process.cwd(), '.git'),
-    ...[
-      '.ssh',
-      '.gnupg',
-      '.aws',
-      '.azure',
-      '.gcloud',
-      '.kube',
-      '.docker',
-      '.claude',
-    ].map((name) => path.join(os.homedir(), name)),
-  ].map((item) => {
-    const resolved = path.resolve(item);
-    // DATA_DIR and other protected locations may themselves be symlinks.
-    // Compare against their canonical target whenever it exists.
-    return getRealPath(resolved) ?? resolved;
-  });
+/**
+ * Real paths no mount may overlap. Building it resolves the workspace roots,
+ * so a caller checking many paths (the directory browser) builds it once and
+ * passes it to validateMount / isHostMountNavigationPathAllowed.
+ */
+export function getProtectedHostPaths(
+  workspaceRoots: string[] = workspaceRootDirs(),
+): string[] {
+  return (
+    [
+      '/proc',
+      '/sys',
+      '/dev',
+      '/run',
+      '/var/run',
+      '/var/lib/docker',
+      '/var/lib/containerd',
+      '/var/lib/containers',
+      DATA_DIR,
+      path.join(process.cwd(), '.env'),
+      path.join(process.cwd(), '.git'),
+      ...[
+        '.ssh',
+        '.gnupg',
+        '.aws',
+        '.azure',
+        '.gcloud',
+        '.kube',
+        '.docker',
+        '.claude',
+      ].map((name) => path.join(os.homedir(), name)),
+    ]
+      .map((item) => {
+        const resolved = path.resolve(item);
+        // DATA_DIR and other protected locations may themselves be symlinks.
+        // Compare against their canonical target whenever it exists.
+        return getRealPath(resolved) ?? resolved;
+      })
+      // Other workspaces' directories: the workspace root and every root a
+      // recorded workspace directory still lives in (already real paths).
+      .concat(workspaceRoots)
+  );
 }
 
-function hardDeniedHostPath(realPath: string): string | null {
-  for (const protectedPath of getProtectedHostPaths()) {
+function hardDeniedHostPath(
+  realPath: string,
+  protectedPaths: string[] = getProtectedHostPaths(),
+): string | null {
+  for (const protectedPath of protectedPaths) {
     if (pathsOverlap(realPath, protectedPath)) return protectedPath;
   }
 
@@ -440,8 +457,11 @@ function hardDeniedHostPath(realPath: string): string | null {
  * even though that ancestor itself cannot be selected as a mount. It must
  * never enter the protected path or anything beneath it.
  */
-export function isHostMountNavigationPathAllowed(realPath: string): boolean {
-  for (const protectedPath of getProtectedHostPaths()) {
+export function isHostMountNavigationPathAllowed(
+  realPath: string,
+  protectedPaths: string[] = getProtectedHostPaths(),
+): boolean {
+  for (const protectedPath of protectedPaths) {
     if (isPathWithin(protectedPath, realPath)) return false;
   }
   return !realPath
@@ -632,6 +652,7 @@ export interface MountValidationResult {
 export function validateMount(
   mount: HostDirectoryMount,
   isMain: boolean,
+  protectedPaths?: string[],
 ): MountValidationResult {
   const allowlist = loadMountAllowlist();
   if (!allowlist || allowlist.allowedRoots.length === 0) {
@@ -694,7 +715,7 @@ export function validateMount(
     };
   }
 
-  const hardDenied = hardDeniedHostPath(realPath);
+  const hardDenied = hardDeniedHostPath(realPath, protectedPaths);
   if (hardDenied) {
     return {
       allowed: false,
@@ -796,6 +817,8 @@ export function validateAdditionalMountsStrict(
     }
   });
 
+  // Resolving the protected paths resolves the workspace roots: once.
+  const protectedPaths = parsedMounts.length > 0 ? getProtectedHostPaths() : [];
   for (let index = 0; index < parsedMounts.length; index += 1) {
     const mount = parsedMounts[index];
     if (isStorageSourceMount(mount)) {
@@ -851,7 +874,7 @@ export function validateAdditionalMountsStrict(
       });
       continue;
     }
-    const result = validateMount(mount, isMain);
+    const result = validateMount(mount, isMain, protectedPaths);
     if (
       !result.allowed ||
       !result.realHostPath ||
