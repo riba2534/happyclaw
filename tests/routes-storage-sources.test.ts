@@ -335,6 +335,7 @@ describe('storage source routes', () => {
     const after = await request('DELETE', 'stuck-nfs');
     expect(after.status).toBe(503);
     expect(await after.json()).toMatchObject({
+      error: expect.stringContaining('改动已生效'),
       persisted: true,
       retryable: true,
     });
