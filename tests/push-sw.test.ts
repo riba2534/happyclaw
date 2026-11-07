@@ -215,7 +215,8 @@ describe('push-sw.js', () => {
       const url = new URL(
         (worker.openWindow.mock.calls[0] as unknown[])[0] as string,
       );
-      expect(url.origin + url.pathname).toBe('https://hc.example/app/');
+      // The chat route itself: the root's redirect would drop the query.
+      expect(url.origin + url.pathname).toBe('https://hc.example/app/chat');
       expect(url.searchParams.get('push_open')).toBe('/chat/ws?agent=a1');
     });
 

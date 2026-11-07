@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 
 import { wsManager } from '../api/ws';
@@ -68,6 +68,10 @@ export function useWebPushLifecycle({ enabled }: { enabled: boolean }): void {
     s.currentGroup ? (s.activeAgentTab[s.currentGroup] ?? null) : null,
   );
 
+  // Read while rendering, before any effect (route restore, a child page)
+  // can replace the URL that carries it; applied in the effect below.
+  const [openedByPush] = useState(() => takePushOpenRoute());
+
   const latest = useRef({ pathname, currentGroup, agentId, navigate });
   latest.current = { pathname, currentGroup, agentId, navigate };
 
@@ -136,10 +140,19 @@ export function useWebPushLifecycle({ enabled }: { enabled: boolean }): void {
   // A tapped notification.
   useEffect(() => {
     if (!enabled) return;
-    const opened = takePushOpenRoute();
-    if (opened) {
-      window.history.replaceState(window.history.state, '', opened.cleanedHref);
-      if (opened.path) latest.current.navigate(opened.path, { replace: true });
+    if (openedByPush) {
+      // Drop the parameter if the URL still has it (nothing navigated yet).
+      const current = takePushOpenRoute();
+      if (current) {
+        window.history.replaceState(
+          window.history.state,
+          '',
+          current.cleanedHref,
+        );
+      }
+      if (openedByPush.path) {
+        latest.current.navigate(openedByPush.path, { replace: true });
+      }
     }
     if (!('serviceWorker' in navigator)) return;
     const container = navigator.serviceWorker;
@@ -153,5 +166,5 @@ export function useWebPushLifecycle({ enabled }: { enabled: boolean }): void {
     // addEventListener does not start the message queue by itself.
     container.startMessages?.();
     return () => container.removeEventListener('message', onMessage);
-  }, [enabled]);
+  }, [enabled, openedByPush]);
 }

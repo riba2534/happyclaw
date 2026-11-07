@@ -110,7 +110,9 @@ async function openConversation(path) {
     }
     return;
   }
-  const target = new URL(scope);
+  // The chat route, not the scope root: the root redirects to /chat and that
+  // redirect drops the query (HashRouter on iOS keeps it, BrowserRouter not).
+  const target = new URL('chat', scope);
   target.searchParams.set(OPEN_PARAM, path);
   await self.clients.openWindow(target.href);
 }

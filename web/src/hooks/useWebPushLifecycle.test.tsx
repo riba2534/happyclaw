@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-import { act } from 'react';
+import { act, useEffect, type ReactNode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { MemoryRouter, useLocation } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
@@ -67,20 +67,34 @@ let container: HTMLDivElement | null = null;
 let location!: ReturnType<typeof useLocation>;
 let worker: EventTarget & { startMessages: () => void };
 
-function Probe({ enabled }: { enabled: boolean }) {
+function Probe({
+  enabled,
+  children,
+}: {
+  enabled: boolean;
+  children?: ReactNode;
+}) {
   useWebPushLifecycle({ enabled });
   location = useLocation();
+  return <>{children}</>;
+}
+
+/** A page whose effect replaces the URL first, as route restore can. */
+function ReplacesUrlFirst() {
+  useEffect(() => {
+    window.history.replaceState(null, '', '/chat/restored');
+  }, []);
   return null;
 }
 
-async function mount(entry = '/chat/ws', enabled = true) {
+async function mount(entry = '/chat/ws', enabled = true, children?: ReactNode) {
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
   await act(async () => {
     root!.render(
       <MemoryRouter initialEntries={[entry]}>
-        <Probe enabled={enabled} />
+        <Probe enabled={enabled}>{children}</Probe>
       </MemoryRouter>,
     );
   });
@@ -279,6 +293,17 @@ describe('a tapped notification', () => {
     expect(location.pathname).toBe('/chat/ws');
     expect(location.search).toBe('?agent=a1');
     expect(window.location.search).toBe('?keep=1');
+  });
+
+  test('?push_open= is read before an effect below can replace the URL', async () => {
+    window.history.replaceState(
+      null,
+      '',
+      '/chat?push_open=%2Fchat%2Fws%3Fagent%3Da1',
+    );
+    await mount('/chat', true, <ReplacesUrlFirst />);
+    expect(location.pathname).toBe('/chat/ws');
+    expect(location.search).toBe('?agent=a1');
   });
 
   test('an unsafe ?push_open= is dropped without routing', async () => {
