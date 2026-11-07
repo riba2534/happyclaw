@@ -441,6 +441,106 @@ HTTP 状态为 409；请求不会停止现有 Runner，也不会修改绑定。
 `GET /api/browse/directories?purpose=mount` 浏览服务器目录；未配置有效 allowlist
 时该入口 fail-closed。
 
+位于宿主机 NFS 挂载之下的目录默认仍按普通绑定挂进容器。allowlist 的根目录设置
+`nfsDirectMount: true` 后，该根下位于 NFS 上的目录改由 Docker 直接挂同一个导出
+子目录（`local` 卷驱动）。宿主机重挂 NFS（NAS 重启、断网恢复）因此不会让运行中的
+容器拿到失效的挂载；Docker Desktop 与 OrbStack 的 VM 没有挂载传播，绑定的旧挂载会
+一直报 `EBADF`。授权不变：仍按宿主机路径校验 allowlist，开关取匹配到的最具体的根；
+根下不在 NFS 上的目录照常绑定。
+
+```json
+{
+  "allowedRoots": [
+    { "path": "/Volumes/nas", "allowReadWrite": true, "nfsDirectMount": true }
+  ]
+}
+```
+
+- 协议跟随宿主机挂载：NFSv4 仍用 v4（含次版本）和宿主机挂载的原路径（包括 v4
+  伪根下的路径），NFSv3 仍用 v3，选项为 `proto=tcp,hard`。macOS 的版本取自
+  `nfsstat -m`，Linux 取自挂载表。
+- 只有 NFSv3 且守护进程用不了 NLM 时才加 `nolock`：Docker Desktop 与 OrbStack 的
+  VM 不跑 rpc.statd，v3 加锁会报 `ENOLCK`，加 `nolock` 后锁只在容器内生效；Linux
+  上守护进程与宿主机共用内核的 lockd 和 rpc.statd，跟随宿主机挂载是否 `nolock`。
+  NFSv4 的锁在协议内完成，不加 `nolock`。
+- 无法按宿主机挂载重建时容器启动失败并说明原因，不会悄悄退回绑定：宿主机挂载用了
+  Kerberos（`sec=krb5*`）、版本不是 3 或 4.x、读不到挂载表或版本。把该根的
+  `nfsDirectMount` 去掉即恢复绑定。
+- 挂载由守护进程完成，需要：守护进程能直接连到 NAS（NFS 端口，v3 还需要 rpcbind
+  与 mountd）；rootless Docker 不能挂 NFS，不要开启；导出要求特权源端口（Linux
+  knfsd 默认的 `secure`、群晖默认设置）时，经用户态 NAT 出网的 Docker Desktop 与
+  OrbStack 可能被拒。NAS 看到的 uid 是容器内进程的 uid：Linux 上与服务用户一致，
+  Docker Desktop 与 OrbStack 下是容器内 `node` 的 1000，而不是 Mac 用户的 uid，
+  NAS 没有 `all_squash` 一类映射时请先确认文件权限。
+
+网络存储也可以作为存储源直接挂载。管理员在 allowlist 的 `storageSources` 中声明
+服务器与凭据，工作区只按 `id` 选择来源、来源内的子目录和是否只读：
+
+```json
+{
+  "storageSources": [
+    {
+      "id": "nas-nfs",
+      "type": "nfs",
+      "server": "nas.lan",
+      "exportPath": "/volume1/shared",
+      "nfsVersion": "3",
+      "allowReadWrite": true
+    },
+    {
+      "id": "nas-smb",
+      "type": "cifs",
+      "server": "nas.lan",
+      "share": "team",
+      "username": "happyclaw-agent",
+      "passwordFile": "config/secrets/nas-smb",
+      "smbVersion": "3.0",
+      "allowReadWrite": false
+    }
+  ]
+}
+```
+
+```json
+{
+  "additional_mounts": [
+    {
+      "source": "nas-nfs",
+      "sub_path": "projects/alpha",
+      "container_path": "alpha",
+      "readonly": false
+    }
+  ]
+}
+```
+
+- `type` 为 `nfs` 或 `cifs`（SMB）。挂载由 Docker 守护进程的内核完成，容器不需要
+  额外权限；子目录不存在时容器启动失败。`sub_path` 和宿主机目录一样不能命中
+  `blockedPatterns`（`.ssh`、`credentials` 等）。
+- SMB 密码只放在 `passwordFile`（绝对路径或相对项目根，必须是服务用户所有的 600
+  普通文件，单行、不含逗号），不进 allowlist、数据库、docker 命令行或日志：
+  启动时经 Docker Engine API 的请求体建一个命名卷
+  （`happyclaw-storage-<id>-<摘要>-<凭据版本>`，标签 `io.happyclaw.storage-source`），
+  容器按名字挂载。凭据版本是用服务端密钥（`WEB_SESSION_SECRET`）对密码做 HMAC 后取
+  的 8 位十六进制：改密码后新启动的容器用新卷，仍在运行的容器继续用旧卷，旧卷不会被
+  删除。Docker 自己会把卷参数（含密码）存在守护进程的数据目录里，
+  `docker volume inspect` 也能看到，所以请给 HappyClaw 用一个只有所需权限的专用
+  SMB 账号。只支持本机 unix socket 的 Docker 上下文；每次启动都按当前 Docker 上下文
+  建卷，与随后的 `docker run` 落在同一个守护进程。同名卷的参数不对（例如卷缺失时
+  `docker run` 自动建出的空本地卷）时，空闲则重建，在用则启动失败，不会把它当成共享
+  挂进容器。
+- 不再使用的 SMB 卷（改密码、改来源或删除工作区之后）目前不会自动回收，参数里仍有
+  旧密码。可以用 `docker volume ls --filter label=io.happyclaw.storage-source`
+  列出，确认没有容器在用后 `docker volume rm` 删除。
+- NFS 使用 AUTH_SYS 认证，NAS 只按来源 IP 和请求里自报的 uid 判断权限。容器出网与
+  守护进程主机共用同一个 IP，容器里的 Agent 可以自己连上导出，绕过 `sub_path` 和
+  只读限制。NAS 上只导出工作区可以看到的内容：按子目录单独导出，只读的就只读导出，
+  并设置 `all_squash`。宿主机目录的 `nfsDirectMount` 同样如此。
+- 没有 Unix 扩展的 SMB 共享没有可映射的属主，挂载按 `file_mode=0777,dir_mode=0777`
+  对容器内所有用户开放，实际权限由 SMB 账号在服务器上的权限决定。
+- 读写同时受来源的 `allowReadWrite` 与 `nonMainReadOnly` 约束；每次容器启动前都会
+  按当前 allowlist 重新校验，来源被删除后旧工作区无法启动。
+
 ## 文件
 
 - `GET|POST /api/groups/:jid/files`

@@ -166,6 +166,16 @@ import {
   sessionWorktreeRunError,
 } from './session-worktree.js';
 import { getSessionWorktree } from './session-worktree-store.js';
+import {
+  resolveNfsDirectMounts,
+  type NfsDirectMountResolution,
+} from './host-nfs-mounts.js';
+import {
+  ensureCifsVolume,
+  storageMountArg,
+  type VolumeMountStorage,
+} from './storage-volumes.js';
+import { isStorageSourceMount } from './storage-sources.js';
 import { RegisteredGroup } from './types.js';
 import type {
   AgentProfile,
@@ -985,9 +995,14 @@ function providerFailureDispositionLogMessage(
 }
 
 export interface VolumeMount {
+  /** Host path of a bind, or a display label for a storage mount. */
   hostPath: string;
   containerPath: string;
   readonly: boolean;
+  /** Mounted by Docker as a volume (NFS/SMB) instead of bound from the host. */
+  storage?: VolumeMountStorage;
+  /** Allowed root whose `nfsDirectMount` covers this host directory. */
+  nfsDirectMountRoot?: string;
 }
 
 export type AgentRunnerMode = 'image' | 'development';
@@ -2517,7 +2532,7 @@ function prepareVolumeMounts(
       group.name,
       group.is_home === true,
     );
-    mounts.push(...validatedMounts);
+    mounts.push(...withHostNfsSources(validatedMounts));
   }
 
   return {
@@ -2529,6 +2544,114 @@ function prepareVolumeMounts(
     usesCodexGateway,
     providerNeedsHostGateway,
   };
+}
+
+/**
+ * A host directory on an NFS share whose allowed root sets `nfsDirectMount`
+ * is mounted by Docker from the same export directory instead of bound from
+ * the host mount, so a host remount cannot leave the container with a stale
+ * handle (see host-nfs-mounts.ts). Every other host directory stays a bind.
+ * An opted-in directory that cannot be mounted directly fails the launch.
+ */
+export function withHostNfsSources(
+  mounts: VolumeMount[],
+  resolve: (
+    hostPaths: string[],
+  ) => NfsDirectMountResolution[] = resolveNfsDirectMounts,
+): VolumeMount[] {
+  const candidates = mounts.filter(
+    (mount) => !mount.storage && mount.nfsDirectMountRoot,
+  );
+  if (candidates.length === 0) return mounts;
+  const results = resolve(candidates.map((mount) => mount.hostPath));
+  const byMount = new Map(
+    candidates.map((mount, index) => [mount, results[index]]),
+  );
+  const issues: string[] = [];
+  const converted = mounts.map((mount) => {
+    const result = byMount.get(mount);
+    if (!result || result.kind === 'bind') return mount;
+    if (result.kind === 'error') {
+      issues.push(
+        `${mount.hostPath} cannot be mounted directly from NFS: ${result.reason}. Set nfsDirectMount to false on allowed root "${mount.nfsDirectMountRoot}" to bind it from the host instead`,
+      );
+      return mount;
+    }
+    logger.info(
+      {
+        hostPath: mount.hostPath,
+        nfs: `${result.source.server}:${result.source.device}`,
+        options: result.source.options,
+        containerPath: mount.containerPath,
+      },
+      'Host directory is on NFS; mounting its export directly',
+    );
+    return { ...mount, storage: { type: 'nfs' as const, ...result.source } };
+  });
+  if (issues.length > 0) throw new AdditionalMountValidationError(issues);
+  return converted;
+}
+
+/** Named SMB volumes for a launch, keyed by the share path they mount. */
+export type StorageVolumeNames = Map<string, string | Error>;
+
+function cifsVolumeKey(storage: { device: string; sourceId: string }): string {
+  return `${storage.sourceId}\u0000${storage.device}`;
+}
+
+/**
+ * Creates the named volumes the group's SMB mounts need, so the password
+ * stays out of argv. Validation failures are left to prepareVolumeMounts,
+ * which reports them where every other mount error is reported.
+ */
+export async function ensureGroupStorageVolumes(
+  group: RegisteredGroup,
+  ensureVolume: typeof ensureCifsVolume = ensureCifsVolume,
+): Promise<StorageVolumeNames> {
+  const names: StorageVolumeNames = new Map();
+  if (group.containerConfigError) return names;
+  const configured = parseContainerConfig(group.containerConfig).config
+    ?.additionalMounts;
+  if (!configured?.some(isStorageSourceMount)) return names;
+  let validated: VolumeMount[];
+  try {
+    validated = validateAdditionalMounts(
+      configured,
+      group.name,
+      group.is_home === true,
+    );
+  } catch {
+    return names;
+  }
+  for (const mount of validated) {
+    if (mount.storage?.type !== 'cifs') continue;
+    const key = cifsVolumeKey(mount.storage);
+    if (names.has(key)) continue;
+    try {
+      names.set(key, await ensureVolume(mount.storage));
+    } catch (err) {
+      names.set(key, err instanceof Error ? err : new Error(String(err)));
+    }
+  }
+  return names;
+}
+
+/** Points each SMB mount at its named volume; fails if it has none. */
+export function withNamedStorageVolumes(
+  mounts: VolumeMount[],
+  names: StorageVolumeNames,
+): VolumeMount[] {
+  return mounts.map((mount) => {
+    if (mount.storage?.type !== 'cifs') return mount;
+    const name = names.get(cifsVolumeKey(mount.storage));
+    if (name instanceof Error) throw name;
+    if (!name) {
+      throw new Error(
+        `SMB volume for ${mount.containerPath} was not prepared before launch`,
+      );
+    }
+    return { ...mount, storage: { type: 'named' as const, name } };
+  });
 }
 
 export function buildVolumeMounts(
@@ -2895,9 +3018,14 @@ export function buildContainerArgs(
     args.push('--add-host', 'host.docker.internal:host-gateway');
   }
 
-  // Docker: -v with :ro suffix for readonly
+  // Docker: -v with :ro suffix for readonly; storage mounts are volumes
   for (const mount of mounts) {
-    if (mount.readonly) {
+    if (mount.storage) {
+      args.push(
+        '--mount',
+        storageMountArg(mount.storage, mount.containerPath, mount.readonly),
+      );
+    } else if (mount.readonly) {
       args.push('-v', `${mount.hostPath}:${mount.containerPath}:ro`);
     } else {
       args.push('-v', `${mount.hostPath}:${mount.containerPath}`);
@@ -3018,6 +3146,9 @@ export async function runContainerAgent(
   // selection, so everything from selection to spawn stays one synchronous
   // step while the docker CLI round trip no longer blocks the event loop.
   const hostIdentity = await detectContainerHostIdentityAsync();
+  // SMB shares become named volumes through the Docker Engine API; that round
+  // trip also happens ahead of the selection-to-spawn block.
+  const storageVolumes = await ensureGroupStorageVolumes(group);
 
   const groupDir = workspaceDirOf(group.folder);
   mkdirForContainer(groupDir);
@@ -3089,7 +3220,10 @@ export async function runContainerAgent(
       containerProxy,
       codexGatewayLease,
     );
-    const mounts = preparedLaunch.mounts;
+    const mounts = withNamedStorageVolumes(
+      preparedLaunch.mounts,
+      storageVolumes,
+    );
     const dockerPlugins = group.created_by
       ? loadUserPlugins(group.created_by, { runtime: 'docker' })
       : [];

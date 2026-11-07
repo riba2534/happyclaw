@@ -944,7 +944,7 @@ groupRoutes.post('/', authMiddleware, async (c) => {
       return c.json(
         {
           error:
-            'Only an active administrator can mount host directories into a workspace',
+            'Only an active administrator can add additional mounts (host directories or storage sources) to a workspace',
           code: 'HOST_MOUNT_ADMIN_REQUIRED',
         },
         403,
@@ -953,7 +953,8 @@ groupRoutes.post('/', authMiddleware, async (c) => {
     if (executionMode !== 'container') {
       return c.json(
         {
-          error: 'Host directory mounts are only valid for container mode',
+          error:
+            'Additional mounts (host directories and storage sources) are only valid for container mode',
           code: 'HOST_MOUNT_CONTAINER_ONLY',
         },
         400,
@@ -967,11 +968,20 @@ groupRoutes.post('/', authMiddleware, async (c) => {
   if (requestedAdditionalMounts.length > 0) {
     try {
       validatedAdditionalMounts = validateAdditionalMountsStrict(
-        requestedAdditionalMounts.map((mount) => ({
-          hostPath: mount.host_path,
-          containerPath: mount.container_path,
-          readonly: mount.readonly,
-        })),
+        requestedAdditionalMounts.map((mount) =>
+          'source' in mount
+            ? {
+                source: mount.source,
+                ...(mount.sub_path ? { subPath: mount.sub_path } : {}),
+                containerPath: mount.container_path,
+                readonly: mount.readonly,
+              }
+            : {
+                hostPath: mount.host_path,
+                containerPath: mount.container_path,
+                readonly: mount.readonly,
+              },
+        ),
         name,
         false,
       );

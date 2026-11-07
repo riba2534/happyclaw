@@ -13,11 +13,19 @@ import crypto from 'crypto';
 
 import { DATA_DIR, MOUNT_ALLOWLIST_PATH } from './config.js';
 import { logger } from './logger.js';
+import {
+  describeStorage,
+  isStorageSourceMount,
+  parseStorageSources,
+  resolveStorageSourceMount,
+  type ResolvedStorage,
+} from './storage-sources.js';
 import { workspaceRootDirs } from './workspace-dir.js';
 import type {
   AdditionalMount,
   AllowedRoot,
   ContainerConfig,
+  HostDirectoryMount,
   MountAllowlist,
 } from './types.js';
 
@@ -95,10 +103,19 @@ function validateAllowlistShape(raw: unknown): MountAllowlist {
     ) {
       throw new Error(`allowedRoots[${index}].description must be a string`);
     }
+    if (
+      entry.nfsDirectMount !== undefined &&
+      typeof entry.nfsDirectMount !== 'boolean'
+    ) {
+      throw new Error(
+        `allowedRoots[${index}].nfsDirectMount must be a boolean`,
+      );
+    }
     return {
       path: entry.path.trim(),
       allowReadWrite: entry.allowReadWrite,
       description: entry.description,
+      ...(entry.nfsDirectMount === true ? { nfsDirectMount: true } : {}),
     };
   });
 
@@ -115,6 +132,7 @@ function validateAllowlistShape(raw: unknown): MountAllowlist {
       ]),
     ],
     nonMainReadOnly: raw.nonMainReadOnly,
+    storageSources: parseStorageSources(raw.storageSources),
   };
 }
 
@@ -153,6 +171,7 @@ export function loadMountAllowlist(): MountAllowlist | null {
       {
         path: MOUNT_ALLOWLIST_PATH,
         allowedRoots: allowlist.allowedRoots.length,
+        storageSources: allowlist.storageSources.length,
         blockedPatterns: allowlist.blockedPatterns.length,
       },
       'Mount allowlist loaded successfully',
@@ -421,17 +440,30 @@ export function parseContainerConfig(raw: unknown): ContainerConfigParseResult {
           error: `container_config.additionalMounts[${index}] must be an object`,
         };
       }
-      const itemUnknown = unknownKeys(item, [
-        'hostPath',
-        'containerPath',
-        'readonly',
-      ]);
+      const isSource = item.source !== undefined;
+      const itemUnknown = unknownKeys(
+        item,
+        isSource
+          ? ['source', 'subPath', 'containerPath', 'readonly']
+          : ['hostPath', 'containerPath', 'readonly'],
+      );
       if (itemUnknown.length > 0) {
         return {
           error: `container_config.additionalMounts[${index}] contains unknown fields: ${itemUnknown.join(', ')}`,
         };
       }
-      if (
+      if (isSource) {
+        if (typeof item.source !== 'string' || !item.source.trim()) {
+          return {
+            error: `container_config.additionalMounts[${index}].source must be a non-empty string`,
+          };
+        }
+        if (item.subPath !== undefined && typeof item.subPath !== 'string') {
+          return {
+            error: `container_config.additionalMounts[${index}].subPath must be a string`,
+          };
+        }
+      } else if (
         typeof item.hostPath !== 'string' ||
         !item.hostPath.trim() ||
         item.hostPath.length > 4096
@@ -450,11 +482,21 @@ export function parseContainerConfig(raw: unknown): ContainerConfigParseResult {
           error: `container_config.additionalMounts[${index}].readonly must be a boolean`,
         };
       }
-      additionalMounts.push({
-        hostPath: item.hostPath.trim(),
-        containerPath: item.containerPath,
-        readonly: item.readonly ?? true,
-      });
+      const readonly = item.readonly ?? true;
+      additionalMounts.push(
+        isSource
+          ? {
+              source: (item.source as string).trim(),
+              ...(item.subPath ? { subPath: item.subPath as string } : {}),
+              containerPath: item.containerPath,
+              readonly,
+            }
+          : {
+              hostPath: (item.hostPath as string).trim(),
+              containerPath: item.containerPath,
+              readonly,
+            },
+      );
     }
   }
 
@@ -473,10 +515,12 @@ export interface MountValidationResult {
   realHostPath?: string;
   resolvedContainerPath?: string;
   effectiveReadonly?: boolean;
+  /** The allowed root (as configured) that opts this path into NFS direct mounting. */
+  nfsDirectMountRoot?: string;
 }
 
 export function validateMount(
-  mount: AdditionalMount,
+  mount: HostDirectoryMount,
   isMain: boolean,
   protectedPaths?: string[],
 ): MountValidationResult {
@@ -588,13 +632,21 @@ export function validateMount(
     realHostPath: realPath,
     resolvedContainerPath: containerPath,
     effectiveReadonly: !requestedReadWrite,
+    ...(allowedRoot.nfsDirectMount
+      ? { nfsDirectMountRoot: allowedRoot.path }
+      : {}),
   };
 }
 
 export interface ValidatedAdditionalMount {
+  /** Canonical host path, or a display label for a storage source. */
   hostPath: string;
   containerPath: string;
   readonly: boolean;
+  /** Set for storage-source mounts: what Docker mounts instead of a bind. */
+  storage?: ResolvedStorage;
+  /** Host directories only: the allowed root that opts into NFS direct mounting. */
+  nfsDirectMountRoot?: string;
   persisted: AdditionalMount;
 }
 
@@ -638,7 +690,61 @@ export function validateAdditionalMountsStrict(
   // Resolving the protected paths resolves the workspace roots: once.
   const protectedPaths = parsedMounts.length > 0 ? getProtectedHostPaths() : [];
   for (let index = 0; index < parsedMounts.length; index += 1) {
-    const result = validateMount(parsedMounts[index], isMain, protectedPaths);
+    const mount = parsedMounts[index];
+    if (isStorageSourceMount(mount)) {
+      const allowlist = loadMountAllowlist();
+      let containerSuffix: string;
+      try {
+        containerSuffix = normalizeAdditionalMountContainerPath(
+          mount.containerPath,
+        );
+      } catch (err) {
+        issues.push(
+          `additionalMounts[${index}]: ${err instanceof Error ? err.message : String(err)}`,
+        );
+        continue;
+      }
+      const result = allowlist
+        ? resolveStorageSourceMount(mount, allowlist, isMain)
+        : {
+            allowed: false,
+            reason: `No mount allowlist configured at ${MOUNT_ALLOWLIST_PATH}`,
+          };
+      if (
+        !result.allowed ||
+        !('storage' in result) ||
+        !result.storage ||
+        result.effectiveReadonly === undefined
+      ) {
+        issues.push(`additionalMounts[${index}]: ${result.reason}`);
+        continue;
+      }
+      // Same blocked names as host directories (.ssh, credentials, ...).
+      const blockedMatch =
+        allowlist && result.subPath
+          ? matchesBlockedPattern(result.subPath, allowlist.blockedPatterns)
+          : null;
+      if (blockedMatch) {
+        issues.push(
+          `additionalMounts[${index}]: subPath matches blocked pattern "${blockedMatch}": "${result.subPath}"`,
+        );
+        continue;
+      }
+      validated.push({
+        hostPath: describeStorage(result.storage),
+        containerPath: `${ADDITIONAL_MOUNT_CONTAINER_ROOT}/${containerSuffix}`,
+        readonly: result.effectiveReadonly,
+        storage: result.storage,
+        persisted: {
+          source: mount.source,
+          ...(result.subPath ? { subPath: result.subPath } : {}),
+          containerPath: containerSuffix,
+          readonly: result.effectiveReadonly,
+        },
+      });
+      continue;
+    }
+    const result = validateMount(mount, isMain, protectedPaths);
     if (
       !result.allowed ||
       !result.realHostPath ||
@@ -653,6 +759,9 @@ export function validateAdditionalMountsStrict(
       hostPath: result.realHostPath,
       containerPath: `${ADDITIONAL_MOUNT_CONTAINER_ROOT}/${suffix}`,
       readonly: result.effectiveReadonly,
+      ...(result.nfsDirectMountRoot
+        ? { nfsDirectMountRoot: result.nfsDirectMountRoot }
+        : {}),
       persisted: {
         hostPath: result.realHostPath,
         containerPath: suffix,
@@ -698,12 +807,20 @@ export function validateAdditionalMounts(
   mounts: unknown,
   groupName: string,
   isMain: boolean,
-): Array<{ hostPath: string; containerPath: string; readonly: boolean }> {
+): Array<{
+  hostPath: string;
+  containerPath: string;
+  readonly: boolean;
+  storage?: ResolvedStorage;
+  nfsDirectMountRoot?: string;
+}> {
   return validateAdditionalMountsStrict(mounts, groupName, isMain).map(
-    ({ hostPath, containerPath, readonly }) => ({
+    ({ hostPath, containerPath, readonly, storage, nfsDirectMountRoot }) => ({
       hostPath,
       containerPath,
       readonly,
+      ...(storage ? { storage } : {}),
+      ...(nfsDirectMountRoot ? { nfsDirectMountRoot } : {}),
     }),
   );
 }
