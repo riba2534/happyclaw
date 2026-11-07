@@ -215,7 +215,10 @@ import {
   MAX_SILENT_STOP_CONTINUES,
 } from './silent-stop.js';
 import { ToolLoopDetector } from './tool-loop-detector.js';
-import { writeCliSecretFiles } from './cli-secret-files.js';
+import {
+  sweepOrphanCliSecretDirs,
+  writeCliSecretFiles,
+} from './cli-secret-files.js';
 
 // 路径解析：优先读取环境变量，降级到容器内默认路径（保持向后兼容）
 const WORKSPACE_GROUP =
@@ -4656,6 +4659,13 @@ function forceExitWithSafetyNet(code: number): never {
 }
 
 async function main(): Promise<void> {
+  // SIGKILL gives a Runner no chance to remove its CLI secret files.
+  const sweptCliSecretDirs = sweepOrphanCliSecretDirs();
+  if (sweptCliSecretDirs > 0) {
+    log(
+      `Removed ${sweptCliSecretDirs} CLI secret file director(ies) left by killed Runners`,
+    );
+  }
   let containerInput: ContainerInput;
 
   try {
