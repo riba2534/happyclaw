@@ -11,6 +11,19 @@ export function resolveFollowUpMode(
   return requestedMode ?? 'queue';
 }
 
+/**
+ * An input cancelled before it ran (a Feishu recall, `/break`, a withdrawn
+ * queue entry). Its text stays in the database, but no reader of the history
+ * shows it, like the Web timeline. A subsumed root is not cancelled: its text
+ * reached the Agent with the forwarded note that covered it.
+ */
+export function isCancelledInput(message: {
+  is_from_me: boolean | number;
+  delivery_status?: string | null;
+}): boolean {
+  return !message.is_from_me && message.delivery_status === 'cancelled';
+}
+
 export type RuntimeControl =
   | { kind: 'steer'; text: string }
   | { kind: 'clear' }

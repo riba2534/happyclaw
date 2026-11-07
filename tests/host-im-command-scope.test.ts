@@ -18,6 +18,7 @@ import {
 import { isNativeContextContainer } from '../src/channel-mount-service.js';
 import { resolveNativeThreadContext } from '../src/channel-native-context.js';
 import { DefinitiveChannelDeliveryError } from '../src/channel-outbox-delivery.js';
+import { isCancelledInput } from '../src/follow-up-policy.js';
 import { getChannelType } from '../src/im-channel.js';
 import {
   OWNER_REQUIRED_IM_COMMANDS,
@@ -230,6 +231,7 @@ function recallLane() {
     resolveBoundChatTarget,
     resolveSessionTarget,
     getMessagesPage,
+    isCancelledInput,
     summarizeWithClaude: vi.fn(async () => null),
     formatContextMessages,
   };
@@ -297,6 +299,32 @@ describe('/recall reads the Session this message routes to (P0-2)', () => {
       undefined,
       10,
     );
+  });
+
+  test('a cancelled input is left out of the summary and the raw fallback', async () => {
+    const l = recallLane();
+    const row = (id: string, content: string, extra: object = {}) => ({
+      id,
+      chat_jid: 'web:ws#agent:session-normal',
+      sender: 'u',
+      sender_name: 'User',
+      content,
+      is_from_me: false,
+      ...extra,
+    });
+    // Newest first, as getMessagesPage returns them.
+    l.getMessagesPage.mockReturnValueOnce([
+      row('m3', 'withdrawn secret', { delivery_status: 'cancelled' }),
+      row('m2', 'the answer', { is_from_me: true, sender_name: 'AI' }),
+      row('m1', 'the question', { delivery_status: 'subsumed' }),
+    ] as never);
+    const reply = await l.recall('feishu:oc_normal');
+    const transcript = l.globals.summarizeWithClaude.mock.calls[0][0];
+    expect(transcript).toContain('the question');
+    expect(transcript).toContain('the answer');
+    expect(transcript).not.toContain('withdrawn secret');
+    expect(reply).toContain('the answer');
+    expect(reply).not.toContain('withdrawn secret');
   });
 
   test('an unbound chat reads nothing and says so', async () => {

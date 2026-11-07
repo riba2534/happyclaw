@@ -103,7 +103,7 @@ import {
 } from './channel-delivery-failure.js';
 import { setImDownloadRootResolver } from './im-downloader.js';
 import { escapeFeishuPanelInline } from './feishu-cards/sections.js';
-import { resolveFollowUpMode } from './follow-up-policy.js';
+import { isCancelledInput, resolveFollowUpMode } from './follow-up-policy.js';
 import {
   discardStartupTypedIpcDeliveries,
   isIpcInputPayloadFilename,
@@ -5921,8 +5921,11 @@ async function handleRecallCommand(
 
   const header = `🧠 ${locationLine}`;
 
-  // Fetch recent messages for summarization
-  const messages = getMessagesPage(targetJid, undefined, 10);
+  // Fetch recent messages for summarization. A cancelled input (recalled,
+  // cut by /break) is not part of the history the summary describes.
+  const messages = getMessagesPage(targetJid, undefined, 10).filter(
+    (msg) => !isCancelledInput(msg),
+  );
   logger.info(
     { chatJid, targetJid, messageCount: messages.length },
     '/recall: fetched messages',
