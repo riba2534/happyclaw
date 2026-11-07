@@ -148,6 +148,7 @@ import type {
   RunFinishReason,
   RegisteredGroup,
 } from './types.js';
+import type { SessionLiveActivity } from './session-inspect-service.js';
 import {
   WEB_PORT,
   SESSION_COOKIE_NAME_SECURE,
@@ -3180,6 +3181,42 @@ export function buildStreamSnapshot(
       turnId: snap.turnId,
       ...(snap.progress?.length ? { progress: snap.progress } : {}),
     },
+  };
+}
+
+/**
+ * What a running session is doing right now, read from its stream snapshot for
+ * the session inspection tools: the tools in flight, the sub-agents still
+ * running, whether it is compacting, and its latest progress statement. Names
+ * and short summaries only; no reasoning or reply text. Null when no run owns
+ * a snapshot for this runtime JID.
+ */
+export function getSessionLiveActivity(
+  jid: string,
+): SessionLiveActivity | null {
+  const snap = streamingSnapshots.get(jid);
+  if (!snap?.runId) return null;
+  const tail = snap.progress?.at(-1);
+  return {
+    activeTools: snap.activeTools
+      .filter((tool) => !tool.isNested)
+      .map((tool) => ({
+        name: tool.toolName,
+        elapsedSeconds: tool.elapsedSeconds ?? null,
+        summary: tool.toolInputSummary ?? null,
+      })),
+    activeSubagents: Object.values(snap.taskStates)
+      .filter(
+        (task) => task.status === 'running' || task.status === 'backgrounded',
+      )
+      .map((task) => ({
+        title: task.title,
+        status: task.status,
+        type: task.subagentType ?? task.taskType ?? null,
+      })),
+    compacting: snap.systemStatus === 'compacting',
+    latestProgress: tail ? { at: tail.at, text: tail.text } : null,
+    updatedAt: snap.updatedAt,
   };
 }
 

@@ -103,7 +103,7 @@ import {
 } from './channel-delivery-failure.js';
 import { setImDownloadRootResolver } from './im-downloader.js';
 import { escapeFeishuPanelInline } from './feishu-cards/sections.js';
-import { resolveFollowUpMode } from './follow-up-policy.js';
+import { isCancelledInput, resolveFollowUpMode } from './follow-up-policy.js';
 import {
   discardStartupTypedIpcDeliveries,
   isIpcInputPayloadFilename,
@@ -400,6 +400,8 @@ import {
   StreamingCardController,
 } from './feishu-streaming-card.js';
 import {
+  findSessionsBySpec,
+  findWorkspaceBySpec,
   formatContextMessages,
   formatWorkspaceList,
   formatSystemStatus,
@@ -625,7 +627,13 @@ import {
   broadcastFollowUpUpdate,
   broadcastMessageTrace,
   broadcastUsageLimitWait,
+  getSessionLiveActivity,
 } from './web.js';
+import {
+  handleSessionInspectIpc,
+  isSessionInspectIpcType,
+  type SessionInspectDeps,
+} from './session-inspect-service.js';
 import { ProactiveCommentaryRelay } from './process-commentary.js';
 import {
   copiesGroupMessage,
@@ -1390,6 +1398,11 @@ let ipcWatcherManager: IpcWatcherManager | null = null;
 const shutdownSavedJids = new Set<string>();
 
 const queue = new GroupQueue();
+/** Live state `session_list` / `session_get` read besides the database. */
+const sessionInspectDeps: SessionInspectDeps = {
+  queueStatus: () => queue.getStatus(),
+  liveActivity: getSessionLiveActivity,
+};
 const EMPTY_CURSOR: MessageCursor = { timestamp: '', id: '', sequence: 0 };
 const terminalWarmupInFlight = new Set<string>();
 const STUCK_RUNNER_CHECK_INTERVAL_MS = 30_000;
@@ -5356,29 +5369,18 @@ function resolveBindingTarget(
   | string {
   const spec = rawSpec.trim();
   const slash = spec.indexOf('/');
-  const workspaceSpec = (slash < 0 ? spec : spec.slice(0, slash))
-    .trim()
-    .toLowerCase();
-  const workspace = collectWorkspaces(userId).find(
-    (ws) =>
-      ws.folder.toLowerCase() === workspaceSpec ||
-      ws.name.trim().toLowerCase() === workspaceSpec,
+  const workspace = findWorkspaceBySpec(
+    collectWorkspaces(userId),
+    slash < 0 ? spec : spec.slice(0, slash),
   );
   if (!workspace) return BIND_TARGET_NOT_FOUND;
   if (slash < 0) return { workspace, session: null };
 
-  const sessionSpec = spec
-    .slice(slash + 1)
-    .trim()
-    .toLowerCase();
+  const sessionSpec = spec.slice(slash + 1).trim();
   if (!sessionSpec) {
     return '请在 / 后写会话短 ID 或名称：/bind <工作区>/<会话短ID>';
   }
-  const matches = workspace.agents.filter(
-    (item) =>
-      item.id.toLowerCase().startsWith(sessionSpec) ||
-      item.name.trim().toLowerCase() === sessionSpec,
-  );
+  const matches = findSessionsBySpec(workspace.agents, sessionSpec);
   if (matches.length === 0) return BIND_TARGET_NOT_FOUND;
   if (matches.length > 1) {
     return [
@@ -5935,8 +5937,11 @@ async function handleRecallCommand(
 
   const header = `🧠 ${locationLine}`;
 
-  // Fetch recent messages for summarization
-  const messages = getMessagesPage(targetJid, undefined, 10);
+  // Fetch recent messages for summarization. A cancelled input (recalled,
+  // cut by /break) is not part of the history the summary describes.
+  const messages = getMessagesPage(targetJid, undefined, 10).filter(
+    (msg) => !isCancelledInput(msg),
+  );
   logger.info(
     { chatJid, targetJid, messageCount: messages.length },
     '/recall: fetched messages',
@@ -8730,7 +8735,8 @@ function startIpcWatcher(): void {
               parsedData?.requestId &&
               (isAutomationIpcType(parsedData.type) ||
                 isLegacyTaskIpcType(parsedData.type) ||
-                isWorkIpcType(parsedData.type))
+                isWorkIpcType(parsedData.type) ||
+                isSessionInspectIpcType(parsedData.type))
             ) {
               const error = 'Internal error while processing task request.';
               writeTaskResult(
@@ -8738,7 +8744,8 @@ function startIpcWatcher(): void {
                 parsedData.type ?? '',
                 parsedData.requestId,
                 // Team tools answer in the `{ ok, error }` shape.
-                isWorkIpcType(parsedData.type)
+                isWorkIpcType(parsedData.type) ||
+                  isSessionInspectIpcType(parsedData.type)
                   ? { ok: false, error }
                   : { success: false, error },
               );
@@ -9493,6 +9500,29 @@ async function processTaskIpc(
     ).then((result) =>
       writeTaskResult(tasksDir, type, data.requestId, { ...result }),
     );
+    return;
+  }
+  if (isSessionInspectIpcType(data.type)) {
+    // Read-only. The caller is the IPC namespace the request was read from,
+    // never the body; whether the turn is the owner's own is judged by the
+    // input it names, as for work_delegate.
+    writeTaskResult(tasksDir, data.type, data.requestId, {
+      ...handleSessionInspectIpc(
+        sessionInspectDeps,
+        {
+          folder: sourceGroup,
+          agentId: ipcAgentId,
+          ownerTurn: (inputTurnId) =>
+            !!ownerTurnOf(
+              sourceGroup,
+              sourceGroupEntry,
+              ipcAgentId,
+              inputTurnId,
+            ),
+        },
+        data as unknown as { type: string } & Record<string, unknown>,
+      ),
+    });
     return;
   }
   if (isLegacyTaskIpcType(data.type)) {

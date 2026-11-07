@@ -390,6 +390,14 @@ preset 的身份和默认风格，只低于平台的安全、权限、工具和�
   `.claude/rules/**`，与上下文来源无关（`container/agent-runner/src/claude-memory-policy.ts`）；
   自定义目录指向 HappyClaw 仓库本身时保留它。`host_claude` 只决定是否继承宿主用户的
   `~/.claude` 记忆。
+- 普通会话（含多任务工作区的普通会话）有只读的 `session_list`、`session_get`，按需加载：
+  宿主在主进程里合成会话的 `runtime_state`（running、queued_slot、rate_limited、
+  waiting_human、warm_idle、idle、error；`active` 不等于在跑），来源是 SQLite 加
+  GroupQueue 与流式快照。`error` 指上一轮失败：普通会话失败后回到 `idle`，错误留在
+  `result_summary`（可能为空串），下一轮开始时清空。非 Home 工作区只能看本工作区，Home
+  可以看主人的全部工作区（必须写明工作区；Host 工作区只在主人是 admin 时可见），永远不能
+  看其他用户的；不是主人亲自发起的轮次只得到本工作区的状态字段。团队会话与派发 Worker
+  不注册。实现和权限见 `src/session-inspect-service.ts`、`docs/ACL-MATRIX.md` §10。
 - Skill、MCP、Plugin 变更会停相关 Runner 并开新 SDK 会话，下一轮自动补注近期历史；
   运行中的 Agent 自己调用 `install_skill` 时，本轮结果送达后才重置。安装、卸载 Skill
   只接受工作区主人亲自发起的轮次。
