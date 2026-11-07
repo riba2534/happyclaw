@@ -118,6 +118,7 @@ import {
 import {
   deleteWebPushSubscriptionsForUser,
   initWebPushStore,
+  moveWebPushSubscriptionsToSession,
 } from './web-push-store.js';
 import {
   DEFAULT_WORK_MODE,
@@ -11212,6 +11213,23 @@ export function deleteUserSession(sessionId: string): void {
 
 export function deleteUserSessionsByUserId(userId: string): void {
   prepareCached('DELETE FROM user_sessions WHERE user_id = ?').run(userId);
+}
+
+/**
+ * End every session of `userId` and sign the device of `currentSessionId` in
+ * again as `next` (a password change made on it). That device keeps its Web
+ * Push subscription; the other devices lose theirs with their sessions.
+ */
+export function replaceUserSessions(
+  userId: string,
+  currentSessionId: string,
+  next: UserSession,
+): void {
+  db.transaction(() => {
+    moveWebPushSubscriptionsToSession(userId, currentSessionId, next.id);
+    deleteUserSessionsByUserId(userId);
+    createUserSession(next);
+  })();
 }
 
 export function updateSessionLastActive(sessionId: string): void {

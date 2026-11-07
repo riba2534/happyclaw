@@ -19,6 +19,7 @@ import type {
   Permission,
   PermissionTemplateKey,
   AuthEventType,
+  UserSession,
 } from '../types.js';
 import { invalidateUserSessions, getWebDeps } from '../web-context.js';
 import { revokeGuestSessionsForOwner } from '../guest-accounts.js';
@@ -32,8 +33,9 @@ import {
   updateUserFieldsAndForceRuntimesToHost,
   deleteUser,
   restoreUser,
+  deleteUserSession,
   deleteUserSessionsByUserId,
-  createUserSession,
+  replaceUserSessions,
   getActiveAdminCount,
   logAuthEvent,
   getAllRegisteredGroups,
@@ -692,6 +694,20 @@ adminRoutes.patch(
 
         const isSelfPasswordReset =
           validation.data.password !== undefined && id === actor.id;
+        // An admin resetting their own password stays signed in on this
+        // device under a new session, which keeps its Web Push subscription.
+        const issuedAt = new Date().toISOString();
+        const selfSession: UserSession | null = isSelfPasswordReset
+          ? {
+              id: generateSessionToken(),
+              user_id: actor.id,
+              ip_address: getClientIp(c),
+              user_agent: c.req.header('user-agent') || null,
+              created_at: issuedAt,
+              expires_at: sessionExpiresAt(),
+              last_active_at: issuedAt,
+            }
+          : null;
         if (validation.data.password !== undefined) {
           updates.password_hash = await hashPassword(validation.data.password);
           // Only force password change when resetting OTHER user's password
@@ -701,7 +717,11 @@ adminRoutes.patch(
           }
           postCommitActions.push(() => {
             invalidateUserSessions(id);
-            deleteUserSessionsByUserId(id);
+            if (selfSession) {
+              replaceUserSessions(id, c.get('sessionId'), selfSession);
+            } else {
+              deleteUserSessionsByUserId(id);
+            }
             logAuthEvent({
               event_type: 'password_changed',
               username: target.username,
@@ -760,6 +780,8 @@ adminRoutes.patch(
               'Failed to apply active administrator host-only runtime policy',
             );
             if (err.persisted) runPostCommitActions();
+            // No cookie goes out: end the session it would have been.
+            if (selfSession) deleteUserSession(selfSession.id);
             return c.json(
               {
                 error: err.persisted
@@ -786,6 +808,8 @@ adminRoutes.patch(
               'Failed to revoke active administrator host privileges',
             );
             if (err.persisted) runPostCommitActions();
+            // No cookie goes out: end the session it would have been.
+            if (selfSession) deleteUserSession(selfSession.id);
             return c.json(
               {
                 error: err.persisted
@@ -802,26 +826,13 @@ adminRoutes.patch(
         runPostCommitActions();
         const updated = getUserById(id)!;
 
-        // When admin resets their own password, recreate session to avoid logout
-        if (isSelfPasswordReset) {
-          const now = new Date().toISOString();
-          const ip = getClientIp(c);
-          const ua = c.req.header('user-agent') || null;
-          const newToken = generateSessionToken();
-          createUserSession({
-            id: newToken,
-            user_id: actor.id,
-            ip_address: ip,
-            user_agent: ua,
-            created_at: now,
-            expires_at: sessionExpiresAt(),
-            last_active_at: now,
-          });
+        // When admin resets their own password, hand over the new session
+        if (selfSession) {
           return new Response(
             JSON.stringify({ success: true, user: toUserPublic(updated) }),
             {
               status: 200,
-              headers: sessionCookieHeaders(c, newToken, {
+              headers: sessionCookieHeaders(c, selfSession.id, {
                 'Content-Type': 'application/json',
               }),
             },

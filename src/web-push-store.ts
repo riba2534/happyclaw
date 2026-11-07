@@ -211,6 +211,21 @@ export function listStaleWebPushSubscriptions(
   ).all(userId, Math.max(0, keep)) as WebPushSubscription[];
 }
 
+/**
+ * Move a session's subscriptions to the session replacing it, so the device
+ * that changed the password keeps its push while the old session ends.
+ */
+export function moveWebPushSubscriptionsToSession(
+  userId: string,
+  fromSessionId: string,
+  toSessionId: string,
+): number {
+  return stmt(
+    `UPDATE web_push_subscriptions SET session_id = ?
+     WHERE user_id = ? AND session_id = ?`,
+  ).run(toSessionId, userId, fromSessionId).changes;
+}
+
 export function deleteWebPushSubscriptionsForUser(userId: string): number {
   return stmt('DELETE FROM web_push_subscriptions WHERE user_id = ?').run(
     userId,
