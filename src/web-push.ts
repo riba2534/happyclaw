@@ -208,6 +208,11 @@ export function endpointId(endpoint: string): string {
 // ─── Payload ───────────────────────────────────────────────────────────
 
 export const PUSH_BODY_MAX_CHARS = 80;
+/**
+ * Only the head of a reply is read for its preview. The patterns below run
+ * on the main thread, so their input stays bounded whatever the reply is.
+ */
+export const PREVIEW_SOURCE_MAX_CHARS = 2000;
 
 export type WebPushKind = 'reply' | 'error' | 'test';
 
@@ -225,21 +230,31 @@ export interface WebPushPayload {
  * Plain text from a Markdown reply: no code fences, link targets, emphasis
  * marks, headings, list or quote markers, tables or tags; whitespace
  * collapsed and cut to `max` characters (not UTF-16 units).
+ *
+ * The input is cut to PREVIEW_SOURCE_MAX_CHARS first, and the line patterns
+ * match `[ \t]` rather than `\s`: `\s` crosses line breaks, which made a run
+ * of blank lines backtrack in cubic time.
  */
 export function plainTextPreview(
   markdown: string,
   max = PUSH_BODY_MAX_CHARS,
 ): string {
   const text = markdown
+    .slice(0, PREVIEW_SOURCE_MAX_CHARS)
+    // A cut through a surrogate pair leaves half a character.
+    .replace(/[\uD800-\uDBFF]$/, '')
     .replace(/```[^\n]*\n([\s\S]*?)```/g, '$1')
     .replace(/```/g, '')
     .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')
     .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
     .replace(/<\/?[A-Za-z][^>]*>/g, '')
-    .replace(/^\s{0,3}#{1,6}\s+/gm, '')
-    .replace(/^\s{0,3}>+\s?/gm, '')
-    .replace(/^\s*(?:[-*+]|\d+[.)])\s+(?:\[[ xX]\]\s+)?/gm, '')
-    .replace(/^\s*\|?\s*:?-{2,}:?\s*(?:\|\s*:?-{2,}:?\s*)*\|?\s*$/gm, '')
+    .replace(/^[ \t]{0,3}#{1,6}[ \t]+/gm, '')
+    .replace(/^[ \t]{0,3}>+[ \t]?/gm, '')
+    .replace(/^[ \t]*(?:[-*+]|\d+[.)])[ \t]+(?:\[[ xX]\][ \t]+)?/gm, '')
+    .replace(
+      /^[ \t]*(?:\|[ \t]*)?:?-{2,}:?[ \t]*(?:\|[ \t]*:?-{2,}:?[ \t]*)*(?:\|[ \t]*)?$/gm,
+      '',
+    )
     .replace(/\|/g, ' ')
     .replace(/(\*\*|__|~~)/g, '')
     .replace(/(^|[^\w*])[*_]([^*_\n]+)[*_](?=[^\w*]|$)/g, '$1$2')

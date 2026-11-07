@@ -60,6 +60,30 @@ describe('plainTextPreview', () => {
     expect(text).not.toMatch(/[*`#>|]|https?:/);
   });
 
+  test.each([
+    ['20 000 newlines', 'a\n' + '\n'.repeat(20_000) + 'b'],
+    [
+      '500 lines of 20 spaces',
+      'a\n' + (' '.repeat(20) + '\n').repeat(500) + 'b',
+    ],
+    ['3 000 blank lines in a table', '| a |\n' + '\n'.repeat(3000) + '| --- |'],
+    ['one 1 MB line of spaces', ' '.repeat(1_000_000) + '|'],
+    ['a long run of list markers', '- '.repeat(200_000)],
+  ])('stays fast on %s', (_name, input) => {
+    const started = performance.now();
+    push.plainTextPreview(input);
+    expect(performance.now() - started).toBeLessThan(50);
+  });
+
+  test('previews only the head of a long reply', () => {
+    const text = push.plainTextPreview(
+      'x'.repeat(push.PREVIEW_SOURCE_MAX_CHARS - 1) + '😀' + 'tail',
+      push.PREVIEW_SOURCE_MAX_CHARS + 10,
+    );
+    // The cut half of the emoji is not left behind.
+    expect(text).toBe('x'.repeat(push.PREVIEW_SOURCE_MAX_CHARS - 1));
+  });
+
   test('cuts at 80 characters, counting characters and not UTF-16 units', () => {
     const long = '你好😀'.repeat(60);
     const text = push.plainTextPreview(long);
