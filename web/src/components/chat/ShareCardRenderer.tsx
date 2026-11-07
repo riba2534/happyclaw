@@ -1,6 +1,7 @@
 import { forwardRef, useMemo } from 'react';
 import { EmojiAvatar } from '../common/EmojiAvatar';
 import { MarkdownRenderer } from './MarkdownRenderer';
+import { SHARE_CARD_DEFAULT_WIDTH } from './share-card-layout';
 
 interface ShareCardRendererProps {
   content: string;
@@ -12,6 +13,8 @@ interface ShareCardRendererProps {
   aiImageUrl?: string | null;
   /** The width the card never narrows below (default 720). */
   minWidth?: number;
+  /** The reply runs past the content area: fade where it is cut. */
+  clipped?: boolean;
 }
 
 /**
@@ -68,12 +71,6 @@ function getCurrentBrandVars(): Record<string, string> {
 }
 
 const MAX_HEIGHT = 20000;
-export const SHARE_CARD_DEFAULT_WIDTH = 720;
-// A phone's card: as wide as its sheet, so the preview is read at about 1:1
-// and the image suits the phone it is shared from.
-export const SHARE_CARD_PHONE_WIDTH = 390;
-export const SHARE_CARD_MAX_WIDTH = 1200;
-export const SHARE_CARD_PADDING = 48; // 24px * 2
 
 /**
  * Override styles for the share card content area.
@@ -115,6 +112,7 @@ export const ShareCardRenderer = forwardRef<
     aiColor,
     aiImageUrl,
     minWidth = SHARE_CARD_DEFAULT_WIDTH,
+    clipped = false,
   },
   ref,
 ) {
@@ -176,11 +174,14 @@ export const ShareCardRenderer = forwardRef<
         </span>
       </div>
 
-      {/* Content */}
+      {/* Content: a reply taller than MAX_HEIGHT is cut here, never drawn
+          over the footer. */}
       <div
+        data-share-card-body=""
         style={{
           padding: '20px 24px',
           maxHeight: MAX_HEIGHT,
+          overflow: 'hidden',
           position: 'relative',
         }}
       >
@@ -192,8 +193,8 @@ export const ShareCardRenderer = forwardRef<
             eagerImages
           />
         </div>
-        {/* Gradient fade for extremely long content */}
-        {content.length > 30000 && (
+        {/* Fade the cut end, measured by the dialog */}
+        {clipped && (
           <div
             style={{
               position: 'absolute',
