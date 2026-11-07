@@ -176,7 +176,9 @@ Web UI 约定：
   `autoFocusOnPhone`），`Sheet`/`Dialog` 和导航抽屉经 `useBackDismiss` 让系统返回先关
   浮层；行和页面的操作菜单用 `ResponsiveMenu`（手机为 ActionSheet），只在 Tooltip 里的
   信息用 `InfoTip`；按钮在手机上自带 44px 命中区，输入框不小于 16px（`variant="code"`
-  关闭自动大写与纠错）。键盘遮挡只读 `--keyboard-inset` / `--vvh`（`useVisualViewport`）。
+  关闭自动大写与纠错）。键盘遮挡只读 `--keyboard-inset` / `--vvh`（`useVisualViewport`）；
+  贴着键盘的底部浮层（输入框、`Dialog`、`Sheet`、toast、表单 footer）的安全区留白用
+  `--safe-bottom`，键盘打开时 `<html data-keyboard="open">` 把它置 0。
 - 安装成 PWA 后 body 关闭了 `-webkit-touch-callout`，iOS 长按图片的系统菜单（存储图像）
   按图片开启：灯箱大图只在 1× 时开启，文件面板预览图用 `touch-callout-default`，Markdown
   图片带 `data-native-image-menu`（同时开启 callout），消息附件缩略图不开（低清 data URL，

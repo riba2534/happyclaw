@@ -295,7 +295,7 @@ function BottomSheetContent({
         SHEET_CONTENT_CLASS,
         // Rounded top and safe-area bottom. Height and drag offset ease into
         // place unless a finger holds it or less motion is asked for.
-        'data-[side=bottom]:rounded-t-[12px] data-[side=bottom]:pb-[env(safe-area-inset-bottom)] data-[side=bottom]:transition-[height,transform,translate,opacity] data-[dragging]:transition-none motion-reduce:transition-none motion-reduce:animate-none',
+        'data-[side=bottom]:rounded-t-[12px] data-[side=bottom]:pb-[var(--safe-bottom,0px)] data-[side=bottom]:transition-[height,transform,translate,opacity] data-[dragging]:transition-none motion-reduce:transition-none motion-reduce:animate-none',
         // Above the on-screen keyboard and within the visible viewport (the
         // vars come from useVisualViewportVars; without them, the layout
         // viewport). A caller's own max-h still wins.
