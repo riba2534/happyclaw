@@ -36,6 +36,8 @@ interface Hit {
   effort?: string;
 }
 const hits: Hit[] = [];
+/** The tool names each request in `hits` offered the model. */
+const requestTools: string[][] = [];
 /** When set, the first request of a turn runs this Bash command. */
 let bashCommand: string | undefined;
 
@@ -52,7 +54,9 @@ function startStub(name: string) {
       const body = JSON.parse(raw || '{}') as {
         messages?: unknown[];
         output_config?: { effort?: string };
+        tools?: { name?: string }[];
       };
+      requestTools.push((body.tools ?? []).map((tool) => tool.name ?? ''));
       hits.push({
         stub: name,
         auth: req.headers.authorization ?? null,
@@ -129,15 +133,80 @@ function startStub(name: string) {
   );
 }
 
+/** JSON-RPC calls the MCP stub received, with the API key header they carried. */
+const mcpCalls: { method: string; key: string | null }[] = [];
+
+/** A user's HTTP MCP server (Streamable HTTP, JSON replies) with one tool. */
+function startMcpStub() {
+  const server = http.createServer((req, res) => {
+    let raw = '';
+    req.on('data', (chunk) => (raw += chunk));
+    req.on('end', () => {
+      if (req.method !== 'POST') {
+        res.writeHead(405).end();
+        return;
+      }
+      const call = JSON.parse(raw || '{}') as {
+        id?: number | string;
+        method?: string;
+        params?: { protocolVersion?: string };
+      };
+      mcpCalls.push({
+        method: call.method ?? '',
+        key: (req.headers['x-api-key'] as string | undefined) ?? null,
+      });
+      if (call.id === undefined) {
+        res.writeHead(202).end();
+        return;
+      }
+      const reply =
+        call.method === 'initialize'
+          ? {
+              result: {
+                protocolVersion: call.params?.protocolVersion ?? '2025-06-18',
+                capabilities: { tools: {} },
+                serverInfo: { name: 'remote', version: '1.0.0' },
+              },
+            }
+          : call.method === 'tools/list'
+            ? {
+                result: {
+                  tools: [
+                    {
+                      name: 'lookup',
+                      description: 'Looks a word up.',
+                      inputSchema: { type: 'object', properties: {} },
+                    },
+                  ],
+                },
+              }
+            : { error: { code: -32601, message: 'Method not found' } };
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ jsonrpc: '2.0', id: call.id, ...reply }));
+    });
+  });
+  return new Promise<{ server: http.Server; url: string }>((resolve) =>
+    server.listen(0, '127.0.0.1', () =>
+      resolve({
+        server,
+        url: `http://127.0.0.1:${(server.address() as AddressInfo).port}/mcp`,
+      }),
+    ),
+  );
+}
+
 let A: Awaited<ReturnType<typeof startStub>>;
 let B: Awaited<ReturnType<typeof startStub>>;
+let mcp: Awaited<ReturnType<typeof startMcpStub>>;
 beforeAll(async () => {
   A = await startStub('A');
   B = await startStub('B');
+  mcp = await startMcpStub();
 });
 afterAll(() => {
   A.server.close();
   B.server.close();
+  mcp.server.close();
   fs.rmSync(scratch, { recursive: true, force: true });
 });
 
@@ -187,6 +256,10 @@ async function runTurn(options: {
   dumpEnvTo?: string;
   /** Writes the CLI's own command line here from inside the turn. */
   dumpArgvTo?: string;
+  /**
+   * The user's MCP servers. With them the turn also gets an in-process
+   * `happyclaw` server, as every Runner query has.
+   */
   mcpServers?: Record<string, unknown>;
 }) {
   const dir = fs.mkdtempSync(path.join(scratch, 'run-'));
@@ -220,7 +293,8 @@ async function runTurn(options: {
   bashCommand = options.dumpEnvTo
     ? `env | grep -E '^(ANTHROPIC|CLAUDE_CODE|CLAUDE_AUTOCOMPACT|AWS_BEARER|CLOUD_ML)' | sort > ${options.dumpEnvTo}`
     : options.dumpArgvTo
-      ? `ps -o command= -p $PPID > ${options.dumpArgvTo}`
+      ? // -ww: never cut the line at the terminal width.
+        `ps -ww -o command= -p $PPID > ${options.dumpArgvTo}`
       : undefined;
   // As the Runner does: the pin and external MCP servers reach the CLI as
   // files, never argv.
@@ -243,18 +317,40 @@ async function runTurn(options: {
         thinking: { type: 'adaptive' },
         settings: files.settingsPath,
         ...(files.mcpConfigPath
-          ? { extraArgs: { 'mcp-config': files.mcpConfigPath } }
+          ? {
+              extraArgs: { 'mcp-config': files.mcpConfigPath },
+              mcpServers: {
+                happyclaw: sdk.createSdkMcpServer({
+                  name: 'happyclaw',
+                  version: '1.0.0',
+                  tools: [
+                    sdk.tool('ping', 'Answers pong.', {}, async () => ({
+                      content: [{ type: 'text' as const, text: 'pong' }],
+                    })),
+                  ],
+                }),
+              },
+            }
           : {}),
       },
     });
     let result = '';
+    let mcpServers: { name: string; status: string }[] | undefined;
     for await (const message of stream) {
+      if (message.type === 'system' && message.subtype === 'init') {
+        mcpServers = message.mcp_servers;
+      }
       if (message.type === 'result') {
         result = (message as { result?: string }).result ?? '';
         break;
       }
     }
-    return { result, hits: hits.slice(start) };
+    return {
+      result,
+      hits: hits.slice(start),
+      tools: requestTools.slice(start),
+      mcpServers,
+    };
   } finally {
     bashCommand = undefined;
     files.dispose();
@@ -408,8 +504,9 @@ describe('the bound connection and the session choices win', () => {
     expect(toolEnv.filter((line) => line.endsWith('='))).toEqual([]);
   }, 90_000);
 
-  test('the CLI command line carries no connection key or MCP credential', async () => {
+  test('the CLI command line carries no connection key or MCP credential, and the MCP file still loads', async () => {
     const dump = path.join(scratch, 'argv.txt');
+    const mcpStart = mcpCalls.length;
     const run = await runTurn({
       bound: {
         ANTHROPIC_BASE_URL: A.url,
@@ -418,7 +515,7 @@ describe('the bound connection and the session choices win', () => {
       mcpServers: {
         remote: {
           type: 'http',
-          url: 'http://127.0.0.1:9/mcp',
+          url: mcp.url,
           headers: { 'X-API-KEY': 'mcp-header-secret' },
         },
       },
@@ -431,6 +528,23 @@ describe('the bound connection and the session choices win', () => {
     expect(argv).toContain('--mcp-config ');
     expect(argv).not.toContain('bound-token-in-settings');
     expect(argv).not.toContain('mcp-header-secret');
+    // The user's server came from the file, with its credential, next to
+    // the SDK's own: dropping either --mcp-config would lose a server.
+    expect(
+      mcpCalls
+        .slice(mcpStart)
+        .filter((call) => call.method === 'tools/list')
+        .map((call) => call.key),
+    ).toContain('mcp-header-secret');
+    expect(run.mcpServers).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: 'remote', status: 'connected' }),
+        expect.objectContaining({ name: 'happyclaw', status: 'connected' }),
+      ]),
+    );
+    expect(run.tools[0]).toEqual(
+      expect.arrayContaining(['mcp__remote__lookup', 'mcp__happyclaw__ping']),
+    );
   }, 90_000);
 
   test('the Runner passes the pin as its flag settings', () => {
