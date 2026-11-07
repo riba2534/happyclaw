@@ -474,7 +474,7 @@ import {
   setWorkspaceRootResolver,
   workspaceDirOf,
 } from './workspace-dir.js';
-import { getWorkspaceRootResolution } from './workspace-root.js';
+import { getRootForNewWorkspaces } from './workspace-root.js';
 import {
   getFeishuProviderConfigWithSource,
   getTelegramProviderConfig,
@@ -18262,10 +18262,9 @@ async function main(): Promise<void> {
   // workspace's directory can never land inside another's.
   // A fallback that has a problem of its own is not used: the workspace
   // stays in data/groups rather than claim a doubtful directory.
-  setWorkspaceRootResolver(() => {
-    const root = getWorkspaceRootResolution(getWorkspaceRootOccupancy());
-    return root.fallbackWarning ? null : root.effective;
-  });
+  setWorkspaceRootResolver(() =>
+    getRootForNewWorkspaces(getWorkspaceRootOccupancy()),
+  );
   initDatabase();
   logger.info('Database initialized');
   installSystemMainModelConfigResolver();

@@ -252,6 +252,28 @@ describe('host-integration: workspace root and deployment mode', () => {
     expect(runtimeConfig.getSystemSettings().workspaceRoot).toBe('');
   });
 
+  test('with the fallback unusable too, no effective root is reported', async () => {
+    // ~/CLAUDE.md rules out both ~/happyclaw and ~/happyclaw-workspaces, so
+    // new workspaces stay in data/groups/<folder> (index.ts's resolver).
+    const home = path.join(tmp, 'home-with-memory');
+    fs.mkdirSync(home, { recursive: true });
+    fs.writeFileSync(path.join(home, 'CLAUDE.md'), '# mine\n');
+    const savedHome = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      const body = await (await request('/api/config/host-integration')).json();
+      expect(body).toMatchObject({
+        workspaceRoot: '',
+        workspaceRootEffective: null,
+        workspaceRootSource: 'default',
+        workspaceRootFallbackReason: 'claude_md_ancestor',
+        workspaceRootFallbackWarning: 'claude_md_ancestor',
+      });
+    } finally {
+      process.env.HOME = savedHome;
+    }
+  });
+
   test('a workspaceRoot that is a file is refused', async () => {
     const file = path.join(tmp, 'a-file');
     fs.writeFileSync(file, 'x');

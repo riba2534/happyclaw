@@ -297,6 +297,36 @@ test.describe('settings: host integration', () => {
     expect(backend.puts.at(-1)?.workspaceRoot).toBe('');
   });
 
+  test('workspace root: with the fallback unusable too, says new workspaces stay in data/groups', async ({
+    page,
+  }, info) => {
+    await mockBackend(
+      page,
+      hostIntegration({
+        workspaceRootEffective: null,
+        workspaceRootFallbackReason: 'claude_md_ancestor',
+        workspaceRootFallbackWarning: 'claude_md_ancestor',
+      }),
+    );
+    await open(page, '/settings?tab=host-integration');
+    const effective = page.getByTestId('workspace-root-effective');
+    await expect(effective).toContainText('当前没有可用的根目录');
+    await expect(effective).toContainText('data/groups/<文件夹>');
+    await expect(effective).not.toContainText('当前生效');
+    const notice = page.getByRole('status').filter({ hasText: '不能用' });
+    await expect(notice).toContainText('CLAUDE.md');
+    await expect(notice).not.toContainText('已改用上面的目录');
+    await expect(
+      page.getByText('备用目录 ~/happyclaw-workspaces 也不能用'),
+    ).toBeVisible();
+    await expect(page.getByLabel('工作区根目录')).toHaveAttribute(
+      'placeholder',
+      '',
+    );
+    await expectNoHorizontalOverflow(page);
+    await shot(page, info, 'host-integration-no-root');
+  });
+
   test('switching the deployment mode confirms, lists the users blocking it, then applies', async ({
     page,
   }, info) => {

@@ -285,6 +285,7 @@ import {
 } from '../deployment-mode.js';
 import {
   getWorkspaceRootResolution,
+  rootForNewWorkspaces,
   validateWorkspaceRootSetting,
   WORKSPACE_ROOT_PROBLEM_MESSAGES,
 } from '../workspace-root.js';
@@ -3762,7 +3763,9 @@ function toHostIntegrationResponse(
   const mode = getDeploymentModeResolution();
   return {
     ...toStoredHostIntegration(settings),
-    workspaceRootEffective: root.effective,
+    // Where new Host workspaces go; null when no root is usable and they
+    // stay in data/groups/<folder>.
+    workspaceRootEffective: rootForNewWorkspaces(root),
     workspaceRootSource: root.source,
     workspaceRootFallbackReason: root.fallbackReason,
     workspaceRootFallbackWarning: root.fallbackWarning,

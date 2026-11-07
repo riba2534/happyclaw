@@ -1066,7 +1066,8 @@ function WorkspaceRootRow({
   error: string | null;
   onChange: (value: string) => void;
 }) {
-  const effective = settings.workspaceRootEffective ?? '';
+  // null: neither the requested root nor the fallback can be used.
+  const effective = settings.workspaceRootEffective ?? null;
   const source = settings.workspaceRootSource ?? 'default';
   const fallbackReason = settings.workspaceRootFallbackReason;
   const fallbackWarning = settings.workspaceRootFallbackWarning;
@@ -1091,7 +1092,7 @@ function WorkspaceRootRow({
           id="host-integration-workspace-root"
           value={value}
           onChange={(event) => onChange(event.target.value)}
-          placeholder={effective}
+          placeholder={effective ?? ''}
           aria-describedby={describedBy}
           aria-invalid={!!error}
           variant="code"
@@ -1104,18 +1105,31 @@ function WorkspaceRootRow({
           data-testid="workspace-root-effective"
           className="text-caption break-all text-muted-foreground"
         >
-          当前生效：
-          <span className="font-mono text-foreground">{effective}</span>（
-          {WORKSPACE_ROOT_SOURCE_LABELS[source]}）
+          {effective ? (
+            <>
+              当前生效：
+              <span className="font-mono text-foreground">{effective}</span>（
+              {WORKSPACE_ROOT_SOURCE_LABELS[source]}）
+            </>
+          ) : (
+            <>
+              当前没有可用的根目录，新工作区暂时放在
+              <span className="font-mono text-foreground">
+                data/groups/&lt;文件夹&gt;
+              </span>
+              。
+            </>
+          )}
         </p>
         {fallbackReason && (
           <Callout tone="warning" role="status">
             原本要用的目录不能用：{workspaceRootProblemMessage(fallbackReason)}
-            已改用上面的目录。
+            {effective && '已改用上面的目录。'}
           </Callout>
         )}
         {fallbackWarning && (
           <Callout tone="warning">
+            备用目录 ~/happyclaw-workspaces 也不能用：
             {workspaceRootProblemMessage(fallbackWarning)}
           </Callout>
         )}

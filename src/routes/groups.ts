@@ -571,7 +571,7 @@ import {
   workspaceDirOf,
   workspacePathConflict,
 } from '../workspace-dir.js';
-import { getWorkspaceRootResolution } from '../workspace-root.js';
+import { getRootForNewWorkspaces } from '../workspace-root.js';
 import {
   getAutomationService,
   presentAutomationMessage,
@@ -849,10 +849,11 @@ groupRoutes.get('/', authMiddleware, (c) => {
   return c.json({
     groups,
     admin_host_only_mode: user.role === 'admin' && isAdminHostOnlyEffective(),
-    // Where a new Host workspace without a custom directory is created.
+    // Where a new Host workspace without a custom directory is created;
+    // null also when no root is usable (it goes to data/groups/<folder>).
     workspace_root:
       user.role === 'admin'
-        ? getWorkspaceRootResolution(getWorkspaceRootOccupancy()).effective
+        ? getRootForNewWorkspaces(getWorkspaceRootOccupancy())
         : null,
   });
 });

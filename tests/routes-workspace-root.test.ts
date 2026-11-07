@@ -58,7 +58,7 @@ vi.mock('../src/web.js', () => ({
 
 const db = await import('../src/db.js');
 const dir = await import('../src/workspace-dir.js');
-const { getWorkspaceRootResolution } = await import('../src/workspace-root.js');
+const { getRootForNewWorkspaces } = await import('../src/workspace-root.js');
 const { ensureMarkedWorkspaceRoot } =
   await import('../src/workspace-root-fs.js');
 const webContext = await import('../src/web-context.js');
@@ -92,8 +92,8 @@ beforeAll(() => {
   // A root HappyClaw marked, so creating folders in it never reads as
   // someone else's directory; and the resolver main() binds at startup.
   ensureMarkedWorkspaceRoot(workspaceRoot);
-  dir.setWorkspaceRootResolver(
-    () => getWorkspaceRootResolution(dir.getWorkspaceRootOccupancy()).effective,
+  dir.setWorkspaceRootResolver(() =>
+    getRootForNewWorkspaces(dir.getWorkspaceRootOccupancy()),
   );
 });
 
@@ -231,6 +231,38 @@ describe('creating workspaces', () => {
     auth.role = 'member';
     const member = await (await groupRoutes.request('/')).json();
     expect(member.workspace_root).toBeNull();
+  });
+
+  test('with the fallback unusable too, GET reports no root and a new workspace stays in data/groups', async () => {
+    // ~/CLAUDE.md rules out ~/happyclaw-workspaces; the env root is inside
+    // the install directory.
+    const home = path.join(tmp, 'home-with-memory');
+    fs.mkdirSync(home, { recursive: true });
+    fs.writeFileSync(path.join(home, 'CLAUDE.md'), '# mine\n');
+    const saved = {
+      HOME: process.env.HOME,
+      root: process.env.HAPPYCLAW_WORKSPACE_ROOT,
+    };
+    process.env.HOME = home;
+    process.env.HAPPYCLAW_WORKSPACE_ROOT = path.join(dataDir, 'roots');
+    try {
+      const admin = await (await groupRoutes.request('/')).json();
+      expect(admin.workspace_root).toBeNull();
+      const { status, json } = await create({
+        name: 'No root',
+        execution_mode: 'host',
+      });
+      expect(status).toBe(200);
+      const folder = json.group.folder as string;
+      expect(dir.getRecordedWorkdir(folder)).toBeNull();
+      expect(dir.workspaceDirOf(folder)).toBe(path.join(groupsDir, folder));
+      expect(fs.existsSync(path.join(home, 'happyclaw-workspaces'))).toBe(
+        false,
+      );
+    } finally {
+      process.env.HOME = saved.HOME;
+      process.env.HAPPYCLAW_WORKSPACE_ROOT = saved.root;
+    }
   });
 });
 

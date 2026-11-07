@@ -107,7 +107,8 @@ export interface HostIntegrationSettings {
   // The rest are absent on servers older than the workspace root setting.
   /** Stored root of new Host workspaces; '' = unset. */
   workspaceRoot?: string;
-  workspaceRootEffective?: string;
+  /** Where new Host workspaces go; null: no usable root, so data/groups/<folder>. */
+  workspaceRootEffective?: string | null;
   workspaceRootSource?: SettingSource;
   /** Why the requested root is not used (a problem code), or null. */
   workspaceRootFallbackReason?: string | null;

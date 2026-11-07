@@ -7,8 +7,10 @@
  * `HAPPYCLAW_WORKSPACE_ROOT`, then `~/happyclaw`. A candidate that would let
  * Claude Code find a foreign CLAUDE.md (it walks every parent directory up to
  * `/`), that overlaps the home or install directory, or that already holds
- * someone's own files falls back to `~/happyclaw-workspaces`. An explicit
- * setting is validated on save instead.
+ * someone's own files falls back to `~/happyclaw-workspaces`. When that has
+ * a problem too, no root is used and new Host workspaces stay in
+ * data/groups/<folder> (rootForNewWorkspaces). An explicit setting is
+ * validated on save instead.
  */
 import fs from 'node:fs';
 import os from 'node:os';
@@ -42,7 +44,11 @@ export interface WorkspaceRootContext {
 }
 
 export interface WorkspaceRootResolution {
-  /** The directory new Host workspaces are created in. */
+  /**
+   * The candidate, or the fallback when the candidate has a problem. New
+   * Host workspaces are created in it unless `fallbackWarning` is set
+   * (rootForNewWorkspaces).
+   */
   effective: string;
   source: WorkspaceRootSource;
   /** The stored setting, or null when unset. */
@@ -51,7 +57,10 @@ export interface WorkspaceRootResolution {
   requested: string;
   /** Why the candidate was not used; null when it was. */
   fallbackReason: WorkspaceRootProblem | null;
-  /** A problem the fallback itself has; it is still used. */
+  /**
+   * A problem the fallback itself has. Then it is not used either: new Host
+   * workspaces stay in data/groups/<folder>.
+   */
   fallbackWarning: WorkspaceRootProblem | null;
 }
 
@@ -244,6 +253,24 @@ export function getWorkspaceRootResolution(
     context: workspaceRootContext(),
     occupancy,
   });
+}
+
+/**
+ * Where new Host workspaces actually go: the effective root, or null when
+ * even the fallback has a problem (they stay in data/groups/<folder>). The
+ * server's resolver (index.ts) and every route reporting the root use this.
+ */
+export function rootForNewWorkspaces(
+  resolution: WorkspaceRootResolution,
+): string | null {
+  return resolution.fallbackWarning ? null : resolution.effective;
+}
+
+/** rootForNewWorkspaces of the current resolution. */
+export function getRootForNewWorkspaces(
+  occupancy?: WorkspaceRootOccupancy,
+): string | null {
+  return rootForNewWorkspaces(getWorkspaceRootResolution(occupancy));
 }
 
 /**
