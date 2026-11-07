@@ -352,9 +352,11 @@ export function readPasswordFile(
   const resolved = path.isAbsolute(passwordFile)
     ? passwordFile
     : path.join(projectRoot, passwordFile);
+  // O_NONBLOCK: opening a FIFO for reading would otherwise wait for a
+  // writer before the regular-file check below could reject it.
   const fd = fs.openSync(
     resolved,
-    fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW,
+    fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK,
   );
   try {
     const stat = fs.fstatSync(fd);

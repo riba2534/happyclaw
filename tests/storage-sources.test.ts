@@ -1,9 +1,13 @@
+import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 import { describe, expect, test, vi } from 'vitest';
+
+const repoRoot = path.resolve(import.meta.dirname, '..');
 
 vi.mock('../src/logger.js', () => ({
   logger: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
@@ -215,6 +219,33 @@ describe('SMB credentials', () => {
   ])('rejects a file %s', (_label, content, mode, message) => {
     expect(() => readPasswordFile(secretFile(content, mode))).toThrow(message);
   });
+
+  test('rejects a FIFO without waiting for a writer', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'happyclaw-smb-'));
+    const fifo = path.join(dir, 'secret');
+    execFileSync('mkfifo', ['-m', '600', fifo]);
+    const moduleUrl = pathToFileURL(
+      path.join(repoRoot, 'src', 'storage-sources.ts'),
+    ).href;
+    // A blocking open would hang this process, so read in a child.
+    const script = `
+      const { readPasswordFile } = await import(${JSON.stringify(moduleUrl)});
+      let message = 'read without error';
+      try {
+        readPasswordFile(${JSON.stringify(fifo)});
+      } catch (err) {
+        message = err.message;
+      }
+      process.stdout.write(message + '\\n');
+    `;
+    const child = spawnSync(
+      process.execPath,
+      ['--import', 'tsx', '--input-type=module', '-e', script],
+      { cwd: repoRoot, encoding: 'utf8', timeout: 15_000 },
+    );
+    expect(child.error?.message ?? null).toBeNull();
+    expect(child.stdout).toContain('is not a regular file');
+  }, 30_000);
 
   test('does not follow a symlinked password file', () => {
     const target = secretFile('s3cret\n', 0o600);

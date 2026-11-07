@@ -696,6 +696,17 @@ export function validateAdditionalMountsStrict(
         issues.push(`additionalMounts[${index}]: ${result.reason}`);
         continue;
       }
+      // Same blocked names as host directories (.ssh, credentials, ...).
+      const blockedMatch =
+        allowlist && result.subPath
+          ? matchesBlockedPattern(result.subPath, allowlist.blockedPatterns)
+          : null;
+      if (blockedMatch) {
+        issues.push(
+          `additionalMounts[${index}]: subPath matches blocked pattern "${blockedMatch}": "${result.subPath}"`,
+        );
+        continue;
+      }
       validated.push({
         hostPath: describeStorage(result.storage),
         containerPath: `${ADDITIONAL_MOUNT_CONTAINER_ROOT}/${containerSuffix}`,

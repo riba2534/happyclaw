@@ -329,6 +329,9 @@ describe.sequential('validateAdditionalMountsStrict', () => {
     [{ source: 'nas', subPath: '../up', containerPath: 'x' }],
     [{ source: 'nas', containerPath: '/abs' }],
     [{ source: 'nas', subPath: 7, containerPath: 'x' }],
+    [{ source: 'nas', subPath: 'alice/.ssh', containerPath: 'x' }],
+    [{ source: 'nas', subPath: 'team/credentials/a', containerPath: 'x' }],
+    [{ source: 'nas', subPath: 'team/blocked', containerPath: 'x' }],
   ])('rejects an invalid storage-source mount %#', async (raw) => {
     writePolicy(
       [{ path: allowedRoot, allowReadWrite: false }],

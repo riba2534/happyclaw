@@ -503,7 +503,8 @@ HTTP 状态为 409；请求不会停止现有 Runner，也不会修改绑定。
 ```
 
 - `type` 为 `nfs` 或 `cifs`（SMB）。挂载由 Docker 守护进程的内核完成，容器不需要
-  额外权限；子目录不存在时容器启动失败。
+  额外权限；子目录不存在时容器启动失败。`sub_path` 和宿主机目录一样不能命中
+  `blockedPatterns`（`.ssh`、`credentials` 等）。
 - SMB 密码只放在 `passwordFile`（绝对路径或相对项目根，必须是服务用户所有的 600
   普通文件，单行、不含逗号），不进 allowlist、数据库、docker 命令行或日志：
   启动时经 Docker Engine API 的请求体建一个命名卷
@@ -519,6 +520,10 @@ HTTP 状态为 409；请求不会停止现有 Runner，也不会修改绑定。
 - 不再使用的 SMB 卷（改密码、改来源或删除工作区之后）目前不会自动回收，参数里仍有
   旧密码。可以用 `docker volume ls --filter label=io.happyclaw.storage-source`
   列出，确认没有容器在用后 `docker volume rm` 删除。
+- NFS 使用 AUTH_SYS 认证，NAS 只按来源 IP 和请求里自报的 uid 判断权限。容器出网与
+  守护进程主机共用同一个 IP，容器里的 Agent 可以自己连上导出，绕过 `sub_path` 和
+  只读限制。NAS 上只导出工作区可以看到的内容：按子目录单独导出，只读的就只读导出，
+  并设置 `all_squash`。宿主机目录的 `nfsDirectMount` 同样如此。
 - 没有 Unix 扩展的 SMB 共享没有可映射的属主，挂载按 `file_mode=0777,dir_mode=0777`
   对容器内所有用户开放，实际权限由 SMB 账号在服务器上的权限决定。
 - 读写同时受来源的 `allowReadWrite` 与 `nonMainReadOnly` 约束；每次容器启动前都会
