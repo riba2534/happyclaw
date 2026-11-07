@@ -356,7 +356,7 @@ Provider 与渠道凭据建议只在 Web 设置中填写。它们使用 AES-256-
 ```text
 data/
 ├── db/messages.db     # SQLite 主数据库（含 Workspace Memory v2）
-├── config/            # 加密配置、密钥与系统设置
+├── config/            # 加密配置、密钥、系统设置与 Web 添加的存储源
 ├── groups/            # 工作区目录和项目文件
 ├── memory/            # 旧版文件记忆，仅供离线迁移/归档
 ├── sessions/          # 每个 Runtime Session 的 Claude 数据

@@ -87,10 +87,13 @@ async function mockBackend(page: Page) {
                 allowReadWrite: false,
                 description: '团队共享盘',
                 hasPassword: true,
+                origin: 'web',
                 usedBy: 2,
+                readWriteUsedBy: 0,
               },
             ],
             allowlistPath: 'config/mount-allowlist.json',
+            managedPath: 'data/config/storage-sources.json',
             nonMainReadOnly: true,
           },
         });

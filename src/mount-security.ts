@@ -26,6 +26,7 @@ import type {
   ContainerConfig,
   HostDirectoryMount,
   MountAllowlist,
+  StorageSource,
 } from './types.js';
 
 export const MAX_ADDITIONAL_MOUNTS = 8;
@@ -57,7 +58,6 @@ const CONTAINER_CONTROL_CHARS_RE = /[\u0000-\u001f\u007f]/;
 const SOCKET_COMPONENT_RE =
   /^(?:docker|podman|containerd|cri-dockerd)(?:[-._][^/]*)?\.sock$/i;
 
-let cachedAllowlist: MountAllowlist | null = null;
 let cachedAllowlistSignature: string | null = null;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -135,37 +135,56 @@ function validateAllowlistShape(raw: unknown): MountAllowlist {
   };
 }
 
-/**
- * Load the deployment policy, reloading automatically when its metadata or
- * contents change. Invalid/missing policy is fail-closed, but a later file
- * update is observed without restarting the service.
- */
-export function loadMountAllowlist(): MountAllowlist | null {
+type FileRead =
+  | { signature: string; content: string }
+  | { signature: string; content?: undefined; missing: boolean };
+
+/** Reads a small config file and a signature that changes with its bytes. */
+function readSignedFile(filePath: string): FileRead {
   let stat: fs.Stats;
   try {
-    stat = fs.statSync(MOUNT_ALLOWLIST_PATH);
+    stat = fs.statSync(filePath);
   } catch {
-    const signature = 'missing';
-    if (cachedAllowlistSignature !== signature) {
-      logger.warn(
-        { path: MOUNT_ALLOWLIST_PATH },
-        'Mount allowlist not found - host directory mounts are blocked',
-      );
-    }
-    cachedAllowlistSignature = signature;
-    cachedAllowlist = null;
-    return null;
+    return { signature: 'missing', missing: true };
   }
-
-  let signature = `${stat.dev}:${stat.ino}:${stat.mtimeMs}:${stat.size}:unreadable`;
+  const meta = `${stat.dev}:${stat.ino}:${stat.mtimeMs}:${stat.size}`;
   try {
-    const content = fs.readFileSync(MOUNT_ALLOWLIST_PATH, 'utf-8');
+    const content = fs.readFileSync(filePath, 'utf-8');
     const digest = crypto.createHash('sha256').update(content).digest('hex');
-    signature = `${stat.dev}:${stat.ino}:${stat.mtimeMs}:${stat.size}:${digest}`;
-    if (cachedAllowlistSignature === signature) return cachedAllowlist;
-    const allowlist = validateAllowlistShape(JSON.parse(content));
-    cachedAllowlistSignature = signature;
-    cachedAllowlist = allowlist;
+    return { signature: `${meta}:${digest}`, content };
+  } catch {
+    return { signature: `${meta}:unreadable`, missing: false };
+  }
+}
+
+export type MountAllowlistFileState =
+  | { status: 'missing' }
+  | { status: 'invalid'; error: string }
+  | { status: 'ok'; allowlist: MountAllowlist };
+
+let cachedFileState: MountAllowlistFileState = { status: 'missing' };
+
+/**
+ * The deployment's own allowlist file, without the storage sources managed
+ * from the settings page. Reloads when the file changes.
+ */
+export function loadMountAllowlistFile(): MountAllowlistFileState {
+  const read = readSignedFile(MOUNT_ALLOWLIST_PATH);
+  // Each state change is logged once.
+  if (read.signature === cachedAllowlistSignature) return cachedFileState;
+  cachedAllowlistSignature = read.signature;
+  if (read.content === undefined && read.missing) {
+    logger.warn(
+      { path: MOUNT_ALLOWLIST_PATH },
+      'Mount allowlist not found - host directory mounts are blocked',
+    );
+    cachedFileState = { status: 'missing' };
+    return cachedFileState;
+  }
+  try {
+    if (read.content === undefined) throw new Error('file is unreadable');
+    const allowlist = validateAllowlistShape(JSON.parse(read.content));
+    cachedFileState = { status: 'ok', allowlist };
     logger.info(
       {
         path: MOUNT_ALLOWLIST_PATH,
@@ -175,22 +194,133 @@ export function loadMountAllowlist(): MountAllowlist | null {
       },
       'Mount allowlist loaded successfully',
     );
-    return allowlist;
   } catch (err) {
-    const shouldLog = cachedAllowlistSignature !== signature;
-    cachedAllowlistSignature = signature;
-    cachedAllowlist = null;
-    if (shouldLog) {
-      logger.error(
+    const error = err instanceof Error ? err.message : String(err);
+    cachedFileState = { status: 'invalid', error };
+    logger.error(
+      { path: MOUNT_ALLOWLIST_PATH, error },
+      'Failed to load mount allowlist - host directory mounts are blocked',
+    );
+  }
+  return cachedFileState;
+}
+
+/**
+ * Storage sources added on the settings page. They live under data/ (never in
+ * the git worktree) and are merged with the allowlist file's own sources.
+ */
+export const MANAGED_STORAGE_SOURCES_PATH = path.join(
+  DATA_DIR,
+  'config',
+  'storage-sources.json',
+);
+
+export type ManagedStorageSourcesState =
+  | { status: 'ok'; sources: StorageSource[] }
+  | { status: 'invalid'; error: string };
+
+let cachedManagedSignature: string | null = null;
+let cachedManagedState: ManagedStorageSourcesState = {
+  status: 'ok',
+  sources: [],
+};
+
+/** Parses the managed storage source file (`{ "storageSources": [...] }`). */
+export function parseManagedStorageSources(content: string): StorageSource[] {
+  const parsed: unknown = JSON.parse(content);
+  if (!isRecord(parsed)) throw new Error('file must hold a JSON object');
+  const unknown = unknownKeys(parsed, ['storageSources']);
+  if (unknown.length > 0) {
+    throw new Error(`unknown fields: ${unknown.join(', ')}`);
+  }
+  return parseStorageSources(parsed.storageSources);
+}
+
+export function loadManagedStorageSources(): ManagedStorageSourcesState {
+  const read = readSignedFile(MANAGED_STORAGE_SOURCES_PATH);
+  if (read.signature === cachedManagedSignature) return cachedManagedState;
+  cachedManagedSignature = read.signature;
+  if (read.content === undefined && read.missing) {
+    cachedManagedState = { status: 'ok', sources: [] };
+    return cachedManagedState;
+  }
+  try {
+    if (read.content === undefined) throw new Error('file is unreadable');
+    cachedManagedState = {
+      status: 'ok',
+      sources: parseManagedStorageSources(read.content),
+    };
+  } catch (err) {
+    const error = err instanceof Error ? err.message : String(err);
+    cachedManagedState = { status: 'invalid', error };
+    logger.error(
+      { path: MANAGED_STORAGE_SOURCES_PATH, error },
+      'Failed to load managed storage sources - they cannot be mounted',
+    );
+  }
+  return cachedManagedState;
+}
+
+let cachedMerged: {
+  file: MountAllowlistFileState;
+  managed: ManagedStorageSourcesState;
+  value: MountAllowlist | null;
+} | null = null;
+
+/**
+ * Load the deployment policy, reloading automatically when its metadata or
+ * contents change. Invalid/missing policy is fail-closed, but a later file
+ * update is observed without restarting the service.
+ *
+ * Storage sources from the settings page are appended to the file's own; an
+ * id the file declares always wins. Without an allowlist file they still
+ * apply, under a policy that grants no host directories and mounts only
+ * read-only outside the main workspace. A broken managed file fails closed
+ * for its sources only.
+ */
+export function loadMountAllowlist(): MountAllowlist | null {
+  const file = loadMountAllowlistFile();
+  const managed = loadManagedStorageSources();
+  if (cachedMerged?.file === file && cachedMerged.managed === managed) {
+    return cachedMerged.value;
+  }
+  let value: MountAllowlist | null;
+  const managedSources = managed.status === 'ok' ? managed.sources : [];
+  if (file.status === 'invalid') {
+    value = null;
+  } else if (file.status === 'missing' && managedSources.length === 0) {
+    value = null;
+  } else {
+    const base: MountAllowlist =
+      file.status === 'ok'
+        ? file.allowlist
+        : {
+            allowedRoots: [],
+            blockedPatterns: [...DEFAULT_BLOCKED_PATTERNS],
+            nonMainReadOnly: true,
+            storageSources: [],
+          };
+    const fileIds = new Set(base.storageSources.map((source) => source.id));
+    const shadowed = managedSources.filter((source) => fileIds.has(source.id));
+    if (shadowed.length > 0) {
+      logger.warn(
         {
-          path: MOUNT_ALLOWLIST_PATH,
-          error: err instanceof Error ? err.message : String(err),
+          path: MANAGED_STORAGE_SOURCES_PATH,
+          ids: shadowed.map((source) => source.id),
         },
-        'Failed to load mount allowlist - host directory mounts are blocked',
+        'Managed storage sources ignored: the mount allowlist declares the same id',
       );
     }
-    return null;
+    value = {
+      ...base,
+      storageSources: [
+        ...base.storageSources,
+        ...managedSources.filter((source) => !fileIds.has(source.id)),
+      ],
+    };
   }
+  cachedMerged = { file, managed, value };
+  return value;
 }
 
 export function expandPath(value: string): string {

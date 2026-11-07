@@ -1,6 +1,10 @@
 import { api } from '../api/client';
 
-/** An NFS export or SMB share from the mount allowlist (never the password). */
+/**
+ * An NFS export or SMB share workspaces can mount (never the password). Sources
+ * added on the settings page have origin 'web'; the ones the mount allowlist
+ * file declares are read-only here.
+ */
 export interface StorageSource {
   id: string;
   type: 'nfs' | 'cifs';
@@ -14,15 +18,21 @@ export interface StorageSource {
   allowReadWrite: boolean;
   description?: string;
   hasPassword: boolean;
+  origin: 'allowlist' | 'web';
   /** Workspaces whose mounts name this source. */
   usedBy: number;
+  /** Of those, the ones that mount it read-write. */
+  readWriteUsedBy: number;
 }
 
 export interface StorageSourceList {
   sources: StorageSource[];
   allowlistPath: string;
+  /** Where sources added on the settings page are stored. */
+  managedPath: string;
   nonMainReadOnly: boolean;
   allowlistError?: string;
+  managedError?: string;
 }
 
 export interface StorageSourceSave {

@@ -506,7 +506,8 @@ HTTP 状态为 409；请求不会停止现有 Runner，也不会修改绑定。
   额外权限；子目录不存在时容器启动失败。`sub_path` 和宿主机目录一样不能命中
   `blockedPatterns`（`.ssh`、`credentials` 等）。
 - SMB 密码只放在 `passwordFile`（绝对路径或相对项目根，必须是服务用户所有的 600
-  普通文件，单行、不含逗号），不进 allowlist、数据库、docker 命令行或日志：
+  普通文件，单行、不含逗号；示例里的密码目录已被 `.gitignore` 忽略），不进
+  allowlist、数据库、docker 命令行或日志：
   启动时经 Docker Engine API 的请求体建一个命名卷
   （`happyclaw-storage-<id>-<摘要>-<凭据版本>`，标签 `io.happyclaw.storage-source`），
   容器按名字挂载。凭据版本是用服务端密钥（`WEB_SESSION_SECRET`）对密码做 HMAC 后取
@@ -526,10 +527,18 @@ HTTP 状态为 409；请求不会停止现有 Runner，也不会修改绑定。
   并设置 `all_squash`。宿主机目录的 `nfsDirectMount` 同样如此。
 - 没有 Unix 扩展的 SMB 共享没有可映射的属主，挂载按 `file_mode=0777,dir_mode=0777`
   对容器内所有用户开放，实际权限由 SMB 账号在服务器上的权限决定。
-- 管理员也可以在 Web「设置 → 存储源」里维护这份列表（见
-  `/api/config/storage-sources`），新建 Container 工作区时在挂载编辑器里选择。
+- 管理员也可以在 Web「设置 → 存储源」里添加存储源（见
+  `/api/config/storage-sources`），新建 Container 工作区时在挂载编辑器里选择。Web 添加的
+  存储源存在 `data/config/storage-sources.json`，密码在 `data/config/secrets/`，都在
+  `data/` 下，不进 Git 工作树、随 `make backup` 备份；服务从不改写
+  `config/mount-allowlist.json`。运行时把两份列表合并：allowlist 文件里的来源排在前面，
+  同一个 `id` 以 allowlist 文件为准，Web 那份被忽略并记一条告警。没有 allowlist 文件时
+  Web 添加的存储源照样可用，此时不授权任何宿主机目录，`nonMainReadOnly` 按 `true`。
+  allowlist 文件无法解析时全部挂载 fail-closed；`storage-sources.json` 无法解析时只有
+  其中的来源不能挂载。
 - 读写同时受来源的 `allowReadWrite` 与 `nonMainReadOnly` 约束；每次容器启动前都会
-  按当前 allowlist 重新校验，来源被删除后旧工作区无法启动。
+  按当前 allowlist 重新校验，来源被删除后旧工作区无法启动；关闭 `allowReadWrite` 后，
+  以读写方式挂载它的工作区同样无法启动（不会自动降为只读）。
 
 ## 文件
 
@@ -1090,12 +1099,16 @@ minimalClientVersion?, availableInPlans?, serviceTiers }`（字段取自官方
   `adminHostOnlyMode`。从 `false` 切到 `true` 时会停稳管理员工作区运行器，并把
   active admin 拥有的工作区持久迁移为 Host；普通成员数据不变
 - `GET /api/config/storage-sources`、`POST|PUT|DELETE /api/config/storage-sources/:id`，
-  仅 admin；读写挂载白名单的 `storageSources`（POST 新建、PUT 替换），白名单的其他
-  字段保持原样，写入前用运行时同一个解析器校验整份列表，不通过时文件不变。返回值带
-  `hasPassword` 与 `usedBy`（引用它的工作区数），从不返回密码或 `passwordFile`。SMB
-  密码只写：请求里的 `password` 省略表示保留、空串表示清除，写入
-  `config/secrets/storage-<id>`（600）。审计记 `storage_source_saved` /
-  `storage_source_deleted`，只含 id、类型和是否改了密码
+  仅 admin；列出合并后的全部存储源，写入只针对 `data/config/storage-sources.json`
+  （POST 新建、PUT 替换），写入前用运行时同一个解析器校验合并后的整份列表，不通过时
+  文件不变。`config/mount-allowlist.json` 声明的来源 `origin` 为 `allowlist`，对它的
+  POST/PUT/DELETE 返回 409（`code: STORAGE_SOURCE_READ_ONLY`），只能在服务器上改该文件；
+  Web 添加的为 `web`。allowlist 文件无法解析时列表为空并带 `allowlistError`，写入返回
+  409；`storage-sources.json` 无法解析时带 `managedError`。返回值还带 `hasPassword`、
+  `usedBy`（挂载它的工作区数）与 `readWriteUsedBy`（其中以读写方式挂载的），从不返回
+  密码或 `passwordFile`。SMB 密码只写：请求里的 `password` 省略表示保留、空串表示清除，
+  写入 `data/config/secrets/storage-<id>`（600，目录 700）。审计记
+  `storage_source_saved` / `storage_source_deleted`，只含 id、类型和是否改了密码
 - `GET /api/config/external-resources`
 - `GET /api/config/external-resources/rule`
 - `GET|PUT /api/config/registration`

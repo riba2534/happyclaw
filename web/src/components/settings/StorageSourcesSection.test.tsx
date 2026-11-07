@@ -40,19 +40,26 @@ const smb = {
   smbVersion: '3.0',
   allowReadWrite: false,
   hasPassword: true,
+  origin: 'web',
   usedBy: 2,
+  readWriteUsedBy: 0,
 };
+
+function listing(sources: unknown[]) {
+  return {
+    sources,
+    allowlistPath: 'config/mount-allowlist.json',
+    managedPath: 'data/config/storage-sources.json',
+    nonMainReadOnly: false,
+  };
+}
 
 let root: Root;
 let container: HTMLDivElement;
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mocks.get.mockResolvedValue({
-    sources: [smb],
-    allowlistPath: 'config/mount-allowlist.json',
-    nonMainReadOnly: false,
-  });
+  mocks.get.mockResolvedValue(listing([smb]));
   mocks.post.mockResolvedValue({ source: {} });
   mocks.put.mockResolvedValue({ source: {} });
   mocks.delete.mockResolvedValue({ success: true });
@@ -76,9 +83,9 @@ async function render() {
 }
 
 /** Opens the row menu (Radix opens on pointerdown) and picks an item. */
-async function menuAction(label: string) {
+async function menuAction(label: string, id = 'nas-smb') {
   const trigger = document.querySelector<HTMLElement>(
-    'button[aria-label="nas-smb 的操作"]',
+    `button[aria-label="${id} 的操作"]`,
   );
   if (!trigger) throw new Error('menu trigger not found');
   await act(async () => {
@@ -158,5 +165,14 @@ describe('StorageSourcesSection', () => {
     await flush();
     expect(mocks.confirm.mock.calls[0][0].message).toContain('2 个工作区');
     expect(mocks.delete).toHaveBeenCalledWith(`${BASE}/nas-smb`);
+  });
+
+  test('sources from the allowlist file are read-only', async () => {
+    mocks.get.mockResolvedValue(listing([{ ...smb, origin: 'allowlist' }]));
+    await render();
+    expect(document.body.textContent).toContain('配置文件');
+    expect(
+      document.querySelector('button[aria-label="nas-smb 的操作"]'),
+    ).toBeNull();
   });
 });

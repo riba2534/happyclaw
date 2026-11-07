@@ -445,6 +445,8 @@ function StorageSourceRow({
   onEdit: (source: StorageSource) => void;
   onDeleted: () => void;
 }) {
+  // Declared in the allowlist file: only editable there.
+  const fromAllowlist = source.origin === 'allowlist';
   const remove = async () => {
     const confirmed = await confirmDialog({
       title: '删除存储源',
@@ -476,6 +478,7 @@ function StorageSourceRow({
           <Badge variant="neutral">
             {source.allowReadWrite ? '可读写' : '只读'}
           </Badge>
+          {fromAllowlist && <Badge variant="neutral">配置文件</Badge>}
         </>
       }
       description={
@@ -502,28 +505,30 @@ function StorageSourceRow({
         </>
       }
       actions={
-        <ResponsiveMenu
-          title={source.id}
-          align="end"
-          trigger={
-            <IconButton
-              label={`${source.id} 的操作`}
-              icon={<MoreHorizontal />}
-              hideTooltip
-            />
-          }
-          groups={[
-            [{ label: '编辑', icon: Edit3, onSelect: () => onEdit(source) }],
-            [
-              {
-                label: '删除',
-                icon: Trash2,
-                destructive: true,
-                onSelect: () => void remove(),
-              },
-            ],
-          ]}
-        />
+        fromAllowlist ? undefined : (
+          <ResponsiveMenu
+            title={source.id}
+            align="end"
+            trigger={
+              <IconButton
+                label={`${source.id} 的操作`}
+                icon={<MoreHorizontal />}
+                hideTooltip
+              />
+            }
+            groups={[
+              [{ label: '编辑', icon: Edit3, onSelect: () => onEdit(source) }],
+              [
+                {
+                  label: '删除',
+                  icon: Trash2,
+                  destructive: true,
+                  onSelect: () => void remove(),
+                },
+              ],
+            ]}
+          />
+        )
       }
     />
   );
@@ -563,13 +568,14 @@ export function StorageSourcesSection() {
   };
 
   const sources = data?.sources ?? [];
-  const blocked = !!data?.allowlistError;
+  const blocked = !!data?.allowlistError || !!data?.managedError;
+  const allowlistPath = data?.allowlistPath ?? 'config/mount-allowlist.json';
 
   return (
     <div className="space-y-8">
       <SettingsSection
         title="网络存储"
-        description={`工作区按标识引用，配置写在 ${data?.allowlistPath ?? 'config/mount-allowlist.json'}。`}
+        description={`工作区按标识引用。在这里添加的存储源保存在 ${data?.managedPath ?? 'data/config/storage-sources.json'}；标为「配置文件」的写在 ${allowlistPath}，只能在服务器上编辑该文件。`}
         actions={
           <>
             <IconButton
@@ -589,13 +595,15 @@ export function StorageSourcesSection() {
           </>
         }
       >
-        {(error || data?.allowlistError) && (
+        {(error || data?.allowlistError || data?.managedError) && (
           <div
             role="alert"
             className="rounded-lg bg-error/10 px-3 py-2.5 text-body text-error"
           >
             {error ??
-              `挂载白名单无法解析，修好文件后再管理存储源（${data?.allowlistError}）`}
+              (data?.allowlistError
+                ? `挂载白名单无法解析，修好文件后再管理存储源（${data.allowlistError}）`
+                : `${data?.managedPath} 无法解析，修好文件后再管理存储源（${data?.managedError}）`)}
           </div>
         )}
         {data?.nonMainReadOnly && sources.some((s) => s.allowReadWrite) && (
