@@ -25,7 +25,7 @@ import {
   loadManagedStorageSources,
   loadMountAllowlist,
   loadMountAllowlistFile,
-  MANAGED_STORAGE_SOURCES_PATH,
+  managedStorageSourcesPath,
   parseManagedStorageSources,
 } from './mount-security.js';
 import { writeSecretFile } from './runtime-config.js';
@@ -35,7 +35,10 @@ import {
 } from './storage-sources.js';
 import type { StorageSource } from './types.js';
 
-export const STORAGE_SECRET_DIR = path.join(DATA_DIR, 'config', 'secrets');
+/** Where managed SMB passwords live; resolved on use like DATA_DIR users. */
+export function storageSecretDir(): string {
+  return path.join(DATA_DIR, 'config', 'secrets');
+}
 
 /** Where a source is defined: the allowlist file (read-only here) or Web. */
 export type StorageSourceOrigin = 'allowlist' | 'web';
@@ -86,7 +89,7 @@ export interface StorageSourceUser {
 }
 
 function secretPathFor(id: string): string {
-  return path.join(STORAGE_SECRET_DIR, `storage-${id}`);
+  return path.join(storageSecretDir(), `storage-${id}`);
 }
 
 function relativeToProject(file: string): string {
@@ -111,7 +114,7 @@ function allowlistFileSources(): StorageSource[] {
 function readManagedSources(): StorageSource[] {
   let content: string;
   try {
-    content = fs.readFileSync(MANAGED_STORAGE_SOURCES_PATH, 'utf8');
+    content = fs.readFileSync(managedStorageSourcesPath(), 'utf8');
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') return [];
     throw err;
@@ -120,7 +123,7 @@ function readManagedSources(): StorageSource[] {
     return parseManagedStorageSources(content);
   } catch (err) {
     throw new StorageSourceAdminError(
-      `${relativeToProject(MANAGED_STORAGE_SOURCES_PATH)} 无法解析：${err instanceof Error ? err.message : String(err)}`,
+      `${relativeToProject(managedStorageSourcesPath())} 无法解析：${err instanceof Error ? err.message : String(err)}`,
       409,
     );
   }
@@ -170,18 +173,19 @@ function removeShadowedSecrets(
 }
 
 function writeManagedSources(sources: StorageSource[]): void {
+  const target = managedStorageSourcesPath();
   // Replace the file atomically so a reader never sees a partial file.
-  fs.mkdirSync(path.dirname(MANAGED_STORAGE_SOURCES_PATH), {
+  fs.mkdirSync(path.dirname(target), {
     recursive: true,
   });
-  const tmp = `${MANAGED_STORAGE_SOURCES_PATH}.tmp-${process.pid}`;
+  const tmp = `${target}.tmp-${process.pid}`;
   fs.rmSync(tmp, { force: true });
   fs.writeFileSync(
     tmp,
     `${JSON.stringify({ storageSources: sources }, null, 2)}\n`,
     { mode: 0o600 },
   );
-  fs.renameSync(tmp, MANAGED_STORAGE_SOURCES_PATH);
+  fs.renameSync(tmp, target);
 }
 
 /** Every workspace that mounts a source, keyed by source id. */
@@ -241,7 +245,7 @@ export function listStorageSources(): {
 } {
   const users = usersBySource();
   const allowlistPath = relativeToProject(MOUNT_ALLOWLIST_PATH);
-  const managedPath = relativeToProject(MANAGED_STORAGE_SOURCES_PATH);
+  const managedPath = relativeToProject(managedStorageSourcesPath());
   const file = loadMountAllowlistFile();
   if (file.status === 'invalid') {
     return {
@@ -435,8 +439,9 @@ export function planStorageSourceSave(
       : 0,
     commit: () => {
       if (secretToWrite !== undefined) {
-        fs.mkdirSync(STORAGE_SECRET_DIR, { recursive: true, mode: 0o700 });
-        fs.chmodSync(STORAGE_SECRET_DIR, 0o700);
+        const secretDir = storageSecretDir();
+        fs.mkdirSync(secretDir, { recursive: true, mode: 0o700 });
+        fs.chmodSync(secretDir, 0o700);
         writeSecretFile(secretPathFor(id), `${secretToWrite}\n`);
       }
       writeManagedSources(nextSources);

@@ -44,7 +44,7 @@ import {
   listStorageSourceUsers,
   planStorageSourceSave,
   saveStorageSource,
-  STORAGE_SECRET_DIR,
+  storageSecretDir,
   withStorageSourceWriteLock,
 } from '../src/storage-source-admin.js';
 import { readPasswordFile } from '../src/storage-sources.js';
@@ -117,7 +117,7 @@ describe('storage source administration', () => {
 
     expect(fs.readFileSync(allowlistPath, 'utf8')).toBe(before);
     expect(fs.readdirSync(configDir)).toEqual(['mount-allowlist.json']);
-    expect(STORAGE_SECRET_DIR).toBe(secretDir);
+    expect(storageSecretDir()).toBe(secretDir);
     const secret = path.join(secretDir, 'storage-nas-smb');
     expect(fs.statSync(secret).mode & 0o777).toBe(0o600);
     expect(fs.statSync(secretDir).mode & 0o777).toBe(0o700);
