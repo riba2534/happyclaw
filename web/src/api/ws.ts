@@ -197,8 +197,9 @@ class WsManager {
 
   /**
    * Ask an open socket for a pong, once at a time: a probe already in flight
-   * answers for every later request. Any message within the deadline keeps
-   * the socket; silence replaces it and reports the loss.
+   * answers for every later request (going offline starts one over). Any
+   * message within the deadline keeps the socket; silence replaces it and
+   * reports the loss.
    */
   private probe(ws: WebSocket) {
     if (this.probeTimer) return;
@@ -230,6 +231,9 @@ class WsManager {
     // ping counts as lost.
     window.addEventListener('offline', () => {
       if (this.wanted && this.ws?.readyState === WebSocket.OPEN) {
+        // Only what arrives from now on says the socket survived: a probe
+        // in flight may have had its answer before the network went.
+        this.clearProbeTimer();
         this.probe(this.ws);
       }
     });
