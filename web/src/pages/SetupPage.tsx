@@ -9,8 +9,9 @@ import {
   SettingsSection,
 } from '../components/settings/SettingsLayout';
 import { getErrorMessage } from '../components/settings/types';
+import { DeploymentModeChoice } from '../components/settings/DeploymentModeChoice';
 
-import { useAuthStore } from '../stores/auth';
+import { useAuthStore, type DeploymentMode } from '../stores/auth';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 
@@ -18,8 +19,24 @@ import { Button } from '@/components/ui/button';
 
 export function SetupPage() {
   const navigate = useNavigate();
-  const { initialized, authenticated, setupAdmin, checkStatus } =
-    useAuthStore();
+  const {
+    initialized,
+    authenticated,
+    setupAdmin,
+    checkStatus,
+    deploymentMode: serverMode,
+    deploymentModeSource,
+  } = useAuthStore();
+  // A mode the environment (or a settings file) already chose is preselected
+  // and only sent when changed, so the wizard never overrides it unasked.
+  // Otherwise the recommended single-user host is preselected and sent.
+  const inherited =
+    deploymentModeSource === 'env' || deploymentModeSource === 'settings';
+  const [picked, setPicked] = useState<DeploymentMode | null>(null);
+  const deploymentMode =
+    picked ?? (inherited ? serverMode : 'single_user_host');
+  const modeToSend =
+    inherited && deploymentMode === serverMode ? undefined : deploymentMode;
 
   // Check initialization status on mount (this is a public page, no AuthGuard)
   useEffect(() => {
@@ -58,13 +75,42 @@ export function SetupPage() {
             HappyClaw 初始设置
           </h1>
           <p className="mt-1.5 text-body text-muted-foreground">
-            先创建管理员账号，完成后进入后台继续配置飞书 Token 与 Claude Key
+            选好使用方式并创建管理员账号，完成后进入后台继续配置飞书 Token 与
+            Claude Key
           </p>
         </header>
 
+        <SettingsSection
+          title="你打算怎么用？"
+          description="之后可以在「设置 → 宿主机集成」里改。"
+        >
+          <SettingsGroup className="p-4">
+            <DeploymentModeChoice
+              legend="使用方式"
+              value={deploymentMode}
+              onChange={setPicked}
+              recommendSingleUser
+              hint={
+                inherited && (
+                  <p
+                    data-testid="setup-deployment-mode-source"
+                    className="mt-2 text-caption text-muted-foreground"
+                  >
+                    {deploymentModeSource === 'env'
+                      ? '已按环境变量 HAPPYCLAW_DEPLOYMENT_MODE 选好；改选后以这里的选择为准。'
+                      : '已按现有的系统设置选好。'}
+                  </p>
+                )
+              }
+            />
+          </SettingsGroup>
+        </SettingsSection>
+
         <CreateAdminStep
           onDone={() => navigate('/setup/providers', { replace: true })}
-          setupAdmin={setupAdmin}
+          setupAdmin={(username, password) =>
+            setupAdmin(username, password, modeToSend)
+          }
         />
       </div>
     </div>

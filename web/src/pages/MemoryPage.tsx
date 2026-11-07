@@ -1560,6 +1560,7 @@ export function MemoryPage() {
                     ) : (
                       <EmptyState
                         icon={proposedView ? Hourglass : BookOpen}
+                        variant={query.trim() ? 'search' : 'empty'}
                         title={
                           query.trim()
                             ? '没有匹配的记忆'

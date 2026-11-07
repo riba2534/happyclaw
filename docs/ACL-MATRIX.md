@@ -416,6 +416,10 @@ Agent MCP 调用没有 Cookie，但必须携带由主进程创建的运行上下
 - 脚本和前置检查仅允许 admin 的 Host Workspace。
 - `adminHostOnlyMode` 仅允许 admin 配置；开启后 active admin 拥有的 Workspace
   强制使用 Host，所有 Container 写入入口都会拒绝。member 始终保留 Container 隔离。
+- `deploymentMode`、`workspaceRoot` 仅允许 admin 配置（`/api/config/host-integration`）。
+  单人宿主机模式等同管理员纯宿主机生效，并由后端拒绝：注册（403）、建用户、建邀请码、
+  重新启用用户或提升为 admin、建访客或重新启用访客、`POST /api/docker/pull`（409
+  `SINGLE_USER_HOST`）。读取、停用、删除不受影响；界面隐藏这些入口只是展示层面。
 
 自动化的 Agent 工具（`automation_*`）不接收任何 JID。主进程从 IPC 目录和正在执行的
 批次推出调用者（`src/automation-runtime.ts` 的 `deriveAutomationActor`），**admin

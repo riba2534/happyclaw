@@ -130,7 +130,7 @@ function DialogContent({
           // Phone: a bottom sheet (see above).
           'phone:top-auto! phone:bottom-[var(--keyboard-inset,0px)]! phone:left-0! phone:max-h-[calc(var(--vvh,100dvh)-3rem)]! phone:max-w-none! phone:translate-x-0! phone:translate-y-0! phone:rounded-t-xl! phone:rounded-b-none! phone:data-open:zoom-in-100 phone:data-open:slide-in-from-bottom-10 phone:data-closed:zoom-out-100 phone:data-closed:slide-out-to-bottom-10 motion-reduce:animate-none',
           // Without a footer to carry it, the safe area pads the content.
-          'phone:not-has-[>[data-slot=dialog-footer]]:pb-[calc(1rem+env(safe-area-inset-bottom))]',
+          'phone:not-has-[>[data-slot=dialog-footer]]:pb-[calc(1rem+var(--safe-bottom,0px))]',
           className,
         )}
         onOpenAutoFocus={(event) => {
@@ -190,7 +190,7 @@ function DialogFooter({
       className={cn(
         'sticky -bottom-4 z-10 -mx-4 -mb-4 flex flex-col-reverse gap-2 rounded-b-xl border-t bg-[color-mix(in_oklab,var(--muted)_50%,var(--surface))] p-4 sm:flex-row sm:justify-end',
         // Phone: one row of equal buttons over the home indicator.
-        'phone:flex-row phone:flex-wrap phone:justify-end phone:rounded-b-none phone:pb-[calc(1rem+env(safe-area-inset-bottom))] phone:*:data-[slot=button]:flex-1',
+        'phone:flex-row phone:flex-wrap phone:justify-end phone:rounded-b-none phone:pb-[calc(1rem+var(--safe-bottom,0px))] phone:*:data-[slot=button]:flex-1',
         className,
       )}
       {...props}

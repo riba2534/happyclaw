@@ -591,7 +591,7 @@ describe('a sub-agent row says what it cost', () => {
 
   it('leaves the classic card as it was: its title row has no usage', async () => {
     await render(<SubAgentCard task={task} groupJid="web:test" />);
-    expect(text()).toContain('执行中');
+    expect(text()).toContain('运行中');
     expect(text()).not.toContain('token');
     expect(text()).not.toContain('14 个工具');
   });

@@ -45,8 +45,8 @@ function ComposerFallback() {
           ? undefined
           : {
               paddingBottom: dock
-                ? 'max(calc(env(safe-area-inset-bottom, 0px) + 8px), calc(var(--keyboard-height, 0px) + 8px))'
-                : 'max(0.75rem, env(safe-area-inset-bottom, 0px), var(--keyboard-height, 0px))',
+                ? 'max(calc(var(--safe-bottom, 0px) + 8px), calc(var(--keyboard-height, 0px) + 8px))'
+                : 'max(0.75rem, var(--safe-bottom, 0px), var(--keyboard-height, 0px))',
             }
       }
     >

@@ -4,7 +4,7 @@ import Database from './sqlite-compat.js';
 import fs from 'fs';
 import path from 'path';
 
-import { STORE_DIR, GROUPS_DIR, TIMEZONE } from './config.js';
+import { STORE_DIR, TIMEZONE } from './config.js';
 import { normalizeAgentEffort } from './agent-effort.js';
 import { logger } from './logger.js';
 import { isValidWorkspaceFolderName } from './workspace-folder.js';
@@ -106,6 +106,12 @@ import {
   reconcileLegacyOwnerProfileMemory,
 } from './owner-profile-store.js';
 import { initSessionWorktreeStore } from './session-worktree-store.js';
+import {
+  assignWorkspaceRootDirIfNew,
+  deleteRecordedWorkdir,
+  ensureWorkspaceDirs,
+  initWorkspaceDirStore,
+} from './workspace-dir.js';
 import {
   deleteWorkspaceAutomations,
   initAutomationStore,
@@ -1029,6 +1035,14 @@ export function initDatabase(
   `);
 
   initSessionWorktreeStore(db);
+  // v89 -> v90: workspace_workdirs, the recorded directory of a Host
+  // workspace created in the workspace root (workspace-dir.ts). Its own
+  // folder-keyed table: `workspaces` is keyed by jid and is a projection that
+  // reconcileCanonicalRuntimeProjections prunes and rebuilds from
+  // registered_groups, so it cannot be the only copy of where files live.
+  // Additive; every existing workspace has no record and stays in
+  // data/groups/<folder>.
+  initWorkspaceDirStore(db);
 
   // v65 -> v66: HappyClaw Owner Profile remains a reserved Workspace Memory
   // item; this table tracks only its one-shot onboarding lifecycle. Duplicate
@@ -9645,7 +9659,7 @@ function ensureGroupDirExists(folder: string): void {
     return;
   }
   try {
-    fs.mkdirSync(path.join(GROUPS_DIR, folder, 'logs'), { recursive: true });
+    ensureWorkspaceDirs(folder);
   } catch (err) {
     logger.warn({ err, folder }, 'Failed to ensure group directory exists');
   }
@@ -9697,6 +9711,13 @@ export function ensureUserHomeGroup(
   };
 
   setRegisteredGroup(jid, group);
+  // A new admin home is a Host workspace without a custom directory: it lives
+  // in the workspace root.
+  try {
+    assignWorkspaceRootDirIfNew(jid, group);
+  } catch (err) {
+    logger.warn({ err, folder }, 'Failed to create the workspace directory');
+  }
   ensureGroupDirExists(folder);
   assignWorkspaceAgentProfile(
     folder,
@@ -10013,6 +10034,9 @@ export function deleteGroupData(
     prepareCached(
       'DELETE FROM workspace_runtime_sessions WHERE group_folder = ?',
     ).run(folder);
+    // The directory itself is removed after the commit (removeFlowArtifacts),
+    // which the caller hands the recorded path it read before.
+    deleteRecordedWorkdir(folder);
     // 4. 删除注册信息
     prepareCached('DELETE FROM registered_groups WHERE jid = ?').run(jid);
     // 5. 删除会话与 workspace-owned agents
@@ -13568,6 +13592,7 @@ export function closeDatabase(): void {
   initRuntimeStateStore(null);
   initAutomationStore(null);
   initWorkItemStore(null);
+  initWorkspaceDirStore(null);
   if (db) {
     db.close();
   }

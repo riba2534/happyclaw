@@ -34,6 +34,8 @@ vi.mock('../src/logger.js', () => ({
 const {
   applyContainerProxyEnvLines,
   buildContainerArgs,
+  withHostNfsSources,
+  withNamedStorageVolumes,
   detectContainerHostIdentity,
   resolveContainerProxyConfig,
   resolveContainerHostIdentity,
@@ -192,6 +194,138 @@ describe('buildContainerArgs identity contract', () => {
   });
 });
 
+describe('buildContainerArgs storage mounts', () => {
+  test('binds host paths and mounts storage as volumes', () => {
+    const args = buildContainerArgs(
+      [
+        {
+          hostPath: '/srv/data',
+          containerPath: '/workspace/extra/data',
+          readonly: true,
+        },
+        {
+          hostPath: 'nfs://nas.lan/export/a',
+          containerPath: '/workspace/extra/nas',
+          readonly: false,
+          storage: {
+            type: 'nfs',
+            server: 'nas.lan',
+            device: '/export/a',
+            options: 'nfsvers=3,proto=tcp,hard,nolock',
+          },
+        },
+        {
+          hostPath: 'smb://192.0.2.5/team',
+          containerPath: '/workspace/extra/team',
+          readonly: true,
+          storage: { type: 'named', name: 'happyclaw-storage-team-0123' },
+        },
+      ],
+      'storage-test',
+      'UTC',
+      { mode: 'unknown' },
+    );
+    expect(args).toContain('/srv/data:/workspace/extra/data:ro');
+    expect(args).toContain(
+      'type=volume,dst=/workspace/extra/nas,volume-driver=local,volume-opt=type=nfs,volume-opt=device=:/export/a,"volume-opt=o=addr=nas.lan,nfsvers=3,proto=tcp,hard,nolock"',
+    );
+    expect(args).toContain(
+      'type=volume,src=happyclaw-storage-team-0123,dst=/workspace/extra/team,readonly',
+    );
+    expect(args.join(' ')).not.toContain('nfs://');
+  });
+});
+
+describe('withHostNfsSources', () => {
+  const plain = {
+    hostPath: '/mnt/nas/plain',
+    containerPath: '/workspace/extra/plain',
+    readonly: true,
+  };
+  const optedIn = {
+    hostPath: '/mnt/nas/proj',
+    containerPath: '/workspace/extra/proj',
+    readonly: false,
+    nfsDirectMountRoot: '/mnt/nas',
+  };
+
+  test('is off unless the allowed root opts in', () => {
+    const resolve = vi.fn(() => {
+      throw new Error('must not read the mount table');
+    });
+    const mounts = [plain];
+    expect(withHostNfsSources(mounts, resolve)).toBe(mounts);
+    expect(resolve).not.toHaveBeenCalled();
+  });
+
+  test('mounts an opted-in NFS directory from its export and binds the rest', () => {
+    const resolve = vi.fn((hostPaths: string[]) =>
+      hostPaths.map(() => ({
+        kind: 'nfs' as const,
+        source: {
+          server: 'nas',
+          device: '/export/proj',
+          options: 'nfsvers=4.2,proto=tcp,hard',
+        },
+      })),
+    );
+    const [first, second] = withHostNfsSources([plain, optedIn], resolve);
+    expect(resolve).toHaveBeenCalledWith(['/mnt/nas/proj']);
+    expect(first).toBe(plain);
+    expect(second.storage).toEqual({
+      type: 'nfs',
+      server: 'nas',
+      device: '/export/proj',
+      options: 'nfsvers=4.2,proto=tcp,hard',
+    });
+    const local = { ...optedIn, hostPath: '/mnt/local/proj' };
+    expect(withHostNfsSources([local], () => [{ kind: 'bind' }])).toEqual([
+      local,
+    ]);
+  });
+
+  test('fails the launch with the way back to a bind when it cannot mount directly', () => {
+    expect(() =>
+      withHostNfsSources([optedIn], () => [
+        { kind: 'error', reason: '/mnt/nas uses sec=krb5' },
+      ]),
+    ).toThrow(
+      /mnt\/nas\/proj cannot be mounted directly from NFS: \/mnt\/nas uses sec=krb5\. Set nfsDirectMount to false on allowed root "\/mnt\/nas"/,
+    );
+  });
+});
+
+describe('withNamedStorageVolumes', () => {
+  const cifs = {
+    hostPath: 'smb://192.0.2.5/team',
+    containerPath: '/workspace/extra/team',
+    readonly: true,
+    storage: {
+      type: 'cifs' as const,
+      sourceId: 'team',
+      server: '192.0.2.5',
+      device: '//192.0.2.5/team',
+      smbVersion: '3.0',
+    },
+  };
+  const key = 'team\u0000//192.0.2.5/team';
+
+  test('points an SMB mount at its prepared volume', () => {
+    expect(
+      withNamedStorageVolumes([cifs], new Map([[key, 'vol-1']]))[0].storage,
+    ).toEqual({ type: 'named', name: 'vol-1' });
+  });
+
+  test('fails the launch with the preparation error or a missing volume', () => {
+    expect(() =>
+      withNamedStorageVolumes([cifs], new Map([[key, new Error('denied')]])),
+    ).toThrow('denied');
+    expect(() => withNamedStorageVolumes([cifs], new Map())).toThrow(
+      'not prepared',
+    );
+  });
+});
+
 describe('container proxy boundary', () => {
   const identity = { mode: 'unknown' } as const;
 
@@ -276,16 +410,16 @@ describe('container proxy boundary', () => {
     expect(
       resolveContainerProxyConfig(
         {
-          httpsProxy: 'http://user:secret@10.0.0.5:8443',
-          httpProxy: 'http://10.0.0.5:8080',
+          httpsProxy: 'http://user:secret@192.0.2.5:8443',
+          httpProxy: 'http://192.0.2.5:8080',
           noProxy: '',
         },
         'linux',
       ),
     ).toEqual({
       envLines: [
-        'HTTPS_PROXY=http://user:secret@10.0.0.5:8443',
-        'HTTP_PROXY=http://10.0.0.5:8080',
+        'HTTPS_PROXY=http://user:secret@192.0.2.5:8443',
+        'HTTP_PROXY=http://192.0.2.5:8080',
       ],
       addHostGateway: false,
     });
@@ -428,6 +562,7 @@ describe('entrypoint permission contract', () => {
     expect(watcher).toContain('readDescriptorMountId(root.fd)');
     expect(watcher).toContain('mountId !== root.mountId');
     expect(watcher).toContain('stat.nlink > 1');
+    expect(watcher).toContain('isStaleMountEntryError(error, parentFd)');
     expect(watcher).toContain('fs.fchownSync(fd');
     expect(watcher).toContain('fs.fchmodSync(fd');
     expect(watcher).not.toMatch(/fs\.(?:chown|chmod)Sync\(/);
@@ -460,6 +595,31 @@ describe('entrypoint permission contract', () => {
         assert.throws(() => readDescriptorMountId(99, () => {
           throw new Error('fdinfo unavailable');
         }));
+      `,
+    ]);
+  });
+
+  test('only a stale entry under a live parent is skipped as a stale mount', () => {
+    const moduleUrl = pathToFileURL(mountBoundaryPath).href;
+    execFileSync(process.execPath, [
+      '--input-type=module',
+      '-e',
+      `
+        import assert from 'node:assert/strict';
+        import { isStaleMountEntryError } from ${JSON.stringify(moduleUrl)};
+        const fail = (code) => () => {
+          throw Object.assign(new Error(code), { code });
+        };
+        const live = () => ({});
+        const error = (code) => Object.assign(new Error(code), { code });
+        assert.equal(isStaleMountEntryError(error('ESTALE'), 7, fail('EBADF')), true);
+        assert.equal(isStaleMountEntryError(error('EBADF'), 7, live), true);
+        assert.equal(isStaleMountEntryError(error('EBADF'), 7, fail('EBADF')), false);
+        assert.throws(() => isStaleMountEntryError(error('EBADF'), 7, fail('EIO')));
+        for (const code of ['EACCES', 'EIO', 'EPERM', undefined]) {
+          assert.equal(isStaleMountEntryError(error(code), 7, live), false);
+        }
+        assert.equal(isStaleMountEntryError(undefined, 7, live), false);
       `,
     ]);
   });

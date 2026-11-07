@@ -7,6 +7,7 @@ import {
 } from './claude-provider-env.js';
 import type { ClaudeContextAudit } from './stream-event.types.js';
 import type { RegisteredGroup } from './types.js';
+import { getRecordedWorkdir } from './workspace-dir.js';
 import {
   reconcileSessionSkills,
   resolveEffectiveSkills,
@@ -62,7 +63,7 @@ export interface ClaudeContextPlanArgs {
   managedSkillPolicy?: ManagedSkillPolicy;
   /**
    * Project Skill directories, lowest precedence first (see
-   * resolveWorkspaceSkillRoots). Defaults to data/groups/<folder>.
+   * resolveWorkspaceSkillRoots). Defaults to the workspace's own directory.
    */
   workspaceSkillRoots?: string[];
   pluginSkillLayers?: EffectiveSkillLayer[];
@@ -293,7 +294,12 @@ export function buildClaudeContextPlan(
         path.join(args.dataDir, 'skills', ownerId))
       : undefined;
   const workspaceSkillRoots = args.workspaceSkillRoots ?? [
-    path.join(args.dataDir, 'groups', args.group.folder, '.claude', 'skills'),
+    path.join(
+      getRecordedWorkdir(args.group.folder) ??
+        path.join(args.dataDir, 'groups', args.group.folder),
+      '.claude',
+      'skills',
+    ),
   ];
   const hostClaudeRuntime = args.groupSessionsDir
     ? path.join(args.groupSessionsDir, 'CLAUDE.md')

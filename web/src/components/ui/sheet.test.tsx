@@ -119,7 +119,7 @@ describe('the bottom sheet', () => {
     expect(handle).not.toBeNull();
     expect(content.className).toContain('data-[side=bottom]:rounded-t-[12px]');
     expect(content.className).toContain(
-      'data-[side=bottom]:pb-[env(safe-area-inset-bottom)]',
+      'data-[side=bottom]:pb-[var(--safe-bottom,0px)]',
     );
     expect(content.className).toContain('motion-reduce:transition-none');
   });

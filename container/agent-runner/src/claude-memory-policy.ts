@@ -30,60 +30,104 @@ function joinClaudePattern(root: string, ...segments: string[]): string {
   return toClaudePattern(pathApiFor(root).join(root, ...segments));
 }
 
+function normalizedRoot(value: string | undefined): string | undefined {
+  if (!value || !isAbsolutePortable(value)) return undefined;
+  return pathApiFor(value).normalize(value);
+}
+
 /**
  * Claude Code resolves user memory from the operating-system home directory,
  * even when CLAUDE_CONFIG_DIR points at HappyClaw's per-session directory.
- * In managed mode, exclude those host instructions explicitly while keeping
- * the session's selected user-source Skills available.
+ * Managed mode excludes those host instructions explicitly while keeping the
+ * session's selected user-source Skills available.
  */
-export function resolveManagedHostClaudeMdExcludes(options: {
+function hostUserMemoryExcludes(
+  homeDir: string | undefined,
+  externalClaudeDir: string | undefined,
+): string[] {
+  const roots = new Set<string>();
+  for (const candidate of [
+    homeDir ? path.join(homeDir, '.claude') : undefined,
+    externalClaudeDir,
+  ]) {
+    const root = normalizedRoot(candidate);
+    if (root) roots.add(root);
+  }
+  return [...roots].flatMap((root) => [
+    joinClaudePattern(root, 'CLAUDE.md'),
+    joinClaudePattern(root, 'rules', '**'),
+  ]);
+}
+
+function isInside(child: string, parent: string): boolean {
+  const api = pathApiFor(parent);
+  const relative = api.relative(parent, child);
+  return (
+    relative !== '' &&
+    relative !== '..' &&
+    !relative.startsWith(`..${api.sep}`) &&
+    !api.isAbsolute(relative)
+  );
+}
+
+/**
+ * HappyClaw-owned workspaces beneath the install live under <projectRoot>/data
+ * (data/groups/<folder>, data/worktrees/...). Claude Code walks every parent
+ * directory, so it discovers the install's own CLAUDE.md as Project memory.
+ * That file describes developing HappyClaw and must not turn a business Agent
+ * into a codebase assistant, whatever its context source. A workspace whose
+ * cwd is the repository itself or its source tree is someone developing
+ * HappyClaw and keeps it; one outside the install never sees it. An unknown
+ * cwd stays excluded. Workspace-local CLAUDE.md files remain available.
+ */
+function platformProjectMemoryExcludes(
+  projectRoot: string | undefined,
+  cwd: string | undefined,
+): string[] {
+  const root = normalizedRoot(projectRoot);
+  if (!root) return [];
+  const workingDir = normalizedRoot(cwd);
+  if (
+    workingDir &&
+    !isInside(workingDir, pathApiFor(root).join(root, 'data'))
+  ) {
+    return [];
+  }
+  return [
+    joinClaudePattern(root, 'CLAUDE.md'),
+    joinClaudePattern(root, '.claude', 'CLAUDE.md'),
+    joinClaudePattern(root, 'CLAUDE.local.md'),
+    joinClaudePattern(root, '.claude', 'rules', '**'),
+  ];
+}
+
+/**
+ * `claudeMdExcludes` for a run. Host runs inside the install's data directory
+ * exclude the platform repository's memory, and every Host run excludes the
+ * person's own host memory only in managed mode: `host_claude` deliberately
+ * inherits it. Container runs never see either, so they get no exclusions.
+ */
+export function resolveHostClaudeMdExcludes(options: {
   executionMode: 'host' | 'container';
   runtimePolicy?: unknown;
   externalClaudeDir?: string;
   homeDir?: string;
   projectRoot?: string;
+  /** The run's working directory; unknown keeps the platform exclusion. */
+  cwd?: string;
 }): string[] {
-  if (
-    options.executionMode !== 'host' ||
+  if (options.executionMode !== 'host') return [];
+  const userMemory =
     contextSource(options.runtimePolicy) === 'host_claude'
-  ) {
-    return [];
-  }
-
-  const roots = new Set<string>();
-  const candidates = [
-    options.homeDir ? path.join(options.homeDir, '.claude') : undefined,
-    options.externalClaudeDir,
+      ? []
+      : hostUserMemoryExcludes(options.homeDir, options.externalClaudeDir);
+  // The Set matters when the external Claude dir is the project's .claude.
+  return [
+    ...new Set([
+      ...userMemory,
+      ...platformProjectMemoryExcludes(options.projectRoot, options.cwd),
+    ]),
   ];
-  for (const candidate of candidates) {
-    if (!candidate || !isAbsolutePortable(candidate)) continue;
-    roots.add(pathApiFor(candidate).normalize(candidate));
-  }
-
-  const excludes = [...roots].flatMap((root) => [
-    joinClaudePattern(root, 'CLAUDE.md'),
-    joinClaudePattern(root, 'rules', '**'),
-  ]);
-
-  // Host agents run inside data/groups/<folder>, which is nested beneath the
-  // HappyClaw git repository. Claude Code therefore discovers the repository's
-  // own CLAUDE.md as Project memory. That file is useful while developing
-  // HappyClaw, but it must not redefine a managed business Agent as a codebase
-  // assistant. Exclude only the platform repository root; workspace-local
-  // CLAUDE.md files inside the group's directory remain available.
-  if (options.projectRoot && isAbsolutePortable(options.projectRoot)) {
-    const projectRoot = pathApiFor(options.projectRoot).normalize(
-      options.projectRoot,
-    );
-    excludes.push(
-      joinClaudePattern(projectRoot, 'CLAUDE.md'),
-      joinClaudePattern(projectRoot, '.claude', 'CLAUDE.md'),
-      joinClaudePattern(projectRoot, 'CLAUDE.local.md'),
-      joinClaudePattern(projectRoot, '.claude', 'rules', '**'),
-    );
-  }
-
-  return [...new Set(excludes)];
 }
 
 /** Return SDK-reported memory files that should have matched an exclusion. */

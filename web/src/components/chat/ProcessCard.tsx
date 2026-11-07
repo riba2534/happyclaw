@@ -48,6 +48,13 @@ import {
   ProcessTimeline,
   QuestionCards,
 } from './ProcessRows';
+import {
+  TOOL_STATE,
+  ToolStateIcon,
+  countToolStates,
+  describeProblems,
+  worstProblem,
+} from './tool-status';
 
 export interface ProcessCardProps {
   mode: 'live' | 'settled';
@@ -185,6 +192,10 @@ function ProcessHeader({
   }, []);
 
   const running = working && headline.running;
+  // Folded, the line also says whether anything went wrong, and out of how
+  // many calls: 「已工作 32s · 12 个工具 · 2 个失败」. Nothing when nothing did;
+  // opened, the counts under it say it.
+  const outcome = working || open ? null : foldedOutcome(steps);
   return (
     <button
       type="button"
@@ -202,6 +213,8 @@ function ProcessHeader({
             running && 'animate-spin motion-reduce:animate-none',
           )}
         />
+      ) : outcome ? (
+        <ToolStateIcon state={outcome.worst} />
       ) : (
         <Layers
           aria-hidden="true"
@@ -230,6 +243,17 @@ function ProcessHeader({
       ) : (
         <span className="min-w-0 flex-1 truncate tabular-nums">
           {describeWork(steps, durationMs)}
+          {outcome && (
+            <>
+              {` · ${outcome.total} 个工具 · `}
+              <span
+                data-hc-work-problems=""
+                className={TOOL_STATE[outcome.worst].tone}
+              >
+                {outcome.problems}
+              </span>
+            </>
+          )}
         </span>
       )}
       {working && seconds != null && seconds >= 1 && (
@@ -247,6 +271,15 @@ function ProcessHeader({
       />
     </button>
   );
+}
+
+/** What went wrong in a settled process, or `null` when nothing did. */
+function foldedOutcome(steps: readonly StreamingStep[]) {
+  const counts = countToolStates(summarizedSteps(steps), false);
+  const worst = worstProblem(counts);
+  if (!worst) return null;
+  const total = Object.values(counts).reduce((sum, count) => sum + count, 0);
+  return { worst, total, problems: describeProblems(counts).join(' · ') };
 }
 
 // ── the window ──────────────────────────────────────────────────────────

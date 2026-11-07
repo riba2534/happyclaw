@@ -4826,7 +4826,19 @@ export interface SystemSettings {
   // 普通成员能否创建只读访客账号。默认关闭：访客由所有者直接建号，不经过邀请码，
   // 开放给成员等于绕过邀请制注册。关闭时成员已有的访客也一并失效；admin 不受限。
   allowMemberGuests: boolean;
+  // Where new Host workspaces without a custom directory are created. '' =
+  // unset: HAPPYCLAW_WORKSPACE_ROOT, then ~/happyclaw (src/workspace-root.ts).
+  workspaceRoot: string;
+  // '' = unset: HAPPYCLAW_DEPLOYMENT_MODE, then 'multi_user'
+  // (src/deployment-mode.ts). Stored as configured, never as resolved.
+  deploymentMode: '' | DeploymentMode;
 }
+
+export type DeploymentMode = 'multi_user' | 'single_user_host';
+export const DEPLOYMENT_MODES: readonly DeploymentMode[] = [
+  'multi_user',
+  'single_user_host',
+];
 
 // Upper bound for the login lockout window. auth.ts reclaims login-attempt
 // records on a fixed 24h TTL (its authoritative window check assumes the
@@ -4856,6 +4868,8 @@ const DEFAULT_SYSTEM_SETTINGS: SystemSettings = {
   fallbackModel: '',
   pluginAutoScan: true,
   allowMemberGuests: false,
+  workspaceRoot: '',
+  deploymentMode: '',
 };
 
 type SystemSettingsSource = 'file' | 'env' | 'api';
@@ -4986,6 +5000,28 @@ function normalizeSystemSettings(
     }
   }
 
+  // Stored as configured; src/workspace-root.ts validates and resolves it.
+  let workspaceRoot = DEFAULT_SYSTEM_SETTINGS.workspaceRoot;
+  if (raw.workspaceRoot !== undefined) {
+    if (typeof raw.workspaceRoot === 'string') {
+      workspaceRoot = raw.workspaceRoot.trim();
+    } else {
+      invalidFields.add('workspaceRoot');
+    }
+  }
+
+  let deploymentMode = DEFAULT_SYSTEM_SETTINGS.deploymentMode;
+  if (raw.deploymentMode !== undefined && raw.deploymentMode !== '') {
+    if (
+      typeof raw.deploymentMode === 'string' &&
+      (DEPLOYMENT_MODES as readonly string[]).includes(raw.deploymentMode)
+    ) {
+      deploymentMode = raw.deploymentMode as DeploymentMode;
+    } else {
+      invalidFields.add('deploymentMode');
+    }
+  }
+
   let mainAgentContextSource = DEFAULT_SYSTEM_SETTINGS.mainAgentContextSource;
   if (raw.mainAgentContextSource !== undefined) {
     if (
@@ -5073,6 +5109,8 @@ function normalizeSystemSettings(
       'allowMemberGuests',
       DEFAULT_SYSTEM_SETTINGS.allowMemberGuests,
     ),
+    workspaceRoot,
+    deploymentMode,
   };
 
   if (invalidFields.size > 0) {
@@ -5088,11 +5126,30 @@ function normalizeSystemSettings(
 let _settingsCache: SystemSettings | null = null;
 let _settingsMtimeMs = 0;
 
+const SYSTEM_SETTING_KEYS = Object.keys(DEFAULT_SYSTEM_SETTINGS) as Array<
+  keyof SystemSettings
+>;
+
 function readSystemSettingsFromFile(): SystemSettings | null {
   if (!fs.existsSync(SYSTEM_SETTINGS_FILE)) return null;
   const raw = JSON.parse(
     fs.readFileSync(SYSTEM_SETTINGS_FILE, 'utf-8'),
   ) as Record<string, unknown>;
+  // Per key: a key the file does not have (the setup wizard stores only the
+  // deployment mode) follows its environment variable, then the default.
+  const missing = SYSTEM_SETTING_KEYS.filter(
+    (key) =>
+      raw[key] === undefined &&
+      // The former name of the main Agent compact window still counts.
+      !(
+        key === 'mainAgentAutoCompactWindow' &&
+        raw.autoCompactWindow !== undefined
+      ),
+  );
+  if (missing.length > 0) {
+    const fromEnv = buildEnvFallbackSettings();
+    for (const key of missing) raw[key] = fromEnv[key];
+  }
   return normalizeSystemSettings(raw, 'file');
 }
 
@@ -5197,16 +5254,21 @@ export function getEffectiveExternalDir(): string {
   return settings.externalClaudeDir || path.join(os.homedir(), '.claude');
 }
 
+function writeSystemSettingsFile(content: Record<string, unknown>): void {
+  fs.mkdirSync(CLAUDE_CONFIG_DIR, { recursive: true });
+  const tmp = `${SYSTEM_SETTINGS_FILE}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(content, null, 2) + '\n', 'utf-8');
+  fs.renameSync(tmp, SYSTEM_SETTINGS_FILE);
+}
+
+/** Store every setting: the current values with `partial` applied. */
 export function saveSystemSettings(
   partial: Partial<SystemSettings>,
 ): SystemSettings {
   const existing = getSystemSettings();
   const merged = normalizeSystemSettings({ ...existing, ...partial }, 'api');
 
-  fs.mkdirSync(CLAUDE_CONFIG_DIR, { recursive: true });
-  const tmp = `${SYSTEM_SETTINGS_FILE}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(merged, null, 2) + '\n', 'utf-8');
-  fs.renameSync(tmp, SYSTEM_SETTINGS_FILE);
+  writeSystemSettingsFile(merged as unknown as Record<string, unknown>);
 
   // Update in-memory cache immediately
   _settingsCache = merged;
@@ -5217,6 +5279,41 @@ export function saveSystemSettings(
   }
 
   return merged;
+}
+
+/**
+ * Store only `partial`'s keys: what the file already has stays, and every
+ * key it does not have keeps following its environment variable. The setup
+ * wizard stores the deployment mode this way, so a new install does not
+ * freeze the environment's values of every other setting into the file.
+ */
+export function saveSystemSettingKeys(
+  partial: Partial<SystemSettings>,
+): SystemSettings {
+  let stored: Record<string, unknown> = {};
+  try {
+    if (fs.existsSync(SYSTEM_SETTINGS_FILE)) {
+      const parsed: unknown = JSON.parse(
+        fs.readFileSync(SYSTEM_SETTINGS_FILE, 'utf-8'),
+      );
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        stored = parsed as Record<string, unknown>;
+      }
+    }
+  } catch {
+    /* unreadable: replaced, as saveSystemSettings would */
+  }
+  const normalized = normalizeSystemSettings(
+    { ...getSystemSettings(), ...partial },
+    'api',
+  );
+  for (const key of SYSTEM_SETTING_KEYS) {
+    if (partial[key] !== undefined) stored[key] = normalized[key];
+  }
+  writeSystemSettingsFile(stored);
+  _settingsCache = null;
+  _settingsMtimeMs = 0;
+  return getSystemSettings();
 }
 
 // ─── OAuth Usage Types ─────────────────────────────────────────────────────
