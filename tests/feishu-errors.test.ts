@@ -77,9 +77,12 @@ describe('classifyFeishuError', () => {
 });
 
 describe('isFeishuChatGoneError', () => {
-  test('a received refusal proves the chat is gone for the bot', () => {
+  test("only Feishu's own answer that the bot lost the chat counts", () => {
     expect(isFeishuChatGoneError(axios(400, 232011))).toBe(true);
     expect(isFeishuChatGoneError(axios(400, 230002))).toBe(true);
+    expect(isFeishuChatGoneError(axios(400, 232009))).toBe(true);
+    // Resolved (not thrown) refusals carry the code on the error itself.
+    expect(isFeishuChatGoneError({ code: 232011 })).toBe(true);
   });
   test('network failures, timeouts, 5xx and rate limits prove nothing', () => {
     const unreachable = Object.assign(
@@ -92,9 +95,26 @@ describe('isFeishuChatGoneError', () => {
     expect(isFeishuChatGoneError(axios(408, 0))).toBe(false);
     expect(isFeishuChatGoneError(axios(429, 99991400))).toBe(false);
   });
-  test('missing scopes and token errors are the app, not the chat', () => {
-    expect(isFeishuChatGoneError(axios(400, 99991672))).toBe(false);
-    expect(isFeishuChatGoneError(axios(400, 99991663))).toBe(false);
+  test('a 4xx that never reached Feishu proves nothing', () => {
+    const page = (status: number, body: string) => ({
+      isAxiosError: true,
+      code: 'ERR_BAD_REQUEST',
+      response: { status, data: body },
+    });
+    expect(isFeishuChatGoneError(page(407, '<html>proxy auth</html>'))).toBe(
+      false,
+    );
+    expect(isFeishuChatGoneError(page(403, '<html>blocked</html>'))).toBe(
+      false,
+    );
+    expect(isFeishuChatGoneError(page(404, 'not found'))).toBe(false);
+  });
+  test('app-level, tenant, permission and id refusals are not the chat', () => {
+    for (const code of [
+      232004, 232006, 232010, 232025, 232033, 232034, 99991672, 99991663,
+    ]) {
+      expect(isFeishuChatGoneError(axios(400, code))).toBe(false);
+    }
   });
 });
 

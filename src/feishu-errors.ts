@@ -97,23 +97,28 @@ export function feishuErrorMessageText(error: unknown): string {
   );
 }
 
-/** The app's own token was missing, invalid or expired: no chat is implicated. */
-const ACCESS_TOKEN_CODES = new Set([
-  99991661, 99991663, 99991664, 99991665, 99991668,
-]);
+/**
+ * Feishu's answers that prove a chat is gone for this bot: the bot is no
+ * longer in it (232011 from chat.get, 230002 from the message APIs) or the
+ * chat was dissolved (232009).
+ *
+ * Nothing else counts. An invalid chat_id (232006) may come from our own
+ * parsing; app-level refusals (232004 app missing, 232025 bot ability off,
+ * 232034 app disabled by the tenant), cross-tenant and permission errors, a
+ * missing scope or a bad token are the app's problem; and a 4xx without a
+ * Feishu code in the body (a proxy's 403/407, a gateway's 404 page) never
+ * reached Feishu at all. Removing a binding deletes its data, so an
+ * inconclusive answer must keep it.
+ */
+const CHAT_GONE_CODES = new Set([232011, 230002, 232009]);
 
 /**
- * Whether a failed chat lookup proves the chat is gone for this bot (bot
- * removed, chat disbanded, chat id invalid). Only a received refusal counts;
- * network failures, timeouts, 5xx and rate limits say nothing about the chat,
- * and neither do missing scopes or token errors, which are the app's problem.
+ * Whether a failed chat lookup proves the chat is gone for this bot: Feishu
+ * itself answered with one of CHAT_GONE_CODES.
  */
 export function isFeishuChatGoneError(error: unknown): boolean {
-  if (isFeishuMissingScopeError(error)) return false;
   const code = feishuErrorCode(error);
-  if (code !== undefined && ACCESS_TOKEN_CODES.has(code)) return false;
-  const { kind } = classifyFeishuError(error);
-  return kind === 'definitive' || kind === 'target_unavailable';
+  return code !== undefined && CHAT_GONE_CODES.has(code);
 }
 
 export function isFeishuMissingScopeError(error: unknown): boolean {

@@ -2318,12 +2318,13 @@ export class IMConnectionManager {
   }
 
   /**
-   * Get chat info for an IM group by JID, auto-routing to the correct connection.
-   * Used for health checks to detect disbanded groups.
+   * Get chat info for an IM group by JID, auto-routing to the correct
+   * connection, for binding and listing routes and backfill. The health
+   * check uses probeChat instead: a null here proves nothing about the chat.
    *
    * Returns:
-   * - object: chat info (reachable)
-   * - null: channel supports getChatInfo but chat is not reachable
+   * - object: chat info
+   * - null: the lookup failed or returned nothing (any reason)
    * - undefined: channel does not support getChatInfo (e.g. Telegram, QQ)
    */
   async getChatInfo(jid: string): Promise<

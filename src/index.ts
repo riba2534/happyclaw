@@ -19712,7 +19712,9 @@ async function checkImBindingsHealth(): Promise<void> {
       }
       if (reachability === 'gone') {
         // The platform says the bot can no longer see this chat (removed,
-        // disbanded). Still wait for consecutive answers before removing.
+        // disbanded). Removal still waits for IM_HEALTH_CHECK_FAIL_THRESHOLD
+        // such answers with no reachable check in between; inconclusive
+        // checks neither add to the count nor reset it.
         const count = (imHealthCheckFailCounts.get(jid) ?? 0) + 1;
         imHealthCheckFailCounts.set(jid, count);
         if (count >= IM_HEALTH_CHECK_FAIL_THRESHOLD) {
