@@ -121,6 +121,19 @@ describe('quoteForComposer', () => {
     expect(quoted.endsWith('…\n\n')).toBe(true);
     expect(quoted.length).toBeLessThan(310);
   });
+
+  test('cuts a long message between characters, never inside an emoji', () => {
+    const quoted = quoteForComposer(`${'a'.repeat(299)}😀😀 tail`);
+    expect(quoted).toBe(`> ${'a'.repeat(299)}😀…\n\n`);
+    // No half of a surrogate pair is left behind.
+    expect(quoted).not.toMatch(
+      /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/,
+    );
+    // Counted in characters, not UTF-16 units: 300 emoji fit whole.
+    expect(quoteForComposer('😀'.repeat(300))).toBe(
+      `> ${'😀'.repeat(300)}\n\n`,
+    );
+  });
 });
 
 describe('MessageContextMenu quote', () => {

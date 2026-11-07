@@ -29,7 +29,10 @@ function copyWithFeedback(text: string) {
   );
 }
 
-/** Longest quote the composer takes; past it the quote ends in an ellipsis. */
+/**
+ * Longest quote the composer takes, in code points (an emoji is one, never
+ * cut in half); past it the quote ends in an ellipsis.
+ */
 const QUOTE_MAX_CHARS = 300;
 
 /**
@@ -39,8 +42,9 @@ const QUOTE_MAX_CHARS = 300;
  */
 export function quoteForComposer(content: string): string {
   let text = markdownToPlainText(content).trim();
-  if (text.length > QUOTE_MAX_CHARS) {
-    text = `${text.slice(0, QUOTE_MAX_CHARS).trimEnd()}…`;
+  const chars = Array.from(text);
+  if (chars.length > QUOTE_MAX_CHARS) {
+    text = `${chars.slice(0, QUOTE_MAX_CHARS).join('').trimEnd()}…`;
   }
   const quoted = text
     .split('\n')
