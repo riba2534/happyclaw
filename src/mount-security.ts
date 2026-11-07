@@ -209,11 +209,11 @@ export function loadMountAllowlistFile(): MountAllowlistFileState {
  * Storage sources added on the settings page. They live under data/ (never in
  * the git worktree) and are merged with the allowlist file's own sources.
  */
-export const MANAGED_STORAGE_SOURCES_PATH = path.join(
-  DATA_DIR,
-  'config',
-  'storage-sources.json',
-);
+export function managedStorageSourcesPath(): string {
+  // Resolved on use: src/db.ts imports this module, and tests mock config.js
+  // without DATA_DIR.
+  return path.join(DATA_DIR, 'config', 'storage-sources.json');
+}
 
 export type ManagedStorageSourcesState =
   | { status: 'ok'; sources: StorageSource[] }
@@ -237,7 +237,7 @@ export function parseManagedStorageSources(content: string): StorageSource[] {
 }
 
 export function loadManagedStorageSources(): ManagedStorageSourcesState {
-  const read = readSignedFile(MANAGED_STORAGE_SOURCES_PATH);
+  const read = readSignedFile(managedStorageSourcesPath());
   if (read.signature === cachedManagedSignature) return cachedManagedState;
   cachedManagedSignature = read.signature;
   if (read.content === undefined && read.missing) {
@@ -254,7 +254,7 @@ export function loadManagedStorageSources(): ManagedStorageSourcesState {
     const error = err instanceof Error ? err.message : String(err);
     cachedManagedState = { status: 'invalid', error };
     logger.error(
-      { path: MANAGED_STORAGE_SOURCES_PATH, error },
+      { path: managedStorageSourcesPath(), error },
       'Failed to load managed storage sources - they cannot be mounted',
     );
   }
@@ -305,7 +305,7 @@ export function loadMountAllowlist(): MountAllowlist | null {
     if (shadowed.length > 0) {
       logger.warn(
         {
-          path: MANAGED_STORAGE_SOURCES_PATH,
+          path: managedStorageSourcesPath(),
           ids: shadowed.map((source) => source.id),
         },
         'Managed storage sources ignored: the mount allowlist declares the same id',
