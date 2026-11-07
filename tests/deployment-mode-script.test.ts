@@ -60,3 +60,21 @@ test('unknown values are ignored', () => {
   settings({ deploymentMode: 'single' });
   expect(run({ HAPPYCLAW_DEPLOYMENT_MODE: 'nope' })).toBe('multi_user');
 });
+
+test('.env is read the way process.loadEnvFile reads it', () => {
+  settings({ deploymentMode: '' });
+  for (const line of [
+    'HAPPYCLAW_DEPLOYMENT_MODE=single_user_host # chosen at install',
+    'export HAPPYCLAW_DEPLOYMENT_MODE=single_user_host',
+    'HAPPYCLAW_DEPLOYMENT_MODE="single_user_host"',
+  ]) {
+    fs.writeFileSync(path.join(root, '.env'), `# HappyClaw\n${line}\n`);
+    expect(run(), line).toBe('single_user_host');
+  }
+  // A commented-out line is not a value.
+  fs.writeFileSync(
+    path.join(root, '.env'),
+    '# HAPPYCLAW_DEPLOYMENT_MODE=single_user_host\n',
+  );
+  expect(run()).toBe('multi_user');
+});

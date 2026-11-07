@@ -5,6 +5,7 @@
 // HAPPYCLAW_DEPLOYMENT_MODE (process env, then .env), then multi_user.
 import fs from 'node:fs';
 import path from 'node:path';
+import { parseEnv } from 'node:util';
 
 const MODES = new Set(['multi_user', 'single_user_host']);
 const parse = (value) =>
@@ -19,11 +20,12 @@ function fromSettings(root) {
   }
 }
 
+// The parser process.loadEnvFile() uses (src/load-env.ts), so quotes,
+// inline comments and `export` read the same as in the server.
 function fromDotEnv(root) {
   try {
     const text = fs.readFileSync(path.join(root, '.env'), 'utf8');
-    const match = text.match(/^\s*HAPPYCLAW_DEPLOYMENT_MODE\s*=\s*(.*)$/m);
-    return match ? parse(match[1].replace(/^['"]|['"]\s*$/g, '')) : null;
+    return parse(parseEnv(text).HAPPYCLAW_DEPLOYMENT_MODE);
   } catch {
     return null;
   }
