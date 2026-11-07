@@ -445,8 +445,14 @@ Agent MCP 调用没有 Cookie，但必须携带由主进程创建的运行上下
   工具入参。群成员轮次、自动化运行、`work_item_input` 回报轮只得到本工作区会话的运行
   状态字段（不含最新消息预览、消息、轨迹、工具入参和进展文本），跨工作区请求返回
   `owner_turn_required`，不做任何查找。
-- 返回的会话内容经 `untrusted_session_data` 围栏作为不可信数据交给模型；消息和轨迹合计
-  最多 32 KiB。没有新增数据库列，也没有界面开关。
+- 已取消的输入（飞书撤回、`/break`，即 `is_from_me=0` 且 `delivery_status='cancelled'`）
+  与 Web 时间线一样不出现在最新消息预览和 `session_get` 的消息里；IM `/recall` 的摘要同样
+  跳过它们。
+- 返回的会话内容经 `untrusted_session_data` 围栏作为不可信数据交给模型，「匹配到多个会话」
+  的候选会话名也放在围栏里，不进错误文本。按 Runner 打印出的字节计，`session_get` 的消息
+  和轨迹合计最多 32 KiB，从最新的往旧的取、遇到第一条放不下的就停，并用 `truncated` 标明
+  省略了多少；`session_list` 的会话条目最多 24 KiB，超出的同样省略并标明。没有新增数据库
+  列，也没有界面开关。
 
 ## 11. 访客（只读）
 

@@ -24,9 +24,11 @@
  */
 
 import {
+  countQueuedFollowUpsByChat,
   getAgent,
   getAgentProfileForWorkspace,
   getGroupsByOwner,
+  getLatestVisibleMessagePerChat,
   getMessagesPage,
   getRegisteredGroup,
   getSessionModelSelectionDetail,
@@ -34,15 +36,23 @@ import {
   getUserById,
   getUserPinnedSessions,
   listAgentsByJid,
-  listQueuedFollowUps,
 } from './db.js';
+import { isCancelledInput } from './follow-up-policy.js';
 import { findSessionsBySpec, findWorkspaceBySpec } from './im-command-utils.js';
-import { getUsageLimitWait } from './runtime-state-store.js';
+import {
+  listWaitingUsageLimitWaits,
+  type UsageLimitWait,
+} from './runtime-state-store.js';
 import { getSessionWorktree } from './session-worktree-store.js';
 import { presentTurnTrace, resolveTurnTraceExposure } from './turn-trace.js';
-import { getWorkItemByAgent } from './work-item-store.js';
+import { getWorkItemsByAgents } from './work-item-store.js';
 import { laneJidOf } from './work-item-runtime.js';
-import { deriveWorkStage, type WorkStage } from './work-items.js';
+import {
+  deriveWorkStage,
+  stageNeedsPerson,
+  type WorkItem,
+  type WorkStage,
+} from './work-items.js';
 import { logger } from './logger.js';
 import { sessionActivityAt, sortSessionsForList } from './session-order.js';
 import type { SubAgent } from './types.js';
@@ -62,14 +72,21 @@ export function isSessionInspectIpcType(
 
 // ── Limits ──────────────────────────────────────────────────────────────
 
-/** Message text and traces of one `session_get`, in UTF-8 bytes of JSON. */
+/**
+ * Message text and traces of one `session_get`, in UTF-8 bytes as the Runner
+ * prints them (renderedBytes).
+ */
 export const SESSION_INSPECT_BODY_BUDGET_BYTES = 32 * 1024;
+/** Session entries of one `session_list`, measured the same way. */
+export const SESSION_LIST_BUDGET_BYTES = 24 * 1024;
 export const SESSION_LIST_DEFAULT_LIMIT = 30;
 export const SESSION_LIST_MAX_LIMIT = 100;
 export const SESSION_GET_DEFAULT_MESSAGES = 10;
 export const SESSION_GET_MAX_MESSAGES = 30;
 /** Characters of the latest message shown in a session list entry. */
 export const SESSION_PREVIEW_CHARS = 200;
+/** Characters read for a preview: room for blanks that collapse. */
+const PREVIEW_READ_CHARS = SESSION_PREVIEW_CHARS * 4;
 /** Characters of one message shown by `session_get`. */
 const MESSAGE_CHARS = 4000;
 /** Turns whose traces `include_traces` adds, newest first. */
@@ -77,6 +94,12 @@ const TRACE_TURNS = 5;
 const TRACE_TOOLS_PER_TURN = 30;
 const TRACE_TEXT_CHARS = 160;
 const SHORT_ID_CHARS = 8;
+/** Nesting of a list entry in the result: workspaces[].sessions[]. */
+const LIST_ENTRY_DEPTH = 4;
+/** Nesting of a message or trace in the `session_get` result. */
+const BODY_ITEM_DEPTH = 2;
+/** The keys and brackets of the messages and traces arrays. */
+const BODY_FRAME_BYTES = 64;
 
 const NOT_FOUND =
   'not_found: 没有这个会话或工作区，或者你无权查看。session_list 可列出能查看的会话。';
@@ -180,7 +203,10 @@ type QueueLane = Pick<
 
 interface Snapshot {
   queueByLane: Map<string, QueueLane>;
-  waiting: string[];
+  /** Position (from 0) of each lane waiting for a container slot. */
+  waitingIndex: Map<string, number>;
+  /** Lanes parked on the usage limit. */
+  limitWaits: Map<string, UsageLimitWait>;
   pins: Record<string, string>;
   nowMs: number;
 }
@@ -198,6 +224,19 @@ function oneLine(text: string, limit: number): string {
 
 function shortId(id: string): string {
   return id.slice(0, SHORT_ID_CHARS);
+}
+
+/**
+ * Bytes `value` adds to the tool result as the Runner prints it
+ * (untrustedChannelData in container/agent-runner/src/mcp-tools.ts: JSON
+ * indented by two, `<`, `>` and `&` as six-byte \u escapes) when it is an
+ * array element `depth` levels deep, its `,\n` separator included.
+ */
+function renderedBytes(value: unknown, depth: number): number {
+  const json = JSON.stringify(value, null, 2) ?? 'null';
+  const escaped = json.match(/[<>&]/g)?.length ?? 0;
+  const lines = json.split('\n').length;
+  return Buffer.byteLength(json, 'utf8') + escaped * 5 + lines * depth * 2 + 2;
 }
 
 function iso(ms: number | null | undefined): string | null {
@@ -320,19 +359,27 @@ function workspaceForSpec(scope: Scope, spec: string): WorkspaceRef {
 
 function takeSnapshot(deps: SessionInspectDeps, scope: Scope): Snapshot {
   const status = deps.queueStatus();
+  const waitingIndex = new Map<string, number>();
+  status.waitingGroupJids.forEach((jid, index) => {
+    if (!waitingIndex.has(jid)) waitingIndex.set(jid, index);
+  });
   return {
     queueByLane: new Map(status.groups.map((group) => [group.jid, group])),
-    waiting: status.waitingGroupJids,
+    waitingIndex,
+    limitWaits: new Map(
+      listWaitingUsageLimitWaits().map((wait) => [wait.scopeKey, wait]),
+    ),
     pins: getUserPinnedSessions(scope.ownerId),
     nowMs: (deps.now ?? Date.now)(),
   };
 }
 
-interface Described {
+interface Classified {
   agent: SubAgent;
   laneJid: string;
   state: SessionRuntimeState;
-  entry: Record<string, unknown>;
+  /** Fields that come with the state: timing, queue position, work item. */
+  stateFields: Record<string, unknown>;
   ended: boolean;
   queuedInputs: number;
 }
@@ -371,18 +418,57 @@ function liveView(
   };
 }
 
-function latestPreview(laneJid: string): Record<string, unknown> | null {
-  for (const message of getMessagesPage(laneJid, undefined, 8)) {
-    if (message.sender === '__system__') continue;
-    const text = oneLine(message.content ?? '', SESSION_PREVIEW_CHARS);
-    if (!text) continue;
-    return {
-      role: message.is_from_me ? 'agent' : 'user',
-      at: message.timestamp,
-      text,
-    };
-  }
-  return null;
+function previewOf(
+  latest:
+    | { content: string; timestamp: string; is_from_me: boolean }
+    | undefined,
+): Record<string, unknown> | null {
+  if (!latest) return null;
+  const text = oneLine(latest.content, SESSION_PREVIEW_CHARS);
+  if (!text) return null;
+  return {
+    role: latest.is_from_me ? 'agent' : 'user',
+    at: latest.timestamp,
+    text,
+  };
+}
+
+/**
+ * Whether the session's last turn failed. A conversation settles back to
+ * `idle` with the error kept in `result_summary` (possibly empty) until its
+ * next turn starts and clears it; only spawn-style rows end as `error`.
+ */
+function lastTurnFailed(agent: SubAgent): boolean {
+  return (
+    agent.status === 'error' ||
+    (agent.status === 'idle' && agent.result_summary != null)
+  );
+}
+
+/**
+ * The state of each of a workspace's sessions, from the snapshot and two
+ * batched reads (queued inputs, work items), however many sessions there are.
+ */
+function classifySessions(
+  deps: SessionInspectDeps,
+  scope: Scope,
+  snapshot: Snapshot,
+  agents: SubAgent[],
+): Classified[] {
+  const laneJids = agents.map((agent) => laneJidOf(agent.chat_jid, agent.id));
+  const queued = countQueuedFollowUpsByChat(laneJids);
+  const workItems = getWorkItemsByAgents(agents.map((agent) => agent.id));
+  return agents.map((agent, index) =>
+    classify(
+      deps,
+      scope,
+      snapshot,
+      agent,
+      laneJids[index],
+      workItems.get(agent.id),
+      queued.get(laneJids[index]) ?? 0,
+    ),
+  );
 }
 
 /**
@@ -390,49 +476,45 @@ function latestPreview(laneJid: string): Record<string, unknown> | null {
  * next input with the process alive, which is `warm_idle`; only a query in
  * flight is `running`.
  */
-function describe(
+function classify(
   deps: SessionInspectDeps,
   scope: Scope,
   snapshot: Snapshot,
   agent: SubAgent,
-  workspace: WorkspaceRef,
-): Described {
+  laneJid: string,
+  workItem: WorkItem | undefined,
+  queuedInputs: number,
+): Classified {
   const clamped = !scope.ownerTurn;
-  const laneJid = laneJidOf(agent.chat_jid, agent.id);
   const queue = snapshot.queueByLane.get(laneJid);
-  const workItem = getWorkItemByAgent(agent.id);
   const stage: WorkStage | null = workItem ? deriveWorkStage(workItem) : null;
-  const queuedInputs = listQueuedFollowUps(laneJid).length;
-  const extra: Record<string, unknown> = {};
+  const fields: Record<string, unknown> = {};
   let state: SessionRuntimeState;
 
-  const waitingIndex = snapshot.waiting.indexOf(laneJid);
-  const limitWait = getUsageLimitWait(laneJid);
+  const waitingIndex = snapshot.waitingIndex.get(laneJid);
+  const limitWait = snapshot.limitWaits.get(laneJid);
   if (queue?.queryInFlight) {
     state = 'running';
-    extra.started_at = iso(queue.queryStartedAt);
+    fields.started_at = iso(queue.queryStartedAt);
     if (queue.queryStartedAt) {
-      extra.elapsed_seconds = Math.max(
+      fields.elapsed_seconds = Math.max(
         0,
         Math.round((snapshot.nowMs - queue.queryStartedAt) / 1000),
       );
     }
     const activity = liveView(deps.liveActivity(laneJid), clamped);
-    if (activity) extra.activity = activity;
-  } else if (waitingIndex >= 0 && !queue?.active) {
+    if (activity) fields.activity = activity;
+  } else if (waitingIndex !== undefined && !queue?.active) {
     state = 'queued_slot';
-    extra.queue_position = waitingIndex + 1;
-  } else if (limitWait?.state === 'waiting') {
+    fields.queue_position = waitingIndex + 1;
+  } else if (limitWait) {
     state = 'rate_limited';
-    extra.reset_at = limitWait.resetAt;
-    extra.resume_at = limitWait.resumeAt;
-  } else if (
-    workItem?.status === 'open' &&
-    (stage === 'answer' || stage === 'approval' || stage === 'blocked')
-  ) {
+    fields.reset_at = limitWait.resetAt;
+    fields.resume_at = limitWait.resumeAt;
+  } else if (workItem?.status === 'open' && stage && stageNeedsPerson(stage)) {
     state = 'waiting_human';
-    extra.work_stage = stage;
-    extra.work_item = clamped
+    fields.work_stage = stage;
+    fields.work_item = clamped
       ? { seq: workItem.seq }
       : {
           seq: workItem.seq,
@@ -441,54 +523,90 @@ function describe(
             ? { question: oneLine(workItem.attention, SESSION_PREVIEW_CHARS) }
             : {}),
         };
-  } else if (agent.status === 'error') {
+  } else if (lastTurnFailed(agent)) {
     state = 'error';
-    if (!clamped && agent.result_summary) {
-      extra.error_summary = oneLine(
-        agent.result_summary,
-        SESSION_PREVIEW_CHARS,
-      );
-    }
+    const summary = clamped
+      ? ''
+      : oneLine(agent.result_summary ?? '', SESSION_PREVIEW_CHARS);
+    if (summary) fields.error_summary = summary;
   } else if (queue?.active) {
     state = 'warm_idle';
   } else {
     state = 'idle';
   }
 
-  const worktree = getSessionWorktree(agent.id);
-  const selection = getSessionModelSelectionDetail(workspace.folder, agent.id);
-  const model =
-    selection?.model ??
-    getAgentProfileForWorkspace(workspace.folder, scope.ownerId)?.model ??
-    null;
-
+  // A temporary session that is over folds away whatever its last turn did.
   const ended =
     (agent.source_kind === 'automation' || agent.source_kind === 'work_item') &&
-    (state === 'idle' || state === 'warm_idle') &&
+    (state === 'idle' || state === 'warm_idle' || state === 'error') &&
     (agent.status === 'completed' || workItem?.status === 'ended');
 
-  const entry: Record<string, unknown> = {
-    id: shortId(agent.id),
-    name: agent.name,
-    source_kind: agent.source_kind ?? 'manual',
-    runtime_state: state,
-    ...extra,
-    queued_inputs: queuedInputs,
-    worktree_branch: worktree?.branch ?? null,
-    model,
-    last_active_at: sessionActivityAt(agent),
-    ...(agent.id === scope.self.id ? { is_self: true } : {}),
-    ...(ended ? { ended: true } : {}),
+  return {
+    agent,
+    laneJid,
+    state,
+    stateFields: fields,
+    ended,
+    queuedInputs,
   };
-  if (!clamped) entry.latest_message = latestPreview(laneJid);
-  return { agent, laneJid, state, entry, ended, queuedInputs };
+}
+
+/**
+ * The entries of the sessions actually returned. Worktree, model and latest
+ * message are read for these alone, the previews in one batched read and the
+ * workspace's agent profile at most once.
+ */
+function presentSessions(
+  scope: Scope,
+  workspace: WorkspaceRef,
+  items: Classified[],
+): Array<Record<string, unknown>> {
+  if (items.length === 0) return [];
+  const previews = scope.ownerTurn
+    ? getLatestVisibleMessagePerChat(
+        items.map((item) => item.laneJid),
+        PREVIEW_READ_CHARS,
+      )
+    : null;
+  let profileModel: string | null | undefined;
+  const workspaceModel = (): string | null => {
+    if (profileModel === undefined) {
+      profileModel =
+        getAgentProfileForWorkspace(workspace.folder, scope.ownerId)?.model ??
+        null;
+    }
+    return profileModel;
+  };
+  return items.map((item) => {
+    const { agent } = item;
+    const worktree = getSessionWorktree(agent.id);
+    const selection = getSessionModelSelectionDetail(
+      workspace.folder,
+      agent.id,
+    );
+    const entry: Record<string, unknown> = {
+      id: shortId(agent.id),
+      name: agent.name,
+      source_kind: agent.source_kind ?? 'manual',
+      runtime_state: item.state,
+      ...item.stateFields,
+      queued_inputs: item.queuedInputs,
+      worktree_branch: worktree?.branch ?? null,
+      model: selection?.model ?? workspaceModel(),
+      last_active_at: sessionActivityAt(agent),
+      ...(agent.id === scope.self.id ? { is_self: true } : {}),
+      ...(item.ended ? { ended: true } : {}),
+    };
+    if (previews) entry.latest_message = previewOf(previews.get(item.laneJid));
+    return entry;
+  });
 }
 
 // ── session_list ────────────────────────────────────────────────────────
 
 type StateFilter = 'running' | 'busy' | 'error' | 'all';
 
-function matchesFilter(item: Described, filter: StateFilter): boolean {
+function matchesFilter(item: Classified, filter: StateFilter): boolean {
   switch (filter) {
     case 'running':
       return item.state === 'running';
@@ -555,12 +673,17 @@ function sessionList(
 
   const snapshot = takeSnapshot(deps, scope);
   let remaining = limit;
+  let budget = SESSION_LIST_BUDGET_BYTES;
+  let overBudget = false;
   const result = workspaces.map((workspace) => {
-    const described = workspaceSessions(scope, snapshot, workspace).map(
-      (agent) => describe(deps, scope, snapshot, agent, workspace),
+    const classified = classifySessions(
+      deps,
+      scope,
+      snapshot,
+      workspaceSessions(scope, snapshot, workspace),
     );
     const counts: Record<string, number> = {
-      total: described.length,
+      total: classified.length,
       running: 0,
       queued_slot: 0,
       rate_limited: 0,
@@ -571,16 +694,28 @@ function sessionList(
       queued_inputs: 0,
       ended_hidden: 0,
     };
-    for (const item of described) {
+    for (const item of classified) {
       counts[item.state] += 1;
       counts.queued_inputs += item.queuedInputs;
       if (item.ended && !includeEnded) counts.ended_hidden += 1;
     }
-    const shown = described.filter(
+    const shown = classified.filter(
       (item) => (includeEnded || !item.ended) && matchesFilter(item, filter),
     );
-    const page = shown.slice(0, Math.max(0, remaining));
-    remaining -= page.length;
+    const page = overBudget ? [] : shown.slice(0, Math.max(0, remaining));
+    // Entries are added while they fit the output budget; the first one that
+    // does not ends the list, in this workspace and the ones after it.
+    const sessions: Array<Record<string, unknown>> = [];
+    for (const entry of presentSessions(scope, workspace, page)) {
+      const size = renderedBytes(entry, LIST_ENTRY_DEPTH);
+      if (size > budget) {
+        overBudget = true;
+        break;
+      }
+      budget -= size;
+      sessions.push(entry);
+    }
+    remaining -= sessions.length;
     return {
       workspace: {
         name: workspace.name,
@@ -589,9 +724,9 @@ function sessionList(
         ...(workspace.folder === scope.own.folder ? { is_current: true } : {}),
       },
       counts,
-      sessions: page.map((item) => item.entry),
-      ...(shown.length > page.length
-        ? { omitted: shown.length - page.length }
+      sessions,
+      ...(shown.length > sessions.length
+        ? { omitted: shown.length - sessions.length }
         : {}),
     };
   });
@@ -599,6 +734,11 @@ function sessionList(
     ...(scope.ownerTurn
       ? {}
       : { clamped: '本轮不是工作区主人发起的，只显示本工作区的运行状态。' }),
+    ...(overBudget
+      ? {
+          truncated: `结果超过 ${SESSION_LIST_BUDGET_BYTES / 1024} KiB，后面的会话没有列出（见各工作区的 omitted）；可以用 state、workspace 或更小的 limit 缩小范围。`,
+        }
+      : {}),
     workspaces: result,
   };
 }
@@ -695,10 +835,6 @@ function turnTraces(
   return traces;
 }
 
-function bytesOf(value: unknown): number {
-  return Buffer.byteLength(JSON.stringify(value), 'utf8');
-}
-
 function sessionGet(
   deps: SessionInspectDeps,
   scope: Scope,
@@ -717,10 +853,11 @@ function sessionGet(
 
   const snapshot = takeSnapshot(deps, scope);
   const { agent, workspace } = resolveSession(scope, snapshot, spec);
-  const described = describe(deps, scope, snapshot, agent, workspace);
+  const [classified] = classifySessions(deps, scope, snapshot, [agent]);
+  const [entry] = presentSessions(scope, workspace, [classified]);
   const session = {
     workspace: { name: workspace.name, folder: workspace.folder },
-    ...described.entry,
+    ...entry,
   };
   if (!scope.ownerTurn) {
     return {
@@ -734,16 +871,28 @@ function sessionGet(
   if (!wantMessages && !includeTraces) return out;
 
   // Newest first, then budgeted from the newest so the cut falls on old ones.
-  const rows = getMessagesPage(
-    described.laneJid,
-    undefined,
-    Math.max(messageLimit, includeTraces ? SESSION_GET_MAX_MESSAGES : 0),
+  // Cancelled inputs are not history: read a margin past them.
+  const wanted = Math.max(
+    messageLimit,
+    includeTraces ? SESSION_GET_MAX_MESSAGES : 0,
   );
-  let used = 0;
-  const messages: Array<Record<string, unknown>> = [];
+  const rows = getMessagesPage(classified.laneJid, undefined, wanted * 2)
+    .filter((row) => !isCancelledInput(row))
+    .slice(0, wanted);
+  // The keys and brackets around the two arrays.
+  let used = BODY_FRAME_BYTES;
+  const fits = (value: unknown): boolean => {
+    const size = renderedBytes(value, BODY_ITEM_DEPTH);
+    if (used + size > SESSION_INSPECT_BODY_BUDGET_BYTES) return false;
+    used += size;
+    return true;
+  };
   let omittedMessages = 0;
+  let omittedTraces = 0;
   if (wantMessages) {
-    for (const row of rows.slice(0, messageLimit)) {
+    const candidates = rows.slice(0, messageLimit);
+    const messages: Array<Record<string, unknown>> = [];
+    for (const row of candidates) {
       const item: Record<string, unknown> = {
         at: row.timestamp,
         role:
@@ -759,14 +908,11 @@ function sessionGet(
           : {}),
         text: truncate(row.content ?? '', MESSAGE_CHARS),
       };
-      const size = bytesOf(item);
-      if (used + size > SESSION_INSPECT_BODY_BUDGET_BYTES) {
-        omittedMessages += 1;
-        continue;
-      }
-      used += size;
+      // The first one that does not fit ends the history: no holes.
+      if (!fits(item)) break;
       messages.push(item);
     }
+    omittedMessages = candidates.length - messages.length;
     messages.reverse();
     out.messages = messages;
     if (omittedMessages > 0) out.messages_omitted = omittedMessages;
@@ -780,24 +926,23 @@ function sessionGet(
         if (turnIds.length >= TRACE_TURNS) break;
       }
     }
+    const all = turnTraces(agent, classified.laneJid, workspace, turnIds);
     const traces: Array<{ turn_id: string; tools: TraceTool[] }> = [];
-    let omittedTraces = 0;
-    for (const trace of turnTraces(
-      agent,
-      described.laneJid,
-      workspace,
-      turnIds,
-    )) {
-      const size = bytesOf(trace);
-      if (used + size > SESSION_INSPECT_BODY_BUDGET_BYTES) {
-        omittedTraces += 1;
-        continue;
-      }
-      used += size;
+    for (const trace of all) {
+      if (!fits(trace)) break;
       traces.push(trace);
     }
+    omittedTraces = all.length - traces.length;
     out.traces = traces;
     if (omittedTraces > 0) out.traces_omitted = omittedTraces;
+  }
+
+  if (omittedMessages > 0 || omittedTraces > 0) {
+    const parts = [
+      ...(omittedMessages > 0 ? [`更早的 ${omittedMessages} 条消息`] : []),
+      ...(omittedTraces > 0 ? [`更早的 ${omittedTraces} 轮轨迹`] : []),
+    ];
+    out.truncated = `消息和轨迹合计超过 ${SESSION_INSPECT_BODY_BUDGET_BYTES / 1024} KiB，${parts.join('和')}没有返回。`;
   }
   return out;
 }

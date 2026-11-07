@@ -3713,6 +3713,24 @@ export function listQueuedFollowUps(chatJid: string): QueuedFollowUp[] {
   return rows.map(normalizeQueuedFollowUpRow);
 }
 
+/** How many inputs each chat has queued, in one read; absent means none. */
+export function countQueuedFollowUpsByChat(
+  chatJids: string[],
+): Map<string, number> {
+  const counts = new Map<string, number>();
+  if (chatJids.length === 0) return counts;
+  const rows = prepareCached(`SELECT chat_jid, COUNT(*) AS n
+       FROM messages
+       WHERE delivery_status IN ('queued', 'promoting')
+         AND chat_jid IN (SELECT value FROM json_each(?))
+       GROUP BY chat_jid`).all(JSON.stringify(chatJids)) as Array<{
+    chat_jid: string;
+    n: number;
+  }>;
+  for (const row of rows) counts.set(row.chat_jid, row.n);
+  return counts;
+}
+
 /**
  * Queued inputs that arrived from a channel chat, in queue order: the only
  * ones whose sender can leave a group's response audience. A Web-only
@@ -10321,6 +10339,56 @@ export function getLatestMessagePreviewPerChat(
     result.set(row.chat_jid, {
       content: toUtf8String(row.content),
       timestamp: row.timestamp,
+    });
+  }
+  return result;
+}
+
+/**
+ * The newest message of each chat a reader would show, in one read: not a
+ * system row, not blank, and not an input cancelled before it ran
+ * (isCancelledInput). Newest by ingest order, like getMessagesPage; the
+ * content is cut to `maxChars` in SQL.
+ */
+export function getLatestVisibleMessagePerChat(
+  chatJids: string[],
+  maxChars: number,
+): Map<string, { content: string; timestamp: string; is_from_me: boolean }> {
+  const result = new Map<
+    string,
+    { content: string; timestamp: string; is_from_me: boolean }
+  >();
+  if (chatJids.length === 0) return result;
+  const rows = prepareCached(
+    `SELECT j.value AS chat_jid,
+            substr(CAST(m.content AS TEXT), 1, ?) AS content,
+            m.timestamp AS timestamp,
+            m.is_from_me AS is_from_me
+     FROM json_each(?) j
+     JOIN messages m ON m.rowid = (
+       SELECT x.rowid
+       FROM message_ingest_sequences seq
+       JOIN messages x ON x.chat_jid = seq.chat_jid AND x.id = seq.message_id
+       WHERE seq.chat_jid = j.value
+         AND x.sender <> '__system__'
+         AND NOT (x.is_from_me = 0
+                  AND COALESCE(x.delivery_status, '') = 'cancelled')
+         AND trim(CAST(COALESCE(x.content, '') AS TEXT),
+                  ' ' || char(9, 10, 13)) <> ''
+       ORDER BY seq.sequence DESC
+       LIMIT 1
+     )`,
+  ).all(Math.max(1, Math.trunc(maxChars)), JSON.stringify(chatJids)) as Array<{
+    chat_jid: string;
+    content: unknown;
+    timestamp: string;
+    is_from_me: number;
+  }>;
+  for (const row of rows) {
+    result.set(row.chat_jid, {
+      content: toUtf8String(row.content),
+      timestamp: row.timestamp,
+      is_from_me: !!row.is_from_me,
     });
   }
   return result;

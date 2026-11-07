@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -30,6 +31,7 @@ vi.mock('../src/logger.js', () => ({
   logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
+const sqlite = (await import('better-sqlite3')).default;
 const db = await import('../src/db.js');
 const store = await import('../src/work-item-store.js');
 const waits = await import('../src/runtime-state-store.js');
@@ -40,12 +42,16 @@ import type { SessionInspectDeps } from '../src/session-inspect-service.js';
 
 const OWNER = 'owner-1';
 const STRANGER = 'stranger-1';
+const OTHER = 'owner-2';
 
 const HOME = { jid: 'web:home-1', folder: 'home-1' };
 const PROJ = { jid: 'web:proj', folder: 'proj' };
 const THEIRS = { jid: 'web:theirs', folder: 'theirs' };
 /** The owner's Host workspace: visible only while the owner is admin. */
 const HOSTWS = { jid: 'web:hostws', folder: 'hostws' };
+/** Another owner's workspaces, for the volume tests. */
+const PERF = { jid: 'web:perf', folder: 'perf' };
+const BULK = { jid: 'web:bulk', folder: 'bulk' };
 
 const HOME_SELF = 'aaaaaaaa-0000-4000-8000-000000000001';
 const HOME_BUILD = 'bbbbbbbb-0000-4000-8000-000000000002';
@@ -55,6 +61,9 @@ const THEIR_ONE = 'eeeeeeee-0000-4000-8000-000000000005';
 const WORKER = 'ffffffff-0000-4000-8000-000000000006';
 const ROUTER = '99999999-0000-4000-8000-000000000007';
 const HOST_ONE = '77777777-0000-4000-8000-00000000000c';
+const RECALLED = '66666666-0000-4000-8000-00000000000d';
+const PERF_SELF = '55555555-0000-4000-8000-00000000000e';
+const BULK_SELF = '44444444-0000-4000-8000-00000000000f';
 
 const lane = (workspaceJid: string, id: string) =>
   `${workspaceJid}#agent:${id}`;
@@ -103,6 +112,32 @@ function data(result: ReturnType<typeof call>): any {
 function error(result: ReturnType<typeof call>): string {
   if (result.ok) throw new Error('expected an error');
   return result.error;
+}
+
+/** Bytes of `value` as the Runner prints it (untrustedChannelData). */
+function renderedBytes(value: unknown): number {
+  return Buffer.byteLength(
+    JSON.stringify(value, null, 2).replace(
+      /[<>&]/g,
+      (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, '0')}`,
+    ),
+  );
+}
+
+/** SQLite statement executions while `run` runs. */
+function countStatements(run: () => void): number {
+  const probe = new sqlite(':memory:');
+  const proto = Object.getPrototypeOf(probe.prepare('SELECT 1'));
+  probe.close();
+  const spies = (['all', 'get', 'run', 'iterate'] as const).map((method) =>
+    vi.spyOn(proto, method),
+  );
+  try {
+    run();
+    return spies.reduce((sum, spy) => sum + spy.mock.calls.length, 0);
+  } finally {
+    for (const spy of spies) spy.mockRestore();
+  }
 }
 
 function createSession(
@@ -155,7 +190,7 @@ function say(
 beforeAll(() => {
   db.initDatabase();
   const now = new Date().toISOString();
-  for (const id of [OWNER, STRANGER]) {
+  for (const id of [OWNER, STRANGER, OTHER]) {
     db.createUser({
       id,
       username: id,
@@ -188,6 +223,8 @@ beforeAll(() => {
   group(PROJ, 'Project', OWNER, false);
   group(THEIRS, 'Theirs', STRANGER, true);
   group(HOSTWS, 'Host box', OWNER, false, 'host');
+  group(PERF, 'Perf', OTHER, false);
+  group(BULK, 'Bulk', OTHER, false);
 
   createSession(HOME_SELF, HOME, 'main chat');
   createSession(HOME_BUILD, HOME, 'build');
@@ -197,6 +234,8 @@ beforeAll(() => {
   createSession(WORKER, PROJ, 'worker', { source_kind: 'work_item' });
   createSession(ROUTER, PROJ, 'router', { source_kind: 'team_router' });
   createSession(HOST_ONE, HOSTWS, 'host session');
+  createSession(PERF_SELF, PERF, 'perf self');
+  createSession(BULK_SELF, BULK, 'bulk self');
 });
 
 beforeEach(() => {
@@ -540,6 +579,16 @@ describe('runtime state', () => {
       work_stage: 'blocked',
       work_item: { seq: 1, title: '修 CI' },
     });
+    // A failed report waits for a person too.
+    store.updateWorkItem(
+      item.id,
+      { lastReport: 'failed', lastSummary: '测试挂了' },
+      new Date().toISOString(),
+    );
+    expect(state('two', PROJ)).toMatchObject({
+      runtime_state: 'waiting_human',
+      work_stage: 'failed',
+    });
     // A running query outranks it.
     lanes = [
       {
@@ -557,7 +606,41 @@ describe('runtime state', () => {
     );
   });
 
-  test('a failed session reports error unless something live outranks it', () => {
+  test('a session whose last turn failed reports error until its next turn', () => {
+    // The real settle path: a conversation goes back to idle with the error
+    // in result_summary, which the next turn's 'running' clears.
+    db.updateAgentStatus(PROJ_TWO, 'running');
+    db.updateAgentStatus(PROJ_TWO, 'idle', 'Error: 529 overloaded');
+    expect(state('two', PROJ)).toMatchObject({
+      runtime_state: 'error',
+      error_summary: 'Error: 529 overloaded',
+    });
+    const errors = data(call(projCaller(), 'session_list', { state: 'error' }));
+    expect(errors.workspaces[0].sessions.map((s: any) => s.name)).toEqual([
+      'two',
+    ]);
+    expect(errors.workspaces[0].counts.error).toBe(1);
+    // A failure without a message is still a failure.
+    db.updateAgentStatus(PROJ_TWO, 'idle', '');
+    const blank = state('two', PROJ);
+    expect(blank.runtime_state).toBe('error');
+    expect(blank.error_summary).toBeUndefined();
+    // Something live outranks it.
+    lanes = [
+      {
+        jid: lane(PROJ.jid, PROJ_TWO),
+        active: true,
+        queryInFlight: true,
+        queryStartedAt: 1_700_000_000_000,
+      },
+    ];
+    expect(state('two', PROJ).runtime_state).toBe('running');
+    lanes = [];
+    // The next turn clears it.
+    db.updateAgentStatus(PROJ_TWO, 'running');
+    db.updateAgentStatus(PROJ_TWO, 'idle');
+    expect(state('two', PROJ).runtime_state).toBe('idle');
+    // A spawn-style 'error' status still reads as error.
     db.updateAgentStatus(PROJ_TWO, 'error', 'boom');
     expect(state('two', PROJ)).toMatchObject({
       runtime_state: 'error',
@@ -679,10 +762,13 @@ describe('session_get bodies', () => {
     expect(result.messages).toBeUndefined();
   });
 
-  test('messages and traces together stay within 32 KiB, newest kept', () => {
-    const big = 'x'.repeat(3900);
+  test('messages and traces together stay within 32 KiB as rendered, newest kept without holes', () => {
+    // Long and short messages alternate, and the long ones are full of
+    // characters the Runner escapes, so a cut that skipped a long message and
+    // kept going would leave a hole, and a compact-JSON count would overshoot.
     for (let i = 0; i < 30; i += 1) {
-      say(PROJ.jid, PROJ_ONE, `big-${i}`, `${i}:${big}`, i % 2 === 1, {
+      const body = i % 2 === 0 ? '<'.repeat(1500) : 'short';
+      say(PROJ.jid, PROJ_ONE, `big-${i}`, `${i}:${body}`, i % 2 === 1, {
         turnId: i % 2 === 1 ? `turn-${i}` : undefined,
       });
     }
@@ -693,17 +779,19 @@ describe('session_get bodies', () => {
         include_traces: true,
       }),
     );
-    const bodyBytes = Buffer.byteLength(
-      JSON.stringify({ messages: result.messages, traces: result.traces }),
-    );
-    expect(bodyBytes).toBeLessThanOrEqual(
-      service.SESSION_INSPECT_BODY_BUDGET_BYTES,
-    );
+    expect(
+      renderedBytes({ messages: result.messages, traces: result.traces }),
+    ).toBeLessThanOrEqual(service.SESSION_INSPECT_BODY_BUDGET_BYTES);
     expect(result.messages_omitted).toBeGreaterThan(0);
-    const texts = result.messages.map((m: any) => m.text as string);
-    // The newest survive, in chronological order.
-    expect(texts.at(-1)).toMatch(/^29:/);
-    expect(texts[0].startsWith('29:')).toBe(false);
+    expect(result.truncated).toMatch(/32 KiB/);
+    const indices = result.messages.map((m: any) =>
+      Number((m.text as string).split(':')[0]),
+    );
+    // The newest survive, in chronological order, with nothing missing.
+    expect(indices.at(-1)).toBe(29);
+    expect(indices).toEqual(
+      Array.from({ length: indices.length }, (_, k) => 30 - indices.length + k),
+    );
     expect(result.messages.length + result.messages_omitted).toBe(30);
   });
 
@@ -796,6 +884,34 @@ describe('session_get bodies', () => {
   });
 });
 
+describe('cancelled inputs', () => {
+  test('a recalled or /break-cancelled input is neither previewed nor listed', () => {
+    createSession(RECALLED, PROJ, 'recalled');
+    const laneJid = lane(PROJ.jid, RECALLED);
+    say(PROJ.jid, RECALLED, 'rc-1', '早先的问题', false);
+    say(PROJ.jid, RECALLED, 'rc-2', '早先的回答', true);
+    say(PROJ.jid, RECALLED, 'rc-3', '撤回的敏感消息', false);
+    expect(db.cancelPendingInboundMessage(laneJid, 'rc-3')).toBe(true);
+
+    const list = data(call(projCaller(), 'session_list'));
+    const entry = list.workspaces[0].sessions.find(
+      (s: any) => s.name === 'recalled',
+    );
+    expect(entry.latest_message).toMatchObject({
+      role: 'agent',
+      text: '早先的回答',
+    });
+    const got = data(
+      call(projCaller(), 'session_get', { session: 'recalled' }),
+    );
+    expect(got.messages.map((m: any) => m.text)).toEqual([
+      '早先的问题',
+      '早先的回答',
+    ]);
+    expect(JSON.stringify([list, got])).not.toContain('撤回');
+  });
+});
+
 describe('Host workspaces', () => {
   test('are hidden from an owner who is not admin, like the Web', () => {
     say(HOSTWS.jid, HOST_ONE, 'host-1', 'SECRET_TOKEN=abc123', true);
@@ -847,5 +963,57 @@ describe('Host workspaces', () => {
     } finally {
       db.updateUserFields(OWNER, { role: 'member' });
     }
+  });
+});
+
+describe('volume', () => {
+  const perfCaller = () => caller(PERF_SELF, PERF.folder);
+  const addArchivedRuns = (count: number) => {
+    for (let i = 0; i < count; i += 1) {
+      createSession(randomUUID(), PERF, `run-${i}`, {
+        source_kind: 'automation',
+        status: 'completed',
+      });
+    }
+  };
+
+  test('the queries of session_list do not grow with the sessions it hides', () => {
+    addArchivedRuns(20);
+    const listing = () => {
+      data(call(perfCaller(), 'session_list', { limit: 5 }));
+      data(call(perfCaller(), 'session_list', { state: 'error' }));
+    };
+    listing(); // settles any one-time writes, such as the profile mapping
+    const before = countStatements(listing);
+    addArchivedRuns(200);
+    const after = countStatements(listing);
+    expect(after).toBe(before);
+    const list = data(call(perfCaller(), 'session_list'));
+    expect(list.workspaces[0].counts).toMatchObject({
+      total: 221,
+      idle: 221,
+      ended_hidden: 220,
+    });
+    expect(list.workspaces[0].sessions.map((s: any) => s.name)).toEqual([
+      'perf self',
+    ]);
+  });
+
+  test('a long list stops at the output budget and says so', () => {
+    const bulkCaller = () => caller(BULK_SELF, BULK.folder);
+    for (let i = 0; i < 99; i += 1) {
+      const id = randomUUID();
+      createSession(id, BULK, `bulk-${i}`);
+      say(BULK.jid, id, `bulk-msg-${i}`, '<'.repeat(400), false);
+    }
+    const list = data(call(bulkCaller(), 'session_list', { limit: 100 }));
+    const shown = list.workspaces[0].sessions.length;
+    expect(shown).toBeGreaterThan(0);
+    expect(shown).toBeLessThan(100);
+    expect(list.workspaces[0].omitted).toBe(100 - shown);
+    expect(list.truncated).toMatch(/KiB/);
+    expect(renderedBytes(list)).toBeLessThanOrEqual(
+      service.SESSION_LIST_BUDGET_BYTES + 2048,
+    );
   });
 });
