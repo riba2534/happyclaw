@@ -14,6 +14,7 @@ import { Label } from '@/components/ui/label';
 import { Spinner } from '@/components/ui/spinner';
 import { api } from '../../api/client';
 import { extractErrorMessage } from '../../utils/error';
+import { workspaceDirPlaceholder } from '../../lib/workspace-root';
 
 interface DirectoryEntry {
   name: string;
@@ -203,7 +204,7 @@ export function DirectoryBrowser({
           variant="code"
           value={value}
           onChange={(event) => onChange(event.target.value, 'input')}
-          placeholder={placeholder || '默认: data/groups/{folder}/'}
+          placeholder={placeholder || workspaceDirPlaceholder()}
           className="flex-1"
           aria-describedby={describedBy || undefined}
           aria-invalid={!!error}

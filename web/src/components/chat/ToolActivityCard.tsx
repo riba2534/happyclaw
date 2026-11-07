@@ -1,7 +1,7 @@
 import { memo } from 'react';
-import { Check, Loader2, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { formatElapsedMs } from '../../utils/format-elapsed';
+import { TOOL_STATE, ToolStateIcon, type ToolState } from './tool-status';
 
 /**
  * ToolActivityCard — structured mini-card for tool calls: a running one
@@ -20,7 +20,7 @@ interface ToolInfo {
   toolInput?: Record<string, unknown>;
 }
 
-export type ToolRowStatus = 'running' | 'done' | 'error';
+export type ToolRowStatus = ToolState;
 
 interface ToolActivityCardProps {
   tool: ToolInfo;
@@ -183,8 +183,8 @@ export const ToolRow = memo(function ToolRow({
   const { verb, hint } = describeToolName(toolName, skillName);
   const param = parseToolParam(toolName, summary);
   const isBash = toolName === 'Bash';
-  const running = status === 'running';
-  const failed = status === 'error';
+  const running = status === 'running' || status === 'background';
+  const failed = !running && !TOOL_STATE[status].quiet;
   const time = running
     ? elapsedSeconds != null
       ? `${Math.round(elapsedSeconds)}s`
@@ -198,19 +198,7 @@ export const ToolRow = memo(function ToolRow({
   return (
     <div className={nested ? 'ml-3 border-l border-surface-border pl-2.5' : ''}>
       <div className="flex min-h-7 items-center gap-2 rounded-md px-1 py-1 font-sans text-label">
-        {running ? (
-          <Loader2
-            aria-hidden="true"
-            className="size-3.5 shrink-0 animate-spin text-muted-foreground"
-          />
-        ) : failed ? (
-          <X aria-hidden="true" className="size-3.5 shrink-0 text-error" />
-        ) : (
-          <Check
-            aria-hidden="true"
-            className="size-3.5 shrink-0 text-faint-foreground"
-          />
-        )}
+        <ToolStateIcon state={status} />
         <span
           className={cn(
             'shrink-0 font-medium',
@@ -238,15 +226,13 @@ export const ToolRow = memo(function ToolRow({
             {time}
           </span>
         )}
-        <span className="sr-only">
-          {running ? '，运行中' : failed ? '，失败' : '，已完成'}
-        </span>
+        <span className="sr-only">，{TOOL_STATE[status].label}</span>
       </div>
       {result && (
         <p
           className={cn(
             'mb-1 ml-6 line-clamp-2 text-caption break-words',
-            failed ? 'text-error' : 'text-muted-foreground',
+            failed ? TOOL_STATE[status].tone : 'text-muted-foreground',
           )}
         >
           {result}

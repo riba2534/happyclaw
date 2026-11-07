@@ -67,6 +67,7 @@ function collectLiteralUnions(sources: ts.SourceFile[]): Map<string, string[]> {
  */
 const CALLBACK_RESULT_TYPES: Record<string, string> = {
   createAutomationTools: 'AutomationIpcType',
+  createSessionTools: 'SessionIpcType',
 };
 
 /**
@@ -228,6 +229,8 @@ describe('task IPC result files are never consumed as requests', () => {
         'workspace_memory_result',
         'happyclaw_owner_profile_result',
         'automation_create_result',
+        'session_list_result',
+        'session_get_result',
         'automation_notify_current_run_result',
         'work_route_result',
         'work_report_result',

@@ -1,6 +1,7 @@
 import { forwardRef, useMemo } from 'react';
 import { EmojiAvatar } from '../common/EmojiAvatar';
 import { MarkdownRenderer } from './MarkdownRenderer';
+import { SHARE_CARD_DEFAULT_WIDTH } from './share-card-layout';
 
 interface ShareCardRendererProps {
   content: string;
@@ -10,6 +11,10 @@ interface ShareCardRendererProps {
   aiEmoji?: string | null;
   aiColor?: string | null;
   aiImageUrl?: string | null;
+  /** The width the card never narrows below (default 720). */
+  minWidth?: number;
+  /** The reply runs past the content area: fade where it is cut. */
+  clipped?: boolean;
 }
 
 /**
@@ -66,9 +71,6 @@ function getCurrentBrandVars(): Record<string, string> {
 }
 
 const MAX_HEIGHT = 20000;
-export const SHARE_CARD_DEFAULT_WIDTH = 720;
-export const SHARE_CARD_MAX_WIDTH = 1200;
-export const SHARE_CARD_PADDING = 48; // 24px * 2
 
 /**
  * Override styles for the share card content area.
@@ -97,107 +99,138 @@ const CONTENT_OVERRIDE_STYLE = `
   }
 `;
 
-export const ShareCardRenderer = forwardRef<HTMLDivElement, ShareCardRendererProps>(
-  function ShareCardRenderer(
-    { content, senderName, timestamp, groupJid, aiEmoji, aiColor, aiImageUrl },
-    ref,
-  ) {
-    // Merge fixed light-mode base vars with dynamic brand colors from current theme
-    const themeVars = useMemo<React.CSSProperties>(() => {
-      const brandVars = getCurrentBrandVars();
-      return { ...LIGHT_BASE_VARS, ...brandVars } as React.CSSProperties;
-    }, []);
+export const ShareCardRenderer = forwardRef<
+  HTMLDivElement,
+  ShareCardRendererProps
+>(function ShareCardRenderer(
+  {
+    content,
+    senderName,
+    timestamp,
+    groupJid,
+    aiEmoji,
+    aiColor,
+    aiImageUrl,
+    minWidth = SHARE_CARD_DEFAULT_WIDTH,
+    clipped = false,
+  },
+  ref,
+) {
+  // Merge fixed light-mode base vars with dynamic brand colors from current theme
+  const themeVars = useMemo<React.CSSProperties>(() => {
+    const brandVars = getCurrentBrandVars();
+    return { ...LIGHT_BASE_VARS, ...brandVars } as React.CSSProperties;
+  }, []);
 
-    return (
+  return (
+    <div
+      ref={ref}
+      style={{
+        ...themeVars,
+        minWidth,
+        fontFamily:
+          "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
+        background: '#ffffff',
+        color: '#0f172a',
+        borderRadius: 16,
+        WebkitFontSmoothing: 'antialiased',
+      }}
+    >
+      <style>{CONTENT_OVERRIDE_STYLE}</style>
+
+      {/* Header */}
       <div
-        ref={ref}
         style={{
-          ...themeVars,
-          minWidth: SHARE_CARD_DEFAULT_WIDTH,
-          fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
-          background: '#ffffff',
-          color: '#0f172a',
-          borderRadius: 16,
-          WebkitFontSmoothing: 'antialiased',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          padding: '16px 24px',
+          borderBottom: '1px solid #e2e8f0',
+          background: '#f8fafc',
+          borderRadius: '16px 16px 0 0',
         }}
       >
-        <style>{CONTENT_OVERRIDE_STYLE}</style>
-
-        {/* Header */}
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            padding: '16px 24px',
-            borderBottom: '1px solid #e2e8f0',
-            background: '#f8fafc',
-            borderRadius: '16px 16px 0 0',
-          }}
-        >
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <EmojiAvatar
-              imageUrl={aiImageUrl}
-              emoji={aiEmoji}
-              color={aiColor}
-              fallbackChar={senderName[0]}
-              size="md"
-            />
-            <span style={{ fontSize: 15, fontWeight: 600, color: '#0f172a' }}>{senderName}</span>
-          </div>
-          <span style={{ fontSize: 13, color: '#64748b', whiteSpace: 'nowrap', marginLeft: 16 }}>{timestamp}</span>
-        </div>
-
-        {/* Content */}
-        <div
-          style={{
-            padding: '20px 24px',
-            maxHeight: MAX_HEIGHT,
-            position: 'relative',
-          }}
-        >
-          <div className="share-card-content max-w-none">
-            <MarkdownRenderer content={content} groupJid={groupJid} variant="chat" eagerImages />
-          </div>
-          {/* Gradient fade for extremely long content */}
-          {content.length > 30000 && (
-            <div
-              style={{
-                position: 'absolute',
-                bottom: 0,
-                left: 0,
-                right: 0,
-                height: 80,
-                background: 'linear-gradient(transparent, #ffffff)',
-                pointerEvents: 'none',
-              }}
-            />
-          )}
-        </div>
-
-        {/* Footer */}
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            padding: '12px 24px',
-            gap: '6px',
-            borderTop: '1px solid #e2e8f0',
-            background: '#f8fafc',
-            borderRadius: '0 0 16px 16px',
-          }}
-        >
-          <img
-            src="/icons/icon-192.png"
-            alt="HappyClaw"
-            style={{ width: 16, height: 16, borderRadius: 3 }}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <EmojiAvatar
+            imageUrl={aiImageUrl}
+            emoji={aiEmoji}
+            color={aiColor}
+            fallbackChar={senderName[0]}
+            size="md"
           />
-          <span style={{ fontSize: 12, color: '#94a3b8' }}>
-            HappyClaw · github.com/riba2534/happyclaw
+          <span style={{ fontSize: 15, fontWeight: 600, color: '#0f172a' }}>
+            {senderName}
           </span>
         </div>
+        <span
+          style={{
+            fontSize: 13,
+            color: '#64748b',
+            whiteSpace: 'nowrap',
+            marginLeft: 16,
+          }}
+        >
+          {timestamp}
+        </span>
       </div>
-    );
-  },
-);
+
+      {/* Content: a reply taller than MAX_HEIGHT is cut here, never drawn
+          over the footer. */}
+      <div
+        data-share-card-body=""
+        style={{
+          padding: '20px 24px',
+          maxHeight: MAX_HEIGHT,
+          overflow: 'hidden',
+          position: 'relative',
+        }}
+      >
+        <div className="share-card-content max-w-none">
+          <MarkdownRenderer
+            content={content}
+            groupJid={groupJid}
+            variant="chat"
+            eagerImages
+          />
+        </div>
+        {/* Fade the cut end, measured by the dialog */}
+        {clipped && (
+          <div
+            style={{
+              position: 'absolute',
+              bottom: 0,
+              left: 0,
+              right: 0,
+              height: 80,
+              background: 'linear-gradient(transparent, #ffffff)',
+              pointerEvents: 'none',
+            }}
+          />
+        )}
+      </div>
+
+      {/* Footer */}
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          padding: '12px 24px',
+          gap: '6px',
+          borderTop: '1px solid #e2e8f0',
+          background: '#f8fafc',
+          borderRadius: '0 0 16px 16px',
+        }}
+      >
+        <img
+          src="/icons/icon-192.png"
+          alt="HappyClaw"
+          style={{ width: 16, height: 16, borderRadius: 3 }}
+        />
+        <span style={{ fontSize: 12, color: '#94a3b8' }}>
+          HappyClaw · github.com/riba2534/happyclaw
+        </span>
+      </div>
+    </div>
+  );
+});

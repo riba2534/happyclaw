@@ -23,7 +23,10 @@ import {
 } from 'lucide-react';
 import { useDisplayMode } from '../../hooks/useDisplayMode';
 import { useFollowGlide } from '../../hooks/useFollowGlide';
-import { measureVisualViewport } from '../../hooks/useVisualViewport';
+import {
+  layoutViewportHeight,
+  measureVisualViewport,
+} from '../../hooks/useVisualViewport';
 import { useIsPhone } from '../layout/phone';
 import { resolveSystemMessage } from '../../lib/system-message-registry';
 import {
@@ -1043,7 +1046,7 @@ export const MessageList = memo(function MessageList({
     const viewport = window.visualViewport;
     if (!isPhone || !viewport) return;
     const readInset = () =>
-      measureVisualViewport(window.innerHeight, viewport).keyboardInset;
+      measureVisualViewport(layoutViewportHeight(), viewport).keyboardInset;
     let inset = readInset();
     let frame = 0;
     const update = () => {
@@ -1269,7 +1272,9 @@ export const MessageList = memo(function MessageList({
     <div className="relative flex-1 overflow-hidden overflow-x-hidden">
       <div
         ref={parentRef}
-        className="h-full overflow-y-auto overflow-x-hidden pb-10"
+        // Room below the last row, unless a phone dock floating over the
+        // list already reserves it (--list-end-room, set by the dock).
+        className="h-full overflow-y-auto overflow-x-hidden pb-[var(--list-end-room,2.5rem)]"
       >
         {/* Clips the follow glide's translation of the content, which would
             otherwise add scroll range below it. A clip, unlike hidden, is

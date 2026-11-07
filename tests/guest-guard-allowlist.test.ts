@@ -14,6 +14,7 @@ describe('guest route allowlist', () => {
   test.each([
     ['GET', '/api/auth/status'],
     ['GET', '/api/auth/me'],
+    ['GET', '/api/build'],
     ['PUT', '/api/auth/password'],
     ['POST', '/api/auth/logout'],
     ['GET', '/api/groups'],

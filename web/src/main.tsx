@@ -7,6 +7,7 @@ import './styles/globals.css';
 import { shouldUseHashRouter } from './utils/url';
 import { cleanupLegacyPwaArtifacts } from './utils/legacyPwaCleanup';
 import { installStaleChunkRecovery } from './utils/staleChunkReload';
+import { startAppUpdateCheck } from './utils/appUpdatePrompt';
 
 if (typeof window !== 'undefined') {
   window.__HAPPYCLAW_HASH_ROUTER__ = shouldUseHashRouter();
@@ -19,6 +20,7 @@ if (typeof window !== 'undefined') {
   // Settings, never here, and is kept by this cleanup.
   void cleanupLegacyPwaArtifacts();
   installStaleChunkRecovery();
+  startAppUpdateCheck();
 }
 
 createRoot(document.getElementById('root')!).render(

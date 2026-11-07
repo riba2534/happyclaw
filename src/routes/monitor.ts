@@ -1,4 +1,5 @@
 import { execFile, spawn } from 'child_process';
+import path from 'path';
 import readline from 'readline';
 import { promisify } from 'util';
 
@@ -28,9 +29,16 @@ import {
   resolveUncertainChannelOutbox,
 } from '../channel-reliability-store.js';
 import { CONTAINER_IMAGE } from '../config.js';
+import {
+  getDeploymentMode,
+  isAdminHostOnlyEffective,
+  isSingleUserHost,
+} from '../deployment-mode.js';
 import { getSystemSettings, getProviders } from '../runtime-config.js';
 import { logger } from '../logger.js';
+import { singleUserHostRefusal } from '../single-user-host-guard.js';
 import { stripVirtualJidSuffix } from '../utils.js';
+import { createBuildInfoReader } from '../build-info.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -99,6 +107,9 @@ const DOCKER_IMAGE_ID_TTL_MS = 30_000;
 let cachedDockerImageId: { id: string | null; fetchedAt: number } | null = null;
 
 async function getDockerImageId(): Promise<string | null> {
+  // Single-user host mode never runs Docker: no image, so no container
+  // version probe either.
+  if (isSingleUserHost()) return null;
   const now = Date.now();
   if (
     cachedDockerImageId &&
@@ -209,6 +220,17 @@ export function injectMonitorDeps(deps: {
 
 const monitorRoutes = new Hono<{ Variables: Variables }>();
 
+// 与 web.ts 的静态资源根一致（按进程 cwd 解析）。
+const buildInfoReader = createBuildInfoReader(path.resolve('./web/dist'));
+
+// GET /api/build - 当前部署的前端构建标识（无认证）
+// 已打开的旧页面据此发现「前端已更新」。每次请求都读 dist/build.json 的最新
+// 状态，不在启动时固定：本机部署只重建前端、不重启后端。
+monitorRoutes.get('/build', (c) => {
+  c.header('Cache-Control', 'no-store');
+  return c.json(buildInfoReader.read() ?? { id: null, builtAt: null });
+});
+
 // GET /api/health - 健康检查（无认证）
 monitorRoutes.get('/health', async (c) => {
   const checks = {
@@ -301,10 +323,14 @@ monitorRoutes.get('/status', authMiddleware, async (c) => {
   // 监控页面属于系统管理功能，admin 可见所有群组状态（不受工作区隔离约束）
   const filteredGroups = visibleQueueGroups(authUser, queueStatus.groups);
 
-  const dockerRequired = hasContainerModeGroups();
-  const dockerImageExists = dockerRequired
-    ? await checkDockerImageExists()
-    : false;
+  // Single-user host mode runs no Docker probe and reports Docker as n/a.
+  const singleUserHost = isSingleUserHost();
+  const dockerRequired = singleUserHost ? null : hasContainerModeGroups();
+  const dockerImageExists = singleUserHost
+    ? null
+    : dockerRequired
+      ? await checkDockerImageExists()
+      : false;
   const systemSettings = getSystemSettings();
 
   // For non-admin users, derive aggregate metrics from their own filtered groups only
@@ -366,12 +392,19 @@ monitorRoutes.get('/status', authMiddleware, async (c) => {
     groups: enrichedGroups,
     dockerImageExists,
     dockerRequired,
-    adminHostOnlyMode: isAdmin ? systemSettings.adminHostOnlyMode : undefined,
-    dockerPullInProgress: pullState.pulling,
+    adminHostOnlyMode: isAdmin ? isAdminHostOnlyEffective() : undefined,
+    deploymentMode: getDeploymentMode(),
+    dockerPullInProgress: singleUserHost ? null : pullState.pulling,
     claudeCodeVersions: isAdmin ? await getClaudeCodeVersions() : undefined,
     dockerPullLogs:
-      isAdmin && pullState.pulling ? pullState.logs.slice(-50) : undefined,
-    dockerPullResult: isAdmin ? pullState.result : undefined,
+      isAdmin && !singleUserHost && pullState.pulling
+        ? pullState.logs.slice(-50)
+        : undefined,
+    dockerPullResult: isAdmin
+      ? singleUserHost
+        ? null
+        : pullState.result
+      : undefined,
   });
 });
 
@@ -531,6 +564,9 @@ monitorRoutes.post(
   authMiddleware,
   systemConfigMiddleware,
   async (c) => {
+    if (isSingleUserHost()) {
+      return singleUserHostRefusal(c, '单人宿主机模式不使用 Docker。');
+    }
     if (pullState.pulling) {
       return c.json(
         {

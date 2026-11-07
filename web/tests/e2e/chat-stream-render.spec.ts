@@ -178,7 +178,9 @@ test.describe('the step timeline', () => {
     const card = page.locator('[data-hc-stream-card="settled"]');
     await expect(card).toBeVisible();
     // The process folds to one summary row; nothing spins.
-    const summary = card.getByRole('button', { name: /^已工作 \d+s$/ });
+    const summary = card.getByRole('button', {
+      name: /^已工作 \d+s · \d+ 个工具 · 1 个失败$/,
+    });
     await expect(summary).toBeVisible();
     await expect(summary).toHaveAttribute('aria-expanded', 'false');
     await expect(page.locator('[data-hc-step-timeline]')).toHaveCount(0);
@@ -484,7 +486,11 @@ test.describe('a finished reply that has its steps', () => {
     await reply.scrollIntoViewIfNeeded();
     const card = reply.locator('[data-hc-process-card]');
     await expect(card).toHaveAttribute('data-mode', 'settled');
-    const summary = card.getByRole('button', { name: /^已工作 \d+s$/ });
+    // Folded, the line says that a call failed; opened, the counts say it.
+    const summary = card.getByRole('button', { name: /^已工作 \d+s/ });
+    await expect(summary).toHaveAccessibleName(
+      /^已工作 \d+s · \d+ 个工具 · 1 个失败$/,
+    );
     await expect(summary).toBeVisible();
     await expect(summary).toHaveAttribute('aria-expanded', 'false');
     // The two rows the card replaces are not there; the steps stay folded.

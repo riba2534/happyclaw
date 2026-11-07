@@ -57,6 +57,43 @@ export function formatContextMessages(
   return lines.length > 0 ? '\n\n📋 最近消息:\n' + lines.join('\n') : '';
 }
 
+// ─── Workspace / Session Addressing ─────────────────────────────
+
+/**
+ * The workspace a `<工作区>` spec names: its folder or its name, ignoring case
+ * and surrounding blanks. Shared by `/bind` and the session inspection tools
+ * so a workspace is addressed the same way everywhere.
+ */
+export function findWorkspaceBySpec<T extends { folder: string; name: string }>(
+  workspaces: readonly T[],
+  spec: string,
+): T | undefined {
+  const wanted = spec.trim().toLowerCase();
+  return workspaces.find(
+    (ws) =>
+      ws.folder.toLowerCase() === wanted ||
+      ws.name.trim().toLowerCase() === wanted,
+  );
+}
+
+/**
+ * The sessions a `<会话>` spec names: those whose id starts with it, or whose
+ * name is it (case-insensitive). More than one match is the caller's to
+ * report; an empty spec matches nothing.
+ */
+export function findSessionsBySpec<T extends { id: string; name: string }>(
+  sessions: readonly T[],
+  spec: string,
+): T[] {
+  const wanted = spec.trim().toLowerCase();
+  if (!wanted) return [];
+  return sessions.filter(
+    (item) =>
+      item.id.toLowerCase().startsWith(wanted) ||
+      item.name.trim().toLowerCase() === wanted,
+  );
+}
+
 // ─── List Formatting ────────────────────────────────────────────
 
 /**

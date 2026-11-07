@@ -737,7 +737,7 @@ function AutomationForm({
         )}
       </div>
 
-      <div className="flex shrink-0 flex-col gap-2 border-t border-surface-border px-5 py-3 sm:flex-row sm:items-center phone:pb-[calc(0.75rem+env(safe-area-inset-bottom))]">
+      <div className="flex shrink-0 flex-col gap-2 border-t border-surface-border px-5 py-3 sm:flex-row sm:items-center phone:pb-[calc(0.75rem+var(--safe-bottom))]">
         <div className="min-w-0 flex-1 space-y-1" aria-live="polite">
           {serverError && (
             <p role="alert" className="text-caption text-error">

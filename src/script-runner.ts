@@ -1,7 +1,6 @@
 import { ChildProcess, execFile, spawn } from 'child_process';
-import path from 'path';
 
-import { GROUPS_DIR } from './config.js';
+import { workspaceDirOf } from './workspace-dir.js';
 import { logger } from './logger.js';
 import { getSystemSettings } from './runtime-config.js';
 
@@ -85,7 +84,7 @@ export async function runScript(
   options?: { ownerId?: string; signal?: AbortSignal },
 ): Promise<ScriptRunResult> {
   const { containerTimeout: taskTimeout } = getSystemSettings();
-  const cwd = path.join(GROUPS_DIR, groupFolder);
+  const cwd = workspaceDirOf(groupFolder);
   const startTime = Date.now();
 
   activeScriptCount++;

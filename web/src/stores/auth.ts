@@ -60,6 +60,30 @@ export interface AppearanceConfig {
   brandBannerUrl: string | null;
 }
 
+/**
+ * How the instance is deployed (`src/deployment-mode.ts` on the server).
+ * `single_user_host` runs everything on the host for one user: no Docker,
+ * registration, other users, guests or billing. The server refuses those
+ * itself; the client only hides them (see lib/deployment-mode.ts).
+ */
+export type DeploymentMode = 'multi_user' | 'single_user_host';
+
+/** An absent or unknown value is `multi_user`, so an older server looks as before. */
+export function parseDeploymentMode(value: unknown): DeploymentMode {
+  return value === 'single_user_host' ? 'single_user_host' : 'multi_user';
+}
+
+/** Where the effective mode comes from: the stored setting, the environment or the default. */
+export type DeploymentModeSource = 'settings' | 'env' | 'default';
+
+function parseDeploymentModeSource(
+  value: unknown,
+): DeploymentModeSource | null {
+  return value === 'settings' || value === 'env' || value === 'default'
+    ? value
+    : null;
+}
+
 export interface SetupStatus {
   needsSetup: boolean;
   claudeConfigured: boolean;
@@ -72,6 +96,12 @@ interface AuthState {
   setupStatus: SetupStatus | null;
   appearance: AppearanceConfig | null;
   initialized: boolean | null; // null = not checked yet
+  /** From /api/auth/me and /api/auth/status; kept across sign-out. */
+  deploymentMode: DeploymentMode;
+  /** From /api/auth/status; null until it is read (or on an older server). */
+  deploymentModeSource: DeploymentModeSource | null;
+  /** Applies a deployment mode switched in settings. */
+  setDeploymentMode: (mode: DeploymentMode) => void;
   checking: boolean;
   login: (username: string, password: string) => Promise<void>;
   register: (data: {
@@ -83,7 +113,11 @@ interface AuthState {
   logout: () => Promise<void>;
   checkAuth: () => Promise<void>;
   checkStatus: () => Promise<void>;
-  setupAdmin: (username: string, password: string) => Promise<void>;
+  setupAdmin: (
+    username: string,
+    password: string,
+    deploymentMode?: DeploymentMode,
+  ) => Promise<void>;
   changePassword: (
     currentPassword: string,
     newPassword: string,
@@ -103,6 +137,13 @@ interface AuthState {
   uploadAvatar: (file: File, target?: 'user' | 'ai') => Promise<string>;
   fetchAppearance: () => Promise<void>;
   hasPermission: (permission: Permission) => boolean;
+}
+
+interface MeResponse {
+  user: UserPublic;
+  setupStatus?: SetupStatus;
+  appearance?: AppearanceConfig;
+  deploymentMode?: unknown;
 }
 
 let checkAuthInFlight: Promise<void> | null = null;
@@ -128,7 +169,11 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   setupStatus: null,
   appearance: null,
   initialized: null,
+  deploymentMode: 'multi_user',
+  deploymentModeSource: null,
   checking: true,
+
+  setDeploymentMode: (mode) => set({ deploymentMode: mode }),
 
   login: async (username: string, password: string) => {
     // Message snapshots are user-scoped application data. Clear them before
@@ -202,25 +247,37 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
   checkStatus: async () => {
     try {
-      const data = await api.get<{ initialized: boolean }>('/api/auth/status');
-      set({ initialized: data.initialized });
+      const data = await api.get<{
+        initialized: boolean;
+        deploymentMode?: unknown;
+        deploymentModeSource?: unknown;
+      }>('/api/auth/status');
+      set({
+        initialized: data.initialized,
+        deploymentMode: parseDeploymentMode(data.deploymentMode),
+        deploymentModeSource: parseDeploymentModeSource(
+          data.deploymentModeSource,
+        ),
+      });
     } catch {
       // If status endpoint fails, assume initialized (safe default)
       set({ initialized: true });
     }
   },
 
-  setupAdmin: async (username: string, password: string) => {
-    const data = await api.post<{
-      success: boolean;
-      user: UserPublic;
-      setupStatus?: SetupStatus;
-      appearance?: AppearanceConfig;
-    }>('/api/auth/setup', { username, password });
+  setupAdmin: async (username, password, deploymentMode) => {
+    const data = await api.post<MeResponse>('/api/auth/setup', {
+      username,
+      password,
+      ...(deploymentMode ? { deployment_mode: deploymentMode } : {}),
+    });
     discardPrewarms();
     set({
       authenticated: true,
       user: data.user,
+      ...(deploymentMode
+        ? { deploymentMode, deploymentModeSource: 'settings' as const }
+        : {}),
       setupStatus: data.setupStatus ?? null,
       appearance: data.appearance ?? null,
       initialized: true,
@@ -243,14 +300,11 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         try {
           const res = await prewarm;
           if (res?.ok) {
-            const data = (await res.json()) as {
-              user: UserPublic;
-              setupStatus?: SetupStatus;
-              appearance?: AppearanceConfig;
-            };
+            const data = (await res.json()) as MeResponse;
             set({
               authenticated: true,
               user: data.user,
+              deploymentMode: parseDeploymentMode(data.deploymentMode),
               setupStatus: data.setupStatus ?? null,
               appearance: data.appearance ?? null,
               initialized: true,
@@ -274,14 +328,11 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       }
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
-          const data = await api.get<{
-            user: UserPublic;
-            setupStatus?: SetupStatus;
-            appearance?: AppearanceConfig;
-          }>('/api/auth/me');
+          const data = await api.get<MeResponse>('/api/auth/me');
           set({
             authenticated: true,
             user: data.user,
+            deploymentMode: parseDeploymentMode(data.deploymentMode),
             setupStatus: data.setupStatus ?? null,
             appearance: data.appearance ?? null,
             initialized: true,

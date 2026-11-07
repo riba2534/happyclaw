@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { AlertCircle, RotateCcw } from 'lucide-react';
+import { RotateCcw, Wallet } from 'lucide-react';
 import { toast } from 'sonner';
 
 import { api } from '../../api/client';
@@ -160,7 +160,8 @@ export default function AdminBillingSettings() {
   if (loadError || !draft) {
     return (
       <EmptyState
-        icon={AlertCircle}
+        icon={Wallet}
+        variant="error"
         title="计费设置加载失败"
         description={loadError ?? undefined}
         className="rounded-xl border border-dashed border-surface-border"
