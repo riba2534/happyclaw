@@ -202,6 +202,48 @@ describe('storage source administration', () => {
     expect(fs.readFileSync(allowlistPath, 'utf8')).not.toBe(before);
   });
 
+  test('the next Web write drops a source the allowlist file took over', async () => {
+    await saveStorageSource('nas-smb', { ...smb, password: 'pw' }, true);
+    await saveStorageSource('kept', nfs, true);
+    const secret = path.join(secretDir, 'storage-nas-smb');
+    writeAllowlist({
+      storageSources: [{ ...fileSource, id: 'nas-smb' }],
+    });
+    expect(
+      listStorageSources().sources.map(({ id, origin }) => [id, origin]),
+    ).toEqual([
+      ['nas-smb', 'allowlist'],
+      ['kept', 'web'],
+    ]);
+
+    // Saving any other source still works and prunes the stale copy.
+    await saveStorageSource('other', nfs, true);
+    expect(readManaged().storageSources.map((source) => source.id)).toEqual([
+      'kept',
+      'other',
+    ]);
+    expect(fs.existsSync(secret)).toBe(false);
+    await saveStorageSource('kept', { ...nfs, description: 'x' }, false);
+    await deleteStorageSource('other');
+    expect(readManaged().storageSources.map((source) => source.id)).toEqual([
+      'kept',
+    ]);
+  });
+
+  test('pruning keeps a managed password file the allowlist file now uses', async () => {
+    await saveStorageSource('nas-smb', { ...smb, password: 'pw' }, true);
+    const secret = path.join(secretDir, 'storage-nas-smb');
+    writeAllowlist({
+      storageSources: [{ id: 'nas-smb', ...smb, passwordFile: secret }],
+    });
+    await deleteStorageSource('nas-smb').catch(() => undefined);
+    await saveStorageSource('other', nfs, true);
+    expect(readManaged().storageSources.map((source) => source.id)).toEqual([
+      'other',
+    ]);
+    expect(readPasswordFile(secret)).toBe('pw');
+  });
+
   test('refuses to write while the allowlist file is broken', async () => {
     fs.writeFileSync(allowlistPath, '{ not json');
     await expect(saveStorageSource('nas-nfs', nfs, true)).rejects.toMatchObject(

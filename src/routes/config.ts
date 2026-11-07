@@ -4197,7 +4197,7 @@ function storageSourceRuntimeErrorResponse(
   return c.json(
     {
       error: err.persisted
-        ? '存储源已保存，但没能停下使用它的工作区，请重试同一请求'
+        ? '改动已生效，但没能停下使用该存储源的工作区；重试同一请求即可完成清理'
         : '没能停下使用该存储源的工作区，存储源未修改',
       persisted: err.persisted,
       retryable: true,

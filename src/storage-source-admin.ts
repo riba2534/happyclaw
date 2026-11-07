@@ -6,7 +6,8 @@
  * names by `passwordFile`: runtime data stays out of the git worktree and in
  * `make backup`. The service never rewrites config/mount-allowlist.json; the
  * runtime merges both lists (see loadMountAllowlist), and a source the
- * allowlist file declares is read-only here and cannot be shadowed.
+ * allowlist file declares is read-only here and cannot be shadowed: a Web
+ * source the file takes over later is dropped on the next write.
  * Responses only ever say whether a password is set.
  *
  * Writes are serialized within the process and each one re-reads both files
@@ -19,6 +20,7 @@ import path from 'node:path';
 
 import { DATA_DIR, MOUNT_ALLOWLIST_PATH } from './config.js';
 import { getAllRegisteredGroups } from './db.js';
+import { logger } from './logger.js';
 import {
   loadManagedStorageSources,
   loadMountAllowlist,
@@ -120,6 +122,49 @@ function readManagedSources(): StorageSource[] {
     throw new StorageSourceAdminError(
       `${relativeToProject(MANAGED_STORAGE_SOURCES_PATH)} 无法解析：${err instanceof Error ? err.message : String(err)}`,
       409,
+    );
+  }
+}
+
+/**
+ * The managed sources a write keeps. An id the allowlist file declares too is
+ * ignored at runtime (the file wins); the next write drops that stale copy.
+ */
+function readLiveManagedSources(fileSources: StorageSource[]): {
+  sources: StorageSource[];
+  shadowed: StorageSource[];
+} {
+  const fileIds = new Set(fileSources.map((source) => source.id));
+  const all = readManagedSources();
+  return {
+    sources: all.filter((source) => !fileIds.has(source.id)),
+    shadowed: all.filter((source) => fileIds.has(source.id)),
+  };
+}
+
+/**
+ * Deletes the managed password files of dropped stale copies, unless the
+ * allowlist file's own source now names that file.
+ */
+function removeShadowedSecrets(
+  shadowed: StorageSource[],
+  fileSources: StorageSource[],
+): void {
+  const inUse = new Set(
+    fileSources.flatMap((source) =>
+      source.type === 'cifs' && source.passwordFile
+        ? [path.resolve(process.cwd(), source.passwordFile)]
+        : [],
+    ),
+  );
+  for (const source of shadowed) {
+    const secret = secretPathFor(source.id);
+    if (!inUse.has(path.resolve(secret))) fs.rmSync(secret, { force: true });
+  }
+  if (shadowed.length > 0) {
+    logger.info(
+      { ids: shadowed.map((source) => source.id) },
+      'Dropped managed storage sources the mount allowlist now declares',
     );
   }
 }
@@ -293,7 +338,7 @@ export function planStorageSourceSave(
         )
       : readOnlyError(id);
   }
-  const sources = readManagedSources();
+  const { sources, shadowed } = readLiveManagedSources(fileSources);
   const index = sources.findIndex((source) => source.id === id);
   if (creating && index >= 0) {
     throw new StorageSourceAdminError(`存储源 ${id} 已存在`, 409);
@@ -400,6 +445,7 @@ export function planStorageSourceSave(
       if (passwordAction === 'removed') {
         fs.rmSync(secretPathFor(id), { force: true });
       }
+      removeShadowedSecrets(shadowed, fileSources);
       return toView(parsed, 'web', usersBySource());
     },
   };
@@ -427,10 +473,11 @@ export interface StorageSourceDeletePlan {
  * under withStorageSourceWriteLock.
  */
 export function planStorageSourceDelete(id: string): StorageSourceDeletePlan {
-  if (allowlistFileSources().some((source) => source.id === id)) {
+  const fileSources = allowlistFileSources();
+  if (fileSources.some((source) => source.id === id)) {
     throw readOnlyError(id);
   }
-  const sources = readManagedSources();
+  const { sources, shadowed } = readLiveManagedSources(fileSources);
   const source = sources.find((candidate) => candidate.id === id);
   if (!source) {
     throw new StorageSourceAdminError(`存储源 ${id} 不存在`, 404);
@@ -440,6 +487,7 @@ export function planStorageSourceDelete(id: string): StorageSourceDeletePlan {
     commit: () => {
       writeManagedSources(sources.filter((candidate) => candidate.id !== id));
       fs.rmSync(secretPathFor(id), { force: true });
+      removeShadowedSecrets(shadowed, fileSources);
     },
   };
 }

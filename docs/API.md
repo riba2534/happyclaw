@@ -545,10 +545,12 @@ HTTP 状态为 409；请求不会停止现有 Runner，也不会修改绑定。
   存储源存在 `data/config/storage-sources.json`，密码在 `data/config/secrets/`，都在
   `data/` 下，不进 Git 工作树、随 `make backup` 备份；服务从不改写
   `config/mount-allowlist.json`。运行时把两份列表合并：allowlist 文件里的来源排在前面，
-  同一个 `id` 以 allowlist 文件为准，Web 那份被忽略并记一条告警。没有 allowlist 文件时
-  Web 添加的存储源照样可用，此时不授权任何宿主机目录，`nonMainReadOnly` 按 `true`。
-  allowlist 文件无法解析时全部挂载 fail-closed；`storage-sources.json` 无法解析时只有
-  其中的来源不能挂载。
+  同一个 `id` 以 allowlist 文件为准，Web 那份被忽略并记一条告警；下次经 Web 保存或
+  删除任意存储源时，这份旧条目从 `storage-sources.json` 删除，连同它在
+  `data/config/secrets/` 下的密码文件（allowlist 文件里的来源正用着这个文件时保留）。
+  没有 allowlist 文件时 Web 添加的存储源照样可用，此时不授权任何宿主机目录，
+  `nonMainReadOnly` 按 `true`。allowlist 文件无法解析时全部挂载 fail-closed；
+  `storage-sources.json` 无法解析时只有其中的来源不能挂载。
 - 读写同时受来源的 `allowReadWrite` 与 `nonMainReadOnly` 约束；每次容器启动前都会
   按当前 allowlist 重新校验，来源被删除后旧工作区无法启动；关闭 `allowReadWrite` 后，
   以读写方式挂载它的工作区同样无法启动（不会自动降为只读）。
