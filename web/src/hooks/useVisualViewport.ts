@@ -62,6 +62,10 @@ let snapshot: VisualViewportMetrics = {
 // telling a keyboard resize apart. A rotation or window resize starts over.
 let tallest = { width: 0, height: 0 };
 let detach: (() => void) | null = null;
+// When a text field last lost focus. Closing the keyboard blurs the field
+// before the page grows back, so for the length of the keyboard animation a
+// still-short page keeps counting as a keyboard.
+let blurredAt = Number.NEGATIVE_INFINITY;
 
 /**
  * The layout viewport's height. Not window.innerHeight: an installed iOS 27
@@ -127,7 +131,7 @@ function read(): VisualViewportMetrics {
     window.visualViewport &&
     window.visualViewport.scale <= 1.01 &&
     resizedForKeyboard(layoutHeight, tallest.height) &&
-    editableHasFocus()
+    (editableHasFocus() || Date.now() - blurredAt < KEYBOARD_SETTLE_MS)
   ) {
     metrics.keyboardOpen = true;
   }
@@ -168,8 +172,12 @@ function subscribe(listener: () => void): () => void {
       window.clearTimeout(settle);
       settle = window.setTimeout(update, KEYBOARD_SETTLE_MS);
     };
+    const blurred = () => {
+      blurredAt = Date.now();
+      recheck();
+    };
     document.addEventListener('focusin', recheck);
-    document.addEventListener('focusout', recheck);
+    document.addEventListener('focusout', blurred);
     document.addEventListener('visibilitychange', recheck);
     window.addEventListener('pageshow', recheck);
     detach = () => {
@@ -177,7 +185,7 @@ function subscribe(listener: () => void): () => void {
       viewport?.removeEventListener('scroll', update);
       window.removeEventListener('resize', update);
       document.removeEventListener('focusin', recheck);
-      document.removeEventListener('focusout', recheck);
+      document.removeEventListener('focusout', blurred);
       document.removeEventListener('visibilitychange', recheck);
       window.removeEventListener('pageshow', recheck);
       window.clearTimeout(settle);
