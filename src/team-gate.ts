@@ -233,6 +233,10 @@ export interface TeamInputItem {
     addressed?: boolean;
     senderImId?: string;
     senderIsBot?: boolean;
+    /** Server receipt time for the bounded intake window, not provider time. */
+    receivedAt?: number;
+    /** Host-selected compatible input ids, kept so a worker sees split context. */
+    candidateBatchIds?: string[];
     threadId?: string;
     workItemId?: string;
     /** A subscribed message: the further items that received a copy. */
@@ -393,6 +397,9 @@ export function candidateInputItem(input: {
       : {}),
     facts: {
       strength: input.strength,
+      ...(inferred && input.settings.candidateIntake?.enabled
+        ? { receivedAt: Date.now() }
+        : {}),
       listed: input.listed,
       addressed: input.addressed,
       senderImId: input.senderImId,

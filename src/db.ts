@@ -3999,6 +3999,7 @@ export function claimNextQueuedFollowUp(
 export function claimNextQueuedFollowUpBatch(
   chatJid: string,
   runId: string,
+  limit = Number.POSITIVE_INFINITY,
 ): QueuedFollowUp[] {
   const select = db.prepare(
     `${FOLLOW_UP_SELECT}
@@ -4014,7 +4015,7 @@ export function claimNextQueuedFollowUpBatch(
     if (rows.length === 0) return [];
     const claimed = selectChannelReplyBatch(
       rows.map(normalizeQueuedFollowUpRow),
-    );
+    ).slice(0, limit);
     const updatedAt = new Date().toISOString();
     for (const item of claimed) {
       const result = update.run(runId, updatedAt, chatJid, item.id);

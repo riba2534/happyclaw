@@ -1100,7 +1100,7 @@ function loadCandidate(
       return {
         messageId: triggerMessageId,
         rowId: id,
-        content: row.content,
+        content: candidateBatchContent(router.laneJid, row, item),
         senderName: row.sender_name ?? '',
         sourceJid: row.source_jid,
         item,
@@ -1108,6 +1108,49 @@ function loadCandidate(
     }
   }
   fail(`${triggerMessageId} is not a candidate this router received.`);
+}
+
+/** Split messages remain separate mandates, but a worker needs the same
+ * surrounding request the router read (for example the preceding client and
+ * the following deadline). The ids come only from the host's intake plan. */
+function candidateBatchContent(
+  laneJid: string,
+  row: NonNullable<ReturnType<typeof getAgentBuilderInputMessage>>,
+  item: TeamInputItem,
+): string {
+  const ids = item.facts?.candidateBatchIds;
+  if (
+    item.facts?.strength !== 'inferred' ||
+    !ids ||
+    ids.length < 2 ||
+    ids.length > 50 ||
+    !ids.includes(row.id)
+  )
+    return row.content;
+  const batch = ids.map((id) => getAgentBuilderInputMessage(laneJid, id));
+  if (
+    batch.some((entry) => {
+      if (
+        !entry ||
+        entry.source_jid !== row.source_jid ||
+        entry.delivery_status === 'cancelled'
+      )
+        return true;
+      const header = readTeamInput(entry.attachments);
+      return (
+        header?.tag !== 'team_candidate' ||
+        header.facts?.strength !== 'inferred' ||
+        JSON.stringify(header.facts.candidateBatchIds) !== JSON.stringify(ids)
+      );
+    })
+  )
+    return row.content;
+  return batch
+    .map(
+      (entry) =>
+        `[${entry!.sender_name || entry!.sender || '成员'} / ${entry!.id}]\n${entry!.content}`,
+    )
+    .join('\n\n');
 }
 
 function requireGroupItem(router: RouterLane, workItemId: unknown): WorkItem {

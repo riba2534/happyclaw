@@ -1587,6 +1587,44 @@ describe('a hand-back keeps the facts of the message as it arrived', () => {
   });
 });
 
+describe('an inferred request split across a host-selected batch', () => {
+  test('the worker receives the client context and deadline without widening its mandate', async () => {
+    await enable();
+    const ids = ['om_split_context', 'om_split_action', 'om_split_deadline'];
+    const text = ['刚才那个客户诉求', '谁去跟进一下', '今天下班前搞定'];
+    for (const [index, id] of ids.entries()) {
+      storeCandidate(id, {
+        strength: 'inferred',
+        listed: false,
+        content: text[index],
+      });
+      const row = db.getAgentBuilderInputMessage(routerLane(), id)!;
+      const header = gate.readTeamInput(row.attachments)!;
+      db.updateMessageAttachments(
+        routerLane(),
+        id,
+        gate.withTeamInputAttachment(row.attachments, {
+          ...header,
+          facts: { ...header.facts, candidateBatchIds: ids },
+        }),
+      );
+    }
+    const result = await accept(ids[1], {
+      ruleAssessments: [
+        { ruleId: 'r1', matched: true, reason: '客户跟进' },
+        { ruleId: 'r2', matched: false, reason: '不是文档' },
+      ],
+    });
+    const item = store.getWorkItem(result.workItemId as string)!;
+    const assignment = laneRows(`${WORKSPACE}#agent:${item.agentId}`).find(
+      (row) => row.id.startsWith('work-assignment-'),
+    )!;
+    for (const fragment of text) expect(assignment.content).toContain(fragment);
+    expect(item.mandate.strength).toBe('inferred');
+    expect(item.mandate.writable).toBe(false);
+  });
+});
+
 describe('session deletion', () => {
   test('deleting a worker session ends its item', async () => {
     storeCandidate('om_del');

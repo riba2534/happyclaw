@@ -149,6 +149,19 @@ export const TeamSettingsBodySchema = z.object({
       unlistedUnaddressed: TeamUnaddressedSchema,
     }),
     acceptMode: z.enum(['off', 'observe', 'auto']),
+    candidateIntake: z
+      .object({
+        enabled: z.boolean(),
+        quietMs: z.number().int().min(1000).max(30000),
+        maxWaitMs: z.number().int().min(1000).max(120000),
+        maxMessages: z.number().int().min(1).max(50),
+        keywords: z.array(z.string().trim().min(1).max(80)).max(100),
+        prioritySenderIds: z.array(z.string().trim().min(1).max(256)).max(100),
+      })
+      .refine((value) => value.maxWaitMs >= value.quietMs, {
+        message: 'maxWaitMs must be at least quietMs',
+      })
+      .optional(),
     rules: z
       .array(
         z.object({

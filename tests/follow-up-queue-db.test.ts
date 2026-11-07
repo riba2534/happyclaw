@@ -25,6 +25,33 @@ afterAll(() => {
 });
 
 describe('durable follow-up queue', () => {
+  test('a bounded candidate batch leaves later queued inputs unclaimed', () => {
+    const jid = 'web:candidate-intake-limit';
+    db.ensureChatExists(jid);
+    for (const id of ['a', 'b', 'c']) {
+      db.storeMessageDirect(
+        id,
+        jid,
+        'member',
+        '成员',
+        id,
+        '2026-11-06T08:00:00Z',
+        false,
+        {
+          sourceJid: 'feishu:oc_team',
+          meta: { deliveryMode: 'queue', deliveryStatus: 'queued' },
+        },
+      );
+    }
+    const claimed = db.claimNextQueuedFollowUpBatch(jid, 'intake-batch', 2);
+    expect(claimed.map((row) => row.id)).toEqual(['a', 'b']);
+    expect(db.getAgentBuilderInputMessage(jid, 'c')?.delivery_status).toBe(
+      'queued',
+    );
+    expect(
+      db.claimNextQueuedFollowUpBatch(jid, 'next-batch').map((row) => row.id),
+    ).toEqual(['c']);
+  });
   test('atomically claims an adjacent merged-forward root and note', () => {
     const jid = 'web:follow-up-forward-bundle';
     db.ensureChatExists(jid);

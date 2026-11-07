@@ -1184,6 +1184,8 @@ Legacy 渠道 facade 位于 `/api/config/user-im/*`，涵盖飞书、Telegram、
   `eligible=false` 时带 `ineligibleReason`
 - `PUT /api/workspaces/:jid/team-mounts/:channelJid`，body `{ settings }`（不含
   `version`，由服务端递增）→ `{ mount }`；规则最多 20 条，说明最长 2000 字
+  - 可选 `settings.candidateIntake` 为推断候选启用模型调用前的防抖和本地关键词初筛，
+    默认关闭。字段、边界与示例见 [群消息候选预处理](GROUP-CANDIDATE-INTAKE.md)。
 - `GET /api/workspaces/:jid/work-items?status=open|ended&limit=` → `{ items }`
 - `GET /api/workspaces/:jid/work-decisions?kind=&limit=` → `{ decisions }`
 - `GET /api/work-items?needs=me` → `{ items }`，当前用户各工作区里等人处理的工作项
