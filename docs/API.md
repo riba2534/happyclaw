@@ -35,6 +35,7 @@
 | `/api/skills`                      | `src/routes/skills.ts`           | 用户 Skills                   |
 | `/api/mcp-servers`                 | `src/routes/mcp-servers.ts`      | 用户/系统 MCP                 |
 | `/api/plugins`                     | `src/routes/plugins.ts`          | Plugin Catalog 与用户启用状态 |
+| `/api/push`                        | `src/routes/push.ts`             | Web Push 订阅与测试           |
 | `/api/usage`                       | `src/routes/usage.ts`            | Token 用量                    |
 | `/api/billing`                     | `src/routes/billing.ts`          | 订阅、余额和计费管理          |
 | `/api/admin`                       | `src/routes/admin.ts`            | 用户、邀请和审计              |
@@ -1173,6 +1174,44 @@ Legacy 渠道 facade 位于 `/api/config/user-im/*`，涵盖飞书、Telegram、
 Web 停止不会取消队列里尚未处理的派发回报；Worker 一轮结束却没有交回结果（或运行彻底
 失败、计费被拒）时，工作项结束为 `failed`，派出会话收到 `state="failed"` 的回报。
 
+## Web Push
+
+系统通知：Web 来源的回复完成或运行出错时，如果主人没有正在看该会话的可见页面，服务端
+向其浏览器订阅推送。只服务当前登录用户本人的订阅，访客 403，全部响应
+`Cache-Control: private, no-store`。
+
+- `GET /api/push/vapid-public-key` → `{ publicKey }`；密钥不可用时 503
+- `GET /api/push/status` → `{ available, subscription_count, subscriptions }`，每项
+  `{ id, user_agent, created_at, last_success_at }`，不返回 endpoint 与密钥
+- `POST /api/push/subscribe`，body 为浏览器 `PushSubscription` 的
+  `{ endpoint, keys: { p256dh, auth } }` → `{ success }`；endpoint 必须是 https、不带端口
+  和账号，主机只能是 `fcm.googleapis.com`、`web.push.apple.com`、
+  `*.push.services.mozilla.com`、`*.notify.windows.com`，且只含 `[a-z0-9.-]`，WHATWG URL
+  与 web-push 使用的 `url.parse` 解析出的主机必须相同，否则 400；只保存规范化后的
+  `new URL(endpoint).href`。订阅记在提交它的登录会话上，同一用户重复提交是更新（并改记到
+  当前会话）；endpoint 已属于其他用户时不改归属：删除那条记录并返回
+  409 `{ code: 'push_subscription_conflict' }`，浏览器须退订，本用户重新开启才会得到新订阅。
+  每个用户最多保留最近登记的 20 个（按最后一次登记时间淘汰）
+- `POST /api/push/unsubscribe`，body `{ endpoint }` → `{ success }`，幂等，只能删除本人的
+- `POST /api/push/test` → `{ success, ...summary }`，只向本人的订阅发一条测试通知；每个
+  用户每分钟最多 3 次，超出 429（带 `Retry-After`）
+
+订阅随登记它的登录会话结束而删除：退出登录、吊销会话、改密或管理员重置密码、禁用或删除
+用户、会话过期（`user_sessions` 上的触发器）。本人改密（含管理员重置自己的密码）时，发起的
+这台设备换到新会话并保留订阅，其他设备的订阅随旧会话删除。Web 退出登录前先注销并退订本浏览器的订阅；
+浏览器另记本机由哪个用户开启，换了账号的浏览器不会把旧订阅登记给新用户，而是退订，设置页
+显示未开启。
+
+VAPID 密钥首次使用时生成在 `data/config/web-push-vapid.json`（权限 600），不进入
+数据库；订阅存于 `web_push_subscriptions`。推送服务返回 404/410 的订阅会被删除。联系
+地址可用环境变量 `WEB_PUSH_SUBJECT` 设置。单次投递由 `src/web-push-transport.ts` 发出：
+总时长不超过 10 秒，响应体超过 16 KiB 即断开，走与其他出站请求相同的 `HTTPS_PROXY` /
+`NO_PROXY`。判定与发送在 `src/web-push.ts`，调用点在 `src/index.ts` 的
+`webTurnPushNotice`：只对 Web 来源的输入、最终回复或运行错误推送；IM 来源、自动化运行、
+团队模式会话和 Worker 不推送。会被推送的回复在 WebSocket `new_message` 里带
+`web_push: true`（不入库、不出现在历史接口）；已订阅推送的页面只对这类回复不再弹页面通知，
+其他回复与后台任务完成仍照常弹出。
+
 ## Skills、MCP 和 Plugins
 
 Skills：
@@ -1468,6 +1507,8 @@ Agent 镜像只由 `main` 分支的 GitHub Actions 构建并发布。该接口�
 - `terminal_input`
 - `terminal_resize`
 - `terminal_stop`
+- `presence`，`{ visible, chatJid, agentId }`：页面是否可见、正在看哪个会话；可见时约每 25 秒
+  重发，服务端 60 秒内未收到即视为不在看。用于决定是否发系统通知，访客连接忽略
 
 服务端主要事件：
 

@@ -114,6 +114,7 @@ Agent Profile（身份、四段 Prompt、能力策略）
 | `src/workspace-dir.ts`             | 工作区目录记录、`workspaceDirOf` 与删除前的安全检查    |
 | `src/deployment-mode.ts`           | 部署方式（多人 / 单人宿主机）的解析与生效开关          |
 | `src/single-user-host-guard.ts`    | 单人宿主机模式只留一个启用账号的路由守卫               |
+| `src/web-push.ts`                  | Web Push：端点校验、推送判定与投递（VAPID、限时请求）  |
 
 渠道实现位于：
 
@@ -641,6 +642,9 @@ data/
 `data/cache/office-preview/` 是 Office 预览的 PDF 缓存：按源文件内容的 sha256 命名、跨用户
 共享，总量受 `OFFICE_PREVIEW_CACHE_MAX_MB` 限制，可随时删除。
 
+`data/config/web-push-vapid.json` 是 Web Push 的 VAPID 密钥（权限 600，首次使用时生成）；
+删除或更换后所有设备都要重新开启推送。
+
 主要数据库当前 Schema 版本以 `src/db.ts` 的 `CURRENT_SCHEMA_VERSION` 为准。
 不要在文档中复制版本号；迁移必须同时具备备份、前向升级和拒绝降级保护。
 v88 把每个工作区的旧主会话迁成普通会话，映射记在 router_state
@@ -666,12 +670,14 @@ v88 把每个工作区的旧主会话迁成普通会话，映射记在 router_st
 - 团队模式：`team_mounts`、`work_items`、`work_item_subscriptions`、`work_item_events`、
   `work_decisions`
 - 记忆：`workspace_memory_*`（含召回索引 `workspace_memory_recall_fts`）
+- Web Push：`web_push_subscriptions`（每行记着登记它的登录会话，会话结束即删除）
 - 用量与计费：`usage_records`、`usage_events`、`usage_daily_summary`、
   `usage_event_connections` 及 `billing_*`、订阅、余额和兑换码相关表
 
 Channel Reliability 的 Inbox/Turn/Outbox/Card 表由
 `src/channel-reliability-store.ts` 在同一数据库连接上创建；同样，`session_worktrees` 由
-`src/session-worktree-store.ts`，自动化表由 `src/automation-store.ts`，团队模式表由 `src/work-item-store.ts`，等待、补注、用量连接
+`src/session-worktree-store.ts`，自动化表由 `src/automation-store.ts`，团队模式表由 `src/work-item-store.ts`，
+`web_push_subscriptions` 由 `src/web-push-store.ts`，等待、补注、用量连接
 和 Web 发送去重表由 `src/runtime-state-store.ts` 创建。
 
 ## 8. 认证与权限
@@ -728,6 +734,7 @@ Web 持久设置 > 环境变量 > 代码默认值
 | `HAPPYCLAW_WORKSPACE_ROOT`           | `~/happyclaw`                     | 新建 Host 工作区的根目录；Web 设置保存过的值优先（逐键）              |
 | `OFFICE_PREVIEW_STIRLING_URL`        | 未设置                            | Office 预览转换服务（Stirling-PDF 兼容），设置后优先使用              |
 | `OFFICE_PREVIEW_SOFFICE_BIN`         | 未设置                            | 本机 soffice 绝对路径；只有显式设置才启用，在宿主机以服务身份解析文档 |
+| `WEB_PUSH_SUBJECT`                   | 本项目 GitHub 地址                | Web Push 的 VAPID 联系地址（`mailto:` 或 `https://`）                 |
 
 其余 `OFFICE_PREVIEW_*`（密钥文件、大小、超时、缓存上限）见 `DEPLOYMENT.md`。
 

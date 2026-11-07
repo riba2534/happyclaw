@@ -211,12 +211,28 @@ describe('every conversation is a session', () => {
     });
     useChatStore.getState().handleWsNewMessage(JID, reply('m1', 's2'), 's2');
     expect(useChatStore.getState().unreadReplies[JID]).toBe(1);
-    expect(notifyMock).toHaveBeenCalledWith('会话测试', '完成了。');
+    // The server does not push it: the page notification stays.
+    expect(notifyMock).toHaveBeenCalledWith('会话测试', '完成了。', {
+      pushCovered: false,
+    });
 
     // The same frame again counts nothing; a reply in view counts nothing.
     useChatStore.getState().handleWsNewMessage(JID, reply('m1', 's2'), 's2');
     useChatStore.getState().handleWsNewMessage(JID, reply('m2', 's1'), 's1');
     expect(useChatStore.getState().unreadReplies[JID]).toBe(1);
+  });
+
+  it('a reply the server pushes leaves the notification to the push', () => {
+    useChatStore.setState({
+      currentGroup: JID,
+      activeAgentTab: { [JID]: 's1' },
+    });
+    useChatStore
+      .getState()
+      .handleWsNewMessage(JID, { ...reply('m3', 's2'), web_push: true }, 's2');
+    expect(notifyMock).toHaveBeenLastCalledWith('会话测试', '完成了。', {
+      pushCovered: true,
+    });
   });
 
   it('shows a sent message at once, from the server answer', async () => {

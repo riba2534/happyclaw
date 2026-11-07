@@ -75,6 +75,7 @@ import workspaceConfigRoutes from './routes/workspace-config.js';
 import agentProfileRoutes from './routes/agent-profiles.js';
 import workspaceRoutes from './routes/workspaces.js';
 import turnTraceRoutes from './routes/turn-traces.js';
+import pushRoutes from './routes/push.js';
 import gitReviewRoutes from './routes/git-review.js';
 import {
   resolveWorkspaceProjectRoot,
@@ -383,6 +384,7 @@ app.route('/api/billing', billingRoutes);
 app.route('/api/bug-report', bugReportRoutes);
 app.route('/api/channel-accounts', channelAccountRoutes);
 app.route('/api/guests', guestRoutes);
+app.route('/api/push', pushRoutes); // Web Push subscriptions of the signed-in account
 app.route('/api', workItemRoutes); // Team mode: /api/workspaces/:jid/team-mounts|work-items|work-decisions, /api/work-items
 // 不挂在 /api/* 下：网关用 provider gateway token 鉴权（x-api-key），
 // 不是浏览器 Cookie 会话，不需要也不应该套用 /api/* 的 CORS/Cookie 中间件。
@@ -1366,6 +1368,7 @@ app.use(
         !p.match(/\.\w+$/) ||
         p === '/index.html' ||
         p === '/sw.js' ||
+        p === '/push-sw.js' ||
         p === '/registerSW.js' ||
         p === '/manifest.webmanifest'
       ) {
@@ -1751,6 +1754,25 @@ function setupWebSocket(server: any): WebSocketServer {
         if (msg.type === 'ping') {
           const pong: WsMessageOut = { type: 'pong' };
           ws.send(JSON.stringify(pong));
+          return;
+        }
+
+        // Where the user is looking; Web Push stays quiet for that
+        // conversation. Guests get no push, so their reports are ignored.
+        if (msg.type === 'presence') {
+          const client = wsClients.get(ws);
+          if (client && session.role !== 'guest') {
+            const asId = (value: unknown): string | null =>
+              typeof value === 'string' && value && value.length <= 256
+                ? value
+                : null;
+            client.presence = {
+              visible: msg.visible === true,
+              chatJid: asId(msg.chatJid),
+              agentId: asId(msg.agentId),
+              at: Date.now(),
+            };
+          }
           return;
         }
 

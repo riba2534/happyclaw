@@ -112,6 +112,49 @@ describe('PWA cache retirement', () => {
     expect(worker).not.toMatch(/addEventListener\(['"]fetch|cache\.put|addAll/);
   });
 
+  test('ships a push-only worker that never caches or intercepts requests', () => {
+    const worker = read('web/public/push-sw.js');
+
+    expect(worker).toMatch(/addEventListener\('push'/);
+    expect(worker).toMatch(/addEventListener\('notificationclick'/);
+    // No fetch handler (it would make the worker a controller of every
+    // request) and no Cache Storage at all.
+    expect(worker).not.toMatch(/addEventListener\(['"]fetch/);
+    expect(worker).not.toMatch(/\bcaches\b|cache\.put|addAll|importScripts/);
+    // The retired worker keeps its name and behavior.
+    expect(read('web/public/sw.js')).toContain(
+      'self.registration.unregister()',
+    );
+  });
+
+  test('only Settings registers the push worker, never the app start', () => {
+    const offenders: string[] = [];
+    const walk = (dir: string) => {
+      for (const entry of fs.readdirSync(path.join(root, dir), {
+        withFileTypes: true,
+      })) {
+        const relative = `${dir}/${entry.name}`;
+        if (entry.isDirectory()) walk(relative);
+        else if (
+          /\.tsx?$/.test(entry.name) &&
+          !/\.test\.tsx?$/.test(entry.name) &&
+          /serviceWorker\s*\.\s*register\(/.test(read(relative))
+        ) {
+          offenders.push(relative);
+        }
+      }
+    };
+    walk('web/src');
+
+    expect(offenders).toEqual(['web/src/utils/webPush.ts']);
+    expect(read('web/src/hooks/usePushNotifications.ts')).toContain(
+      'ensurePushRegistration',
+    );
+    expect(read('web/src/hooks/useWebPushLifecycle.ts')).not.toContain(
+      'ensurePushRegistration',
+    );
+  });
+
   test('recognizes only HappyClaw legacy caches and registrations', () => {
     expect(
       isLegacyPwaCacheName('workbox-precache-v2-https://example.com/'),
@@ -120,29 +163,49 @@ describe('PWA cache retirement', () => {
     expect(isLegacyPwaCacheName('unrelated-product-cache')).toBe(false);
 
     const appScope = 'https://example.com/happyclaw/';
-    const scriptUrl = `${appScope}sw.js`;
-    const worker = { scriptURL: scriptUrl } as ServiceWorker;
-    const registration = {
-      scope: appScope,
-      active: worker,
+    const legacyUrl = `${appScope}sw.js`;
+    const pushUrl = `${appScope}push-sw.js`;
+    const registration = (
+      active: string | null,
+      installing: string | null = null,
+    ) => ({
+      active: active ? ({ scriptURL: active } as ServiceWorker) : null,
       waiting: null,
-      installing: null,
-    };
-    expect(
-      isLegacyHappyClawRegistration(registration, appScope, scriptUrl),
-    ).toBe(true);
+      installing: installing
+        ? ({ scriptURL: installing } as ServiceWorker)
+        : null,
+    });
+
+    // The old Workbox worker is cleaned up …
     expect(
       isLegacyHappyClawRegistration(
-        {
-          ...registration,
-          scope: 'https://example.com/other/',
-          active: {
-            scriptURL: 'https://example.com/other/sw.js',
-          } as ServiceWorker,
-        },
-        appScope,
-        scriptUrl,
+        registration(legacyUrl),
+        legacyUrl,
+        pushUrl,
       ),
+    ).toBe(true);
+    // … the push worker, which shares its scope, is not.
+    expect(
+      isLegacyHappyClawRegistration(registration(pushUrl), legacyUrl, pushUrl),
+    ).toBe(false);
+    // Nor is a registration mid-upgrade from the legacy worker to the push one.
+    expect(
+      isLegacyHappyClawRegistration(
+        registration(legacyUrl, pushUrl),
+        legacyUrl,
+        pushUrl,
+      ),
+    ).toBe(false);
+    // Another app's worker, and an empty registration, are left alone.
+    expect(
+      isLegacyHappyClawRegistration(
+        registration('https://example.com/other/sw.js'),
+        legacyUrl,
+        pushUrl,
+      ),
+    ).toBe(false);
+    expect(
+      isLegacyHappyClawRegistration(registration(null), legacyUrl, pushUrl),
     ).toBe(false);
   });
 
@@ -155,6 +218,7 @@ describe('PWA cache retirement', () => {
     );
     expect(webServer).toContain("p === '/index.html'");
     expect(webServer).toContain("p === '/sw.js'");
+    expect(webServer).toContain("p === '/push-sw.js'");
     expect(webServer).toContain("'no-cache, no-store, must-revalidate'");
   });
 });

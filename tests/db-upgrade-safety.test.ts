@@ -228,6 +228,8 @@ describe('schema version head', () => {
     // (schema-v89-multitask-mode.test.ts).
     // v90: workspace_workdirs, the recorded directory of a Host workspace in
     // the workspace root (schema-v90-workspace-workdirs.test.ts).
-    expect(db.CURRENT_SCHEMA_VERSION).toBe(90);
+    // v91: Web Push subscriptions, web_push_subscriptions, created by
+    // web-push-store.ts (schema-v91-web-push.test.ts).
+    expect(db.CURRENT_SCHEMA_VERSION).toBe(91);
   });
 });

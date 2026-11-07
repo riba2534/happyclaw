@@ -20,10 +20,26 @@ import type { WhatsAppConnectionState } from './whatsapp.js';
 import type { ChannelAccount } from './types.js';
 import type { ChannelAccountSecret } from './channel-account-secrets.js';
 
+/**
+ * What one open page last said about itself (WS `presence`): whether it is
+ * in front of the user and which conversation it shows. Web Push stays quiet
+ * for a conversation a visible page has open.
+ */
+export interface WsClientPresence {
+  visible: boolean;
+  /** The workspace the page has open, or null off the chat page. */
+  chatJid: string | null;
+  /** The session open in it. */
+  agentId: string | null;
+  /** When the report arrived (epoch ms); old reports expire. */
+  at: number;
+}
+
 export interface WsClientInfo {
   sessionId: string;
   userId: string;
   role: UserRole;
+  presence?: WsClientPresence;
 }
 
 export interface WebDeps {

@@ -419,6 +419,11 @@ import { resolveImGroupDefaults } from './im-group-defaults.js';
 import { canSendCrossGroupMessage as canSendCrossGroupMessagePure } from './cross-group-acl.js';
 import { resolveIpcDeliveryTargetGroup } from './ipc-delivery-routing.js';
 import { invalidateSessionCache, type WebDeps } from './web-context.js';
+import {
+  isWebOriginTurn,
+  notifyWebTurn,
+  type WebTurnNotice,
+} from './web-push.js';
 import { StreamingBuffer } from './streaming-buffer.js';
 import { resolveEffectiveAgentProfile } from './agent-profile-runtime.js';
 import {
@@ -4689,6 +4694,61 @@ function normalizeCursor(value: unknown): MessageCursor {
   return { ...EMPTY_CURSOR };
 }
 
+/**
+ * Web Push: the notice that tells the conversation's owner, on their other
+ * devices, that a Web-typed input finished or failed; null when the turn is
+ * not one that is pushed. `imSourceJid` is the IM chat the input came from,
+ * when it did: that IM notifies by itself. Never throws.
+ */
+function webTurnPushNotice(input: {
+  agentId: string;
+  kind: 'reply' | 'error';
+  text: string;
+  imSourceJid: string | null;
+  automationRunId: string | null;
+}): WebTurnNotice | null {
+  try {
+    const agent = getAgent(input.agentId);
+    if (!agent) return null;
+    const group = getRegisteredGroup(agent.chat_jid);
+    if (!group) return null;
+    if (
+      !isWebOriginTurn({
+        imSourceJid: input.imSourceJid,
+        automationRunId: input.automationRunId,
+        teamLane: teamLaneOf(agent) !== null,
+        sessionKind: agent.kind,
+        sessionSourceKind: agent.source_kind,
+      })
+    ) {
+      return null;
+    }
+    return {
+      ownerUserId: group.created_by,
+      kind: input.kind,
+      workspaceName: group.name,
+      sessionName: agent.name,
+      text: input.text,
+      conversation: {
+        chatJid: agent.chat_jid,
+        folder: group.folder,
+        agentId: agent.id,
+      },
+    };
+  } catch (err) {
+    logger.warn({ err, agentId: input.agentId }, 'Web push dispatch failed');
+    return null;
+  }
+}
+
+/** Push a turn outcome when it is one that is pushed. Never throws. */
+function pushWebTurnOutcome(
+  input: Parameters<typeof webTurnPushNotice>[0],
+): void {
+  const notice = webTurnPushNotice(input);
+  if (notice) void notifyWebTurn(notice);
+}
+
 function sendSystemMessage(jid: string, type: string, detail: string): void {
   const msgId = crypto.randomUUID();
   const timestamp = new Date().toISOString();
@@ -6574,6 +6634,8 @@ interface SendMessageOptions {
    * later message of the same held reply sequence.
    */
   turnTrace?: { tracker: TurnTraceTracker; inputId: string; keep?: boolean };
+  /** Announce the message with `web_push` (the server pushes this reply). */
+  webPush?: boolean;
   /** Metadata used to preserve Claude SDK turn semantics for persisted messages. */
   messageMeta?: {
     turnId?: string;
@@ -7576,6 +7638,7 @@ async function sendMessageWithOutcome(
         source_kind: options.messageMeta?.sourceKind ?? null,
         finalization_reason: options.messageMeta?.finalizationReason ?? null,
         workflow_runs: options.workflowRuns,
+        ...(options.webPush ? { web_push: true } : {}),
       },
       undefined,
       options.source,
@@ -7889,6 +7952,9 @@ function startIpcWatcher(): void {
             if (data.type === 'message' && data.chatJid && data.text) {
               const targetGroup = getIpcDeliveryTargetGroup(data.chatJid);
               let messageDelivered = false;
+              // Set when the session has no IM route for this input: the
+              // canonical Web copy is the only delivery.
+              let webOnlyInput = false;
               let messageStaged = false;
               let messageDeliveryError: string | undefined;
               let messageDeliveryUncertain = false;
@@ -8208,6 +8274,7 @@ function startIpcWatcher(): void {
                     // durable persistence/broadcast below; it has no native
                     // provider side effect to acknowledge first.
                     messageDelivered = true;
+                    webOnlyInput = true;
                   }
                 }
 
@@ -8322,6 +8389,30 @@ function startIpcWatcher(): void {
                   }
                 }
                 if (messageDelivered) {
+                  // A Proactive session answers with a final send_message;
+                  // that is the reply a Web-typed input waits for.
+                  let finalPush: WebTurnNotice | null = null;
+                  if (
+                    webOnlyInput &&
+                    ipcInteractionMode === 'proactive' &&
+                    hostOutputRoute.deliveryRole === 'final' &&
+                    typeof data.inputTurnId === 'string' &&
+                    data.inputTurnId
+                  ) {
+                    const finalInput = getAgentBuilderInputMessage(
+                      effectiveChatJid,
+                      data.inputTurnId,
+                    );
+                    finalPush = webTurnPushNotice({
+                      agentId: ipcAgentId,
+                      kind: 'reply',
+                      text: webText,
+                      imSourceJid: null,
+                      automationRunId: finalInput
+                        ? automationRunIdOf(finalInput)
+                        : null,
+                    });
+                  }
                   const sendOutcome = await sendMessageWithOutcome(
                     effectiveChatJid,
                     webText,
@@ -8331,6 +8422,7 @@ function startIpcWatcher(): void {
                       // session, using a replay-stable id.
                       sendToIM: false,
                       messageId: projectionMessageId,
+                      webPush: finalPush !== null,
                       messageMeta: {
                         turnId:
                           typeof data.inputTurnId === 'string'
@@ -8345,6 +8437,9 @@ function startIpcWatcher(): void {
                     },
                   );
                   messageDelivered = sendOutcome.targetDelivered;
+                  if (messageDelivered && finalPush) {
+                    void notifyWebTurn(finalPush);
+                  }
                   if (!messageDelivered && nativeDeliveryAcknowledged) {
                     // The provider side effect already ACKed. Reporting a tool
                     // failure would invite a duplicate retry; preserve the ACK
@@ -12511,6 +12606,13 @@ async function processAgentConversation(
   ): Promise<void> => {
     const inputTurnId = activeAgentInputTurnId;
     sendSystemMessage(virtualChatJid, webType, text);
+    pushWebTurnOutcome({
+      agentId,
+      kind: 'error',
+      text,
+      imSourceJid: replySourceImJid,
+      automationRunId: automationTurns.runOf(inputTurnId),
+    });
     failDelegatedWorkerRun(agentId, text);
     agentDeterministicTerminalError = terminalError;
     automationTurns.settle(inputTurnId, {
@@ -12687,6 +12789,13 @@ async function processAgentConversation(
       );
     } else {
       sendSystemMessage(virtualChatJid, 'agent_error', errorDetail);
+      pushWebTurnOutcome({
+        agentId,
+        kind: 'error',
+        text: errorDetail,
+        imSourceJid: replySourceImJid,
+        automationRunId: automationTurns.runOf(inputTurnId),
+      });
       failDelegatedWorkerRun(agentId, errorDetail);
     }
     return true;
@@ -13632,6 +13741,20 @@ async function processAgentConversation(
           heldAgentDbMsgId = null;
           heldAgentDbTurnId = null;
         }
+        // Decided before the announcement, which says whether it is pushed.
+        const replyPush = isGenuineReplyResult({
+          holdReason,
+          sourceKind: output.sourceKind,
+          finalizationReason: output.finalizationReason,
+        })
+          ? webTurnPushNotice({
+              agentId,
+              kind: output.status === 'error' ? 'error' : 'reply',
+              text: dbText,
+              imSourceJid: outputAgentReplySourceJid ?? null,
+              automationRunId: automationTurns.runOf(outputAgentScope.inputId),
+            })
+          : null;
         broadcastNewMessage(
           virtualChatJid,
           {
@@ -13658,6 +13781,7 @@ async function processAgentConversation(
             workflow_runs: holdReason
               ? activeAgentWorkflowRuns
               : completedAgentWorkflowRuns,
+            ...(replyPush ? { web_push: true } : {}),
           },
           agentId,
         );
@@ -13666,6 +13790,7 @@ async function processAgentConversation(
         // its canonical DB/Web checkpoint must still block a trailing
         // session-only success from resurrecting the same SDK candidate.
         agentAnyReplyProjectedByInput.set(outputAgentScope.inputId, true);
+        if (replyPush) void notifyWebTurn(replyPush);
         if (!holdReason) {
           activeAgentWorkflowRuns = [];
           completedAgentWorkflowRuns = [];

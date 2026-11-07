@@ -11,30 +11,31 @@ export function isLegacyPwaCacheName(name: string): boolean {
   return name.startsWith('workbox-') || LEGACY_CACHE_NAMES.has(name);
 }
 
-function normalizeUrl(url: string): string {
-  return url.endsWith('/') ? url : `${url}/`;
-}
-
+/**
+ * Whether a registration is the retired Workbox worker (`/sw.js`). One scope
+ * holds one registration, so the push worker (`/push-sw.js`) shares the
+ * Workbox worker's scope: a registration is never judged by scope alone. One
+ * that also runs the push worker (the upgrade is in flight) is not legacy.
+ */
 export function isLegacyHappyClawRegistration(
   registration: Pick<
     ServiceWorkerRegistration,
-    'scope' | 'active' | 'waiting' | 'installing'
+    'active' | 'waiting' | 'installing'
   >,
-  appScope: string,
   legacyScriptUrl: string,
+  pushScriptUrl: string,
 ): boolean {
-  if (normalizeUrl(registration.scope) === normalizeUrl(appScope)) return true;
-
-  return [
+  const scripts = [
     registration.active,
     registration.waiting,
     registration.installing,
-  ].some((worker) => worker?.scriptURL === legacyScriptUrl);
+  ].map((worker) => worker?.scriptURL);
+  return scripts.includes(legacyScriptUrl) && !scripts.includes(pushScriptUrl);
 }
 
 /**
  * Remove registrations and Cache Storage left by HappyClaw releases that used
- * Workbox. The cleanup is deliberately best-effort and never blocks rendering.
+ * Workbox. The push worker's registration is kept. The cleanup is deliberately best-effort and never blocks rendering.
  */
 export async function cleanupLegacyPwaArtifacts(): Promise<void> {
   if (typeof window === 'undefined') return;
@@ -42,6 +43,7 @@ export async function cleanupLegacyPwaArtifacts(): Promise<void> {
   const appScope = new URL(import.meta.env.BASE_URL, window.location.origin)
     .href;
   const legacyScriptUrl = new URL('sw.js', appScope).href;
+  const pushScriptUrl = new URL('push-sw.js', appScope).href;
   const tasks: Promise<unknown>[] = [];
 
   if ('serviceWorker' in navigator) {
@@ -54,8 +56,8 @@ export async function cleanupLegacyPwaArtifacts(): Promise<void> {
               .filter((registration) =>
                 isLegacyHappyClawRegistration(
                   registration,
-                  appScope,
                   legacyScriptUrl,
+                  pushScriptUrl,
                 ),
               )
               .map((registration) => registration.unregister()),

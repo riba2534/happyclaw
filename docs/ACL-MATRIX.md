@@ -72,6 +72,7 @@ token（Runner/查询退出即吊销），并拒绝带 `Forwarded`、`X-Forwarde
 | HappyClaw Owner Profile                             | Home actual owner + runtime exact-turn gate   |
 | `/api/usage/*`                                      | Login；普通用户只见本人，管理视图再按角色过滤 |
 | `/api/billing/my/*`                                 | Login，仅本人                                 |
+| `/api/push/*`                                       | Login，仅本人订阅；访客 403                   |
 
 产品级 Agent 删除前必须先迁移其工作区（`migrate-and-delete` 一次性迁移并归档，
 目标也必须是本人的 active Agent）。复制、导入不授予宿主机资源：非 admin 得到的
@@ -334,6 +335,7 @@ admin。admin 没有跨 owner bypass，不存在与无权限都返回 404。
 | Runtime Session 消息                   | Access + Session 属于该 Workspace  |
 | `terminal_start`                       | Access；只支持 Container Workspace |
 | `terminal_input` / resize / stop       | 必须是当前 WebSocket 已拥有的终端  |
+| `presence`                             | 仅记在本连接上；访客连接忽略       |
 | Docker Build 流                        | 对应系统管理权限                   |
 
 不能仅依赖 `terminal_start` 的历史授权；终端 owner 映射和连接关闭清理是协议的一部分。
@@ -503,7 +505,7 @@ Agent MCP 调用没有 Cookie，但必须携带由主进程创建的运行上下
   前置检查命令、脚本命令和前置检查输出一律去掉（REST 与 WebSocket 相同）；所有写
   操作（包括标记已读）403。
 - Memory：读取用 `canViewGroup`，写入仍是 Modify。
-- WebSocket：访客连接只接收。除 `ping`（回 `pong`）外，任何入站消息（`send_message`、
+- WebSocket：访客连接只接收。除 `ping`（回 `pong`）和被忽略的 `presence` 外，任何入站消息（`send_message`、
   `terminal_*` 及未来类型）都在分发前以 `ws_error` 拒绝。广播受众
   （`getGroupAllowedUserIds`）包含持有有效授权的访客，包括 Host 工作区事件、流式思考
   与工具调用、重连快照和自动化事件；访客看到的过程信息与 owner 相同。REST 不给访客

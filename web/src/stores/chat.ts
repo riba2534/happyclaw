@@ -4579,6 +4579,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       notifyIfHidden(
         groupName,
         preview || (didFinishReply ? '收到新回复' : '收到新消息'),
+        { pushCovered: wsMsg.web_push === true },
       );
     }
     if (didFinishReply && typeof document !== 'undefined' && !document.hidden) {
