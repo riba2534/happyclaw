@@ -1140,7 +1140,8 @@ minimalClientVersion?, availableInPlans?, serviceTiers }`（字段取自官方
   停不下来时返回 503，带 `persisted` 与 `retryable`，`persisted: true` 表示改动已经生效、
   这些工作区暂停接活，重试同一请求（DELETE 也一样）完成清理后恢复。审计记
   `storage_source_saved` / `storage_source_deleted`，只含 id、类型和是否实际写入或删除了
-  密码，不含服务器与共享
+  密码，不含服务器与共享。单人宿主机模式不使用 Docker，三个写接口都返回 409
+  `{ code: "SINGLE_USER_HOST" }`，设置页也不显示存储源
 - `GET /api/config/external-resources`
 - `GET /api/config/external-resources/rule`
 - `GET|PUT /api/config/registration`

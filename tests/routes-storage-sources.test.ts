@@ -238,6 +238,33 @@ describe('storage source routes', () => {
     ]);
   });
 
+  test('single-user host mode refuses every write: it runs no Docker', async () => {
+    const managedBefore = fs.existsSync(managedPath)
+      ? fs.readFileSync(managedPath, 'utf8')
+      : null;
+    process.env.HAPPYCLAW_DEPLOYMENT_MODE = 'single_user_host';
+    try {
+      for (const method of ['POST', 'PUT', 'DELETE']) {
+        const response = await request(
+          method,
+          'nas-single',
+          method === 'DELETE' ? undefined : nfs,
+        );
+        expect(response.status).toBe(409);
+        expect(await response.json()).toMatchObject({
+          code: 'SINGLE_USER_HOST',
+        });
+      }
+      expect(
+        fs.existsSync(managedPath)
+          ? fs.readFileSync(managedPath, 'utf8')
+          : null,
+      ).toBe(managedBefore);
+    } finally {
+      delete process.env.HAPPYCLAW_DEPLOYMENT_MODE;
+    }
+  });
+
   test('allowlist file sources are read-only through the API', async () => {
     for (const method of ['POST', 'PUT']) {
       const response = await request(method, 'from-file', nfs);

@@ -23,8 +23,14 @@ describe('deployment mode', () => {
     expect(parseDeploymentMode('single_user_host')).toBe('single_user_host');
   });
 
-  test('single-user host mode drops registration, users, guests and billing', () => {
-    const hidden = ['registration', 'users', 'guests', 'billing'];
+  test('single-user host mode drops registration, users, guests, billing and storage sources', () => {
+    const hidden = [
+      'registration',
+      'users',
+      'guests',
+      'billing',
+      'storage-sources',
+    ];
     expect(tabsOf()).toEqual(expect.arrayContaining(hidden));
     const single = tabsOf(true);
     for (const tab of hidden) expect(single).not.toContain(tab);

@@ -301,6 +301,7 @@ import {
 import {
   listOtherActiveUsers,
   SingleUserHostConflictError,
+  singleUserHostRefusal,
   type OtherActiveUser,
 } from '../single-user-host-guard.js';
 import { getWorkspaceRootOccupancy } from '../workspace-dir.js';
@@ -4250,10 +4251,22 @@ configRoutes.get(
   },
 );
 
+// Storage sources are Docker volumes, and single-user host mode runs no
+// Docker: a source saved there would never be mounted.
+function storageSourceWriteRefusal(c: Context) {
+  if (!isSingleUserHost()) return null;
+  return singleUserHostRefusal(
+    c,
+    '单人宿主机模式不使用 Docker，存储源不会生效。',
+  );
+}
+
 async function saveStorageSourceRoute(
   c: Context<{ Variables: Variables }>,
   creating: boolean,
 ) {
+  const refusal = storageSourceWriteRefusal(c);
+  if (refusal) return refusal;
   const id = c.req.param('id') ?? '';
   if (!STORAGE_SOURCE_ID_RE.test(id)) {
     return c.json(
@@ -4335,6 +4348,8 @@ configRoutes.delete(
   authMiddleware,
   adminRoleMiddleware,
   async (c) => {
+    const refusal = storageSourceWriteRefusal(c);
+    if (refusal) return refusal;
     const id = c.req.param('id');
     let audit: Record<string, unknown> | undefined;
     try {
