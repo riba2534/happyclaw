@@ -519,7 +519,8 @@ HTTP 状态为 409；请求不会停止现有 Runner，也不会修改绑定。
   额外权限；子目录不存在时容器启动失败。`sub_path` 和宿主机目录一样不能命中
   `blockedPatterns`（`.ssh`、`credentials` 等）。
 - SMB 密码只放在 `passwordFile`（绝对路径或相对项目根，必须是服务用户所有的 600
-  普通文件，单行、不含逗号），不进 allowlist、数据库、docker 命令行或日志：
+  普通文件，单行、不含逗号；示例里的密码目录已被 `.gitignore` 忽略），不进
+  allowlist、数据库、docker 命令行或日志：
   启动时经 Docker Engine API 的请求体建一个命名卷
   （`happyclaw-storage-<id>-<摘要>-<凭据版本>`，标签 `io.happyclaw.storage-source`），
   容器按名字挂载。凭据版本是用服务端密钥（`WEB_SESSION_SECRET`）对密码做 HMAC 后取
@@ -539,8 +540,20 @@ HTTP 状态为 409；请求不会停止现有 Runner，也不会修改绑定。
   并设置 `all_squash`。宿主机目录的 `nfsDirectMount` 同样如此。
 - 没有 Unix 扩展的 SMB 共享没有可映射的属主，挂载按 `file_mode=0777,dir_mode=0777`
   对容器内所有用户开放，实际权限由 SMB 账号在服务器上的权限决定。
+- 管理员也可以在 Web「设置 → 存储源」里添加存储源（见
+  `/api/config/storage-sources`），新建 Container 工作区时在挂载编辑器里选择。Web 添加的
+  存储源存在 `data/config/storage-sources.json`，密码在 `data/config/secrets/`，都在
+  `data/` 下，不进 Git 工作树、随 `make backup` 备份；服务从不改写
+  `config/mount-allowlist.json`。运行时把两份列表合并：allowlist 文件里的来源排在前面，
+  同一个 `id` 以 allowlist 文件为准，Web 那份被忽略并记一条告警；下次经 Web 保存或
+  删除任意存储源时，这份旧条目从 `storage-sources.json` 删除，连同它在
+  `data/config/secrets/` 下的密码文件（allowlist 文件里的来源正用着这个文件时保留）。
+  没有 allowlist 文件时 Web 添加的存储源照样可用，此时不授权任何宿主机目录，
+  `nonMainReadOnly` 按 `true`。allowlist 文件无法解析时全部挂载 fail-closed；
+  `storage-sources.json` 无法解析时只有其中的来源不能挂载。
 - 读写同时受来源的 `allowReadWrite` 与 `nonMainReadOnly` 约束；每次容器启动前都会
-  按当前 allowlist 重新校验，来源被删除后旧工作区无法启动。
+  按当前 allowlist 重新校验，来源被删除后旧工作区无法启动；关闭 `allowReadWrite` 后，
+  以读写方式挂载它的工作区同样无法启动（不会自动降为只读）。
 
 ## 文件
 
@@ -1112,6 +1125,25 @@ minimalClientVersion?, availableInPlans?, serviceTiers }`（字段取自官方
     成功时执行与开启 `adminHostOnlyMode` 相同的 Host 迁移（已存的 `adminHostOnlyMode` 为
     `true` 时没有要迁移的工作区，不停运行器、不清会话）；切回多人只保存这一项，存储的
     `adminHostOnlyMode`、注册和计费设置原样生效，不迁回 Docker
+- `GET /api/config/storage-sources`、`POST|PUT|DELETE /api/config/storage-sources/:id`，
+  仅 admin；列出合并后的全部存储源，写入只针对 `data/config/storage-sources.json`
+  （POST 新建、PUT 替换），写入前用运行时同一个解析器校验合并后的整份列表，不通过时
+  文件不变。`config/mount-allowlist.json` 声明的来源 `origin` 为 `allowlist`，对它的
+  POST/PUT/DELETE 返回 409（`code: STORAGE_SOURCE_READ_ONLY`），只能在服务器上改该文件；
+  Web 添加的为 `web`。allowlist 文件无法解析时列表为空并带 `allowlistError`，写入返回
+  409；`storage-sources.json` 无法解析时带 `managedError`。返回值还带 `hasPassword`、
+  `usedBy`（挂载它的工作区数）与 `readWriteUsedBy`（其中以读写方式挂载的），从不返回
+  密码或 `passwordFile`。SMB 密码只写：请求里的 `password` 省略表示保留、空串表示清除，
+  写入 `data/config/secrets/storage-<id>`（600，目录 700）；NFS 请求里的 `password`
+  被忽略。PUT 把 `allowReadWrite` 从 `true` 改为 `false` 且有工作区以读写方式挂载它时
+  返回 409（`code: STORAGE_SOURCE_READ_WRITE_IN_USE`、`readWriteUsedBy`），请求体带
+  `force: true` 才执行。DELETE，以及改动服务器、导出路径、共享、版本、凭据或收回读写的
+  PUT，会先停下挂载该来源的工作区的运行器再写入（只改 `description` 或打开读写不停）；
+  停不下来时返回 503，带 `persisted` 与 `retryable`，`persisted: true` 表示改动已经生效、
+  这些工作区暂停接活，重试同一请求（DELETE 也一样）完成清理后恢复。审计记
+  `storage_source_saved` / `storage_source_deleted`，只含 id、类型和是否实际写入或删除了
+  密码，不含服务器与共享。单人宿主机模式不使用 Docker，三个写接口都返回 409
+  `{ code: "SINGLE_USER_HOST" }`，设置页也不显示存储源
 - `GET /api/config/external-resources`
 - `GET /api/config/external-resources/rule`
 - `GET|PUT /api/config/registration`

@@ -219,6 +219,7 @@ export type SettingsTab =
   | 'system'
   | 'main-agent'
   | 'host-integration'
+  | 'storage-sources'
   | 'billing'
   | 'profile'
   | 'preferences'

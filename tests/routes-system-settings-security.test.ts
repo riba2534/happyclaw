@@ -175,6 +175,37 @@ describe('system settings capability boundaries', () => {
     ).toBe(403);
   });
 
+  test('storage sources are admin only', async () => {
+    asUser('member', ['manage_system_config']);
+    expect((await app.request('/api/config/storage-sources')).status).toBe(403);
+    for (const method of ['POST', 'PUT', 'DELETE']) {
+      expect(
+        (
+          await app.request('/api/config/storage-sources/nas', {
+            method,
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              type: 'nfs',
+              server: 'nas.lan',
+              exportPath: '/export',
+              allowReadWrite: true,
+            }),
+          })
+        ).status,
+      ).toBe(403);
+    }
+    asUser('admin');
+    expect(
+      (
+        await app.request('/api/config/storage-sources/Bad%20Id', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: '{}',
+        })
+      ).status,
+    ).toBe(400);
+  });
+
   test('admin host update logs names but never the sensitive path', async () => {
     asUser('admin');
     const response = await app.request('/api/config/host-integration', {

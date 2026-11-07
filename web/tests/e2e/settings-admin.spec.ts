@@ -73,6 +73,31 @@ async function mockBackend(page: Page) {
           },
         });
       }
+      if (path === '/api/config/storage-sources') {
+        return route.fulfill({
+          json: {
+            sources: [
+              {
+                id: 'nas-smb',
+                type: 'cifs',
+                server: 'nas.lan',
+                share: 'team-archive-with-a-long-name',
+                username: 'happyclaw-agent',
+                smbVersion: '3.0',
+                allowReadWrite: false,
+                description: '团队共享盘',
+                hasPassword: true,
+                origin: 'web',
+                usedBy: 2,
+                readWriteUsedBy: 0,
+              },
+            ],
+            allowlistPath: 'config/mount-allowlist.json',
+            managedPath: 'data/config/storage-sources.json',
+            nonMainReadOnly: true,
+          },
+        });
+      }
       return route.fulfill({ status: 404, json: { error: 'not mocked' } });
     },
   );
@@ -149,6 +174,44 @@ test.describe('settings on a phone', () => {
     await page.getByRole('button', { name: '返回' }).click();
     await expect(routeProbe(page)).toHaveText('/settings');
     await expect(page.getByRole('button', { name: '个人资料' })).toBeVisible();
+  });
+});
+
+test.describe('storage sources on a phone', () => {
+  test('rows fit the screen and the editor opens as a sheet', async ({
+    page,
+  }) => {
+    await page.goto(`${HARNESS}?route=/settings?tab=storage-sources`);
+    await expect(page.getByRole('heading', { level: 1 })).toHaveText('存储源');
+    await expect(
+      page.getByText('smb://nas.lan/team-archive-with-a-long-name'),
+    ).toBeVisible();
+    await expect(page.getByText('2 个工作区在用')).toBeVisible();
+    await expectNoHorizontalOverflow(page);
+
+    await page.getByRole('button', { name: 'nas-smb 的操作' }).click();
+    await page
+      .getByRole('dialog', { name: 'nas-smb' })
+      .getByRole('button', { name: '编辑' })
+      .click();
+    const dialog = page.getByRole('dialog', { name: '编辑存储源' });
+    await expect(dialog).toBeVisible();
+    await expect(dialog.getByText('已设置')).toBeVisible();
+    // The password is never prefilled; replacing it reveals an empty field.
+    await expect(dialog.locator('input[type="password"]')).toHaveCount(0);
+    await dialog.getByRole('button', { name: '更换密码' }).click();
+    await expect(dialog.locator('input[type="password"]')).toHaveValue('');
+    // Phone inputs stay at 16px so iOS does not zoom in.
+    const fontSizes = await dialog
+      .locator('input:not([type="checkbox"]):not([aria-hidden="true"])')
+      .evaluateAll((inputs) =>
+        inputs.map((input) => parseFloat(getComputedStyle(input).fontSize)),
+      );
+    for (const size of fontSizes) expect(size).toBeGreaterThanOrEqual(16);
+    await expectNoHorizontalOverflow(page);
+    await page.screenshot({
+      path: test.info().outputPath('storage-source-editor.png'),
+    });
   });
 });
 

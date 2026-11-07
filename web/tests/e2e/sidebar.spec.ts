@@ -16,6 +16,18 @@ test.beforeEach(async ({ page }) => {
       return route.fulfill({ status: 503, json: { error: 'not mocked' } });
     },
   );
+  // The new-workspace dialog lists storage sources for an admin creating a
+  // Container workspace; it reads them from the API, not from a store.
+  await page.route('**/api/config/storage-sources', (route) =>
+    route.fulfill({
+      json: {
+        sources: [],
+        allowlistPath: 'config/mount-allowlist.json',
+        managedPath: 'data/config/storage-sources.json',
+        nonMainReadOnly: true,
+      },
+    }),
+  );
 });
 test.afterEach(() => {
   expect(unmockedApiCalls).toEqual([]);

@@ -26,6 +26,8 @@ happyclaw-backup-*.tar.gz
 *.key
 *.pem
 *.keys.json
+# Hand-written SMB password files next to the mount allowlist
+/config/secrets/
 
 # Database files outside store/ (safety net)
 *.db

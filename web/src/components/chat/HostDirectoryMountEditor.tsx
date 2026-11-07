@@ -1,10 +1,25 @@
 import { useId } from 'react';
-import { FolderSymlink, LockKeyhole, Plus, Trash2 } from 'lucide-react';
+import {
+  FolderSymlink,
+  HardDrive,
+  LockKeyhole,
+  Plus,
+  Trash2,
+} from 'lucide-react';
 import { IconButton } from '@/components/common/IconButton';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import {
+  NativeSelect,
+  NativeSelectOption,
+} from '@/components/ui/native-select';
+import { Switch } from '@/components/ui/switch';
+import {
+  storageSourceLocation,
+  type StorageSource,
+} from '../../lib/storage-sources';
 import type { AdditionalMountInput } from '../../types';
 import { DirectoryBrowser } from '../shared/DirectoryBrowser';
 
@@ -16,19 +31,49 @@ let mountDraftSequence = 0;
 
 export interface HostDirectoryMountDraft {
   id: string;
+  /** A host directory bind, or a network storage source from the allowlist. */
+  kind: 'host' | 'storage';
   hostPath: string;
+  source: string;
+  subPath: string;
+  /** Storage mounts only; host directories are always read-only. */
+  readonly: boolean;
   containerPath: string;
   containerPathTouched: boolean;
 }
 
-export function createHostDirectoryMountDraft(): HostDirectoryMountDraft {
+export function createHostDirectoryMountDraft(
+  kind: HostDirectoryMountDraft['kind'] = 'host',
+  source = '',
+): HostDirectoryMountDraft {
   mountDraftSequence += 1;
   return {
     id: `host-mount-${mountDraftSequence}`,
+    kind,
     hostPath: '',
-    containerPath: '',
+    source,
+    subPath: '',
+    readonly: true,
+    containerPath: kind === 'storage' ? source : '',
     containerPathTouched: false,
   };
+}
+
+function isSafeSubPath(value: string): boolean {
+  if (!value) return true;
+  if (
+    value.startsWith('/') ||
+    value.length > 1024 ||
+    value.includes('\\') ||
+    /[\u0000-\u001f\u007f]/.test(value) ||
+    value !== value.trim()
+  ) {
+    return false;
+  }
+  return value
+    .replace(/\/+$/, '')
+    .split('/')
+    .every((segment) => segment && segment !== '.' && segment !== '..');
 }
 
 function basename(directoryPath: string): string {
@@ -63,13 +108,21 @@ export function validateHostDirectoryMounts(
   const errors: Record<string, string> = {};
   const targets = new Map<string, number>();
   if (mounts.length > MAX_HOST_DIRECTORY_MOUNTS) {
-    errors.additional_mounts = `最多只能挂载 ${MAX_HOST_DIRECTORY_MOUNTS} 个宿主机目录`;
+    errors.additional_mounts = `最多只能挂载 ${MAX_HOST_DIRECTORY_MOUNTS} 个目录`;
   }
 
   mounts.forEach((mount, index) => {
     const hostPath = mount.hostPath.trim();
     const containerPath = mount.containerPath.trim();
-    if (!hostPath) {
+    if (mount.kind === 'storage') {
+      if (!mount.source) {
+        errors[`additional_mounts.${index}.source`] = '请选择存储源';
+      }
+      if (!isSafeSubPath(mount.subPath)) {
+        errors[`additional_mounts.${index}.sub_path`] =
+          '子目录必须是相对路径，不能以 / 开头或包含 .、..、反斜杠';
+      }
+    } else if (!hostPath) {
       errors[`additional_mounts.${index}.host_path`] =
         '请选择 HappyClaw 服务器上的宿主机目录';
     } else if (!hostPath.startsWith('/')) {
@@ -117,11 +170,22 @@ export function validateHostDirectoryMounts(
 export function toAdditionalMountInputs(
   mounts: HostDirectoryMountDraft[],
 ): AdditionalMountInput[] {
-  return mounts.map((mount) => ({
-    host_path: mount.hostPath.trim(),
-    container_path: mount.containerPath.trim(),
-    readonly: true,
-  }));
+  return mounts.map((mount) =>
+    mount.kind === 'storage'
+      ? {
+          source: mount.source,
+          ...(mount.subPath.trim()
+            ? { sub_path: mount.subPath.trim().replace(/\/+$/, '') }
+            : {}),
+          container_path: mount.containerPath.trim(),
+          readonly: mount.readonly,
+        }
+      : {
+          host_path: mount.hostPath.trim(),
+          container_path: mount.containerPath.trim(),
+          readonly: true as const,
+        },
+  );
 }
 
 interface HostDirectoryMountEditorProps {
@@ -129,6 +193,10 @@ interface HostDirectoryMountEditorProps {
   onChange: (mounts: HostDirectoryMountDraft[]) => void;
   fieldErrors?: Record<string, string>;
   disabled?: boolean;
+  /** Storage sources the administrator defined; empty hides the option. */
+  storageSources?: StorageSource[];
+  /** False when the allowlist keeps new workspaces read-only. */
+  storageReadWriteAllowed?: boolean;
 }
 
 export function HostDirectoryMountEditor({
@@ -136,6 +204,8 @@ export function HostDirectoryMountEditor({
   onChange,
   fieldErrors = {},
   disabled = false,
+  storageSources = [],
+  storageReadWriteAllowed = false,
 }: HostDirectoryMountEditorProps) {
   const headingId = useId();
   const mountListError = fieldErrors.additional_mounts;
@@ -155,10 +225,44 @@ export function HostDirectoryMountEditor({
     onChange(mounts.filter((_, mountIndex) => mountIndex !== index));
   };
 
-  const addMount = () => {
+  const addMount = (kind: HostDirectoryMountDraft['kind'] = 'host') => {
     if (mounts.length >= MAX_HOST_DIRECTORY_MOUNTS) return;
-    onChange([...mounts, createHostDirectoryMountDraft()]);
+    onChange([
+      ...mounts,
+      createHostDirectoryMountDraft(
+        kind,
+        kind === 'storage' ? (storageSources[0]?.id ?? '') : '',
+      ),
+    ]);
   };
+  const hasStorage = storageSources.length > 0;
+  const atLimit = mounts.length >= MAX_HOST_DIRECTORY_MOUNTS;
+  const addButtons = (first: boolean) => (
+    <div className="flex flex-wrap gap-2">
+      <Button
+        type="button"
+        variant="outline"
+        onClick={() => addMount('host')}
+        disabled={disabled || atLimit}
+        className="pointer-coarse:h-10"
+      >
+        <Plus />
+        {first ? '添加宿主机目录' : '添加另一个目录'}
+      </Button>
+      {hasStorage && (
+        <Button
+          type="button"
+          variant="outline"
+          onClick={() => addMount('storage')}
+          disabled={disabled || atLimit}
+          className="pointer-coarse:h-10"
+        >
+          <HardDrive />
+          添加存储源
+        </Button>
+      )}
+    </div>
+  );
 
   return (
     <section aria-labelledby={headingId} className="space-y-3">
@@ -166,11 +270,13 @@ export function HostDirectoryMountEditor({
         <FolderSymlink className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
         <div className="min-w-0">
           <h3 id={headingId} className="text-body font-medium text-foreground">
-            宿主机目录挂载
+            {hasStorage ? '目录与存储挂载' : '宿主机目录挂载'}
           </h3>
           <p className="mt-0.5 text-caption leading-5 text-muted-foreground">
             仅管理员可用。选择 HappyClaw/Docker
             服务器上的目录，并实时挂载到容器；这不是复制，源目录后续变化会直接反映到容器中。
+            {hasStorage &&
+              '存储源是设置里配置的 NAS 共享，由 Docker 直接挂载。'}
           </p>
         </div>
       </div>
@@ -187,18 +293,9 @@ export function HostDirectoryMountEditor({
             <code className="mx-1 rounded bg-surface-selected px-1 py-0.5 font-mono">
               /workspace/extra/
             </code>
-            下，并固定为只读。
+            下。宿主机目录固定为只读。
           </p>
-          <Button
-            type="button"
-            variant="outline"
-            onClick={addMount}
-            disabled={disabled}
-            className="mt-2.5 pointer-coarse:h-10"
-          >
-            <Plus />
-            添加宿主机目录
-          </Button>
+          <div className="mt-2.5">{addButtons(true)}</div>
         </div>
       ) : (
         <div className="space-y-3">
@@ -209,22 +306,50 @@ export function HostDirectoryMountEditor({
               fieldErrors[`additional_mounts.${index}.container_path`];
             const containerInputId = `${mount.id}-container-path`;
             const containerErrorId = `${containerInputId}-error`;
+            const isStorage = mount.kind === 'storage';
+            const selectedSource = storageSources.find(
+              (source) => source.id === mount.source,
+            );
+            const sourceError =
+              fieldErrors[`additional_mounts.${index}.source`];
+            const subPathError =
+              fieldErrors[`additional_mounts.${index}.sub_path`];
+            const canWrite =
+              storageReadWriteAllowed && !!selectedSource?.allowReadWrite;
+            const writeHint = !selectedSource
+              ? null
+              : !selectedSource.allowReadWrite
+                ? '这个存储源只允许只读挂载'
+                : !storageReadWriteAllowed
+                  ? '挂载白名单要求新建的工作区只读挂载'
+                  : null;
+            const defaultTarget = (sourceId: string, subPath: string) =>
+              basename(subPath) || sourceId;
             return (
               <fieldset
                 key={mount.id}
                 className="space-y-3 rounded-lg border border-surface-border p-3"
                 disabled={disabled}
               >
-                <legend className="sr-only">宿主机目录挂载 {index + 1}</legend>
+                <legend className="sr-only">
+                  {isStorage ? '存储源挂载' : '宿主机目录挂载'} {index + 1}
+                </legend>
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-label text-foreground">
                     挂载目录 {index + 1}
                   </span>
                   <div className="flex items-center gap-1">
-                    <Badge variant="neutral">
-                      <LockKeyhole />
-                      固定只读
-                    </Badge>
+                    {isStorage ? (
+                      <Badge variant="outline">
+                        <HardDrive />
+                        存储源
+                      </Badge>
+                    ) : (
+                      <Badge variant="neutral">
+                        <LockKeyhole />
+                        固定只读
+                      </Badge>
+                    )}
                     <IconButton
                       label={`删除挂载目录 ${index + 1}`}
                       icon={<Trash2 />}
@@ -234,32 +359,154 @@ export function HostDirectoryMountEditor({
                   </div>
                 </div>
 
-                <DirectoryBrowser
-                  value={mount.hostPath}
-                  onChange={(nextPath, source) => {
-                    const nextUpdate: Partial<HostDirectoryMountDraft> = {
-                      hostPath: nextPath,
-                    };
-                    if (
-                      (source === 'browser' || source === 'created') &&
-                      !mount.containerPathTouched
-                    ) {
-                      nextUpdate.containerPath = basename(nextPath);
-                    }
-                    updateMount(index, nextUpdate);
-                  }}
-                  inputId={`${mount.id}-host-path`}
-                  label="宿主机目录"
-                  description="这里浏览的是 HappyClaw/Docker 服务器目录，不是当前浏览器设备上的文件夹。"
-                  placeholder="/srv/projects/example"
-                  purpose="mount"
-                  allowCreateFolder={false}
-                  disabled={disabled}
-                />
-                {hostError && (
-                  <p className="text-caption text-error" role="alert">
-                    {hostError}
-                  </p>
+                {isStorage ? (
+                  <div className="space-y-3">
+                    <div>
+                      <Label htmlFor={`${mount.id}-source`} className="mb-1.5">
+                        存储源
+                      </Label>
+                      <NativeSelect
+                        id={`${mount.id}-source`}
+                        value={mount.source}
+                        onChange={(event) => {
+                          const source = event.target.value;
+                          const next = storageSources.find(
+                            (candidate) => candidate.id === source,
+                          );
+                          updateMount(index, {
+                            source,
+                            ...(next?.allowReadWrite ? {} : { readonly: true }),
+                            ...(mount.containerPathTouched
+                              ? {}
+                              : {
+                                  containerPath: defaultTarget(
+                                    source,
+                                    mount.subPath,
+                                  ),
+                                }),
+                          });
+                        }}
+                        className="w-full"
+                        aria-invalid={!!sourceError}
+                      >
+                        {!selectedSource && (
+                          <NativeSelectOption value="">
+                            {mount.source
+                              ? `${mount.source}（已删除）`
+                              : '请选择'}
+                          </NativeSelectOption>
+                        )}
+                        {storageSources.map((source) => (
+                          <NativeSelectOption key={source.id} value={source.id}>
+                            {source.description || source.id} ·{' '}
+                            {storageSourceLocation(source)}
+                          </NativeSelectOption>
+                        ))}
+                      </NativeSelect>
+                      {sourceError && (
+                        <p
+                          className="mt-1 text-caption text-error"
+                          role="alert"
+                        >
+                          {sourceError}
+                        </p>
+                      )}
+                    </div>
+                    <div>
+                      <Label
+                        htmlFor={`${mount.id}-sub-path`}
+                        className="mb-1.5"
+                      >
+                        子目录（可选）
+                      </Label>
+                      <Input
+                        id={`${mount.id}-sub-path`}
+                        value={mount.subPath}
+                        onChange={(event) =>
+                          updateMount(index, {
+                            subPath: event.target.value,
+                            ...(mount.containerPathTouched
+                              ? {}
+                              : {
+                                  containerPath: defaultTarget(
+                                    mount.source,
+                                    event.target.value.trim(),
+                                  ),
+                                }),
+                          })
+                        }
+                        placeholder="projects/alpha"
+                        variant="code"
+                        className="font-mono pointer-coarse:h-10"
+                        aria-invalid={!!subPathError}
+                        autoComplete="off"
+                      />
+                      <p className="mt-1.5 text-caption text-muted-foreground">
+                        留空挂载整个共享；目录必须已在 NAS 上存在。
+                      </p>
+                      {subPathError && (
+                        <p
+                          className="mt-1 text-caption text-error"
+                          role="alert"
+                        >
+                          {subPathError}
+                        </p>
+                      )}
+                    </div>
+                    <label
+                      htmlFor={`${mount.id}-writable`}
+                      className="flex items-center justify-between gap-4"
+                    >
+                      <span className="min-w-0">
+                        <span className="block text-label text-foreground">
+                          允许写入
+                        </span>
+                        {writeHint && (
+                          <span className="block text-caption text-muted-foreground">
+                            {writeHint}
+                          </span>
+                        )}
+                      </span>
+                      <Switch
+                        id={`${mount.id}-writable`}
+                        checked={!mount.readonly && canWrite}
+                        disabled={!canWrite}
+                        onCheckedChange={(checked) =>
+                          updateMount(index, { readonly: !checked })
+                        }
+                      />
+                    </label>
+                  </div>
+                ) : (
+                  <>
+                    <DirectoryBrowser
+                      value={mount.hostPath}
+                      onChange={(nextPath, source) => {
+                        const nextUpdate: Partial<HostDirectoryMountDraft> = {
+                          hostPath: nextPath,
+                        };
+                        if (
+                          (source === 'browser' || source === 'created') &&
+                          !mount.containerPathTouched
+                        ) {
+                          nextUpdate.containerPath = basename(nextPath);
+                        }
+                        updateMount(index, nextUpdate);
+                      }}
+                      inputId={`${mount.id}-host-path`}
+                      label="宿主机目录"
+                      description="这里浏览的是 HappyClaw/Docker 服务器目录，不是当前浏览器设备上的文件夹。"
+                      placeholder="/srv/projects/example"
+                      purpose="mount"
+                      allowCreateFolder={false}
+                      disabled={disabled}
+                    />
+                    {hostError && (
+                      <p className="text-caption text-error" role="alert">
+                        {hostError}
+                      </p>
+                    )}
+                  </>
                 )}
 
                 <div>
@@ -311,16 +558,7 @@ export function HostDirectoryMountEditor({
           })}
 
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <Button
-              type="button"
-              variant="outline"
-              onClick={addMount}
-              disabled={disabled || mounts.length >= MAX_HOST_DIRECTORY_MOUNTS}
-              className="pointer-coarse:h-10"
-            >
-              <Plus />
-              添加另一个目录
-            </Button>
+            {addButtons(false)}
             <span
               className="text-caption text-muted-foreground tabular-nums"
               aria-live="polite"

@@ -1,6 +1,7 @@
 /**
  * What single-user host mode hides. The server refuses registration, other
- * users, guests, billing and Docker itself; these only keep them out of view.
+ * users, guests, billing, storage source writes and Docker itself; these only
+ * keep them out of view.
  */
 import type { SettingsTab } from '../components/settings/types';
 import { useAuthStore } from '../stores/auth';
@@ -22,12 +23,16 @@ export function isSingleUserHostHiddenPath(pathname: string): boolean {
   );
 }
 
-/** Settings sections about other people or money. */
+/**
+ * Settings sections about other people or money, and storage sources (Docker
+ * volumes, which this mode never mounts).
+ */
 const SINGLE_USER_HOST_HIDDEN_TABS: readonly SettingsTab[] = [
   'registration',
   'users',
   'guests',
   'billing',
+  'storage-sources',
 ];
 
 export function isSingleUserHostHiddenTab(tab: SettingsTab): boolean {

@@ -3,6 +3,7 @@ import {
   ChevronRight,
   CreditCard,
   Gauge,
+  HardDrive,
   Info,
   MessageSquare,
   Palette,
@@ -157,6 +158,12 @@ const systemItems: NavItem[] = [
     keywords: ['Claude 目录', '~/.claude', 'Plugin', '插件', 'Marketplace'],
   },
   {
+    key: 'storage-sources',
+    label: '存储源',
+    icon: HardDrive,
+    keywords: ['NAS', 'NFS', 'SMB', 'CIFS', '挂载', '网络存储', '共享'],
+  },
+  {
     key: 'billing',
     label: '计费管理',
     icon: CreditCard,
@@ -226,7 +233,11 @@ export function getSettingsSections({
   const system = systemItems.filter((item) => {
     if (!shown(item)) return false;
     if (item.key === 'billing') return canManageBilling;
-    if (item.key === 'main-agent' || item.key === 'host-integration') {
+    if (
+      item.key === 'main-agent' ||
+      item.key === 'host-integration' ||
+      item.key === 'storage-sources'
+    ) {
       return isAdmin;
     }
     return canManageSystemConfig;

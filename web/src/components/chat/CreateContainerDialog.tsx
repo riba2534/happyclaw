@@ -45,6 +45,10 @@ import { workspaceCreationBlockReason } from '../../utils/agent-product';
 import { extractErrorMessage } from '../../utils/error';
 import { InteractionModeSelector } from './InteractionModeSelector';
 import { WorkModeSelector } from './WorkModeSelector';
+import {
+  listStorageSources,
+  type StorageSourceList,
+} from '../../lib/storage-sources';
 import { DEFAULT_WORK_MODE, type WorkMode } from '../../work-items';
 import {
   HostDirectoryMountEditor,
@@ -196,6 +200,8 @@ export function CreateContainerDialog({
     useState<InteractionMode>('assistant');
   const [workMode, setWorkMode] = useState<WorkMode>(DEFAULT_WORK_MODE);
   const [hostMounts, setHostMounts] = useState<HostDirectoryMountDraft[]>([]);
+  const [storageSources, setStorageSources] =
+    useState<StorageSourceList | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
 
@@ -224,6 +230,25 @@ export function CreateContainerDialog({
   useEffect(() => {
     if (open) void loadProfiles();
   }, [open, loadProfiles]);
+
+  // Storage sources are admin-only; without them the editor offers host
+  // directories alone, so a failed load only hides the option.
+  const wantsStorageSources =
+    open && canHostExec && executionMode === 'container';
+  useEffect(() => {
+    if (!wantsStorageSources) return;
+    let cancelled = false;
+    listStorageSources()
+      .then((list) => {
+        if (!cancelled) setStorageSources(list);
+      })
+      .catch(() => {
+        if (!cancelled) setStorageSources(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [wantsStorageSources]);
 
   useEffect(() => {
     if (!open || selectedAgentProfileId || profiles.length === 0) return;
@@ -310,7 +335,7 @@ export function CreateContainerDialog({
         : {};
     if (Object.keys(mountErrors).length > 0) {
       setFieldErrors(mountErrors);
-      setSubmitError('请检查宿主机目录挂载配置');
+      setSubmitError('请检查目录挂载配置');
       return;
     }
 
@@ -677,6 +702,12 @@ export function CreateContainerDialog({
                           }}
                           fieldErrors={fieldErrors}
                           disabled={loading}
+                          storageSources={storageSources?.sources}
+                          storageReadWriteAllowed={
+                            storageSources
+                              ? !storageSources.nonMainReadOnly
+                              : false
+                          }
                         />
                       </div>
                     )}

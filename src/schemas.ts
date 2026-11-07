@@ -245,6 +245,26 @@ export const AdditionalMountCreateSchema = z.union([
     .strict(),
 ]);
 
+/** Admin storage source editor; the id comes from the URL. */
+export const StorageSourceSaveSchema = z
+  .object({
+    type: z.enum(['nfs', 'cifs']),
+    server: z.string().trim().min(1).max(253),
+    exportPath: z.string().trim().min(1).max(1024).optional(),
+    nfsVersion: z.enum(['3', '4', '4.1', '4.2']).optional(),
+    share: z.string().trim().min(1).max(80).optional(),
+    username: z.string().trim().max(256).optional(),
+    domain: z.string().trim().max(256).optional(),
+    smbVersion: z.enum(['2.1', '3.0', '3.1.1']).optional(),
+    allowReadWrite: z.boolean(),
+    description: z.string().max(200).optional(),
+    // Write-only: omitted keeps the stored password, '' removes it.
+    password: z.string().max(1024).optional(),
+    // Confirms revoking read-write from workspaces that mount it read-write.
+    force: z.boolean().optional(),
+  })
+  .strict();
+
 export const GroupCreateSchema = z.object({
   name: z.string().min(1).max(MAX_GROUP_NAME_LEN),
   agent_profile_id: z

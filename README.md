@@ -385,7 +385,7 @@ Web 推送通知（设置 → 常规 → 推送通知）要求页面通过 HTTPS
 ```text
 data/
 ├── db/messages.db     # SQLite 主数据库（含 Workspace Memory v2）
-├── config/            # 加密配置、密钥与系统设置
+├── config/            # 加密配置、密钥、系统设置与 Web 添加的存储源
 ├── groups/            # 已有工作区与 Container 工作区的目录
 ├── logs/              # 工作区根目录下工作区的运行日志
 ├── memory/            # 旧版文件记忆，仅供离线迁移/归档
