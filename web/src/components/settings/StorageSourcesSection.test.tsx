@@ -237,6 +237,29 @@ describe('StorageSourcesSection', () => {
     expect(mocks.put.mock.calls[1][1]).toMatchObject({ force: true });
   });
 
+  test('clearing the username drops the password typed for it', async () => {
+    await render();
+    await click(button('添加存储源'));
+    await click(button('SMB'));
+    await type('#storage-source-id', 'guest');
+    await type('#storage-source-server', 'nas.lan');
+    await type('#storage-source-share', 'public');
+    await type('#storage-source-username', 'agent');
+    await type('#storage-source-password', 'pw');
+    await type('#storage-source-username', '');
+    expect(document.querySelector('#storage-source-password')).toBeNull();
+    await click(button('添加'));
+    await flush();
+    expect(document.body.textContent).not.toContain('设置密码时必须填写用户名');
+    expect(mocks.post).toHaveBeenCalledWith(`${BASE}/guest`, {
+      type: 'cifs',
+      server: 'nas.lan',
+      share: 'public',
+      smbVersion: '3.0',
+      allowReadWrite: false,
+    });
+  });
+
   test('sources from the allowlist file are read-only', async () => {
     mocks.get.mockResolvedValue(listing([{ ...smb, origin: 'allowlist' }]));
     await render();

@@ -325,7 +325,14 @@ function StorageSourceDialog({
                   <Input
                     id="storage-source-username"
                     value={draft.username}
-                    onChange={(e) => update({ username: e.target.value })}
+                    onChange={(e) =>
+                      update({
+                        username: e.target.value,
+                        // The password field hides without a username; do not
+                        // keep validating a password nobody can see.
+                        ...(e.target.value.trim() ? {} : { password: '' }),
+                      })
+                    }
                     variant="code"
                     autoComplete="off"
                   />
