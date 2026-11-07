@@ -711,6 +711,81 @@ describe('session_list', () => {
     );
   });
 
+  test('a folded session is counted as hidden, not in the state it ended in', () => {
+    const ws = { jid: 'web:workers', folder: 'workers' };
+    db.setRegisteredGroup(ws.jid, {
+      name: 'Workers',
+      folder: ws.folder,
+      added_at: new Date().toISOString(),
+      executionMode: 'container',
+      created_by: OTHER,
+      is_home: false,
+    } as never);
+    const delegator = '33333333-0000-4000-8000-000000000010';
+    const worker = '22222222-0000-4000-8000-000000000011';
+    createSession(delegator, ws, 'delegator');
+    createSession(worker, ws, 'failed worker', { source_kind: 'work_item' });
+    const item = store.insertWorkItem({
+      id: 'wi-failed',
+      workspaceJid: ws.jid,
+      workspaceFolder: ws.folder,
+      channelJid: lane(ws.jid, delegator),
+      agentId: worker,
+      title: '跑迁移',
+      sourceMessageId: 'delegate:failed',
+      sourceRouteJid: ws.jid,
+      mandate: {
+        strength: 'explicit',
+        requesterImId: null,
+        requesterName: null,
+        requesterListed: true,
+        requesterIsOwner: true,
+        matchedRules: [],
+        settingsVersion: 1,
+        writable: true,
+      },
+      now: new Date().toISOString(),
+      delegatedBy: { agentId: delegator, inputId: null },
+    });
+    // A Worker that exhausted its retries: failDelegatedItem ends the item as
+    // failed, and the Worker row settles to idle with the error for good.
+    const at = new Date().toISOString();
+    store.updateWorkItem(
+      item.id,
+      { status: 'ended', outcome: 'failed', endedAt: at, attention: null },
+      at,
+    );
+    db.updateAgentStatus(worker, 'running');
+    db.updateAgentStatus(worker, 'idle', 'Error: retries exhausted');
+
+    const who = caller(delegator, ws.folder);
+    const folded = data(call(who, 'session_list'));
+    expect(folded.workspaces[0].counts).toMatchObject({
+      total: 2,
+      idle: 1,
+      error: 0,
+      ended_hidden: 1,
+    });
+    expect(
+      data(call(who, 'session_list', { state: 'error' })).workspaces[0]
+        .sessions,
+    ).toEqual([]);
+
+    // Asked for, it is counted where it is listed.
+    const shown = data(call(who, 'session_list', { include_ended: true }));
+    expect(shown.workspaces[0].counts).toMatchObject({
+      total: 2,
+      idle: 1,
+      error: 1,
+      ended_hidden: 0,
+    });
+    expect(
+      data(
+        call(who, 'session_list', { state: 'error', include_ended: true }),
+      ).workspaces[0].sessions.map((s: any) => s.name),
+    ).toEqual(['failed worker']);
+  });
+
   test('limit caps the sessions and says how many were left out', () => {
     const list = data(call(projCaller(), 'session_list', { limit: 1 }));
     expect(list.workspaces[0].sessions).toHaveLength(1);
@@ -991,7 +1066,7 @@ describe('volume', () => {
     const list = data(call(perfCaller(), 'session_list'));
     expect(list.workspaces[0].counts).toMatchObject({
       total: 221,
-      idle: 221,
+      idle: 1,
       ended_hidden: 220,
     });
     expect(list.workspaces[0].sessions.map((s: any) => s.name)).toEqual([

@@ -694,10 +694,16 @@ function sessionList(
       queued_inputs: 0,
       ended_hidden: 0,
     };
+    // A folded session counts as hidden only, not in the state it ended in:
+    // otherwise `error: 1` would point at a session `state: 'error'` never
+    // lists. total = the state buckets + ended_hidden.
     for (const item of classified) {
+      if (item.ended && !includeEnded) {
+        counts.ended_hidden += 1;
+        continue;
+      }
       counts[item.state] += 1;
       counts.queued_inputs += item.queuedInputs;
-      if (item.ended && !includeEnded) counts.ended_hidden += 1;
     }
     const shown = classified.filter(
       (item) => (includeEnded || !item.ended) && matchesFilter(item, filter),
