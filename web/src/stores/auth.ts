@@ -3,6 +3,7 @@ import { resetUserScopedStores } from './user-scope';
 import { api, apiFetch } from '../api/client';
 import { wsManager } from '../api/ws';
 import { clearMessageSnapshotCache } from '../utils/messageSnapshotCache';
+import { releasePushSubscription } from '../utils/webPush';
 
 export type Permission =
   | 'manage_system_config'
@@ -176,6 +177,9 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   },
 
   logout: async () => {
+    // While the session still counts: this browser stops receiving this
+    // account's push notifications. Never blocks signing out.
+    await releasePushSubscription();
     await api.post('/api/auth/logout');
     // The socket is bound to the old session; left open, the server closes
     // it with 1008 at its next broadcast and the client then bounces a user

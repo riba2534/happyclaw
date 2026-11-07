@@ -14,12 +14,16 @@ vi.mock('../api/client', () => ({
 import {
   closeDeliveredPushNotifications,
   findPushRegistration,
+  forgetPushOwner,
   getPushSupport,
   isPushRegistration,
   isPushSubscribed,
   isSafeAppPath,
+  ownsPushSubscription,
   pushScriptUrl,
   registerSubscription,
+  releasePushSubscription,
+  rememberPushOwner,
   setPushSubscribed,
   syncExistingSubscription,
   takePushOpenRoute,
@@ -72,10 +76,21 @@ function stubBrowser(options: {
   return container;
 }
 
+function stubStorage() {
+  const items = new Map<string, string>();
+  vi.stubGlobal('localStorage', {
+    getItem: (key: string) => items.get(key) ?? null,
+    setItem: (key: string, value: string) => void items.set(key, value),
+    removeItem: (key: string) => void items.delete(key),
+  });
+}
+
 beforeEach(() => {
   post.mockReset();
   get.mockReset();
+  stubStorage();
   setPushSubscribed(false);
+  forgetPushOwner();
 });
 
 afterEach(() => {
@@ -145,24 +160,74 @@ describe('isPushRegistration / findPushRegistration', () => {
 });
 
 describe('syncExistingSubscription', () => {
-  const subscription = {
-    toJSON: () => ({
-      endpoint: 'https://fcm.googleapis.com/x',
-      keys: { p256dh: 'k', auth: 'a' },
-    }),
-  };
+  const ENDPOINT = 'https://fcm.googleapis.com/x';
+  const makeSubscription = () => ({
+    endpoint: ENDPOINT,
+    toJSON: () => ({ endpoint: ENDPOINT, keys: { p256dh: 'k', auth: 'a' } }),
+    unsubscribe: vi.fn(async () => true),
+  });
+  let subscription = makeSubscription();
+  beforeEach(() => {
+    subscription = makeSubscription();
+  });
 
-  test('re-registers an existing subscription with the server', async () => {
+  test('re-registers a subscription this account opted in with', async () => {
+    rememberPushOwner('alice', ENDPOINT);
     stubBrowser({
       permission: 'granted',
       registrations: [fakeRegistration(SCRIPT(), subscription)],
     });
-    expect(await syncExistingSubscription()).toBe(true);
+    expect(await syncExistingSubscription('alice')).toBe(true);
     expect(isPushSubscribed()).toBe(true);
     expect(post).toHaveBeenCalledWith('/api/push/subscribe', {
-      endpoint: 'https://fcm.googleapis.com/x',
+      endpoint: ENDPOINT,
       keys: { p256dh: 'k', auth: 'a' },
     });
+    expect(subscription.unsubscribe).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ['another account opted in with it', 'bob'],
+    ['nobody opted in with it in this browser', null],
+  ])('unsubscribes instead of taking it over when %s', async (_name, owner) => {
+    if (owner) rememberPushOwner(owner, ENDPOINT);
+    setPushSubscribed(true);
+    stubBrowser({
+      permission: 'granted',
+      registrations: [fakeRegistration(SCRIPT(), subscription)],
+    });
+    expect(await syncExistingSubscription('alice')).toBe(false);
+    expect(post).not.toHaveBeenCalled();
+    expect(subscription.unsubscribe).toHaveBeenCalledTimes(1);
+    expect(isPushSubscribed()).toBe(false);
+    expect(ownsPushSubscription(owner ?? 'alice', ENDPOINT)).toBe(false);
+  });
+
+  test('unsubscribes when the server says another account holds it', async () => {
+    rememberPushOwner('alice', ENDPOINT);
+    post.mockRejectedValueOnce({ status: 409, message: 'conflict' });
+    stubBrowser({
+      permission: 'granted',
+      registrations: [fakeRegistration(SCRIPT(), subscription)],
+    });
+    expect(await syncExistingSubscription('alice')).toBe(false);
+    expect(subscription.unsubscribe).toHaveBeenCalledTimes(1);
+    expect(isPushSubscribed()).toBe(false);
+    expect(ownsPushSubscription('alice', ENDPOINT)).toBe(false);
+  });
+
+  test('other server failures keep the subscription', async () => {
+    rememberPushOwner('alice', ENDPOINT);
+    post.mockRejectedValueOnce({ status: 0, message: 'Network error' });
+    stubBrowser({
+      permission: 'granted',
+      registrations: [fakeRegistration(SCRIPT(), subscription)],
+    });
+    await expect(syncExistingSubscription('alice')).rejects.toMatchObject({
+      status: 0,
+    });
+    expect(subscription.unsubscribe).not.toHaveBeenCalled();
+    expect(ownsPushSubscription('alice', ENDPOINT)).toBe(true);
   });
 
   test('never creates a subscription or asks for a permission', async () => {
@@ -170,7 +235,7 @@ describe('syncExistingSubscription', () => {
     (registration.pushManager as unknown as Record<string, unknown>).subscribe =
       vi.fn();
     stubBrowser({ permission: 'granted', registrations: [registration] });
-    expect(await syncExistingSubscription()).toBe(false);
+    expect(await syncExistingSubscription('alice')).toBe(false);
     expect(isPushSubscribed()).toBe(false);
     expect(post).not.toHaveBeenCalled();
     expect(registration.pushManager.subscribe).not.toHaveBeenCalled();
@@ -182,7 +247,7 @@ describe('syncExistingSubscription', () => {
     });
     (Notification as unknown as Record<string, unknown>).requestPermission =
       request;
-    expect(await syncExistingSubscription()).toBe(false);
+    expect(await syncExistingSubscription('alice')).toBe(false);
     expect(request).not.toHaveBeenCalled();
     expect(post).not.toHaveBeenCalled();
   });
@@ -193,7 +258,7 @@ describe('syncExistingSubscription', () => {
       permission: 'denied',
       registrations: [fakeRegistration(SCRIPT(), subscription)],
     });
-    expect(await syncExistingSubscription()).toBe(false);
+    expect(await syncExistingSubscription('alice')).toBe(false);
     expect(isPushSubscribed()).toBe(false);
   });
 
@@ -209,6 +274,60 @@ describe('syncExistingSubscription', () => {
       endpoint: 'e',
       keys: { p256dh: 'k', auth: 'a' },
     });
+  });
+});
+
+describe('releasePushSubscription', () => {
+  const ENDPOINT = 'https://fcm.googleapis.com/x';
+
+  test('removes the subscription from the server and the push service', async () => {
+    const subscription = {
+      endpoint: ENDPOINT,
+      unsubscribe: vi.fn(async () => true),
+    };
+    rememberPushOwner('alice', ENDPOINT);
+    setPushSubscribed(true);
+    stubBrowser({
+      permission: 'granted',
+      registrations: [fakeRegistration(SCRIPT(), subscription)],
+    });
+    await releasePushSubscription();
+    expect(post).toHaveBeenCalledWith('/api/push/unsubscribe', {
+      endpoint: ENDPOINT,
+    });
+    expect(subscription.unsubscribe).toHaveBeenCalledTimes(1);
+    expect(isPushSubscribed()).toBe(false);
+    expect(ownsPushSubscription('alice', ENDPOINT)).toBe(false);
+  });
+
+  test('failures never reach the caller', async () => {
+    const subscription = {
+      endpoint: ENDPOINT,
+      unsubscribe: vi.fn(async () => {
+        throw new Error('push service down');
+      }),
+    };
+    post.mockRejectedValueOnce({ status: 0, message: 'Network error' });
+    stubBrowser({
+      permission: 'granted',
+      registrations: [fakeRegistration(SCRIPT(), subscription)],
+    });
+    await expect(releasePushSubscription()).resolves.toBeUndefined();
+    expect(subscription.unsubscribe).toHaveBeenCalledTimes(1);
+
+    const container = stubBrowser({ permission: 'granted' });
+    container.getRegistrations.mockRejectedValueOnce(new Error('no workers'));
+    await expect(releasePushSubscription()).resolves.toBeUndefined();
+  });
+
+  test('gives up rather than holding up signing out', async () => {
+    const container = stubBrowser({ permission: 'granted' });
+    container.getRegistrations.mockReturnValueOnce(new Promise(() => {}));
+    rememberPushOwner('alice', ENDPOINT);
+    const started = Date.now();
+    await releasePushSubscription(50);
+    expect(Date.now() - started).toBeLessThan(1000);
+    expect(ownsPushSubscription('alice', ENDPOINT)).toBe(false);
   });
 });
 

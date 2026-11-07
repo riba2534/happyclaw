@@ -4,7 +4,8 @@
  * Every route works on the caller's own subscriptions only. Guests have no
  * push (the guest guard denies the whole prefix, and each handler checks the
  * role as well). A subscription's endpoint must belong to a known push
- * service: the server posts to it, so it is never an arbitrary URL.
+ * service: the server posts to it, so it is never an arbitrary URL. The row
+ * belongs to the login session that registered it (see web-push-store.ts).
  */
 import { Hono } from 'hono';
 import { z } from 'zod';
@@ -85,7 +86,11 @@ pushRoutes.get('/status', (c) => {
   });
 });
 
-/** Register (or refresh) this browser's subscription. Idempotent. */
+/**
+ * Register (or refresh) this browser's subscription. Idempotent for the
+ * account that registered it; an endpoint another account registered is
+ * answered with 409 (see upsertWebPushSubscription).
+ */
 pushRoutes.post('/subscribe', async (c) => {
   const user = c.get('user') as AuthUser;
   if (!getVapidPublicKey()) {
@@ -101,13 +106,24 @@ pushRoutes.post('/subscribe', async (c) => {
   }
   const endpoint = normalizePushEndpoint(parsed.data.endpoint)!;
   const userAgent = c.req.header('user-agent')?.slice(0, 256) ?? null;
-  upsertWebPushSubscription({
+  const result = upsertWebPushSubscription({
     endpoint,
     userId: user.id,
+    sessionId: c.get('sessionId'),
     p256dh: parsed.data.keys.p256dh,
     auth: parsed.data.keys.auth,
     userAgent,
   });
+  if (result === 'conflict') {
+    return c.json(
+      {
+        error:
+          'This browser subscription belongs to another account; subscribe again',
+        code: 'push_subscription_conflict',
+      },
+      409,
+    );
+  }
   // Keep the newest; the account never accumulates dead devices without bound.
   const own = listWebPushSubscriptions(user.id);
   for (const row of own.slice(

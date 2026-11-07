@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 
 import { wsManager } from '../api/ws';
+import { useAuthStore } from '../stores/auth';
 import { useChatStore } from '../stores/chat';
 import { syncAppBadge } from '../utils/appBadge';
 import {
@@ -108,7 +109,9 @@ export function useWebPushLifecycle({ enabled }: { enabled: boolean }): void {
   useEffect(() => {
     if (!enabled || getPushSupport() !== 'supported') return;
     const sync = () => {
-      void syncExistingSubscription().catch(() => {});
+      void syncExistingSubscription(useAuthStore.getState().user?.id).catch(
+        () => {},
+      );
     };
     const comeToFront = () => {
       if (document.visibilityState !== 'visible') return;

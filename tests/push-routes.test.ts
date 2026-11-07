@@ -33,13 +33,15 @@ vi.mock('../src/middleware/auth.ts', async (importOriginal) => {
   return {
     ...actual,
     authMiddleware: async (c: any, next: any) => {
+      const id = process.env.HAPPYCLAW_TEST_USER_ID ?? 'alice';
       c.set('user', {
-        id: process.env.HAPPYCLAW_TEST_USER_ID ?? 'alice',
+        id,
         username: 'u',
         role: process.env.HAPPYCLAW_TEST_ROLE ?? 'member',
         status: 'active',
         permissions: [],
       });
+      c.set('sessionId', process.env.HAPPYCLAW_TEST_SESSION_ID ?? `s-${id}`);
       return next();
     },
   };
@@ -78,9 +80,10 @@ const KEYS = {
   auth: 'tBHItJI5svbpez7KI4CCXg',
 };
 
-function as(user: string, role = 'member') {
+function as(user: string, role = 'member', session = `s-${user}`) {
   process.env.HAPPYCLAW_TEST_USER_ID = user;
   process.env.HAPPYCLAW_TEST_ROLE = role;
+  process.env.HAPPYCLAW_TEST_SESSION_ID = session;
 }
 
 async function call(method: string, url: string, body?: unknown) {
@@ -115,6 +118,7 @@ afterAll(() => {
   delete process.env.HAPPYCLAW_SKIP_MIGRATION_BACKUP;
   delete process.env.HAPPYCLAW_TEST_USER_ID;
   delete process.env.HAPPYCLAW_TEST_ROLE;
+  delete process.env.HAPPYCLAW_TEST_SESSION_ID;
   fs.rmSync(root, { recursive: true, force: true });
 });
 
@@ -247,15 +251,44 @@ describe('/api/push', () => {
     expect(store.listWebPushSubscriptions('frank')).toEqual([]);
   });
 
-  test('another account registering the same device takes it over', async () => {
-    as('bob');
+  test("another account registering the device is refused and the device's row dropped", async () => {
     await call('POST', '/api/push/subscribe', {
       endpoint: endpoint(1),
       keys: KEYS,
     });
-    expect(store.getWebPushSubscription(endpoint(1))?.user_id).toBe('bob');
+    expect(store.getWebPushSubscription(endpoint(1))?.user_id).toBe('alice');
+    as('bob');
+    const res = await call('POST', '/api/push/subscribe', {
+      endpoint: endpoint(1),
+      keys: KEYS,
+    });
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe('push_subscription_conflict');
+    // Neither account receives this browser's pushes any more.
+    expect(store.getWebPushSubscription(endpoint(1))).toBeUndefined();
     expect(store.listWebPushSubscriptions('alice')).toEqual([]);
-    store.deleteWebPushSubscriptionByEndpoint(endpoint(1));
+    expect(store.listWebPushSubscriptions('bob')).toEqual([]);
+  });
+
+  test('a subscription belongs to the login session that registered it', async () => {
+    as('grace', 'member', 's-grace-1');
+    await call('POST', '/api/push/subscribe', {
+      endpoint: endpoint(400),
+      keys: KEYS,
+    });
+    expect(store.getWebPushSubscription(endpoint(400))?.session_id).toBe(
+      's-grace-1',
+    );
+    // Signing in again on the same browser moves it to the new session.
+    as('grace', 'member', 's-grace-2');
+    await call('POST', '/api/push/subscribe', {
+      endpoint: endpoint(400),
+      keys: KEYS,
+    });
+    expect(store.getWebPushSubscription(endpoint(400))?.session_id).toBe(
+      's-grace-2',
+    );
+    store.deleteWebPushSubscriptionByEndpoint(endpoint(400));
   });
 
   test("unsubscribe removes only the caller's own subscription and is idempotent", async () => {

@@ -42,6 +42,9 @@ vi.mock('../stores/chat', async () => {
   return { useChatStore };
 });
 vi.mock('../utils/appBadge', () => ({ syncAppBadge: mocks.syncAppBadge }));
+vi.mock('../stores/auth', () => ({
+  useAuthStore: { getState: () => ({ user: { id: 'alice' } }) },
+}));
 vi.mock('../utils/webPush', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../utils/webPush')>()),
   getPushSupport: () => 'supported',
@@ -220,6 +223,8 @@ describe('coming to the front', () => {
     await mount('/chat/ws');
     await act(async () => {});
     expect(mocks.syncExisting).toHaveBeenCalledTimes(1);
+    // Only a subscription this account opted in with is kept.
+    expect(mocks.syncExisting).toHaveBeenCalledWith('alice');
     expect(mocks.closeDelivered).toHaveBeenCalledTimes(1);
     // After the worker's badge, the in-page unread count is the badge again.
     expect(mocks.syncAppBadge).toHaveBeenLastCalledWith(3);

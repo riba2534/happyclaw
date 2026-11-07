@@ -44,6 +44,34 @@ function createUser(id: string): void {
   });
 }
 
+function createSession(
+  id: string,
+  userId: string,
+  expiresAt = '2099-01-01T00:00:00.000Z',
+): void {
+  db.createUserSession({
+    id,
+    user_id: userId,
+    ip_address: null,
+    user_agent: null,
+    created_at: NOW,
+    expires_at: expiresAt,
+    last_active_at: NOW,
+  });
+}
+
+function subscribe(
+  endpoint: string,
+  userId: string,
+  sessionId: string,
+  now?: string,
+) {
+  return store.upsertWebPushSubscription(
+    { endpoint, userId, sessionId, p256dh: 'k', auth: 'a' },
+    now,
+  );
+}
+
 function tableNames(conn: Database.Database): string[] {
   return (
     conn
@@ -65,6 +93,7 @@ beforeAll(() => {
 
   const legacy = new Database(databasePath);
   legacy.exec(`
+    DROP TRIGGER trg_web_push_subscriptions_session_end;
     DROP INDEX idx_web_push_subscriptions_user;
     DROP TABLE web_push_subscriptions;
   `);
@@ -97,6 +126,7 @@ describe('schema v90 web push subscriptions', () => {
         expect(columns).toEqual([
           'endpoint',
           'user_id',
+          'session_id',
           'p256dh',
           'auth',
           'user_agent',
@@ -110,7 +140,18 @@ describe('schema v90 web push subscriptions', () => {
               .prepare('PRAGMA index_list(web_push_subscriptions)')
               .all() as Array<{ name: string }>
           ).map((index) => index.name),
-        ).toContain('idx_web_push_subscriptions_user');
+        ).toEqual(
+          expect.arrayContaining([
+            'idx_web_push_subscriptions_user',
+            'idx_web_push_subscriptions_session',
+          ]),
+        );
+        // Without user_sessions (a bare connection) there is no trigger.
+        expect(
+          conn
+            .prepare("SELECT name FROM sqlite_master WHERE type = 'trigger'")
+            .all(),
+        ).toEqual([]);
         // Idempotent: binding again changes nothing.
         store.initWebPushStore(conn);
         expect(tableNames(conn)).toContain('web_push_subscriptions');
@@ -147,30 +188,39 @@ describe('schema v90 web push subscriptions', () => {
     const conn = new Database(databasePath, { readonly: true });
     try {
       expect(tableNames(conn)).toContain('web_push_subscriptions');
+      expect(
+        conn
+          .prepare(
+            "SELECT tbl_name FROM sqlite_master WHERE type = 'trigger' AND name = 'trg_web_push_subscriptions_session_end'",
+          )
+          .get(),
+      ).toEqual({ tbl_name: 'user_sessions' });
     } finally {
       conn.close();
     }
   });
 
-  test('stores one row per endpoint and re-owns it on re-registration', () => {
+  test('stores one row per endpoint and never moves it to another account', () => {
     createUser('other-user');
-    store.upsertWebPushSubscription(
-      {
-        endpoint: 'https://fcm.googleapis.com/e/1',
-        userId: 'push-owner',
-        p256dh: 'k1',
-        auth: 'a1',
-        userAgent: 'UA',
-      },
-      '2026-11-05T01:00:00.000Z',
-    );
-    store.upsertWebPushSubscription(
-      {
-        endpoint: 'https://fcm.googleapis.com/e/2',
-        userId: 'push-owner',
-        p256dh: 'k2',
-        auth: 'a2',
-      },
+    createSession('s-owner', 'push-owner');
+    createSession('s-other', 'other-user');
+    expect(
+      store.upsertWebPushSubscription(
+        {
+          endpoint: 'https://fcm.googleapis.com/e/1',
+          userId: 'push-owner',
+          sessionId: 's-owner',
+          p256dh: 'k1',
+          auth: 'a1',
+          userAgent: 'UA',
+        },
+        '2026-11-05T01:00:00.000Z',
+      ),
+    ).toBe('stored');
+    subscribe(
+      'https://fcm.googleapis.com/e/2',
+      'push-owner',
+      's-owner',
       '2026-11-05T02:00:00.000Z',
     );
     expect(
@@ -180,26 +230,65 @@ describe('schema v90 web push subscriptions', () => {
       'https://fcm.googleapis.com/e/2',
     ]);
 
-    // Same device, another account: the row moves, keys refresh, created_at stays.
+    // The owner refreshing it: keys and time refresh, created_at stays.
     store.upsertWebPushSubscription(
       {
         endpoint: 'https://fcm.googleapis.com/e/1',
-        userId: 'other-user',
+        userId: 'push-owner',
+        sessionId: 's-owner',
         p256dh: 'k1b',
         auth: 'a1b',
       },
       '2026-11-05T03:00:00.000Z',
     );
-    expect(store.listWebPushSubscriptions('push-owner')).toHaveLength(1);
     expect(
       store.getWebPushSubscription('https://fcm.googleapis.com/e/1'),
     ).toMatchObject({
-      user_id: 'other-user',
+      user_id: 'push-owner',
+      session_id: 's-owner',
       p256dh: 'k1b',
       auth: 'a1b',
       created_at: '2026-11-05T01:00:00.000Z',
       updated_at: '2026-11-05T03:00:00.000Z',
     });
+
+    // Same device, another account: refused, and the row is dropped.
+    expect(
+      subscribe('https://fcm.googleapis.com/e/1', 'other-user', 's-other'),
+    ).toBe('conflict');
+    expect(
+      store.getWebPushSubscription('https://fcm.googleapis.com/e/1'),
+    ).toBeUndefined();
+    expect(store.listWebPushSubscriptions('other-user')).toEqual([]);
+    subscribe('https://fcm.googleapis.com/e/1', 'push-owner', 's-owner');
+  });
+
+  test('a subscription ends with the login session that registered it', () => {
+    createUser('session-user');
+    createSession('s-a', 'session-user');
+    createSession('s-b', 'session-user');
+    createSession('s-c', 'session-user');
+    createSession('s-old', 'session-user', '2000-01-01T00:00:00.000Z');
+    subscribe('https://fcm.googleapis.com/s/a', 'session-user', 's-a');
+    subscribe('https://fcm.googleapis.com/s/b', 'session-user', 's-b');
+    subscribe('https://fcm.googleapis.com/s/c', 'session-user', 's-c');
+    subscribe('https://fcm.googleapis.com/s/old', 'session-user', 's-old');
+    const kept = () =>
+      store.listWebPushSubscriptions('session-user').map((row) => row.endpoint);
+
+    // Logout or revoking one session (DELETE /api/auth/sessions/:id).
+    db.deleteUserSession('s-a');
+    expect(kept()).toEqual([
+      'https://fcm.googleapis.com/s/b',
+      'https://fcm.googleapis.com/s/c',
+      'https://fcm.googleapis.com/s/old',
+    ]);
+    // An expired session.
+    expect(db.deleteExpiredSessions()).toBe(1);
+    expect(kept()).not.toContain('https://fcm.googleapis.com/s/old');
+    // A password change or reset, disabling or deleting the account.
+    db.deleteUserSessionsByUserId('session-user');
+    expect(kept()).toEqual([]);
   });
 
   test("deleting is scoped to the owner; the push service's 410 deletes by endpoint", () => {
@@ -227,18 +316,8 @@ describe('schema v90 web push subscriptions', () => {
   });
 
   test('deleting a user drops their subscriptions', () => {
-    store.upsertWebPushSubscription({
-      endpoint: 'https://fcm.googleapis.com/e/3',
-      userId: 'push-owner',
-      p256dh: 'k',
-      auth: 'a',
-    });
-    store.upsertWebPushSubscription({
-      endpoint: 'https://fcm.googleapis.com/e/4',
-      userId: 'other-user',
-      p256dh: 'k',
-      auth: 'a',
-    });
+    subscribe('https://fcm.googleapis.com/e/3', 'push-owner', 's-owner');
+    subscribe('https://fcm.googleapis.com/e/4', 'other-user', 's-other');
     db.deleteUser('push-owner');
     expect(store.listWebPushSubscriptions('push-owner')).toEqual([]);
     expect(store.listWebPushSubscriptions('other-user')).toHaveLength(1);

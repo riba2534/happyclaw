@@ -1,15 +1,28 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import {
+  dropSubscription,
   ensurePushRegistration,
   fetchVapidPublicKey,
+  forgetPushOwner,
   getPushSupport,
+  isSubscriptionConflict,
+  ownsPushSubscription,
   registerSubscription,
+  rememberPushOwner,
   setPushSubscribed,
   unregisterSubscription,
   urlBase64ToUint8Array,
 } from '../utils/webPush';
 import { api } from '../api/client';
+import { useAuthStore } from '../stores/auth';
+
+const CONFLICT_MESSAGE =
+  '这台设备上的推送订阅属于另一个账号，已清除；如需推送，请重新开启。';
+
+function currentUserId(): string | undefined {
+  return useAuthStore.getState().user?.id;
+}
 
 export type PushStatus =
   /** Looking at the worker, the server key and the existing subscription. */
@@ -86,10 +99,23 @@ export function usePushNotifications(): PushNotificationsApi {
         if (Notification.permission === 'denied') {
           setStatus('denied');
         } else if (subscription && Notification.permission === 'granted') {
+          // Another account opted in with this browser: not ours to keep.
+          if (!ownsPushSubscription(currentUserId(), subscription.endpoint)) {
+            await dropSubscription(subscription);
+            if (!cancelled) setStatus('off');
+            return;
+          }
           setStatus('on');
           setPushSubscribed(true);
           // Make sure the server has it (it may have lost the row).
-          await registerSubscription(subscription).catch(() => {});
+          try {
+            await registerSubscription(subscription);
+          } catch (err) {
+            if (isSubscriptionConflict(err)) {
+              await dropSubscription(subscription);
+              if (!cancelled) setStatus('off');
+            }
+          }
         } else {
           setStatus('off');
         }
@@ -113,8 +139,8 @@ export function usePushNotifications(): PushNotificationsApi {
     }
     setBusy(true);
     setError(null);
+    let subscription: PushSubscription | null = null;
     try {
-      let subscription: PushSubscription;
       const options = { userVisibleOnly: true, applicationServerKey: key };
       try {
         // First call of the tap handler, no await before it (see above).
@@ -126,10 +152,16 @@ export function usePushNotifications(): PushNotificationsApi {
         subscription = await registration.pushManager.subscribe(options);
       }
       await registerSubscription(subscription);
+      const userId = currentUserId();
+      if (userId) rememberPushOwner(userId, subscription.endpoint);
       setPushSubscribed(true);
       setStatus('on');
     } catch (err) {
-      if (Notification.permission === 'denied') {
+      if (subscription && isSubscriptionConflict(err)) {
+        await dropSubscription(subscription);
+        setStatus('off');
+        setError(CONFLICT_MESSAGE);
+      } else if (Notification.permission === 'denied') {
         setStatus('denied');
       } else {
         setError(describeError(err, '开启推送通知失败'));
@@ -153,6 +185,7 @@ export function usePushNotifications(): PushNotificationsApi {
           serverError = err;
         }
         await subscription.unsubscribe();
+        forgetPushOwner();
         if (serverError) {
           setError('已在本机关闭，服务器上的记录会在下次推送时自动清理');
         }

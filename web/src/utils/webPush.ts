@@ -127,6 +127,61 @@ export async function ensurePushRegistration(): Promise<ServiceWorkerRegistratio
   return registration;
 }
 
+// ─── Whose subscription this is ────────────────────────────────────────
+
+/**
+ * The account that opted in with this browser's subscription. A browser is
+ * shared by whoever signs in on it: the next account must never inherit a
+ * subscription it did not ask for, even when the server has already dropped
+ * the row (the session that registered it ended).
+ */
+const OWNER_KEY = 'happyclaw:push-owner';
+
+function readOwner(): { userId: string; endpoint: string } | null {
+  try {
+    const parsed = JSON.parse(
+      window.localStorage.getItem(OWNER_KEY) ?? 'null',
+    ) as {
+      userId?: unknown;
+      endpoint?: unknown;
+    } | null;
+    return typeof parsed?.userId === 'string' &&
+      typeof parsed.endpoint === 'string'
+      ? { userId: parsed.userId, endpoint: parsed.endpoint }
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+export function rememberPushOwner(userId: string, endpoint: string): void {
+  try {
+    window.localStorage.setItem(
+      OWNER_KEY,
+      JSON.stringify({ userId, endpoint }),
+    );
+  } catch {
+    // Without storage the subscription is dropped at the next check.
+  }
+}
+
+export function forgetPushOwner(): void {
+  try {
+    window.localStorage.removeItem(OWNER_KEY);
+  } catch {
+    // nothing to forget
+  }
+}
+
+/** Whether `userId` opted in with this subscription in this browser. */
+export function ownsPushSubscription(
+  userId: string | null | undefined,
+  endpoint: string,
+): boolean {
+  const owner = readOwner();
+  return !!userId && owner?.userId === userId && owner.endpoint === endpoint;
+}
+
 // ─── Server record ─────────────────────────────────────────────────────
 
 export async function fetchVapidPublicKey(): Promise<string | null> {
@@ -147,17 +202,41 @@ export async function registerSubscription(
   await api.post('/api/push/subscribe', { endpoint, keys });
 }
 
+/**
+ * The server refused the subscription because another account registered
+ * it (and dropped that account's row): this browser has to unsubscribe.
+ */
+export function isSubscriptionConflict(err: unknown): boolean {
+  return (
+    !!err &&
+    typeof err === 'object' &&
+    (err as { status?: unknown }).status === 409
+  );
+}
+
 export async function unregisterSubscription(endpoint: string): Promise<void> {
   await api.post('/api/push/unsubscribe', { endpoint });
+}
+
+/** Unsubscribe in this browser only; the server row is not ours to touch. */
+export async function dropSubscription(
+  subscription: PushSubscription,
+): Promise<void> {
+  setPushSubscribed(false);
+  forgetPushOwner();
+  await subscription.unsubscribe().catch(() => false);
 }
 
 /**
  * Re-register this browser's existing subscription with the server (it may
  * have restarted or lost the row). Never creates a subscription, never asks
- * for a permission, and never registers the worker. Returns whether this
- * browser is subscribed.
+ * for a permission, and never registers the worker. A subscription `userId`
+ * did not opt in with here, or one the server says another account holds,
+ * is unsubscribed instead. Returns whether this browser is subscribed.
  */
-export async function syncExistingSubscription(): Promise<boolean> {
+export async function syncExistingSubscription(
+  userId: string | null | undefined,
+): Promise<boolean> {
   if (getPushSupport() !== 'supported') return false;
   if (Notification.permission !== 'granted') {
     setPushSubscribed(false);
@@ -171,9 +250,54 @@ export async function syncExistingSubscription(): Promise<boolean> {
     setPushSubscribed(false);
     return false;
   }
+  if (!ownsPushSubscription(userId, subscription.endpoint)) {
+    await dropSubscription(subscription);
+    return false;
+  }
   setPushSubscribed(true);
-  await registerSubscription(subscription);
+  try {
+    await registerSubscription(subscription);
+  } catch (err) {
+    if (!isSubscriptionConflict(err)) throw err;
+    await dropSubscription(subscription);
+    return false;
+  }
   return true;
+}
+
+const RELEASE_TIMEOUT_MS = 3000;
+
+/**
+ * Signing out: remove this browser's subscription from the server and from
+ * the push service, so nothing of this account reaches the device any more.
+ * Never throws and gives up after a few seconds: signing out must go on.
+ */
+export async function releasePushSubscription(
+  timeoutMs = RELEASE_TIMEOUT_MS,
+): Promise<void> {
+  const release = async () => {
+    if (getPushSupport() !== 'supported') return;
+    const registration = await findPushRegistration();
+    const subscription = await registration?.pushManager.getSubscription();
+    if (!subscription) return;
+    await unregisterSubscription(subscription.endpoint).catch(() => {});
+    await subscription.unsubscribe().catch(() => false);
+  };
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      release(),
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, timeoutMs);
+      }),
+    ]);
+  } catch {
+    // Best effort; the server also drops the row with the session.
+  } finally {
+    clearTimeout(timer);
+    setPushSubscribed(false);
+    forgetPushOwner();
+  }
 }
 
 // ─── Notifications on screen ───────────────────────────────────────────

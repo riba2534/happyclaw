@@ -26,6 +26,7 @@ function subscription(endpoint: string, userId = 'owner'): Subscription {
   return {
     endpoint,
     user_id: userId,
+    session_id: 'session-1',
     p256dh: 'k',
     auth: 'a',
     user_agent: null,

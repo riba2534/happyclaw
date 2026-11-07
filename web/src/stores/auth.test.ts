@@ -6,6 +6,8 @@ const mocks = vi.hoisted(() => ({
   apiPost: vi.fn(),
   clearMessageSnapshotCache: vi.fn().mockResolvedValue(undefined),
   resetUsage: vi.fn(),
+  releasePushSubscription: vi.fn(),
+  order: [] as string[],
 }));
 
 vi.mock('../api/client', () => ({
@@ -19,6 +21,9 @@ vi.mock('../api/client', () => ({
 
 vi.mock('../utils/messageSnapshotCache', () => ({
   clearMessageSnapshotCache: mocks.clearMessageSnapshotCache,
+}));
+vi.mock('../utils/webPush', () => ({
+  releasePushSubscription: mocks.releasePushSubscription,
 }));
 
 const { useAuthStore } = await import('./auth');
@@ -68,6 +73,10 @@ beforeEach(() => {
   });
   mocks.clearMessageSnapshotCache.mockClear();
   mocks.resetUsage.mockClear();
+  mocks.order.length = 0;
+  mocks.releasePushSubscription.mockReset().mockImplementation(async () => {
+    mocks.order.push('release-push');
+  });
   useAuthStore.setState({
     authenticated: false,
     user: null,
@@ -121,5 +130,24 @@ describe('auth store sign-in from a public page', () => {
     // User-scoped stores that were loaded are reset synchronously; auth
     // never has to download them first.
     expect(mocks.resetUsage).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('auth store sign-out', () => {
+  test("drops this browser's push subscription while the session still counts", async () => {
+    useAuthStore.setState({ authenticated: true, user: registeredUser });
+    mocks.apiPost.mockImplementation(async (url: string) => {
+      mocks.order.push(url);
+      return { success: true };
+    });
+
+    await useAuthStore.getState().logout();
+
+    expect(mocks.releasePushSubscription).toHaveBeenCalledTimes(1);
+    expect(mocks.order).toEqual(['release-push', '/api/auth/logout']);
+    expect(useAuthStore.getState()).toMatchObject({
+      authenticated: false,
+      user: null,
+    });
   });
 });

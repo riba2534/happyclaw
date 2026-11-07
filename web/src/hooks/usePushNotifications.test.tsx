@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => ({
   registerSubscription: vi.fn(),
   unregisterSubscription: vi.fn(),
   post: vi.fn(),
+  userId: 'alice' as string | undefined,
 }));
 
 vi.mock('../utils/webPush', async (importOriginal) => ({
@@ -22,12 +23,25 @@ vi.mock('../utils/webPush', async (importOriginal) => ({
   unregisterSubscription: mocks.unregisterSubscription,
 }));
 vi.mock('../api/client', () => ({ api: { post: mocks.post } }));
+vi.mock('../stores/auth', () => ({
+  useAuthStore: {
+    getState: () => ({ user: mocks.userId ? { id: mocks.userId } : null }),
+  },
+}));
 
 import {
   usePushNotifications,
   type PushNotificationsApi,
 } from './usePushNotifications';
-import { isPushSubscribed, setPushSubscribed } from '../utils/webPush';
+import {
+  forgetPushOwner,
+  isPushSubscribed,
+  ownsPushSubscription,
+  rememberPushOwner,
+  setPushSubscribed,
+} from '../utils/webPush';
+
+const ENDPOINT = 'https://fcm.googleapis.com/fcm/send/abc';
 
 (
   globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
@@ -67,7 +81,7 @@ function pushManager(subscription: unknown = null) {
 
 function makeSubscription() {
   return {
-    endpoint: 'https://fcm.googleapis.com/fcm/send/abc',
+    endpoint: ENDPOINT,
     toJSON: () => ({}),
     unsubscribe: vi.fn(async () => true),
   };
@@ -89,6 +103,14 @@ beforeEach(() => {
   mocks.unregisterSubscription.mockReset().mockResolvedValue(undefined);
   mocks.ensurePushRegistration.mockReset();
   mocks.post.mockReset();
+  mocks.userId = 'alice';
+  const items = new Map<string, string>();
+  vi.stubGlobal('localStorage', {
+    getItem: (key: string) => items.get(key) ?? null,
+    setItem: (key: string, value: string) => void items.set(key, value),
+    removeItem: (key: string) => void items.delete(key),
+  });
+  forgetPushOwner();
   setPushSubscribed(false);
 });
 
@@ -143,6 +165,7 @@ describe('usePushNotifications', () => {
 
     act(() => root?.unmount());
     stubNotification('granted');
+    rememberPushOwner('alice', ENDPOINT);
     const subscription = makeSubscription();
     mocks.ensurePushRegistration.mockResolvedValue({
       pushManager: pushManager(subscription),
@@ -151,6 +174,38 @@ describe('usePushNotifications', () => {
     expect(current.status).toBe('on');
     expect(isPushSubscribed()).toBe(true);
     expect(mocks.registerSubscription).toHaveBeenCalledWith(subscription);
+  });
+
+  test("another account's subscription in this browser is dropped, not shown as on", async () => {
+    stubNotification('granted');
+    rememberPushOwner('bob', ENDPOINT);
+    const subscription = makeSubscription();
+    mocks.ensurePushRegistration.mockResolvedValue({
+      pushManager: pushManager(subscription),
+    });
+    await mount();
+    expect(current.status).toBe('off');
+    expect(isPushSubscribed()).toBe(false);
+    expect(subscription.unsubscribe).toHaveBeenCalledTimes(1);
+    expect(mocks.registerSubscription).not.toHaveBeenCalled();
+  });
+
+  test('a subscription the server says another account holds is dropped', async () => {
+    stubNotification('granted');
+    rememberPushOwner('alice', ENDPOINT);
+    const subscription = makeSubscription();
+    mocks.ensurePushRegistration.mockResolvedValue({
+      pushManager: pushManager(subscription),
+    });
+    mocks.registerSubscription.mockRejectedValueOnce({
+      status: 409,
+      message: 'conflict',
+    });
+    await mount();
+    expect(current.status).toBe('off');
+    expect(isPushSubscribed()).toBe(false);
+    expect(subscription.unsubscribe).toHaveBeenCalledTimes(1);
+    expect(ownsPushSubscription('alice', ENDPOINT)).toBe(false);
   });
 
   test('enable subscribes synchronously inside the tap, before any await', async () => {
@@ -177,6 +232,29 @@ describe('usePushNotifications', () => {
     expect(current.status).toBe('on');
     expect(current.error).toBeNull();
     expect(isPushSubscribed()).toBe(true);
+    // This browser now knows whose subscription it holds.
+    expect(ownsPushSubscription('alice', ENDPOINT)).toBe(true);
+  });
+
+  test('enable with an endpoint another account holds asks to opt in again', async () => {
+    stubNotification('granted');
+    const subscription = makeSubscription();
+    const manager = pushManager();
+    manager.subscribe.mockResolvedValue(subscription);
+    mocks.ensurePushRegistration.mockResolvedValue({ pushManager: manager });
+    await mount();
+    mocks.registerSubscription.mockRejectedValueOnce({
+      status: 409,
+      message: 'conflict',
+    });
+    await act(async () => {
+      await current.enable();
+    });
+    expect(subscription.unsubscribe).toHaveBeenCalledTimes(1);
+    expect(current.status).toBe('off');
+    expect(current.error).toMatch(/另一个账号/);
+    expect(isPushSubscribed()).toBe(false);
+    expect(ownsPushSubscription('alice', ENDPOINT)).toBe(false);
   });
 
   test('a denied prompt ends as denied; another failure is reported', async () => {
@@ -224,6 +302,7 @@ describe('usePushNotifications', () => {
 
   test('disable removes the server record and the browser subscription', async () => {
     stubNotification('granted');
+    rememberPushOwner('alice', ENDPOINT);
     const subscription = makeSubscription();
     mocks.ensurePushRegistration.mockResolvedValue({
       pushManager: pushManager(subscription),
@@ -241,10 +320,12 @@ describe('usePushNotifications', () => {
     expect(current.status).toBe('off');
     expect(isPushSubscribed()).toBe(false);
     expect(current.error).toBeNull();
+    expect(ownsPushSubscription('alice', ENDPOINT)).toBe(false);
   });
 
   test('disable still turns it off here when the server cannot be reached', async () => {
     stubNotification('granted');
+    rememberPushOwner('alice', ENDPOINT);
     const subscription = makeSubscription();
     mocks.ensurePushRegistration.mockResolvedValue({
       pushManager: pushManager(subscription),

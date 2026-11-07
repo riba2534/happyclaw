@@ -4,8 +4,11 @@
  *
  * db.ts binds this module to its connection; no other module touches the
  * table directly. The endpoint is the key: it identifies one browser
- * installation, so registering it again (a re-login, or another account on
- * the same device) moves the row to the new owner instead of duplicating it.
+ * installation. Each row also records the login session that registered it
+ * and goes away with that session (logout, revocation, a password change or
+ * reset, disabling the account, expiry): a device signed out of HappyClaw
+ * gets no more of its notifications. An endpoint another account holds is
+ * never moved over silently; see upsertWebPushSubscription.
  */
 
 interface SqliteRunResult {
@@ -26,6 +29,8 @@ interface SqliteDatabase {
 export interface WebPushSubscription {
   endpoint: string;
   user_id: string;
+  /** user_sessions.id of the login that registered it. */
+  session_id: string;
   p256dh: string;
   auth: string;
   user_agent: string | null;
@@ -37,6 +42,7 @@ export interface WebPushSubscription {
 export interface WebPushSubscriptionInput {
   endpoint: string;
   userId: string;
+  sessionId: string;
   p256dh: string;
   auth: string;
   userAgent?: string | null;
@@ -68,6 +74,7 @@ export function initWebPushStore(db: SqliteDatabase | null): void {
     CREATE TABLE IF NOT EXISTS web_push_subscriptions (
       endpoint TEXT PRIMARY KEY,
       user_id TEXT NOT NULL,
+      session_id TEXT NOT NULL,
       p256dh TEXT NOT NULL,
       auth TEXT NOT NULL,
       user_agent TEXT,
@@ -77,33 +84,71 @@ export function initWebPushStore(db: SqliteDatabase | null): void {
     );
     CREATE INDEX IF NOT EXISTS idx_web_push_subscriptions_user
       ON web_push_subscriptions(user_id);
+    CREATE INDEX IF NOT EXISTS idx_web_push_subscriptions_session
+      ON web_push_subscriptions(session_id);
   `);
+  // Every way a login session ends deletes its row in user_sessions; the
+  // trigger follows all of them, also with foreign keys switched off.
+  const hasSessions = db
+    .prepare(
+      "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'user_sessions'",
+    )
+    .get();
+  if (hasSessions) {
+    db.exec(`
+      CREATE TRIGGER IF NOT EXISTS trg_web_push_subscriptions_session_end
+      AFTER DELETE ON user_sessions
+      BEGIN
+        DELETE FROM web_push_subscriptions WHERE session_id = OLD.id;
+      END;
+    `);
+  }
 }
 
-/** Store a subscription; an endpoint already known is re-owned and refreshed. */
+export type WebPushUpsertResult =
+  | 'stored'
+  /**
+   * The endpoint was registered by another account. That row is deleted and
+   * nothing is stored: the browser must unsubscribe, and this account opt in
+   * again with a new subscription.
+   */
+  | 'conflict';
+
+/**
+ * Store or refresh the caller's subscription. Re-registering one's own
+ * endpoint (a refresh, a new login) moves it to the current session.
+ */
 export function upsertWebPushSubscription(
   input: WebPushSubscriptionInput,
   now = new Date().toISOString(),
-): void {
+): WebPushUpsertResult {
+  const existing = getWebPushSubscription(input.endpoint);
+  if (existing && existing.user_id !== input.userId) {
+    deleteWebPushSubscriptionByEndpoint(input.endpoint);
+    return 'conflict';
+  }
   stmt(
     `INSERT INTO web_push_subscriptions
-       (endpoint, user_id, p256dh, auth, user_agent, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)
+       (endpoint, user_id, session_id, p256dh, auth, user_agent, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(endpoint) DO UPDATE SET
-       user_id = excluded.user_id,
+       session_id = excluded.session_id,
        p256dh = excluded.p256dh,
        auth = excluded.auth,
        user_agent = excluded.user_agent,
-       updated_at = excluded.updated_at`,
+       updated_at = excluded.updated_at
+     WHERE web_push_subscriptions.user_id = excluded.user_id`,
   ).run(
     input.endpoint,
     input.userId,
+    input.sessionId,
     input.p256dh,
     input.auth,
     input.userAgent ?? null,
     now,
     now,
   );
+  return 'stored';
 }
 
 export function listWebPushSubscriptions(
