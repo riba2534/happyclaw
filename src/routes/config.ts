@@ -3861,13 +3861,10 @@ configRoutes.put(
         validation.data.externalClaudeDir !== before.externalClaudeDir;
       const hostContextChanged =
         mainContextSourceChanged || externalClaudeDirChanged;
-      const adminHostOnlyModeChanged =
-        validation.data.adminHostOnlyMode !== undefined &&
-        validation.data.adminHostOnlyMode !== before.adminHostOnlyMode;
-      const enablingAdminHostOnlyMode =
-        (adminHostOnlyModeChanged &&
-          validation.data.adminHostOnlyMode === true) ||
-        enablingSingleUserHost;
+      // Effective host-only turning on: the stored switch, or single-user
+      // host mode. Already on (stored true, then single-user host), there is
+      // nothing to migrate and no runner or session to reset.
+      const enablingAdminHostOnlyMode = !hostOnlyBefore && hostOnlyAfter;
       const pendingRuntimeCleanupFolders =
         getPendingAdminHostOnlyCleanupFolders();
       const repairingRuntimeCleanup = pendingRuntimeCleanupFolders.length > 0;

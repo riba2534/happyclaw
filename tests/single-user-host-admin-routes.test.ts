@@ -508,3 +508,27 @@ describe('switching back to multi-user', () => {
     expect(childCalls.some(([command]) => command === 'docker')).toBe(true);
   });
 });
+
+describe('switching to single-user host with admin host-only already on', () => {
+  test('migrates nothing, so it stops no runner and keeps every session', async () => {
+    runtimeConfig.saveSystemSettings({ adminHostOnlyMode: true });
+    db.setRegisteredGroup('web:owner-host', {
+      name: 'Owner host',
+      folder: 'owner-host',
+      added_at: new Date().toISOString(),
+      executionMode: 'host',
+      created_by: ADMIN,
+    });
+    db.setSession('owner-host', 'host-session');
+    stopGroup.mockClear();
+
+    const response = await putHost({ deploymentMode: 'single_user_host' });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      adminHostOnlyMode: true,
+      deploymentMode: 'single_user_host',
+    });
+    expect(stopGroup).not.toHaveBeenCalled();
+    expect(db.getSession('owner-host')).toBe('host-session');
+  });
+});
