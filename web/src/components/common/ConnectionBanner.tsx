@@ -9,7 +9,9 @@ import { useIsPhone } from '../layout/phone';
 
 /**
  * A reconnect this quick is not worth a word: a phone coming back to the
- * foreground reconnects in about a second, and used to flash two toasts.
+ * foreground reconnects in about a second, and used to flash two toasts. The
+ * browser going offline waits the same: a network handoff flips that flag
+ * for a moment while the socket survives.
  */
 export const RECONNECT_GRACE_MS = 2500;
 const RESTORED_MS = 2000;
@@ -31,17 +33,16 @@ function useConnectionNotice(): Notice | null {
   const connectedOnce = useRef(false);
 
   useEffect(() => {
-    if (status === 'offline') {
-      setNotice('offline');
-      return;
-    }
-    if (status === 'reconnecting') {
-      // Back online but not reconnected yet: say so at once.
+    if (status !== 'connected') {
+      // Neither a dropped socket nor the browser's offline flag is proof of
+      // an outage on its own. Once a notice shows, it follows the status at
+      // once; before that, a cut that heals inside the grace period is
+      // never mentioned.
       setNotice((current) =>
-        current === 'offline' ? 'reconnecting' : current,
+        current === 'offline' || current === 'reconnecting' ? status : current,
       );
       const timer = window.setTimeout(
-        () => setNotice('reconnecting'),
+        () => setNotice(status),
         RECONNECT_GRACE_MS,
       );
       return () => window.clearTimeout(timer);

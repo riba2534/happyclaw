@@ -472,8 +472,8 @@ test.describe('phone model entry', () => {
         element.getAttribute('enterkeyhint'),
       ]),
     ).toEqual(['16px', 'none', 'off', 'search']);
-    // Searching makes room: the sheet goes to its full detent.
-    await expect(sheet).toHaveAttribute('data-snap', 'half');
+    // The sheet opens full, and searching keeps it there.
+    await expect(sheet).toHaveAttribute('data-snap', 'full');
     await search.tap();
     await expect(sheet).toHaveAttribute('data-snap', 'full');
   });
@@ -636,5 +636,139 @@ test.describe('phone model sheet at 390px', () => {
       expect(box!.x).toBeGreaterThanOrEqual(0);
       expect(box!.x + box!.width).toBeLessThanOrEqual(390.5);
     }
+  });
+});
+
+test.describe('pinned models', () => {
+  const CHATGPT = 'ChatGPT 订阅 (someone@example.com)';
+  const firstRow = (page: Page) => page.locator('[data-model-row]').first();
+  /** A finger held on a row: no hover on a phone, so pins come this way. */
+  async function longPress(target: Locator) {
+    const init = { pointerId: 7, pointerType: 'touch', isPrimary: true };
+    await target.dispatchEvent('pointerdown', init);
+    await target.page().waitForTimeout(650);
+    await target.dispatchEvent('pointerup', init);
+    // The click a real release makes, which the long press swallows.
+    await target.dispatchEvent('click');
+  }
+
+  test('a desktop pins from the button a hovered row shows, and by keyboard', async ({
+    page,
+    isMobile,
+  }) => {
+    test.skip(isMobile, 'a phone has no hover');
+    const { puts } = await openHarness(page);
+    await modelButton(page).click();
+    const pin = page.getByRole('button', {
+      name: `置顶「${CHATGPT} · gpt-5.5」`,
+    });
+    await expect(pin).toHaveCSS('opacity', '0');
+    await modelRow(page, 'gpt-5.5').hover();
+    await expect(pin).toHaveCSS('opacity', '1');
+    await pin.click();
+    await expect(firstRow(page)).toHaveAttribute('title', 'gpt-5.5');
+    await expect(page.getByText('置顶', { exact: true })).toBeVisible();
+
+    // Tab from the row reaches its pin; a pinned row's pin stays shown.
+    await modelRow(page, 'gpt-5.5').focus();
+    await page.keyboard.press('Tab');
+    const unpin = page.getByRole('button', {
+      name: `取消置顶「${CHATGPT} · gpt-5.5」`,
+    });
+    await expect(unpin).toBeFocused();
+    await expect(unpin).toHaveCSS('opacity', '1');
+    await page.keyboard.press('Enter');
+    await expect(page.locator('[data-model-row][data-pinned]')).toHaveCount(0);
+    expect(puts).toHaveLength(0);
+  });
+
+  test.describe('a tablet', () => {
+    // Wider than a phone, so the picker is the desktop popover, but nothing
+    // hovers there.
+    test.use({
+      viewport: { width: 1180, height: 820 },
+      hasTouch: true,
+      isMobile: false,
+    });
+
+    test('shows the pin beside the row, pins by a long press too, and a tap on the row picks', async ({
+      page,
+    }, testInfo) => {
+      test.skip(
+        testInfo.project.name !== 'chromium-desktop',
+        'one tablet window is enough',
+      );
+      const { puts } = await openHarness(page);
+      await modelButton(page).tap();
+      await expect(page.locator('[data-slot="sheet-content"]')).toHaveCount(0);
+      const row = modelRow(page, 'gpt-5.5');
+      await expect(row).toBeVisible();
+      const pin = page.getByRole('button', {
+        name: `置顶「${CHATGPT} · gpt-5.5」`,
+      });
+      await expect(pin).toHaveCSS('opacity', '1');
+      // Its layout size: the popover may still be scaling in.
+      const size = await pin.evaluate((el: HTMLElement) => ({
+        width: el.offsetWidth,
+        height: el.offsetHeight,
+      }));
+      expect(size.width).toBeGreaterThanOrEqual(44);
+      expect(size.height).toBeGreaterThanOrEqual(44);
+      const pinBox = (await pin.boundingBox())!;
+      const rowBox = (await row.boundingBox())!;
+      // Beside the row, not over its end.
+      expect(pinBox.x).toBeGreaterThanOrEqual(rowBox.x + rowBox.width);
+      await pin.tap();
+      await expect(firstRow(page)).toHaveAttribute('title', 'gpt-5.5');
+      expect(puts).toHaveLength(0);
+
+      await longPress(modelRow(page, 'gpt-6-astra'));
+      await page.getByRole('button', { name: '置顶「gpt-6-astra」' }).tap();
+      await expect(page.locator('[data-model-row][data-pinned]')).toHaveCount(
+        2,
+      );
+      expect(puts).toHaveLength(0);
+      await expect(page.locator('[data-slot="sheet-content"]')).toHaveCount(0);
+
+      // The row's own end picks its model; it does not pin or unpin.
+      const astra = (await modelRow(page, 'gpt-6-astra').boundingBox())!;
+      await page.touchscreen.tap(
+        astra.x + astra.width - 4,
+        astra.y + astra.height / 2,
+      );
+      await expect.poll(() => puts.length).toBe(1);
+      expect(puts[0]).toMatchObject({
+        modelConfigId: 'chatgpt',
+        model: 'gpt-6-astra',
+      });
+      await modelButton(page).tap();
+      await expect(page.locator('[data-model-row][data-pinned]')).toHaveCount(
+        2,
+      );
+    });
+  });
+
+  test('a phone pins by a long press in the sheet, a tap still picks', async ({
+    page,
+    isMobile,
+  }) => {
+    test.skip(!isMobile, 'the long press is a phone gesture');
+    const { puts } = await openHarness(page);
+    await modelButton(page).click();
+    const sheet = page.locator('[data-slot="sheet-content"]').first();
+    await expect(sheet).toBeVisible();
+    await longPress(modelRow(page, 'gpt-5.5'));
+    await page.getByRole('button', { name: '置顶「gpt-5.5」' }).click();
+    // The model sheet stays, its pinned row first; nothing was picked.
+    await expect(sheet).toBeVisible();
+    await expect(firstRow(page)).toHaveAttribute('title', 'gpt-5.5');
+    expect(puts).toHaveLength(0);
+
+    await modelRow(page, 'gpt-5.5').click();
+    await expect.poll(() => puts.length).toBe(1);
+    expect(puts[0]).toMatchObject({
+      modelConfigId: 'chatgpt',
+      model: 'gpt-5.5',
+    });
   });
 });

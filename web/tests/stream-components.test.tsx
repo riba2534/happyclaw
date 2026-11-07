@@ -215,7 +215,7 @@ describe('SubAgentCard', () => {
     );
     expect(html).toContain('检查移动端滚动');
     expect(html).toContain('已读完 3 个文件');
-    expect(html).toContain('执行中');
+    expect(html).toContain('运行中');
     expect(html).toContain('子 Agent：');
     expect(html).toContain('aria-expanded="false"');
     expect(html).not.toContain('读取 a.ts');

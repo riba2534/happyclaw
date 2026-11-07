@@ -1037,6 +1037,7 @@ pre code.language-diff .hljs-deletion {
 }
 
 .floating-nav {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 2px;
@@ -1052,6 +1053,7 @@ pre code.language-diff .hljs-deletion {
 
 .floating-nav-item {
   position: relative;
+  z-index: 1;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1071,10 +1073,32 @@ pre code.language-diff .hljs-deletion {
   transform: scale(0.94);
 }
 
-/* Neutral selected state, same language as the desktop sidebar rows. */
+/* Neutral selected state, same language as the desktop sidebar rows. The
+   fill is one pill under the tabs that slides to the selected one. */
 .floating-nav-item.active {
-  background: var(--surface-selected);
   color: var(--foreground);
+}
+
+.floating-nav-indicator {
+  position: absolute;
+  top: 0;
+  left: 0;
+  border-radius: 9999px;
+  background: var(--surface-selected);
+  pointer-events: none;
+}
+
+.floating-nav-indicator.slide {
+  transition:
+    transform 320ms cubic-bezier(0.25, 1, 0.5, 1),
+    width 320ms cubic-bezier(0.25, 1, 0.5, 1);
+}
+
+/* With reduced motion the pill jumps to the new tab. */
+@media (prefers-reduced-motion: reduce) {
+  .floating-nav-indicator.slide {
+    transition: none;
+  }
 }
 
 @media (min-width: 1024px) {

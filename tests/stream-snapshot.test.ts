@@ -246,6 +246,31 @@ describe('stream_snapshot of a run in progress', () => {
     expect(task.activeTools.map((t) => t.toolUseId)).toEqual(['g2']);
   });
 
+  test('a sub-agent a stop killed is restored as stopped, not failed', () => {
+    const run = startRun();
+    for (const id of ['notified', 'killed', 'failed']) {
+      run.emit('task_start', { taskId: id, toolUseId: id });
+    }
+    run.emit('task_notification', {
+      taskId: 'notified',
+      taskStatus: 'stopped',
+    });
+    run.emit('task_updated', {
+      taskId: 'killed',
+      taskPatch: { status: 'killed' },
+    });
+    run.emit('task_updated', {
+      taskId: 'failed',
+      taskPatch: { status: 'failed' },
+    });
+    const { snapshot } = web.buildStreamSnapshot(run.jid)!;
+    const status = (id: string) =>
+      (snapshot.taskStates![id] as { status: string }).status;
+    expect(status('notified')).toBe('stopped');
+    expect(status('killed')).toBe('stopped');
+    expect(status('failed')).toBe('error');
+  });
+
   test('trace rows read exactly as the Web builds them', () => {
     const run = startRun();
     run.emit('tool_use_start', {
