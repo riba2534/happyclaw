@@ -23,7 +23,7 @@ import type {
 } from '../types.js';
 import { DEFAULT_WORK_MODE, type WorkMode } from '../work-items.js';
 import { checkGroupLimit } from '../billing.js';
-import { DATA_DIR, GROUPS_DIR, isDockerAvailable } from '../config.js';
+import { DATA_DIR, isDockerAvailable } from '../config.js';
 import {
   isHostExecutionGroup,
   hasHostExecutionPermission,
@@ -111,10 +111,10 @@ import {
   withAgentProfileLocks,
   WorkspaceRuntimeQuiesceError,
 } from '../agent-profile-runtime.js';
+import { isAdminHostOnlyEffective } from '../deployment-mode.js';
 import {
   getContainerEnvConfig,
   getProviders,
-  getSystemSettings,
   providerHasCredentials,
   saveContainerEnvConfig,
   toPublicContainerEnvConfig,
@@ -561,6 +561,18 @@ function buildGroupsPayload(user: AuthUser): Record<string, GroupPayloadItem> {
 
 import { removeFlowArtifacts } from '../file-manager.js';
 import {
+  assertRecordedWorkdirRemovable,
+  assignWorkspaceRootDirIfNew,
+  getRecordedWorkdirRecord,
+  releaseUnusedWorkdir,
+  UnsafeWorkdirError,
+  recordedWorkdirLogsDir,
+  getWorkspaceRootOccupancy,
+  workspaceDirOf,
+  workspacePathConflict,
+} from '../workspace-dir.js';
+import { getRootForNewWorkspaces } from '../workspace-root.js';
+import {
   getAutomationService,
   presentAutomationMessage,
 } from '../automation-run-ledger.js';
@@ -590,32 +602,71 @@ class WorkspaceFilesystemRollbackError extends AggregateError {
 }
 
 /**
+ * Remove `dir` if it holds nothing but empty directories (what a rebuild
+ * creates); anything with a file in it is left alone.
+ */
+function removeEmptyTree(dir: string): void {
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory()) return;
+    removeEmptyTree(path.join(dir, entry.name));
+  }
+  try {
+    fs.rmdirSync(dir);
+  } catch {
+    /* something appeared in it: leave it */
+  }
+}
+
+/**
  * Move destructive filesystem targets aside before touching SQLite. A handled
  * database failure can then restore the exact original directories instead of
  * returning 500 after files have already been permanently deleted.
  */
 function stageWorkspaceResetForGroup(folder: string): StagedWorkspaceReset {
   const suffix = `.rebuild-backup-${crypto.randomUUID()}`;
-  const groupDir = path.join(GROUPS_DIR, folder);
+  // A recorded directory is moved aside next to itself, in the workspace
+  // root, only after it passes the same check as a delete; its logs live in
+  // data/logs/<folder> instead of inside it.
+  const recordedWorkdir = getRecordedWorkdirRecord(folder);
+  if (recordedWorkdir) assertRecordedWorkdirRemovable(recordedWorkdir);
+  const groupDir = workspaceDirOf(folder);
   const sessionDir = path.join(DATA_DIR, 'sessions', folder);
   const ipcDir = path.join(DATA_DIR, 'ipc', folder);
   const legacyMemoryDir = path.join(DATA_DIR, 'memory', folder);
-  const targets = [groupDir, sessionDir, ipcDir, legacyMemoryDir].map(
-    (targetPath) => ({
-      targetPath,
-      backupPath: `${targetPath}${suffix}`,
-      moved: false,
-    }),
-  );
+  const logsDir = recordedWorkdir ? [recordedWorkdirLogsDir(folder)] : [];
+  const targets = [
+    groupDir,
+    sessionDir,
+    ipcDir,
+    legacyMemoryDir,
+    ...logsDir,
+  ].map((targetPath) => ({
+    targetPath,
+    backupPath: `${targetPath}${suffix}`,
+    existed: fs.existsSync(targetPath),
+    moved: false,
+  }));
 
+  // Only what this rebuild made goes: the fresh directory standing in for a
+  // moved original, or one it created where nothing was. An original that
+  // could not be moved (EACCES, EBUSY) is still in place and is never
+  // touched.
   const rollback = () => {
     const errors: unknown[] = [];
     for (const target of [...targets].reverse()) {
       try {
-        fs.rmSync(target.targetPath, { recursive: true, force: true });
         if (target.moved) {
+          fs.rmSync(target.targetPath, { recursive: true, force: true });
           fs.renameSync(target.backupPath, target.targetPath);
           target.moved = false;
+        } else if (!target.existed) {
+          removeEmptyTree(target.targetPath);
         }
       } catch (error) {
         errors.push(error);
@@ -694,6 +745,14 @@ async function discardFamilyWork(
   jids: string[],
 ): Promise<void> {
   await Promise.all(jids.map((j) => queue.stopGroup(j, { force: true })));
+}
+
+function unsafeWorkdirConflict(err: UnsafeWorkdirError) {
+  return {
+    error: err.message,
+    code: 'WORKSPACE_DIR_UNSAFE',
+    reason: err.reason,
+  };
 }
 
 class DirtyWorktreesError extends Error {
@@ -789,8 +848,13 @@ groupRoutes.get('/', authMiddleware, (c) => {
   const groups = buildGroupsPayload(user);
   return c.json({
     groups,
-    admin_host_only_mode:
-      user.role === 'admin' && getSystemSettings().adminHostOnlyMode,
+    admin_host_only_mode: user.role === 'admin' && isAdminHostOnlyEffective(),
+    // Where a new Host workspace without a custom directory is created;
+    // null also when no root is usable (it goes to data/groups/<folder>).
+    workspace_root:
+      user.role === 'admin'
+        ? getRootForNewWorkspaces(getWorkspaceRootOccupancy())
+        : null,
   });
 });
 
@@ -831,7 +895,7 @@ groupRoutes.post('/', authMiddleware, async (c) => {
   const adminHostOnlyMode =
     authUser.role === 'admin' &&
     authUser.status === 'active' &&
-    getSystemSettings().adminHostOnlyMode;
+    isAdminHostOnlyEffective();
   if (adminHostOnlyMode && validation.data.execution_mode === 'container') {
     return c.json(
       {
@@ -880,7 +944,7 @@ groupRoutes.post('/', authMiddleware, async (c) => {
       return c.json(
         {
           error:
-            'Only an active administrator can mount host directories into a workspace',
+            'Only an active administrator can add additional mounts (host directories or storage sources) to a workspace',
           code: 'HOST_MOUNT_ADMIN_REQUIRED',
         },
         403,
@@ -889,7 +953,8 @@ groupRoutes.post('/', authMiddleware, async (c) => {
     if (executionMode !== 'container') {
       return c.json(
         {
-          error: 'Host directory mounts are only valid for container mode',
+          error:
+            'Additional mounts (host directories and storage sources) are only valid for container mode',
           code: 'HOST_MOUNT_CONTAINER_ONLY',
         },
         400,
@@ -903,11 +968,20 @@ groupRoutes.post('/', authMiddleware, async (c) => {
   if (requestedAdditionalMounts.length > 0) {
     try {
       validatedAdditionalMounts = validateAdditionalMountsStrict(
-        requestedAdditionalMounts.map((mount) => ({
-          hostPath: mount.host_path,
-          containerPath: mount.container_path,
-          readonly: mount.readonly,
-        })),
+        requestedAdditionalMounts.map((mount) =>
+          'source' in mount
+            ? {
+                source: mount.source,
+                ...(mount.sub_path ? { subPath: mount.sub_path } : {}),
+                containerPath: mount.container_path,
+                readonly: mount.readonly,
+              }
+            : {
+                hostPath: mount.host_path,
+                containerPath: mount.container_path,
+                readonly: mount.readonly,
+              },
+        ),
         name,
         false,
       );
@@ -976,6 +1050,17 @@ groupRoutes.post('/', authMiddleware, async (c) => {
       } catch {
         return c.json({ error: 'custom_cwd directory does not exist' }, 400);
       }
+      // Workspace roots hold other workspaces' directories: a custom
+      // directory inside one, or around one (like ~), would expose them.
+      const conflict = workspacePathConflict(realPath);
+      if (conflict) {
+        return c.json(
+          {
+            error: `custom_cwd 不能与工作区根目录或其他工作区的目录 ${conflict} 重叠。`,
+          },
+          400,
+        );
+      }
 
       // 白名单校验：检查路径是否在允许的根目录下，并过滤敏感路径
       // （与 init_source_path 对齐：之前缺少 matchesBlockedPattern，可把
@@ -1043,6 +1128,17 @@ groupRoutes.post('/', authMiddleware, async (c) => {
     } catch {
       return c.json(
         { error: 'init_source_path directory does not exist' },
+        400,
+      );
+    }
+    // Copying from inside or around a workspace root copies other
+    // workspaces' files.
+    const sourceConflict = workspacePathConflict(realPath);
+    if (sourceConflict) {
+      return c.json(
+        {
+          error: `init_source_path 不能与工作区根目录或其他工作区的目录 ${sourceConflict} 重叠。`,
+        },
         400,
       );
     }
@@ -1169,7 +1265,7 @@ groupRoutes.post('/', authMiddleware, async (c) => {
   // registered workspace or its Agent membership. This removes the rollback
   // race entirely: while clone/copy awaits, migration/delete routes cannot see
   // the workspace, and a failure has no DB membership to undo.
-  const groupDir = path.join(GROUPS_DIR, folder);
+  const groupDir = workspaceDirOf(folder);
   try {
     if (initSourcePath) {
       await fsp.mkdir(groupDir, { recursive: true });
@@ -1256,7 +1352,7 @@ groupRoutes.post('/', authMiddleware, async (c) => {
             group.executionMode !== 'host' &&
             currentOwner?.role === 'admin' &&
             currentOwner.status === 'active' &&
-            getSystemSettings().adminHostOnlyMode
+            isAdminHostOnlyEffective()
           ) {
             hostOnlyPolicyChangedDuringCreate = true;
             return undefined;
@@ -1276,6 +1372,7 @@ groupRoutes.post('/', authMiddleware, async (c) => {
               setWorkspaceWorkMode(folder, workMode);
             }
             setRegisteredGroup(jid, group);
+            assignWorkspaceRootDirIfNew(jid, group);
             updateChatName(jid, name);
             deps.getRegisteredGroups()[jid] = group;
             return lockedProfile;
@@ -1290,6 +1387,7 @@ groupRoutes.post('/', authMiddleware, async (c) => {
             }
             deleteWorkspaceAgentProfile(folder);
             deleteChatHistory(jid);
+            releaseUnusedWorkdir(folder);
             delete deps.getRegisteredGroups()[jid];
             throw err;
           }
@@ -1415,7 +1513,7 @@ groupRoutes.patch('/:jid', authMiddleware, async (c) => {
     execution_mode === 'container' &&
     authUser.role === 'admin' &&
     authUser.status === 'active' &&
-    getSystemSettings().adminHostOnlyMode
+    isAdminHostOnlyEffective()
   ) {
     return c.json(
       {
@@ -1555,7 +1653,7 @@ groupRoutes.patch('/:jid', authMiddleware, async (c) => {
         execution_mode === 'container' &&
         authUser.role === 'admin' &&
         authUser.status === 'active' &&
-        getSystemSettings().adminHostOnlyMode
+        isAdminHostOnlyEffective()
       ) {
         throw new AdminHostOnlyModeConflictError();
       }
@@ -2099,6 +2197,19 @@ groupRoutes.delete('/:jid', authMiddleware, async (c) => {
       confirmedWorktrees,
     );
     if (freshWorktreeBlock) return freshWorktreeBlock;
+    // A recorded directory is deleted only when it is exactly the one
+    // HappyClaw made; otherwise nothing at all is deleted.
+    const recordedWorkdir = getRecordedWorkdirRecord(freshExisting.folder);
+    if (recordedWorkdir) {
+      try {
+        assertRecordedWorkdirRemovable(recordedWorkdir);
+      } catch (err) {
+        if (err instanceof UnsafeWorkdirError) {
+          return c.json(unsafeWorkdirConflict(err), 409);
+        }
+        throw err;
+      }
+    }
 
     const channelUpdates: Array<{ jid: string; group: RegisteredGroup }> = [];
     deleteGroupData(jid, freshExisting.folder, {
@@ -2136,7 +2247,7 @@ groupRoutes.delete('/:jid', authMiddleware, async (c) => {
     delete registeredGroups[jid];
     deps.setLastAgentTimestamp(jid, { timestamp: '', id: '' });
 
-    removeFlowArtifacts(freshExisting.folder);
+    removeFlowArtifacts(freshExisting.folder, recordedWorkdir);
     await releaseWorkspaceWorktrees(freshExisting.folder);
 
     logger.info(
@@ -2839,6 +2950,9 @@ groupRoutes.post('/:jid/clear-history', authMiddleware, async (c) => {
       confirmedWorktrees,
     );
     if (dirty.length > 0) throw new DirtyWorktreesError(dirty);
+    // Refuse before any queued work is dropped; staging checks again.
+    const recordedWorkdir = getRecordedWorkdirRecord(group.folder);
+    if (recordedWorkdir) assertRecordedWorkdirRemovable(recordedWorkdir);
     // The rebuild goes ahead: work queued before it is dropped; work that
     // arrives during it stays parked and runs against the fresh workspace.
     await discardFamilyWork(deps.queue, stopJids);
@@ -2922,6 +3036,9 @@ groupRoutes.post('/:jid/clear-history', authMiddleware, async (c) => {
     }
     if (err instanceof DirtyWorktreesError && !rollbackError) {
       return c.json(dirtyWorktreesConflict(err.dirty), 409);
+    }
+    if (err instanceof UnsafeWorkdirError && !rollbackError) {
+      return c.json(unsafeWorkdirConflict(err), 409);
     }
     logger.error(
       {

@@ -186,6 +186,7 @@ export function SkillsPage() {
           ) : filtered.length === 0 ? (
             <EmptyState
               icon={Puzzle}
+              variant={searchQuery ? 'search' : 'empty'}
               title={searchQuery ? '没有找到匹配的技能' : '暂无技能'}
               className="border border-surface-border"
             />

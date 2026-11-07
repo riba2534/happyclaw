@@ -8,24 +8,21 @@ const mocks = vi.hoisted(() => ({
   createFlow: vi.fn(async () => ({ jid: 'web:new', folder: 'new' })),
   onCreated: vi.fn(),
   onClose: vi.fn(),
-}));
-
-vi.mock('../../stores/chat', () => {
-  const state = {
-    createFlow: mocks.createFlow,
+  chat: {
     groups: {},
     adminHostOnlyMode: false,
-  };
-  return {
-    useChatStore: (selector: (value: unknown) => unknown) => selector(state),
-  };
-});
-vi.mock('../../stores/auth', () => {
-  const state = { user: { role: 'member' } };
-  return {
-    useAuthStore: (selector: (value: unknown) => unknown) => selector(state),
-  };
-});
+    workspaceRoot: null as string | null,
+  },
+  auth: { user: { role: 'member' } },
+}));
+
+vi.mock('../../stores/chat', () => ({
+  useChatStore: (selector: (value: unknown) => unknown) =>
+    selector({ ...mocks.chat, createFlow: mocks.createFlow }),
+}));
+vi.mock('../../stores/auth', () => ({
+  useAuthStore: (selector: (value: unknown) => unknown) => selector(mocks.auth),
+}));
 vi.mock('../../stores/agent-profiles', () => {
   const state = {
     profiles: [
@@ -63,6 +60,9 @@ afterEach(async () => {
   root = null;
   document.body.innerHTML = '';
   vi.clearAllMocks();
+  mocks.chat.adminHostOnlyMode = false;
+  mocks.chat.workspaceRoot = null;
+  mocks.auth.user = { role: 'member' };
 });
 
 async function render() {
@@ -146,5 +146,34 @@ describe('creating a workspace: 工作方式', () => {
         interaction_mode: 'assistant',
       }),
     );
+  });
+});
+
+describe('creating a Host workspace: where it goes', () => {
+  async function openHostDirectory() {
+    mocks.auth.user = { role: 'admin' };
+    mocks.chat.adminHostOnlyMode = true;
+    await render();
+    const advanced = [...document.querySelectorAll('button')].find((entry) =>
+      entry.textContent?.includes('高级选项'),
+    )!;
+    await act(async () => advanced.click());
+    return document.querySelector<HTMLInputElement>('#workspace-custom-cwd')!;
+  }
+
+  test('the placeholder names the workspace root the server reports', async () => {
+    mocks.chat.workspaceRoot = '/home/me/happyclaw/';
+    const input = await openHostDirectory();
+    expect(input.placeholder).toBe('默认: /home/me/happyclaw/<文件夹>');
+    // Host-only mode (and single-user host mode, which reports it) leaves
+    // no Docker choice.
+    expect(
+      document.querySelector('input[name="execution_mode"][value="container"]'),
+    ).toBeNull();
+  });
+
+  test('an older server without workspace_root keeps the old hint', async () => {
+    const input = await openHostDirectory();
+    expect(input.placeholder).toBe('默认: data/groups/{folder}/');
   });
 });

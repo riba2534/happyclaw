@@ -227,13 +227,23 @@ export const ChannelMountInteractionModePatchSchema = z
   })
   .strict();
 
-export const AdditionalMountCreateSchema = z
-  .object({
-    host_path: z.string().trim().min(1).max(4096),
-    container_path: z.string().trim().min(1).max(512),
-    readonly: z.boolean().optional().default(true),
-  })
-  .strict();
+export const AdditionalMountCreateSchema = z.union([
+  z
+    .object({
+      host_path: z.string().trim().min(1).max(4096),
+      container_path: z.string().trim().min(1).max(512),
+      readonly: z.boolean().optional().default(true),
+    })
+    .strict(),
+  z
+    .object({
+      source: z.string().trim().min(1).max(63),
+      sub_path: z.string().max(1024).optional(),
+      container_path: z.string().trim().min(1).max(512),
+      readonly: z.boolean().optional().default(true),
+    })
+    .strict(),
+]);
 
 export const GroupCreateSchema = z.object({
   name: z.string().min(1).max(MAX_GROUP_NAME_LEN),
@@ -776,6 +786,9 @@ export const HostIntegrationSettingsSchema = z
     externalClaudeDir: z.string().max(512).optional(),
     pluginAutoScan: z.boolean().optional(),
     adminHostOnlyMode: z.boolean().optional(),
+    // '' clears the stored value; validated by src/workspace-root.ts.
+    workspaceRoot: z.string().max(1024).optional(),
+    deploymentMode: z.enum(['', 'multi_user', 'single_user_host']).optional(),
     mainAgentContextSource: z.enum(['managed', 'host_claude']).optional(),
     mainAgentAutoCompactWindow: z
       .number()

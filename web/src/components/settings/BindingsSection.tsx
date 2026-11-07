@@ -456,7 +456,11 @@ export function BindingsSection() {
                 className="py-10"
               />
             ) : (
-              <EmptyState title="没有匹配的渠道" className="py-10" />
+              <EmptyState
+                variant="search"
+                title="没有匹配的渠道"
+                className="py-10"
+              />
             )}
           </SettingsGroup>
         ) : (

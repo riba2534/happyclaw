@@ -189,7 +189,7 @@ import {
 import { assessContextBudget } from './context-budget.js';
 import {
   findClaudeMdExcludeLeaks,
-  resolveManagedHostClaudeMdExcludes,
+  resolveHostClaudeMdExcludes,
 } from './claude-memory-policy.js';
 import {
   escapeAttribute,
@@ -215,6 +215,11 @@ import {
   MAX_SILENT_STOP_CONTINUES,
 } from './silent-stop.js';
 import { ToolLoopDetector } from './tool-loop-detector.js';
+import {
+  type CliSecretFiles,
+  sweepOrphanCliSecretDirs,
+  writeCliSecretFiles,
+} from './cli-secret-files.js';
 
 // 路径解析：优先读取环境变量，降级到容器内默认路径（保持向后兼容）
 const WORKSPACE_GROUP =
@@ -558,9 +563,9 @@ function enrichContextAudit(
     audit.claudeMdExcludes ?? [],
   );
   if (excludedMemoryLeaks.length > 0) {
-    audit.warnings.push(
-      `managed context isolation failed; SDK loaded excluded memory: ${excludedMemoryLeaks.join(', ')}`,
-    );
+    const warning = `context isolation failed; SDK loaded excluded memory: ${excludedMemoryLeaks.join(', ')}`;
+    audit.warnings.push(warning);
+    logWarn(warning);
   }
   const claudeMemory = memoryFiles.find(
     (file) =>
@@ -2984,12 +2989,13 @@ async function runQueryAttempt(
     }),
     ...webFetchPreflightSettings(containerInput.webFetchPreflightPolicy),
   };
-  const claudeMdExcludes = resolveManagedHostClaudeMdExcludes({
+  const claudeMdExcludes = resolveHostClaudeMdExcludes({
     executionMode: contextAuditBase.executionMode,
     runtimePolicy: containerInput.agentProfile?.runtimePolicy,
     externalClaudeDir: contextAuditBase.externalClaudeDir,
     homeDir: process.env.HOME,
     projectRoot: contextAuditBase.projectRoot,
+    cwd: WORKSPACE_GROUP,
   });
   if (claudeMdExcludes.length > 0) {
     flagSettings.claudeMdExcludes = claudeMdExcludes;
@@ -3068,8 +3074,17 @@ async function runQueryAttempt(
   const userMcpServers = activeAgentMcpPolicy.includeUserMcpServers
     ? loadUserMcpServers()
     : {};
+  // HappyClaw's own server wins a name clash, as it did when both shared one
+  // mcpServers object.
+  const { happyclaw: _shadowed, ...externalMcpServers } = userMcpServers;
+  // Flag settings carry the connection token and user MCP servers their
+  // credentials: they go to the CLI as 0600 files, not argv (see
+  // cli-secret-files.ts). Written inside the try so a failed write still
+  // closes the IPC watcher; removed in the finally below.
+  let cliSecretFiles: CliSecretFiles | undefined;
 
   try {
+    cliSecretFiles = writeCliSecretFiles(flagSettings, externalMcpServers);
     const agentEffort = resolveRunSdkEffort(containerInput);
     log(
       agentEffort
@@ -3119,15 +3134,15 @@ async function runQueryAttempt(
       // stream events: the card's sub-agent transcript advances block by block
       // instead of only filling in when the subagent completes.
       forwardSubagentText: true,
-      settings: flagSettings as any,
+      settings: cliSecretFiles.settingsPath,
+      ...(cliSecretFiles.mcpConfigPath
+        ? { extraArgs: { 'mcp-config': cliSecretFiles.mcpConfigPath } }
+        : {}),
       ...(userPlugins && { plugins: userPlugins }),
       ...(activeAgentMcpPolicy.strictMcpConfig
         ? { strictMcpConfig: true }
         : {}),
-      mcpServers: {
-        ...userMcpServers,
-        happyclaw: mcpServerConfig,
-      },
+      mcpServers: { happyclaw: mcpServerConfig },
       hooks: {
         PreToolUse: [
           {
@@ -4542,6 +4557,7 @@ async function runQueryAttempt(
     // 定时器，以及旧 watcher 抢先 drain 本应进入新 query 的 IPC 消息。
     ipcPolling = false;
     ipcQueryWatcher.close();
+    cliSecretFiles?.dispose();
   }
 }
 
@@ -4647,6 +4663,13 @@ function forceExitWithSafetyNet(code: number): never {
 }
 
 async function main(): Promise<void> {
+  // SIGKILL gives a Runner no chance to remove its CLI secret files.
+  const sweptCliSecretDirs = sweepOrphanCliSecretDirs();
+  if (sweptCliSecretDirs > 0) {
+    log(
+      `Removed ${sweptCliSecretDirs} CLI secret file director(ies) left by killed Runners`,
+    );
+  }
   let containerInput: ContainerInput;
 
   try {

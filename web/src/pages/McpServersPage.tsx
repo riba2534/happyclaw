@@ -260,6 +260,7 @@ export function McpServersPage() {
           ) : filtered.length === 0 ? (
             <EmptyState
               icon={Server}
+              variant={searchQuery ? 'search' : 'empty'}
               title={
                 searchQuery ? '没有找到匹配的 MCP 服务器' : '暂无 MCP 服务器'
               }

@@ -548,8 +548,12 @@ test.describe('the settled card', () => {
     await open(page, 'scenario=settled');
     const card = page.locator('[data-hc-stream-card="settled"]');
     const summary = card.locator('[data-hc-process-card] > button');
-    // How long it worked; what it used is inside.
-    await expect(summary).toHaveText(/^已工作 \d+s$/);
+    // How long it worked, and that a call of the run failed; what it used is
+    // inside.
+    await expect(summary).toHaveText(/^已工作 \d+s · \d+ 个工具 · 1 个失败$/);
+    await expect(summary.locator('[data-hc-work-problems]')).toHaveClass(
+      /text-error/,
+    );
     await expect(summary).toHaveAttribute('aria-expanded', 'false');
     expect((await summary.boundingBox())!.height).toBeGreaterThanOrEqual(40);
     await expect(win(page)).toHaveCount(0);
@@ -558,6 +562,8 @@ test.describe('the settled card', () => {
     await summary.click();
     await expect(summary).toHaveAttribute('aria-expanded', 'true');
     await expect(win(page)).toBeVisible();
+    // Opened, the counts under the line say what failed: the line does not.
+    await expect(summary).toHaveText(/^已工作 \d+s$/);
     await expect(win(page).locator('[data-hc-work-counts]')).toContainText(
       '6 个工具',
     );

@@ -1241,6 +1241,28 @@ describe('the size of a stored step', () => {
 });
 
 describe('parseStoredSteps', () => {
+  test('keeps how a call ended without a result of its own', () => {
+    const base = {
+      id: 'tool-1',
+      kind: 'tool',
+      at: 1,
+      endedAt: 2,
+      status: 'error',
+      toolUseId: 'b',
+      toolName: 'Bash',
+    };
+    const [stopped, denied, other] = parseStoredSteps(
+      JSON.stringify([
+        { ...base, outcome: 'stopped' },
+        { ...base, id: 'tool-2', outcome: 'denied' },
+        { ...base, id: 'tool-3', outcome: 'exploded' },
+      ]),
+    );
+    expect(stopped.outcome).toBe('stopped');
+    expect(denied.outcome).toBe('denied');
+    expect(other.outcome).toBeUndefined();
+  });
+
   test('reads what was stored and nothing else', () => {
     const stored: StreamingStep[] = [
       {

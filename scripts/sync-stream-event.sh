@@ -76,6 +76,10 @@ sync_file "$ROOT/shared/automation.ts" "$ROOT/src/automation.ts"
 sync_file "$ROOT/shared/automation.ts" "$ROOT/web/src/lib/automation.ts"
 sync_file "$ROOT/shared/automation.ts" "$ROOT/container/agent-runner/src/automation.ts"
 
+# --- Workspace root problems: the server's checks and the Web's words ---
+sync_file "$ROOT/shared/workspace-root-problems.ts" "$ROOT/src/workspace-root-problems.ts"
+sync_file "$ROOT/shared/workspace-root-problems.ts" "$ROOT/web/src/lib/workspace-root-problems.ts"
+
 # --- Team mode shapes (3 targets: backend, web and agent-runner) ---
 for target in \
   "$ROOT/src/work-items.ts" \

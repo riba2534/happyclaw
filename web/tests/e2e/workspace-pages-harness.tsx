@@ -2,6 +2,7 @@
 // signed-in app shell, on a hash router so system back walks real history.
 // Agents, automations and files come from mocked stores; the memory page
 // talks to /api, which the spec answers. A hidden probe shows the route.
+//   ?automations=0  the automations page starts with none (its empty state)
 import { createRoot } from 'react-dom/client';
 import {
   RouterProvider,
@@ -179,11 +180,18 @@ function automation(id: string, name: string): Automation {
 }
 const runNowCalls: string[] = [];
 (window as unknown as { runNowCalls: string[] }).runNowCalls = runNowCalls;
+const noAutomations =
+  new URLSearchParams(window.location.search).get('automations') === '0';
 useAutomationsStore.setState({
-  automations: [
-    automation('daily-issues', '每天早上汇总仓库里新的 issue 和待处理的 PR'),
-    automation('weekly', '每周账单'),
-  ],
+  automations: noAutomations
+    ? []
+    : [
+        automation(
+          'daily-issues',
+          '每天早上汇总仓库里新的 issue 和待处理的 PR',
+        ),
+        automation('weekly', '每周账单'),
+      ],
   loaded: true,
   loading: false,
   error: null,

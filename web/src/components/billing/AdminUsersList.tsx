@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Users, Search, Package, AlertTriangle } from 'lucide-react';
+import { Users, Package, AlertTriangle } from 'lucide-react';
 import {
   useBillingStore,
   type UserBillingOverview,
@@ -281,7 +281,8 @@ export default function AdminUsersList({ onSelectUser }: AdminUsersListProps) {
         }
         empty={
           <EmptyState
-            icon={search ? Search : Users}
+            icon={Users}
+            variant={search ? 'search' : 'empty'}
             title={search ? '未找到匹配的用户' : '暂无用户'}
           />
         }
