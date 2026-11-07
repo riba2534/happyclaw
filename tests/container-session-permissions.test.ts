@@ -562,6 +562,7 @@ describe('entrypoint permission contract', () => {
     expect(watcher).toContain('readDescriptorMountId(root.fd)');
     expect(watcher).toContain('mountId !== root.mountId');
     expect(watcher).toContain('stat.nlink > 1');
+    expect(watcher).toContain('isStaleMountEntryError(error, parentFd)');
     expect(watcher).toContain('fs.fchownSync(fd');
     expect(watcher).toContain('fs.fchmodSync(fd');
     expect(watcher).not.toMatch(/fs\.(?:chown|chmod)Sync\(/);
@@ -594,6 +595,31 @@ describe('entrypoint permission contract', () => {
         assert.throws(() => readDescriptorMountId(99, () => {
           throw new Error('fdinfo unavailable');
         }));
+      `,
+    ]);
+  });
+
+  test('only a stale entry under a live parent is skipped as a stale mount', () => {
+    const moduleUrl = pathToFileURL(mountBoundaryPath).href;
+    execFileSync(process.execPath, [
+      '--input-type=module',
+      '-e',
+      `
+        import assert from 'node:assert/strict';
+        import { isStaleMountEntryError } from ${JSON.stringify(moduleUrl)};
+        const fail = (code) => () => {
+          throw Object.assign(new Error(code), { code });
+        };
+        const live = () => ({});
+        const error = (code) => Object.assign(new Error(code), { code });
+        assert.equal(isStaleMountEntryError(error('ESTALE'), 7, fail('EBADF')), true);
+        assert.equal(isStaleMountEntryError(error('EBADF'), 7, live), true);
+        assert.equal(isStaleMountEntryError(error('EBADF'), 7, fail('EBADF')), false);
+        assert.throws(() => isStaleMountEntryError(error('EBADF'), 7, fail('EIO')));
+        for (const code of ['EACCES', 'EIO', 'EPERM', undefined]) {
+          assert.equal(isStaleMountEntryError(error(code), 7, live), false);
+        }
+        assert.equal(isStaleMountEntryError(undefined, 7, live), false);
       `,
     ]);
   });

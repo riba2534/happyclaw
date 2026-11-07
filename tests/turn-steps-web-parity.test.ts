@@ -20,6 +20,11 @@ import {
   type StreamingStep,
   type ToolResultFacts,
 } from '../web/src/lib/stream-steps';
+import {
+  countToolStates,
+  describeProblems,
+  worstProblem,
+} from '../web/src/components/chat/tool-status';
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'turn-steps-parity-'));
 for (const dir of ['data', 'store', 'groups']) {
@@ -557,6 +562,68 @@ describe('the host records the steps the Web builds', () => {
       status: 'error',
       resultPreview: '已停止',
     });
+  });
+
+  it('a stop that kills sub-agents before the run ends reads as a stop, on both sides', () => {
+    const notified = uid('agent');
+    const killed = uid('agent');
+    const steps = expectSameSteps(
+      [
+        [0, ev('thinking_delta', { text: '分头调研' })],
+        [2, ev('tool_use_start', { toolName: 'Agent', toolUseId: notified })],
+        [
+          5,
+          ev('task_start', {
+            toolUseId: notified,
+            taskId: notified,
+            taskDescription: '调研 A',
+            taskType: 'local_agent',
+          }),
+        ],
+        [10, ev('tool_use_start', { toolName: 'Agent', toolUseId: killed })],
+        [
+          15,
+          ev('task_start', {
+            toolUseId: killed,
+            taskId: killed,
+            taskDescription: '调研 B',
+            taskType: 'local_agent',
+          }),
+        ],
+        // The CLI's interrupt ends the sub-agents first, then the Runner
+        // reports the turn interrupted.
+        [
+          40,
+          ev('task_notification', {
+            toolUseId: notified,
+            taskId: notified,
+            taskStatus: 'stopped',
+          }),
+        ],
+        [
+          45,
+          ev('task_updated', {
+            toolUseId: killed,
+            taskId: killed,
+            taskPatch: { status: 'killed' },
+          }),
+        ],
+        [50, ev('status', { statusText: 'interrupted' })],
+      ],
+      900,
+      { stopped: true },
+    );
+    for (const id of [notified, killed]) {
+      expect(steps.find((s) => s.toolUseId === id)).toMatchObject({
+        kind: 'task',
+        status: 'error',
+        outcome: 'stopped',
+      });
+    }
+    // The folded process line names them as stopped, not failed.
+    const problems = describeProblems(countToolStates(steps, false));
+    expect(problems.join(' · ')).not.toContain('失败');
+    expect(worstProblem(countToolStates(steps, false))).toBe('stopped');
   });
 
   it("how a tool ended: the SDK flag, what it did, and a sub-agent's totals", () => {

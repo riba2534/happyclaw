@@ -20,7 +20,9 @@ export function workflowRunOf(
           ? 'completed'
           : task.status === 'error'
             ? 'failed'
-            : 'running',
+            : task.status === 'stopped'
+              ? 'stopped'
+              : 'running',
       durationMs: task.usage?.durationMs,
       totalTokens: task.usage?.totalTokens,
       totalToolCalls: task.usage?.toolUses,

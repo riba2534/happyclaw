@@ -108,7 +108,22 @@ export interface StreamingStep {
    * kept on the step for the reader to answer after the turn.
    */
   questions?: StepQuestion[];
+  /**
+   * tool, task (status `error`): why it ended without a result of its own. A
+   * stop caught it in flight, or a permission denial refused it; absent for a
+   * call that failed by itself (and in steps stored before it was kept).
+   */
+  outcome?: StepOutcome;
 }
+
+export type StepOutcome = 'stopped' | 'denied';
+
+/**
+ * What a call a stop caught in flight says it returned, and the word every
+ * view uses for a stopped call. Steps stored before `outcome` was kept are
+ * recognised by it.
+ */
+export const STOPPED_PREVIEW = '已停止';
 
 /** One question of an AskUserQuestion call, as the reader answers it. */
 export interface StepQuestion {
@@ -639,6 +654,7 @@ export function failToolStep(
     status: 'error',
     endedAt: list.steps[index].endedAt ?? at,
     resultPreview: head(reason, MAX_RESULT_PREVIEW_CHARS),
+    outcome: 'denied',
   });
 }
 
@@ -713,13 +729,17 @@ export function ensureTaskStep(
   });
 }
 
-/** The sub-agent's own lifecycle moved. */
+/**
+ * The sub-agent's own lifecycle moved. `outcome` says why an `error` ended it
+ * (a stop killed it); running again or done clears it.
+ */
 export function setTaskStepStatus(
   list: StepList,
   taskId: string,
   status: StepStatus,
   at: number,
   summary?: string,
+  outcome?: StepOutcome,
 ): StepList {
   const index = taskIndex(list, taskId);
   if (index < 0) return list;
@@ -730,7 +750,16 @@ export function setTaskStepStatus(
     if (status !== 'running') patch.endedAt = step.endedAt ?? at;
   }
   if (summary && summary !== step.summary) patch.summary = summary;
-  return Object.keys(patch).length > 0 ? replaceAt(list, index, patch) : list;
+  if (status === 'error' && outcome && outcome !== step.outcome) {
+    patch.outcome = outcome;
+  }
+  const clearOutcome = status !== 'error' && step.outcome !== undefined;
+  if (Object.keys(patch).length === 0 && !clearOutcome) return list;
+  if (!clearOutcome) return replaceAt(list, index, patch);
+  const { outcome: _outcome, ...rest } = step;
+  const steps = list.steps.slice();
+  steps[index] = { ...rest, ...patch };
+  return { steps, dropped: list.dropped };
 }
 
 // ── the end of a reply ──────────────────────────────────────────────────
@@ -748,22 +777,19 @@ export function finishSteps(
   if (!list.steps.some((step) => step.status === 'running')) return list;
   return {
     dropped: list.dropped,
-    steps: list.steps.map((step) =>
-      step.status !== 'running'
-        ? step
-        : {
+    steps: list.steps.map((step) => {
+      if (step.status !== 'running') return step;
+      const cut = stopped && (step.kind === 'tool' || step.kind === 'task');
+      return cut
+        ? {
             ...step,
             endedAt: at,
-            status:
-              stopped && (step.kind === 'tool' || step.kind === 'task')
-                ? 'error'
-                : 'done',
-            resultPreview:
-              stopped && (step.kind === 'tool' || step.kind === 'task')
-                ? (step.resultPreview ?? '已停止')
-                : step.resultPreview,
-          },
-    ),
+            status: 'error',
+            resultPreview: step.resultPreview ?? STOPPED_PREVIEW,
+            outcome: 'stopped',
+          }
+        : { ...step, endedAt: at, status: 'done' };
+    }),
   };
 }
 
@@ -926,9 +952,10 @@ export function rebuildSteps(input: SnapshotSteps): StepList {
       status:
         task.status === 'completed'
           ? 'done'
-          : task.status === 'error'
+          : task.status === 'error' || task.status === 'stopped'
             ? 'error'
             : 'running',
+      ...(task.status === 'stopped' ? { outcome: 'stopped' as const } : {}),
       taskId: task.id,
       toolUseId: task.id,
       toolName: 'Task',

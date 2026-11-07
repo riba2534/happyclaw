@@ -28,11 +28,15 @@ import {
   CONTAINER_MEMORY_LIMIT,
   CONTAINER_NO_PROXY,
   DATA_DIR,
-  GROUPS_DIR,
   TIMEZONE,
   type ContainerProxyConfig,
 } from './config.js';
 import type { ContainerMemoryLimit } from './container-memory-limit.js';
+import { workspaceDirOf, workspaceLogsDirOf } from './workspace-dir.js';
+import { isSingleUserHost } from './deployment-mode.js';
+
+export const SINGLE_USER_HOST_CONTAINER_REFUSAL =
+  '单人宿主机模式不运行 Docker 工作区；请把工作区改为宿主机模式或切回多人模式。';
 import { logger } from './logger.js';
 import { isCodexGatewayBaseUrl } from './codex-gateway/resolve-gateway-url.js';
 import {
@@ -1222,7 +1226,7 @@ function resolveRuntimeMcpServers(
   group: RegisteredGroup,
   agentProfile?: RunnerAgentProfile,
   /** The run's project root; see resolveWorkspaceProjectRoot. */
-  workspaceDir = path.join(GROUPS_DIR, group.folder),
+  workspaceDir = workspaceDirOf(group.folder),
 ): Record<string, Record<string, unknown>> {
   const managedLayers = group.created_by
     ? loadManagedMcpLayers(group.created_by, {
@@ -2114,14 +2118,14 @@ function prepareVolumeMounts(
 
     // Admin home also gets its group folder as the working directory
     mounts.push({
-      hostPath: path.join(GROUPS_DIR, group.folder),
+      hostPath: workspaceDirOf(group.folder),
       containerPath: '/workspace/group',
       readonly: false,
     });
   } else {
     // Member home and non-home groups only get their own folder
     mounts.push({
-      hostPath: path.join(GROUPS_DIR, group.folder),
+      hostPath: workspaceDirOf(group.folder),
       containerPath: '/workspace/group',
       readonly: false,
     });
@@ -2209,7 +2213,7 @@ function prepareVolumeMounts(
   // realpath(skillsDir), which would follow a planted symlink).
   let groupReal: string | null = null;
   try {
-    groupReal = fs.realpathSync(path.join(GROUPS_DIR, group.folder));
+    groupReal = fs.realpathSync(workspaceDirOf(group.folder));
   } catch {
     groupReal = null;
   }
@@ -3119,6 +3123,16 @@ export async function runContainerAgent(
   onOutput?: (output: ContainerOutput) => Promise<void>,
   ownerHomeFolder?: string,
 ): Promise<ContainerOutput> {
+  // Single-user host mode never runs Docker, whatever a leftover Container
+  // row says (other users kept while the mode comes only from env).
+  if (isSingleUserHost()) {
+    return {
+      status: 'error',
+      result: SINGLE_USER_HOST_CONTAINER_REFUSAL,
+      // A deterministic configuration failure: settled at once, no retry.
+      error: `agent_profile_unavailable: ${SINGLE_USER_HOST_CONTAINER_REFUSAL}`,
+    };
+  }
   const startTime = Date.now();
   // Worktrees are host checkouts; a container would run this session in the
   // shared workspace directory instead, so refuse rather than substitute.
@@ -3136,7 +3150,7 @@ export async function runContainerAgent(
   // trip also happens ahead of the selection-to-spawn block.
   const storageVolumes = await ensureGroupStorageVolumes(group);
 
-  const groupDir = path.join(GROUPS_DIR, group.folder);
+  const groupDir = workspaceDirOf(group.folder);
   mkdirForContainer(groupDir);
   // Like the probe above, the host-owned OAuth renewal awaits ahead of the
   // synchronous selection-to-spawn block.
@@ -3283,7 +3297,7 @@ export async function runContainerAgent(
       'Spawning container agent',
     );
 
-    const logsDir = path.join(GROUPS_DIR, group.folder, 'logs');
+    const logsDir = workspaceLogsDirOf(group.folder);
     fs.mkdirSync(logsDir, { recursive: true });
 
     const result = await new Promise<ContainerOutput>((resolve) => {
@@ -4023,7 +4037,7 @@ export async function runHostAgent(
   });
 
   // 1. 确定工作目录
-  const defaultGroupDir = path.join(GROUPS_DIR, group.folder);
+  const defaultGroupDir = workspaceDirOf(group.folder);
   // A session that owns a worktree runs only there. A missing or damaged
   // checkout fails the run; falling back would put its edits in the main
   // checkout.
@@ -4125,8 +4139,9 @@ export async function runHostAgent(
     }
   }
 
-  // Always store logs in data/groups/{folder}/logs/, not in customCwd
-  const logsBaseDir = path.join(defaultGroupDir, 'logs');
+  // Logs never go to customCwd or a recorded workspace directory: they stay
+  // in data/groups/{folder}/logs/, or data/logs/{folder} (workspaceLogsDirOf).
+  const logsBaseDir = workspaceLogsDirOf(group.folder);
   fs.mkdirSync(logsBaseDir, { recursive: true });
 
   // 2. 确保目录结构（宿主机模式下限制目录权限）：会话自己的 IPC 与 .claude 目录

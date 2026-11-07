@@ -5,9 +5,24 @@ import { StatTile } from './StatTile';
 
 interface ContainerStatusProps {
   status: SystemStatus;
+  /** Single-user host mode: every runner is a host process, with no cap. */
+  hostOnly?: boolean;
 }
 
-export function ContainerStatus({ status }: ContainerStatusProps) {
+export function ContainerStatus({ status, hostOnly }: ContainerStatusProps) {
+  if (hostOnly) {
+    return (
+      <StatTile
+        label="活跃工作区"
+        icon={Server}
+        value={String(status.activeHostProcesses ?? status.activeTotal ?? 0)}
+      >
+        <div className="text-caption text-muted-foreground">
+          宿主机进程，不限制不同会话并发
+        </div>
+      </StatTile>
+    );
+  }
   const maxConcurrent = Math.max(1, status.maxConcurrentContainers || 20);
   const percentage = (status.activeContainers / maxConcurrent) * 100;
   const progressWidth = Math.min(100, percentage);

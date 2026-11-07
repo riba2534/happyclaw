@@ -881,8 +881,9 @@ describe('SDK task terminal status and sticky API retry', () => {
     );
 
     const state = useChatStore.getState();
+    // Ended either way; a stop is not a failure.
     expect(state.agentStreaming[sid]?.taskStates['task-stopped']?.status).toBe(
-      'error',
+      'stopped',
     );
     expect(state.agentStreaming[sid]?.taskStates['task-aborted']?.status).toBe(
       'error',

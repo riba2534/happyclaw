@@ -153,8 +153,9 @@ import {
   SESSION_COOKIE_NAME_SECURE,
   SESSION_COOKIE_NAME_PLAIN,
   ASSISTANT_NAME,
-  GROUPS_DIR,
 } from './config.js';
+import { isSingleUserHost } from './deployment-mode.js';
+import { workspaceDirOf } from './workspace-dir.js';
 import { expandPluginSlashCommandIfNeeded } from './plugin-expander-core.js';
 import { makeExpandContext } from './plugin-expander-context.js';
 import type { ExpandContext } from './plugin-expander-context.js';
@@ -243,7 +244,10 @@ function buildWebExpandContext(
   agentId?: string | null,
 ): ExpandContext | null {
   const deps = getWebDeps();
-  const containerName = deps?.queue.getActiveContainerName(groupJid) ?? null;
+  // Single-user host mode never runs `docker exec` (see index.ts).
+  const containerName = isSingleUserHost()
+    ? null
+    : (deps?.queue.getActiveContainerName(groupJid) ?? null);
   const rawMode = group.executionMode ?? group.execution_mode;
   const customCwd =
     rawMode === 'host'
@@ -262,7 +266,7 @@ function buildWebExpandContext(
     ownerId: group.created_by,
     executionMode: rawMode,
     customCwd,
-    groupsDir: GROUPS_DIR,
+    workspaceDir: workspaceDirOf(group.folder),
     containerName,
   });
 }
@@ -2085,12 +2089,20 @@ function setupWebSocket(server: any): WebSocketServer {
               );
               return;
             }
-            if ((group.executionMode || 'container') === 'host') {
+            // Single-user host mode never starts a container, whatever mode
+            // a leftover row still has.
+            const singleUserHost = isSingleUserHost();
+            if (
+              singleUserHost ||
+              (group.executionMode || 'container') === 'host'
+            ) {
               ws.send(
                 JSON.stringify({
                   type: 'terminal_error',
                   chatJid,
-                  error: '宿主机模式不支持终端',
+                  error: singleUserHost
+                    ? '单人宿主机模式暂不支持 Web 终端。'
+                    : '宿主机模式不支持终端',
                 }),
               );
               return;
@@ -2765,7 +2777,7 @@ interface StreamingSnapshotEntry {
     {
       id: string;
       title: string;
-      status: 'running' | 'completed' | 'error' | 'backgrounded';
+      status: 'running' | 'completed' | 'error' | 'stopped' | 'backgrounded';
       subagentType?: string;
       taskType?: string;
       workflowName?: string;
@@ -3047,24 +3059,32 @@ function updateSnapshotTask(
   } else if (event.eventType === 'task_updated') {
     const patch = event.taskPatch;
     if (patch?.status === 'completed') task.status = 'completed';
-    else if (
-      patch?.status === 'failed' ||
-      patch?.status === 'killed' ||
-      patch?.status === 'stopped' ||
-      patch?.status === 'aborted'
-    )
+    // A stop (the CLI's interrupt kills running sub-agents) is no failure.
+    else if (patch?.status === 'killed' || patch?.status === 'stopped')
+      task.status = 'stopped';
+    else if (patch?.status === 'failed' || patch?.status === 'aborted')
       task.status = 'error';
     else if (patch?.is_backgrounded) task.status = 'backgrounded';
     task.latestSummary =
       event.summary || patch?.description || patch?.error || task.latestSummary;
   } else if (event.eventType === 'task_notification') {
-    task.status = event.taskStatus === 'completed' ? 'completed' : 'error';
+    task.status =
+      event.taskStatus === 'completed'
+        ? 'completed'
+        : event.taskStatus === 'stopped' || event.taskStatus === 'killed'
+          ? 'stopped'
+          : 'error';
     task.latestSummary =
       event.taskSummary || event.summary || task.latestSummary;
     if (task.workflowRun) {
       task.workflowRun = {
         ...task.workflowRun,
-        status: event.taskStatus === 'completed' ? 'completed' : 'failed',
+        status:
+          task.status === 'completed'
+            ? 'completed'
+            : task.status === 'stopped'
+              ? 'stopped'
+              : 'failed',
         completedAt: task.workflowRun.completedAt ?? Date.now(),
       };
     }

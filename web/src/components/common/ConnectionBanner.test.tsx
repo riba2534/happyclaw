@@ -110,14 +110,56 @@ describe('ConnectionBanner on a phone', () => {
     expect(toast.success).not.toHaveBeenCalled();
   });
 
-  test('going offline shows at once, under the page bar off the chat', () => {
-    render('phone', '/automations');
+  test('the browser going offline while the socket is open says nothing', () => {
+    render('phone');
     act(() => {
       window.dispatchEvent(new Event('offline'));
     });
-    // happy-dom keeps navigator.onLine; the event is what the hook hears.
+    advance(RECONNECT_GRACE_MS * 4);
+    expect(strip()).toBeNull();
+    act(() => {
+      window.dispatchEvent(new Event('online'));
+    });
+    advance(5000);
+    expect(strip()).toBeNull();
+  });
+
+  test('offline with the socket down shows after the grace period, under the page bar off the chat', () => {
+    render('phone', '/automations');
+    act(() => {
+      // happy-dom keeps navigator.onLine; the event is what the hook hears.
+      window.dispatchEvent(new Event('offline'));
+      ws.emit('disconnected');
+    });
+    advance(RECONNECT_GRACE_MS - 1);
+    expect(strip()).toBeNull();
+    advance(1);
     expect(strip()?.dataset.connectionNotice).toBe('offline');
     expect(strip()?.className).toContain('top-13');
+
+    // Once shown, the notice follows the status without another wait.
+    act(() => {
+      window.dispatchEvent(new Event('online'));
+    });
+    expect(strip()?.dataset.connectionNotice).toBe('reconnecting');
+    act(() => ws.emit('connected'));
+    expect(strip()?.dataset.connectionNotice).toBe('restored');
+  });
+
+  test('a network handoff that heals inside the grace period shows nothing', () => {
+    render('phone');
+    act(() => {
+      window.dispatchEvent(new Event('offline'));
+      ws.emit('disconnected');
+    });
+    advance(1000);
+    act(() => {
+      window.dispatchEvent(new Event('online'));
+    });
+    advance(500);
+    act(() => ws.emit('connected'));
+    advance(5000);
+    expect(strip()).toBeNull();
   });
 });
 
