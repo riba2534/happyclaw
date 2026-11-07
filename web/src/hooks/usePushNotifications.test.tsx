@@ -360,5 +360,12 @@ describe('usePushNotifications', () => {
       await current.sendTest();
     });
     expect(current.testResult).toBe('failed');
+
+    mocks.post.mockRejectedValueOnce({ status: 429, message: 'Too many' });
+    await act(async () => {
+      await current.sendTest();
+    });
+    expect(current.testResult).toBe('failed');
+    expect(current.error).toMatch(/太频繁/);
   });
 });

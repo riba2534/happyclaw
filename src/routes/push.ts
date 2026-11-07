@@ -15,6 +15,7 @@ import type { Variables } from '../web-context.js';
 import type { AuthUser } from '../types.js';
 import {
   deleteWebPushSubscription,
+  listStaleWebPushSubscriptions,
   listWebPushSubscriptions,
   upsertWebPushSubscription,
 } from '../web-push-store.js';
@@ -28,8 +29,40 @@ import {
   type WebPushPayload,
 } from '../web-push.js';
 
-/** Subscriptions kept per account; registering more drops the oldest. */
+/**
+ * Subscriptions kept per account; registering more drops the ones refreshed
+ * longest ago (a browser re-registers its own every few minutes it is open).
+ */
 export const MAX_PUSH_SUBSCRIPTIONS_PER_USER = 20;
+
+/** Test pushes an account may send per window. */
+export const PUSH_TEST_LIMIT = 3;
+export const PUSH_TEST_WINDOW_MS = 60_000;
+const recentTests = new Map<string, number[]>();
+
+/** Whether the account may send a test push now; records it when it may. */
+function takePushTestSlot(userId: string, now = Date.now()): boolean {
+  for (const [id, times] of recentTests) {
+    if (times.every((at) => now - at >= PUSH_TEST_WINDOW_MS)) {
+      recentTests.delete(id);
+    }
+  }
+  const times = (recentTests.get(userId) ?? []).filter(
+    (at) => now - at < PUSH_TEST_WINDOW_MS,
+  );
+  if (times.length >= PUSH_TEST_LIMIT) {
+    recentTests.set(userId, times);
+    return false;
+  }
+  times.push(now);
+  recentTests.set(userId, times);
+  return true;
+}
+
+/** Forget the test-push budget (tests only). */
+export function resetPushTestLimitForTests(): void {
+  recentTests.clear();
+}
 
 const base64Url = z
   .string()
@@ -124,11 +157,10 @@ pushRoutes.post('/subscribe', async (c) => {
       409,
     );
   }
-  // Keep the newest; the account never accumulates dead devices without bound.
-  const own = listWebPushSubscriptions(user.id);
-  for (const row of own.slice(
-    0,
-    Math.max(0, own.length - MAX_PUSH_SUBSCRIPTIONS_PER_USER),
+  // The account never accumulates dead devices without bound.
+  for (const row of listStaleWebPushSubscriptions(
+    user.id,
+    MAX_PUSH_SUBSCRIPTIONS_PER_USER,
   )) {
     deleteWebPushSubscription(row.endpoint, user.id);
   }
@@ -148,9 +180,19 @@ pushRoutes.post('/unsubscribe', async (c) => {
   return c.json({ success: true });
 });
 
-/** Send a test notification to every device of the account. */
+/**
+ * Send a test notification to every device of the account (only its own
+ * subscriptions), a few times a minute at most.
+ */
 pushRoutes.post('/test', async (c) => {
   const user = c.get('user') as AuthUser;
+  if (!takePushTestSlot(user.id)) {
+    c.header('Retry-After', String(Math.ceil(PUSH_TEST_WINDOW_MS / 1000)));
+    return c.json(
+      { error: 'Too many test notifications; try again in a minute' },
+      429,
+    );
+  }
   const payload: WebPushPayload = {
     title: 'HappyClaw',
     body: '推送通知已开启',

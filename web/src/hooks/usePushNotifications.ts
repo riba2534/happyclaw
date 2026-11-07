@@ -208,7 +208,11 @@ export function usePushNotifications(): PushNotificationsApi {
       setTestResult(result.success ? 'sent' : 'failed');
     } catch (err) {
       setTestResult('failed');
-      setError(describeError(err, '发送测试通知失败'));
+      setError(
+        (err as { status?: unknown } | null)?.status === 429
+          ? '测试通知发送得太频繁，请一分钟后再试'
+          : describeError(err, '发送测试通知失败'),
+      );
     } finally {
       setBusy(false);
     }

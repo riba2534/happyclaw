@@ -188,6 +188,21 @@ export function deleteWebPushSubscriptionByEndpoint(endpoint: string): boolean {
   );
 }
 
+/**
+ * The user's subscriptions past the newest `keep` by last registration: the
+ * ones a device stopped refreshing.
+ */
+export function listStaleWebPushSubscriptions(
+  userId: string,
+  keep: number,
+): WebPushSubscription[] {
+  return stmt(
+    `SELECT * FROM web_push_subscriptions
+     WHERE user_id = ? ORDER BY updated_at DESC, endpoint DESC
+     LIMIT -1 OFFSET ?`,
+  ).all(userId, Math.max(0, keep)) as WebPushSubscription[];
+}
+
 export function deleteWebPushSubscriptionsForUser(userId: string): number {
   return stmt('DELETE FROM web_push_subscriptions WHERE user_id = ?').run(
     userId,

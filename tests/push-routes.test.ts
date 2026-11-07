@@ -68,8 +68,11 @@ const db = await import('../src/db.js');
 const routes = (await import('../src/routes/push.js')).default;
 const store = await import('../src/web-push-store.js');
 const push = await import('../src/web-push.js');
-const { MAX_PUSH_SUBSCRIPTIONS_PER_USER } =
-  await import('../src/routes/push.js');
+const {
+  MAX_PUSH_SUBSCRIPTIONS_PER_USER,
+  PUSH_TEST_LIMIT,
+  resetPushTestLimitForTests,
+} = await import('../src/routes/push.js');
 
 const app = new Hono();
 app.route('/api/push', routes);
@@ -111,6 +114,7 @@ beforeEach(() => {
   postPushMessage.mockReset();
   postPushMessage.mockResolvedValue({ statusCode: 201, body: '' });
   generateRequestDetails.mockReset();
+  resetPushTestLimitForTests();
 });
 
 afterAll(() => {
@@ -315,20 +319,36 @@ describe('/api/push', () => {
     expect((await call('POST', '/api/push/unsubscribe', {})).status).toBe(400);
   });
 
-  test('an account keeps at most the newest subscriptions', async () => {
+  test('an account keeps the subscriptions refreshed most recently', async () => {
     as('carol');
-    for (let n = 100; n < 100 + MAX_PUSH_SUBSCRIPTIONS_PER_USER + 3; n += 1) {
-      await call('POST', '/api/push/subscribe', {
-        endpoint: endpoint(n),
-        keys: KEYS,
-      });
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      let now = Date.parse('2026-11-01T00:00:00.000Z');
+      const subscribeAt = async (n: number) => {
+        vi.setSystemTime((now += 1000));
+        await call('POST', '/api/push/subscribe', {
+          endpoint: endpoint(n),
+          keys: KEYS,
+        });
+      };
+      for (let n = 100; n < 100 + MAX_PUSH_SUBSCRIPTIONS_PER_USER; n += 1) {
+        await subscribeAt(n);
+      }
+      // The oldest device is still in use: it re-registers itself.
+      await subscribeAt(100);
+      await subscribeAt(500);
+      await subscribeAt(501);
+    } finally {
+      vi.useRealTimers();
     }
     const kept = store
       .listWebPushSubscriptions('carol')
       .map((row) => row.endpoint);
     expect(kept).toHaveLength(MAX_PUSH_SUBSCRIPTIONS_PER_USER);
-    expect(kept).not.toContain(endpoint(100));
-    expect(kept).toContain(endpoint(100 + MAX_PUSH_SUBSCRIPTIONS_PER_USER + 2));
+    expect(kept).toContain(endpoint(100));
+    expect(kept).not.toContain(endpoint(101));
+    expect(kept).not.toContain(endpoint(102));
+    expect(kept).toContain(endpoint(501));
   });
 
   test("test push goes to the caller's devices and reports the outcome", async () => {
@@ -365,6 +385,18 @@ describe('/api/push', () => {
       path: '/settings',
     });
     expect(options.vapidDetails.publicKey).toMatch(/^[A-Za-z0-9_-]{87}$/);
+  });
+
+  test('test pushes are limited per account', async () => {
+    as('heidi');
+    for (let i = 0; i < PUSH_TEST_LIMIT; i += 1) {
+      expect((await call('POST', '/api/push/test')).status).toBe(200);
+    }
+    const limited = await call('POST', '/api/push/test');
+    expect(limited.status).toBe(429);
+    // Another account has its own budget.
+    as('ivan');
+    expect((await call('POST', '/api/push/test')).status).toBe(200);
   });
 
   test('a 410 from the push service removes the subscription', async () => {

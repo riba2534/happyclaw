@@ -8,6 +8,7 @@ import {
   type PushNotificationsApi,
   type PushStatus,
 } from '../../hooks/usePushNotifications';
+import { useIsGuest } from '../../stores/auth';
 import { SettingsGroup, SettingsSection } from './SettingsLayout';
 import { SettingsSwitchRow } from './SettingsFormControls';
 
@@ -80,8 +81,16 @@ function Control({
   );
 }
 
-/** Settings → Preferences: Web Push for this device. */
+/**
+ * Settings → Preferences: Web Push for this device. Guests have no push, so
+ * for them nothing is shown and nothing is requested.
+ */
 export function PushNotificationSection() {
+  const isGuest = useIsGuest();
+  return isGuest ? null : <PushNotificationSettings />;
+}
+
+function PushNotificationSettings() {
   const push = usePushNotifications();
   const { status, busy, error, testResult, sendTest } = push;
 
