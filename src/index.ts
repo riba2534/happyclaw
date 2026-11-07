@@ -539,7 +539,7 @@ import {
 import {
   checkBillingAccessFresh,
   formatBillingAccessDeniedMessage,
-  checkAndExpireSubscriptions,
+  runScheduledSubscriptionExpiry,
   isBillingEnabled,
   getUserConcurrentContainerLimit,
   reconcileMonthlyUsage,
@@ -18830,14 +18830,11 @@ async function main(): Promise<void> {
     10 * 60 * 1000,
   );
 
-  // Billing: check expired subscriptions every hour. Off with billing
-  // (always in single-user host mode); expiry compares against now, so a
-  // later pass catches up when billing is turned back on. The retention
-  // cleanup below keeps running either way.
+  // Billing: check expired subscriptions every hour (not in single-user
+  // host mode).
   setInterval(
     () => {
-      if (!isBillingEnabled()) return;
-      checkAndExpireSubscriptions();
+      runScheduledSubscriptionExpiry();
     },
     60 * 60 * 1000,
   );

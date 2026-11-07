@@ -841,6 +841,16 @@ export function checkAndExpireSubscriptions(): void {
 }
 
 /**
+ * The hourly expiry pass (index.ts). It runs whether billing is on or not,
+ * so subscriptions that ran out while billing was off are already expired
+ * when it is turned back on; single-user host mode has none and skips it.
+ */
+export function runScheduledSubscriptionExpiry(): void {
+  if (isSingleUserHost()) return;
+  checkAndExpireSubscriptions();
+}
+
+/**
  * Reconcile monthly_usage against daily_usage aggregation for a specific user/month.
  * Used as a periodic safety net to fix drift when incrementMonthlyUsage was missed.
  * If drift exceeds threshold, corrects monthly_usage to match daily_usage sum.
