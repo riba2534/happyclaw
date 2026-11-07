@@ -221,14 +221,14 @@ describe('saving and creating the root', () => {
     ).toBeNull();
   });
 
-  test('a custom directory or mount inside the root is refused; one around it is not', () => {
+  test('a custom directory or mount inside the root is refused; a custom directory around it is not', () => {
     const project = path.join(context.home, 'work', 'proj');
     fs.mkdirSync(project, { recursive: true });
     // A root that already contains the project is not empty anyway.
     expect(
       validateWorkspaceRootSetting(
         path.join(context.home, 'work'),
-        { occupiedPaths: [project] },
+        { customDirs: [project] },
         context,
       ),
     ).toBe('not_empty');
@@ -236,13 +236,47 @@ describe('saving and creating the root', () => {
     const empty = path.join(context.home, 'mounted');
     fs.mkdirSync(empty);
     expect(
-      validateWorkspaceRootSetting(empty, { occupiedPaths: [empty] }, context),
+      validateWorkspaceRootSetting(empty, { customDirs: [empty] }, context),
+    ).toBe('overlaps_workspace_paths');
+    expect(
+      validateWorkspaceRootSetting(empty, { mountSources: [empty] }, context),
     ).toBe('overlaps_workspace_paths');
     // A custom directory around the root (such as ~) does not block it.
     expect(
       validateWorkspaceRootSetting(
         path.join(context.home, 'spaces'),
-        { occupiedPaths: [context.home] },
+        { customDirs: [context.home] },
+        context,
+      ),
+    ).toBeNull();
+  });
+
+  test('a mount source around the root is refused too', () => {
+    // A Container workspace mounts /srv/data; a root at /srv/data/ws would
+    // make that mount overlap a protected root, so it would no longer start.
+    const mounted = path.join(context.home, 'srv-data');
+    fs.mkdirSync(mounted, { recursive: true });
+    const inside = path.join(mounted, 'ws');
+    expect(
+      validateWorkspaceRootSetting(
+        inside,
+        { mountSources: [mounted] },
+        context,
+      ),
+    ).toBe('overlaps_workspace_paths');
+    // Resolved from the environment or the default, it falls back instead.
+    const resolution = resolveWorkspaceRoot({
+      configured: '',
+      env: inside,
+      context,
+      occupancy: { mountSources: [mounted] },
+    });
+    expect(resolution.fallbackReason).toBe('overlaps_workspace_paths');
+    // Elsewhere is fine.
+    expect(
+      validateWorkspaceRootSetting(
+        path.join(context.home, 'elsewhere'),
+        { mountSources: [mounted] },
         context,
       ),
     ).toBeNull();

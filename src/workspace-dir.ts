@@ -146,7 +146,10 @@ function listRecordedWorkdirs(): RecordedWorkdir[] {
 }
 
 /** Host paths existing workspaces use as their custom directory or mounts. */
-function listOccupiedHostPaths(): string[] {
+function listOccupiedHostPaths(): {
+  customDirs: string[];
+  mountSources: string[];
+} {
   const rows = (statement(
     `SELECT custom_cwd, container_config FROM registered_groups
      WHERE (custom_cwd IS NOT NULL AND custom_cwd != '')
@@ -155,22 +158,25 @@ function listOccupiedHostPaths(): string[] {
     custom_cwd: string | null;
     container_config: string | null;
   }>;
-  const paths: string[] = [];
+  const customDirs: string[] = [];
+  const mountSources: string[] = [];
   for (const row of rows) {
-    if (row.custom_cwd) paths.push(row.custom_cwd);
+    if (row.custom_cwd) customDirs.push(row.custom_cwd);
     if (!row.container_config) continue;
     try {
       const config = JSON.parse(row.container_config) as {
         additionalMounts?: Array<{ hostPath?: unknown }>;
       };
       for (const mount of config.additionalMounts ?? []) {
-        if (typeof mount?.hostPath === 'string') paths.push(mount.hostPath);
+        if (typeof mount?.hostPath === 'string') {
+          mountSources.push(mount.hostPath);
+        }
       }
     } catch {
       /* unreadable config: it mounts nothing */
     }
   }
-  return paths;
+  return { customDirs, mountSources };
 }
 
 /**
@@ -180,7 +186,7 @@ function listOccupiedHostPaths(): string[] {
  */
 export function getWorkspaceRootOccupancy(): WorkspaceRootOccupancy {
   return {
-    occupiedPaths: listOccupiedHostPaths(),
+    ...listOccupiedHostPaths(),
     workdirs: listRecordedWorkdirs().map(({ workdir, root }) => ({
       workdir,
       root,

@@ -481,9 +481,14 @@ describe('the root never lands inside an existing workspace', () => {
     });
     try {
       const occupancy = dir.getWorkspaceRootOccupancy();
-      expect(occupancy.occupiedPaths).toEqual(
-        expect.arrayContaining(['/srv/mounted', '/srv/repo']),
+      expect(occupancy.customDirs).toEqual(
+        expect.arrayContaining(['/srv/repo']),
       );
+      expect(occupancy.customDirs).not.toContain('/srv/mounted');
+      expect(occupancy.mountSources).toEqual(
+        expect.arrayContaining(['/srv/mounted']),
+      );
+      expect(occupancy.mountSources).not.toContain('/srv/repo');
       const recorded = dir.getRecordedWorkdirRecord('flow-host')!;
       expect(occupancy.workdirs).toContainEqual({
         workdir: recorded.workdir,

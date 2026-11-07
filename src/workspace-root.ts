@@ -109,8 +109,10 @@ function selfAndAncestors(dir: string): string[] {
  * the known roots (switching back to an old root) is fine.
  */
 export interface WorkspaceRootOccupancy {
-  /** Custom directories and mount sources of existing workspaces. */
-  occupiedPaths?: readonly string[];
+  /** Custom directories of existing Host workspaces. */
+  customDirs?: readonly string[];
+  /** Additional mount sources of existing Container workspaces. */
+  mountSources?: readonly string[];
   /** Recorded workspace directories and the root each was created in. */
   workdirs?: ReadonlyArray<{ workdir: string; root: string }>;
   knownRoots?: readonly string[];
@@ -164,13 +166,16 @@ export function checkWorkspaceRootCandidate(
   const overlaps = (other: string) =>
     pathsOverlap(canonicalizePath(other), resolved);
   const isThisRoot = (root: string) => canonicalizePath(root) === resolved;
-  // A custom directory or mount source inside the root would become a
-  // protected root's content; one around it (such as ~) is not harmed by
-  // HappyClaw's own directories appearing inside it.
+  // A custom directory inside the root would become a protected root's
+  // content; one around it (such as ~) is not harmed by HappyClaw's own
+  // directories appearing inside it. A mount source must not overlap the
+  // root either way: the mount check (mount-security.ts) refuses any mount
+  // overlapping a root, so that workspace would no longer start.
   const insideCandidate = (occupied: string) =>
     isPathInside(canonicalizePath(occupied), resolved);
   if (
-    (occupancy.occupiedPaths ?? []).some(insideCandidate) ||
+    (occupancy.customDirs ?? []).some(insideCandidate) ||
+    (occupancy.mountSources ?? []).some(overlaps) ||
     (occupancy.workdirs ?? []).some(
       ({ workdir, root }) => !isThisRoot(root) && overlaps(workdir),
     ) ||
