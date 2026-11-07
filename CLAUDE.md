@@ -110,6 +110,10 @@ Agent Profile（身份、四段 Prompt、能力策略）
 | `src/team-gate.ts`                 | 团队模式入站：订阅键、名单与 @ 判定、准入表            |
 | `src/work-item-service.ts`         | 工作项的路由、生命周期、回复门控，REST 与 IPC 共用     |
 | `src/work-item-runtime.ts`         | 团队输入注入各 lane、团队回复经 Outbox 投递            |
+| `src/workspace-root.ts`            | 工作区根目录的解析、回退与候选校验                     |
+| `src/workspace-dir.ts`             | 工作区目录记录、`workspaceDirOf` 与删除前的安全检查    |
+| `src/deployment-mode.ts`           | 部署方式（多人 / 单人宿主机）的解析与生效开关          |
+| `src/single-user-host-guard.ts`    | 单人宿主机模式只留一个启用账号的路由守卫               |
 
 渠道实现位于：
 
@@ -594,12 +598,15 @@ cancelled 结束且游标前进。批次含其他输入时不中断。回复锚�
 运行时数据默认位于 `data/`，不进入 Git。新建的 Host 工作区（未指定自定义目录）在工作区
 根目录下：`<workspaceRoot>/<folder>`，默认 `~/happyclaw`（`src/workspace-root.ts`：系统
 设置 > `HAPPYCLAW_WORKSPACE_ROOT` > 默认；位于安装目录内、上层有 `CLAUDE.md`、位于别的 git
-仓库内或不可写时回退到 `~/happyclaw-workspaces`，设置接口直接拒绝这样的值）。每个工作区的
+仓库内或不可写时回退到 `~/happyclaw-workspaces`，它也不能用时新工作区留在
+`data/groups/{folder}`，接口和设置页报告的就是这个实际位置（`rootForNewWorkspaces`）；设置
+接口直接拒绝这样的值）。每个工作区的
 目录记在 `workspace_workdirs`（按 folder），一律经 `workspaceDirOf(folder)`（`src/workspace-dir.ts`）
 读取，不要再拼 `GROUPS_DIR` 与 folder；没有记录的（已有工作区、Container 工作区）就是
 `data/groups/{folder}`。修改根目录只影响之后新建的工作区。这些工作区的运行日志写在
 `data/logs/{folder}`；删除和重建前校验目录名等于 folder、位于已知根目录下且没有经符号链接
-逃逸，任何一项不满足就拒绝；工作区根目录不在 `make backup` 范围内。
+逃逸，任何一项不满足就拒绝（根目录被移走后用链接接回原位、真实位置仍带
+`.happyclaw-workspace-root` 标记时按真实位置校验）；工作区根目录不在 `make backup` 范围内。
 
 ```text
 data/

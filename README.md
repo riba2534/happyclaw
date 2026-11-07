@@ -133,7 +133,8 @@ Docker 工作区迁移为 Host；切回多人只保存设置，注册、计费�
 `~/happyclaw`，可在 **设置 → 宿主机集成** 或环境变量 `HAPPYCLAW_WORKSPACE_ROOT` 修改。
 工作区放在 HappyClaw 安装目录之外，Agent 不会读到安装目录里给开发者看的 `CLAUDE.md`。
 根目录位于安装目录里、上层目录有 `CLAUDE.md`、位于别的 git 仓库里或不可写时，会改用
-`~/happyclaw-workspaces` 并在设置页说明原因；在设置里直接保存这样的路径会被拒绝。
+`~/happyclaw-workspaces` 并在设置页说明原因；这个目录也不能用时，新工作区暂时放在安装目录的
+`data/groups/<文件夹>`，设置页同样会显示。在设置里直接保存这样的路径会被拒绝。
 
 每个工作区记住自己的目录：修改根目录只影响之后新建的工作区。已有工作区和 Container 工作区
 仍在 `data/groups/<文件夹>`。
