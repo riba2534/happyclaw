@@ -1384,6 +1384,11 @@ describe('chat reachability probe (binding health check)', () => {
     expect(await connection.probeChat('oc_probe_dissolved')).toBe('gone');
     controls.chatGet.mockResolvedValueOnce({
       code: 0,
+      data: { name: '解散并保留', chat_status: 'dissolved_save' },
+    });
+    expect(await connection.probeChat('oc_probe_dissolved_save')).toBe('gone');
+    controls.chatGet.mockResolvedValueOnce({
+      code: 0,
       data: { name: '正常', chat_status: 'normal' },
     });
     expect(await connection.probeChat('oc_probe_normal')).toBe('reachable');

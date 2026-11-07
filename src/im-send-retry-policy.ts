@@ -219,9 +219,9 @@ export function classifyImSendFailure(error: unknown): ImSendFailureOutcome {
  * Decide whether repeating a failed IM send can make progress and whether the
  * failure is evidence that the concrete chat binding is unhealthy.
  *
- * Only the platform's own answer that the chat is gone for this bot counts
+ * Only the platform's own refusal saying the chat is gone for this bot counts
  * toward removing the binding (which deletes its data); today that is a
- * Feishu chat-gone code anywhere in the error chain. A pre-acceptance failure
+ * rejected send with a Feishu chat-gone code anywhere in the error chain. A pre-acceptance failure
  * (DNS, a refused connection, no connected channel) never reached the
  * platform: it is worth retrying, but says nothing about the chat.
  */
@@ -229,9 +229,9 @@ export function imSendFailurePolicy(error: unknown): ImSendFailurePolicy {
   const outcome = classifyImSendFailure(error);
   return {
     retryable: outcome === 'pre_accept',
-    countsTowardChannelRemoval: errorChain(error).some((item) =>
-      isFeishuChatGoneError(item),
-    ),
+    countsTowardChannelRemoval:
+      outcome === 'rejected' &&
+      errorChain(error).some((item) => isFeishuChatGoneError(item)),
     outcome,
   };
 }

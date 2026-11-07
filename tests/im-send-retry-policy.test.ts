@@ -90,6 +90,14 @@ describe('imSendFailurePolicy', () => {
     expect(imSendFailurePolicy(refused(232034))).toMatchObject({
       countsTowardChannelRemoval: false,
     });
+    // After part of a reply was delivered the outcome is uncertain: not a
+    // proof against the chat even with a gone code in the tail.
+    expect(
+      imSendFailurePolicy(physicalDeliveryProgressError(refused(230002), 1)),
+    ).toMatchObject({
+      countsTowardChannelRemoval: false,
+      outcome: 'uncertain',
+    });
   });
 
   test('does not automatically replay an accepted-but-unacknowledged delivery', () => {
