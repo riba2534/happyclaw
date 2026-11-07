@@ -80,12 +80,17 @@ describe('schema v90 workspace directories', () => {
   test('backs up the v89 database and adds the table; old workspaces stay put', () => {
     process.env.HAPPYCLAW_MIGRATION_BACKUP_DIR = backupDir;
     db.initDatabase();
-    expect(db.CURRENT_SCHEMA_VERSION).toBe(90);
-    expect(db.getRouterState('schema_version')).toBe('90');
+    // Later migrations run on top; the v89 -> v90 step is what is checked.
+    expect(db.CURRENT_SCHEMA_VERSION).toBeGreaterThanOrEqual(90);
+    expect(db.getRouterState('schema_version')).toBe(
+      String(db.CURRENT_SCHEMA_VERSION),
+    );
 
     const backupName = fs
       .readdirSync(backupDir)
-      .find((name) => name.startsWith('messages-v89-to-v90-'));
+      .find((name) =>
+        name.startsWith(`messages-v89-to-v${db.CURRENT_SCHEMA_VERSION}-`),
+      );
     expect(backupName).toBeDefined();
     const backup = new Database(path.join(backupDir, backupName!), {
       readonly: true,
