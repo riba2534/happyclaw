@@ -5928,9 +5928,11 @@ export function createFeishuConnection(
   }
 
   /** One `chat.get`; a failure is reported and handed back with no info. */
-  async function readChatInfo(
-    chatId: string,
-  ): Promise<{ info: FeishuChatInfo | null; error?: unknown }> {
+  async function readChatInfo(chatId: string): Promise<{
+    info: FeishuChatInfo | null;
+    error?: unknown;
+    dissolved?: boolean;
+  }> {
     if (!client) return { info: null };
     try {
       const target = parseFeishuRouteTarget(chatId);
@@ -5957,7 +5959,12 @@ export function createFeishuConnection(
         chatMode: info.chat_mode,
         groupMessageType: info.group_message_type,
       });
-      return { info };
+      // Outside the chat the bot still gets its basic info, with its status.
+      const status = (res.data as { chat_status?: string }).chat_status;
+      return {
+        info,
+        dissolved: status === 'dissolved' || status === 'dissolved_save',
+      };
     } catch (err) {
       permissionNotices.report('chat_info', err);
       logger.warn({ err, chatId }, 'Failed to get Feishu chat info');
@@ -6598,8 +6605,8 @@ export function createFeishuConnection(
     },
 
     async probeChat(chatId: string): Promise<ChatReachability> {
-      const { info, error } = await readChatInfo(chatId);
-      if (info) return 'reachable';
+      const { info, error, dissolved } = await readChatInfo(chatId);
+      if (info) return dissolved ? 'gone' : 'reachable';
       return error !== undefined && isFeishuChatGoneError(error)
         ? 'gone'
         : 'unknown';

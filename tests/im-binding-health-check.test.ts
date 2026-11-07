@@ -52,9 +52,9 @@ describe('IM binding health check', () => {
   });
 
   test('inconclusive probes neither count nor reset; a reachable one resets', async () => {
-    const kept = healthCheck(['gone', 'unknown', 'gone', 'unknown', 'gone']);
-    await kept.run(5);
-    expect(kept.removeImGroupRecord).toHaveBeenCalledTimes(1);
+    const spaced = healthCheck(['gone', 'unknown', 'gone', 'unknown', 'gone']);
+    await spaced.run(5);
+    expect(spaced.removeImGroupRecord).toHaveBeenCalledTimes(1);
 
     const reset = healthCheck(['gone', 'gone', 'reachable', 'gone', 'gone']);
     await reset.run(5);
