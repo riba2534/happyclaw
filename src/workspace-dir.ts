@@ -25,6 +25,7 @@ import {
   ensureMarkedWorkspaceRoot,
   isPathInside,
   pathsOverlap,
+  workspaceRootDirState,
 } from './workspace-root-fs.js';
 
 /** A workspace's recorded directory and the root it was created in. */
@@ -359,10 +360,17 @@ export function checkRecordedWorkdirRemoval(
   const realParent = canonicalizePath(path.dirname(workdir));
   const realWorkdir = path.join(realParent, folder);
 
-  // Roots are recorded as real paths; one that resolves elsewhere now is a
-  // link planted (or swapped in) since, and judged as foreign.
-  if (canonicalizePath(root) !== root) return 'root_not_real';
-  if (realParent !== root) return 'root_mismatch';
+  // Roots are recorded as real paths. One that resolves elsewhere now is
+  // either a root moved and linked back (`mv root /new && ln -s /new root`),
+  // whose real target still carries HappyClaw's marker, or a link planted
+  // (or swapped in) since, judged as foreign. The moved root is checked at
+  // its new real path; the record keeps the linked path the workspace runs
+  // in.
+  const realRoot = canonicalizePath(root);
+  if (realRoot !== root && workspaceRootDirState(realRoot) !== 'marked') {
+    return 'root_not_real';
+  }
+  if (realParent !== realRoot) return 'root_mismatch';
 
   const installDir = canonicalizePath(path.dirname(DATA_DIR));
   if (pathsOverlap(installDir, realWorkdir)) return 'install_dir';

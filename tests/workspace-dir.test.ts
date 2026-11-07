@@ -300,6 +300,39 @@ describe('removing a recorded directory', () => {
     );
   });
 
+  test('a root moved and linked back is checked at its new real path', () => {
+    // mv root /bigdisk/root && ln -s /bigdisk/root root
+    const movedRoot = path.join(tmp, 'root-moved');
+    currentRoot = movedRoot;
+    const workdir = dir.assignWorkspaceRootDir('flow-moved');
+    withFile(workdir);
+    const target = path.join(tmp, 'bigdisk', 'root-moved');
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.renameSync(movedRoot, target);
+    fs.symlinkSync(target, movedRoot);
+    const record = dir.getRecordedWorkdirRecord('flow-moved')!;
+    expect(record).toMatchObject({ root: movedRoot, workdir });
+    expect(dir.checkRecordedWorkdirRemoval(record)).toBeNull();
+    removeFlowArtifacts('flow-moved', record);
+    expect(fs.existsSync(path.join(target, 'flow-moved'))).toBe(false);
+    expect(fs.existsSync(path.join(target, WORKSPACE_ROOT_MARKER))).toBe(true);
+  });
+
+  test('a link swapped in for a root, to a directory without the marker, is refused', () => {
+    const swappedRoot = path.join(tmp, 'root-swapped');
+    currentRoot = swappedRoot;
+    dir.assignWorkspaceRootDir('flow-swapped');
+    fs.renameSync(swappedRoot, path.join(tmp, 'root-swapped-away'));
+    const decoy = path.join(tmp, 'decoy');
+    const file = withFile(path.join(decoy, 'flow-swapped'));
+    fs.symlinkSync(decoy, swappedRoot);
+    expectKept(
+      dir.getRecordedWorkdirRecord('flow-swapped')!,
+      'root_not_real',
+      file,
+    );
+  });
+
   test("a directory that is some workspace's custom directory is refused", () => {
     const workdir = dir.assignWorkspaceRootDir('flow-cwd');
     const file = withFile(workdir);

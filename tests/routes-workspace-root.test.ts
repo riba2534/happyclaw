@@ -348,6 +348,44 @@ describe('deleting and rebuilding a recorded directory', () => {
     ).toEqual([]);
   });
 
+  test('a root moved and linked back can still be rebuilt and deleted', async () => {
+    // Workspaces made in their own root, which the admin then moves to a
+    // bigger disk: mv root /bigdisk/root && ln -s /bigdisk/root root.
+    const movable = path.join(tmp, 'root-movable');
+    process.env.HAPPYCLAW_WORKSPACE_ROOT = movable;
+    let rebuilt: Awaited<ReturnType<typeof hostWorkspace>>;
+    let deleted: Awaited<ReturnType<typeof hostWorkspace>>;
+    try {
+      rebuilt = await hostWorkspace('Moved rebuild');
+      deleted = await hostWorkspace('Moved delete');
+    } finally {
+      process.env.HAPPYCLAW_WORKSPACE_ROOT = workspaceRoot;
+    }
+    expect(rebuilt.workdir).toBe(path.join(movable, rebuilt.folder));
+    const target = path.join(tmp, 'bigdisk', 'root-movable');
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.renameSync(movable, target);
+    fs.symlinkSync(target, movable);
+
+    const rebuild = await groupRoutes.request(
+      `/${encodeURIComponent(rebuilt.jid)}/clear-history`,
+      { method: 'POST' },
+    );
+    expect(rebuild.status).toBe(200);
+    expect(fs.existsSync(path.join(target, rebuilt.folder))).toBe(true);
+    expect(fs.existsSync(path.join(target, rebuilt.folder, 'notes.md'))).toBe(
+      false,
+    );
+
+    const del = await groupRoutes.request(
+      `/${encodeURIComponent(deleted.jid)}`,
+      { method: 'DELETE' },
+    );
+    expect(del.status).toBe(200);
+    expect(fs.existsSync(path.join(target, deleted.folder))).toBe(false);
+    expect(dir.getRecordedWorkdir(deleted.folder)).toBeNull();
+  });
+
   test('rebuild of a forged record is refused and moves nothing', async () => {
     const ws = await hostWorkspace('Forged rebuild');
     const outside = path.join(tmp, 'elsewhere', ws.folder);
