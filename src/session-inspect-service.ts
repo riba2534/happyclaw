@@ -16,6 +16,8 @@
  *  - A non-Home workspace sees itself only. The Home workspace sees every
  *    workspace of its owner, and must name the workspace it looks into: a bare
  *    session id never searches across workspaces.
+ *  - A Host workspace is visible only while its owner is admin, as on the Web
+ *    (canViewHostGroup).
  *  - A turn the workspace owner did not start (a group member, an automation
  *    run, a worker report) is clamped to status fields of its own workspace:
  *    no message text, no traces, no tool inputs, no other workspace.
@@ -161,6 +163,8 @@ interface WorkspaceRef {
 
 interface Scope {
   ownerId: string;
+  /** Host workspaces are visible only while the owner is admin. */
+  ownerIsAdmin: boolean;
   /** The turn is the owner's own; otherwise the view is clamped. */
   ownerTurn: boolean;
   isHome: boolean;
@@ -253,8 +257,11 @@ function resolveScope(
     fail(UNAVAILABLE);
   const owner = getUserById(group.created_by);
   if (!owner || owner.status !== 'active') fail(UNAVAILABLE);
+  const ownerIsAdmin = owner.role === 'admin';
+  if (isHostWorkspace(group) && !ownerIsAdmin) fail(UNAVAILABLE);
   return {
     ownerId: owner.id,
+    ownerIsAdmin,
     ownerTurn: caller.ownerTurn(inputTurnId),
     isHome: !!group.is_home,
     self,
@@ -267,12 +274,20 @@ function resolveScope(
   };
 }
 
-/** The owner's workspaces (Web JIDs, one per folder), the caller's first. */
+function isHostWorkspace(group: { executionMode?: string | null }): boolean {
+  return (group.executionMode ?? 'container') === 'host';
+}
+
+/**
+ * The owner's workspaces (Web JIDs, one per folder), the caller's first.
+ * Host workspaces count only while the owner is admin.
+ */
 function ownerWorkspaces(scope: Scope): WorkspaceRef[] {
   const seen = new Set<string>();
   const list: WorkspaceRef[] = [];
   for (const group of getGroupsByOwner(scope.ownerId)) {
     if (!group.jid.startsWith('web:') || seen.has(group.folder)) continue;
+    if (isHostWorkspace(group) && !scope.ownerIsAdmin) continue;
     seen.add(group.folder);
     list.push({
       jid: group.jid,

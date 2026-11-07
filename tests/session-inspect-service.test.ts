@@ -44,6 +44,8 @@ const STRANGER = 'stranger-1';
 const HOME = { jid: 'web:home-1', folder: 'home-1' };
 const PROJ = { jid: 'web:proj', folder: 'proj' };
 const THEIRS = { jid: 'web:theirs', folder: 'theirs' };
+/** The owner's Host workspace: visible only while the owner is admin. */
+const HOSTWS = { jid: 'web:hostws', folder: 'hostws' };
 
 const HOME_SELF = 'aaaaaaaa-0000-4000-8000-000000000001';
 const HOME_BUILD = 'bbbbbbbb-0000-4000-8000-000000000002';
@@ -52,6 +54,7 @@ const PROJ_TWO = 'dddddddd-0000-4000-8000-000000000004';
 const THEIR_ONE = 'eeeeeeee-0000-4000-8000-000000000005';
 const WORKER = 'ffffffff-0000-4000-8000-000000000006';
 const ROUTER = '99999999-0000-4000-8000-000000000007';
+const HOST_ONE = '77777777-0000-4000-8000-00000000000c';
 
 const lane = (workspaceJid: string, id: string) =>
   `${workspaceJid}#agent:${id}`;
@@ -171,18 +174,20 @@ beforeAll(() => {
     name: string,
     owner: string,
     isHome: boolean,
+    executionMode: 'container' | 'host' = 'container',
   ) =>
     db.setRegisteredGroup(workspace.jid, {
       name,
       folder: workspace.folder,
       added_at: now,
-      executionMode: 'container',
+      executionMode,
       created_by: owner,
       is_home: isHome,
     } as never);
   group(HOME, 'Home', OWNER, true);
   group(PROJ, 'Project', OWNER, false);
   group(THEIRS, 'Theirs', STRANGER, true);
+  group(HOSTWS, 'Host box', OWNER, false, 'host');
 
   createSession(HOME_SELF, HOME, 'main chat');
   createSession(HOME_BUILD, HOME, 'build');
@@ -191,6 +196,7 @@ beforeAll(() => {
   createSession(THEIR_ONE, THEIRS, 'secret plans');
   createSession(WORKER, PROJ, 'worker', { source_kind: 'work_item' });
   createSession(ROUTER, PROJ, 'router', { source_kind: 'team_router' });
+  createSession(HOST_ONE, HOSTWS, 'host session');
 });
 
 beforeEach(() => {
@@ -787,5 +793,59 @@ describe('session_get bodies', () => {
     expect([...two.latest_message.text].length).toBeLessThanOrEqual(
       service.SESSION_PREVIEW_CHARS + 1,
     );
+  });
+});
+
+describe('Host workspaces', () => {
+  test('are hidden from an owner who is not admin, like the Web', () => {
+    say(HOSTWS.jid, HOST_ONE, 'host-1', 'SECRET_TOKEN=abc123', true);
+    const missing = error(
+      call(homeCaller(), 'session_list', { workspace: 'no-such-workspace' }),
+    );
+    const all = data(
+      call(homeCaller(), 'session_list', { all_workspaces: true }),
+    );
+    expect(all.workspaces.map((w: any) => w.workspace.folder)).not.toContain(
+      HOSTWS.folder,
+    );
+    expect(
+      error(call(homeCaller(), 'session_list', { workspace: 'hostws' })),
+    ).toBe(missing);
+    expect(
+      error(call(homeCaller(), 'session_list', { workspace: 'Host box' })),
+    ).toBe(missing);
+    expect(
+      error(
+        call(homeCaller(), 'session_get', { session: 'hostws/host session' }),
+      ),
+    ).toBe(missing);
+    // A session of the Host workspace itself cannot inspect either.
+    expect(
+      error(call(caller(HOST_ONE, HOSTWS.folder), 'session_list')),
+    ).toMatch(/^unavailable/);
+  });
+
+  test('are visible while the owner is admin', () => {
+    db.updateUserFields(OWNER, { role: 'admin' });
+    try {
+      const all = data(
+        call(homeCaller(), 'session_list', { all_workspaces: true }),
+      );
+      expect(all.workspaces.map((w: any) => w.workspace.folder)).toContain(
+        HOSTWS.folder,
+      );
+      const got = data(
+        call(homeCaller(), 'session_get', { session: 'hostws/host session' }),
+      );
+      expect(got.messages.map((m: any) => m.text)).toEqual([
+        'SECRET_TOKEN=abc123',
+      ]);
+      expect(
+        data(call(caller(HOST_ONE, HOSTWS.folder), 'session_list'))
+          .workspaces[0].workspace.folder,
+      ).toBe(HOSTWS.folder);
+    } finally {
+      db.updateUserFields(OWNER, { role: 'member' });
+    }
   });
 });
