@@ -19705,13 +19705,14 @@ async function checkImBindingsHealth(): Promise<void> {
     }
 
     try {
-      const info = await imManager.getChatInfo(jid);
-      if (info === undefined) {
-        // Channel doesn't support getChatInfo (e.g. Telegram, QQ) — skip reachability check
+      const reachability = await imManager.probeChat(jid);
+      if (reachability === undefined) {
+        // Channel cannot probe chats (e.g. Telegram, QQ) — skip reachability check
         continue;
       }
-      if (info === null) {
-        // Chat not reachable — could be temporary (connection down, API permission issue)
+      if (reachability === 'gone') {
+        // The platform says the bot can no longer see this chat (removed,
+        // disbanded). Still wait for consecutive answers before removing.
         const count = (imHealthCheckFailCounts.get(jid) ?? 0) + 1;
         imHealthCheckFailCounts.set(jid, count);
         if (count >= IM_HEALTH_CHECK_FAIL_THRESHOLD) {
@@ -19729,9 +19730,12 @@ async function checkImBindingsHealth(): Promise<void> {
             'IM health check failed, will retry before unbinding',
           );
         }
-      } else {
-        // Chat is reachable — reset failure counter
+      } else if (reachability === 'reachable') {
         imHealthCheckFailCounts.delete(jid);
+      } else {
+        // Connection down, timeout, rate limit or missing permission: the
+        // probe proved nothing, so neither count it nor reset the streak.
+        logger.debug({ jid }, 'IM health check inconclusive, keeping binding');
       }
     } catch (err) {
       // API error — could be temporary, don't unbind on single failure

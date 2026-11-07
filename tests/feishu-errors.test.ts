@@ -2,6 +2,7 @@ import { describe, expect, test } from 'vitest';
 import {
   classifyFeishuError,
   feishuErrorCode,
+  isFeishuChatGoneError,
   isFeishuMissingScopeError,
   neutralizeFeishuMentions,
 } from '../src/feishu-errors';
@@ -72,6 +73,28 @@ describe('classifyFeishuError', () => {
     expect(
       classifyFeishuError({ response: { status: 408, data: {} } }).kind,
     ).toBe('transient');
+  });
+});
+
+describe('isFeishuChatGoneError', () => {
+  test('a received refusal proves the chat is gone for the bot', () => {
+    expect(isFeishuChatGoneError(axios(400, 232011))).toBe(true);
+    expect(isFeishuChatGoneError(axios(400, 230002))).toBe(true);
+  });
+  test('network failures, timeouts, 5xx and rate limits prove nothing', () => {
+    const unreachable = Object.assign(
+      new Error('connect EHOSTUNREACH 198.18.0.16:443'),
+      { code: 'EHOSTUNREACH' },
+    );
+    expect(isFeishuChatGoneError(unreachable)).toBe(false);
+    expect(isFeishuChatGoneError({ code: 'ECONNABORTED' })).toBe(false);
+    expect(isFeishuChatGoneError(axios(503, 0))).toBe(false);
+    expect(isFeishuChatGoneError(axios(408, 0))).toBe(false);
+    expect(isFeishuChatGoneError(axios(429, 99991400))).toBe(false);
+  });
+  test('missing scopes and token errors are the app, not the chat', () => {
+    expect(isFeishuChatGoneError(axios(400, 99991672))).toBe(false);
+    expect(isFeishuChatGoneError(axios(400, 99991663))).toBe(false);
   });
 });
 

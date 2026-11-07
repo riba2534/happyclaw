@@ -97,6 +97,25 @@ export function feishuErrorMessageText(error: unknown): string {
   );
 }
 
+/** The app's own token was missing, invalid or expired: no chat is implicated. */
+const ACCESS_TOKEN_CODES = new Set([
+  99991661, 99991663, 99991664, 99991665, 99991668,
+]);
+
+/**
+ * Whether a failed chat lookup proves the chat is gone for this bot (bot
+ * removed, chat disbanded, chat id invalid). Only a received refusal counts;
+ * network failures, timeouts, 5xx and rate limits say nothing about the chat,
+ * and neither do missing scopes or token errors, which are the app's problem.
+ */
+export function isFeishuChatGoneError(error: unknown): boolean {
+  if (isFeishuMissingScopeError(error)) return false;
+  const code = feishuErrorCode(error);
+  if (code !== undefined && ACCESS_TOKEN_CODES.has(code)) return false;
+  const { kind } = classifyFeishuError(error);
+  return kind === 'definitive' || kind === 'target_unavailable';
+}
+
 export function isFeishuMissingScopeError(error: unknown): boolean {
   const code = feishuErrorCode(error);
   if (code !== undefined && MISSING_SCOPE_CODES.has(code)) return true;
