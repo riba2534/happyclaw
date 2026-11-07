@@ -15,7 +15,7 @@ import {
 const safeOffset = (gap: number) => ({
   top: `calc(env(safe-area-inset-top, 0px) + ${gap}px)`,
   right: `calc(env(safe-area-inset-right, 0px) + ${gap}px)`,
-  bottom: `calc(env(safe-area-inset-bottom, 0px) + var(--keyboard-inset, 0px) + ${gap}px)`,
+  bottom: `calc(var(--safe-bottom, 0px) + var(--keyboard-inset, 0px) + ${gap}px)`,
   left: `calc(env(safe-area-inset-left, 0px) + ${gap}px)`,
 });
 const OFFSET = safeOffset(24);

@@ -22,6 +22,7 @@ import {
 import { toast } from 'sonner';
 
 import { cn } from '@/lib/utils';
+import { keepFocusThatMovedOn } from '@/lib/focus';
 import type { ModelCapabilitySource } from '@/lib/model-providers';
 import type { ConnectionModel } from '@/types';
 import {
@@ -57,6 +58,7 @@ import { SegmentedControl } from '@/components/common/SegmentedControl';
 import { vendorOfConnection, vendorOfModel } from '../brand/vendor';
 import { VendorTile } from '../brand/VendorTile';
 import { api } from '../../api/client';
+import { useLongPress } from '../../hooks/useLongPress';
 import { useMediaQuery } from '../../hooks/useMediaQuery';
 import { useAuthStore } from '../../stores/auth';
 import { showToast } from '../../utils/toast';
@@ -71,6 +73,19 @@ import {
   modelBindingErrorMessage,
 } from '../settings/model-connections';
 import { getErrorMessage } from '../settings/types';
+import {
+  isModelPinned,
+  readModelPins,
+  splitPinnedRows,
+  toggleModelPin,
+  type ModelPin,
+} from './modelPins';
+import {
+  PinActionSheet,
+  PinGlyph,
+  PinToggle,
+  type RowPinControl,
+} from './ModelPinControls';
 
 /** One model a ChatGPT login may run, with the efforts this user may pick on it. */
 export interface CodexModelChoice {
@@ -339,6 +354,24 @@ function optionRows(
   return rows;
 }
 
+/** The model a row stands for, as 置顶 and 最近 name it. */
+function rowModel(row: ModelRow): ModelPin {
+  return { modelConfigId: row.option.id, model: row.id };
+}
+
+/**
+ * What a row pins when it may lead the list; null for a model gone from its
+ * connection's list or a connection that cannot run.
+ */
+function rowPin(row: ModelRow): ModelPin | null {
+  return row.note || optionStatus(row.option) ? null : rowModel(row);
+}
+
+/** How a row is named where it is pinned. */
+function pinName(row: ModelRow): string {
+  return `${row.option.name} · ${row.id || '由中转站决定'}`;
+}
+
 /** The second line of a model row. */
 function rowDetail(row: ModelRow): string {
   return [
@@ -543,16 +576,6 @@ function useQuietTooltip() {
   };
 }
 
-/**
- * A closed menu hands focus back to its trigger once its exit animation ends.
- * If the model panel was opened in the meantime, focus already sits there;
- * pulling it back would close the panel again.
- */
-function keepFocusThatMovedOn(event: Event) {
-  const active = document.activeElement;
-  if (active && active !== document.body) event.preventDefault();
-}
-
 interface ModelSelectorProps {
   groupJid: string;
   /** The session whose model this picks. */
@@ -575,9 +598,15 @@ export function ModelSelector({
   const [recent, setRecent] = useState<RecentModel[]>(() =>
     readRecentModels(userId),
   );
+  const [pins, setPins] = useState<ModelPin[]>(() => readModelPins(userId));
+  // The row a phone's long press asks about; kept while its sheet closes.
+  const [pinTarget, setPinTarget] = useState<ModelRow | null>(null);
+  const [pinSheetOpen, setPinSheetOpen] = useState(false);
   // A phone gets one pill for model and effort and picks the effort in the
   // sheet; a narrow window keeps the desktop controls but the sheet too.
   const phone = useIsPhone();
+  // A touch screen wider than a phone (a tablet) has no hover either.
+  const coarse = useMediaQuery('(pointer: coarse)');
   const narrow = useMediaQuery('(max-width: 639px)');
   const inSheet = phone || narrow;
   const compact = (useComposerDock()?.compact ?? false) && phone;
@@ -588,7 +617,9 @@ export function ModelSelector({
   const [open, setOpen] = useDockOverlay();
   // The sheet's detent: half on open, full while searching (cindy's picker
   // makes room for the keyboard when its field gets focus).
-  const [snap, setSnap] = useState<'half' | 'full'>('half');
+  // Full, not half: the search field, connection chips and footer take
+  // most of a half sheet, which left about one model row in view.
+  const [snap, setSnap] = useState<'half' | 'full'>('full');
   const [saving, setSaving] = useState(false);
   const modelTooltip = useQuietTooltip();
   const lastRefreshAt = useRef(0);
@@ -649,7 +680,7 @@ export function ModelSelector({
       return;
     }
     modelTooltip.onMenuOpenChange(next);
-    if (next) setSnap('half');
+    if (next) setSnap('full');
     setOpen(next);
     if (next) refreshCatalog();
   };
@@ -793,6 +824,40 @@ export function ModelSelector({
     });
   };
 
+  // A row that may be pinned, or is: a desktop's hover button toggles it, a
+  // tablet's always-shown one too; a long press on a touch screen asks in a
+  // sheet (a tap still picks the model).
+  const togglePin = (row: ModelRow) => {
+    const next = toggleModelPin(userId, rowModel(row));
+    setPins(next);
+    return isModelPinned(next, rowModel(row));
+  };
+  const pinControl = (row: ModelRow): RowPinControl | undefined => {
+    const pinned = isModelPinned(pins, rowModel(row));
+    if (!pinned && !rowPin(row)) return undefined;
+    return {
+      pinned,
+      input: phone ? 'phone' : coarse ? 'touch' : 'pointer',
+      onToggle: () => void togglePin(row),
+      onLongPress: () => {
+        setPinTarget(row);
+        setPinSheetOpen(true);
+      },
+    };
+  };
+  const pinSheet = (
+    <PinActionSheet
+      open={pinSheetOpen}
+      onOpenChange={setPinSheetOpen}
+      title={pinTarget ? pinName(pinTarget) : '置顶模型'}
+      name={pinTarget ? pinTarget.id || pinTarget.option.name : ''}
+      pinned={!!pinTarget && isModelPinned(pins, rowModel(pinTarget))}
+      onToggle={() => {
+        if (pinTarget) togglePin(pinTarget);
+      }}
+    />
+  );
+
   const pickEffort = (value: string | null) => {
     if (!effortContext || value === effortContext.effort) return;
     void save(
@@ -820,6 +885,8 @@ export function ModelSelector({
     <ModelPanel
       selection={selection}
       recent={recent}
+      pins={pins}
+      pinControl={pinControl}
       pinnedModel={pinnedModel}
       selectedKey={selectedKey}
       disabled={disabled}
@@ -963,7 +1030,9 @@ export function ModelSelector({
             detents
             snap={snap}
             onSnapChange={setSnap}
-            className="gap-0 p-0"
+            // The sheet takes focus itself (below); that is no keyboard
+            // position, so it draws no focus ring.
+            className="gap-0 p-0 outline-none"
             // Focus the sheet, not the search field: a phone keyboard would
             // cover the list.
             onOpenAutoFocus={(event) => {
@@ -978,6 +1047,8 @@ export function ModelSelector({
               </SheetDescription>
             </SheetHeader>
             {panel}
+            {/* Inside the sheet, so opening it does not close this one. */}
+            {pinSheet}
           </SheetContent>
         ) : (
           <PopoverContent
@@ -988,6 +1059,8 @@ export function ModelSelector({
             className="flex max-h-[var(--radix-popover-content-available-height)] w-[min(460px,calc(100vw-2rem))] flex-col gap-0 overflow-hidden rounded-xl p-0"
           >
             {panel}
+            {/* A tablet's long press; inside, so opening it keeps this open. */}
+            {coarse && pinSheet}
           </PopoverContent>
         )}
       </Root>
@@ -1120,6 +1193,10 @@ interface ModelPanelProps {
   selection: SessionModelSelection;
   /** Models this user picked lately, most recent first. */
   recent: RecentModel[];
+  /** Models this user pinned, in the order they were pinned. */
+  pins: ModelPin[];
+  /** How a row is pinned; undefined when it cannot be. */
+  pinControl: (row: ModelRow) => RowPinControl | undefined;
   /** The model picked within the selected connection, if any. */
   pinnedModel: string | null;
   selectedKey: string;
@@ -1159,6 +1236,8 @@ const ALL_RAIL = 'all';
 function ModelPanel({
   selection,
   recent,
+  pins,
+  pinControl,
   pinnedModel,
   selectedKey,
   disabled,
@@ -1206,7 +1285,7 @@ function ModelPanel({
   const needle = query.trim().toLowerCase();
   const recentView = rail === RECENT_RAIL && !needle;
   // A search looks through every connection, whatever the rail shows.
-  const rows = recentView
+  const listed = recentView
     ? recentRows(selection, recent)
     : selection.options
         .filter((option) => needle || rail === ALL_RAIL || option.id === rail)
@@ -1221,6 +1300,10 @@ function ModelPanel({
               option.name.toLowerCase().includes(needle),
           ),
         );
+  // Pinned models lead every view but 最近, which keeps the order of use.
+  const { pinned, rest: rows } = recentView
+    ? { pinned: [], rest: listed }
+    : splitPinnedRows(listed, pins, rowPin);
   const sourceLabel = defaultSourceLabel(selection);
   const showDefault =
     rail === ALL_RAIL &&
@@ -1259,6 +1342,27 @@ function ModelPanel({
     })),
   ].map((item) => ({ ...item, active: rail === item.id && !needle }));
 
+  const modelRow = (row: ModelRow) => (
+    <Fragment key={row.key}>
+      <RowButton
+        checked={row.key === selectedKey}
+        disabled={disabled || !!optionStatus(row.option)}
+        onClick={() => onPick(row)}
+        mark={
+          <VendorTile
+            vendor={vendorOf(row.option, row.id)}
+            name={row.option.name}
+          />
+        }
+        title={row.id || '由中转站决定'}
+        detail={rowDetail(row)}
+        pin={pinControl(row)}
+        pinLabel={pinName(row)}
+      />
+      {row.key === selectedKey && effortRow}
+    </Fragment>
+  );
+
   const moveFocus = (event: KeyboardEvent<HTMLElement>) => {
     if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
     const items = [
@@ -1269,7 +1373,13 @@ function ModelPanel({
     if (items.length === 0) return;
     event.preventDefault();
     const step = event.key === 'ArrowDown' ? 1 : -1;
-    const index = items.indexOf(document.activeElement as HTMLButtonElement);
+    // From a row's pin button, move on from its row.
+    const current =
+      (document.activeElement as HTMLElement | null)
+        ?.closest('[data-pin-row]')
+        ?.querySelector<HTMLButtonElement>('[data-model-row]') ??
+      (document.activeElement as HTMLButtonElement);
+    const index = items.indexOf(current);
     const next =
       index < 0
         ? step > 0
@@ -1351,6 +1461,15 @@ function ModelPanel({
           aria-label="本会话使用的模型"
           className="relative min-w-0 flex-1 space-y-0.5 overflow-y-auto overscroll-contain p-1.5"
         >
+          {pinned.length > 0 && (
+            <>
+              <ListHeading>置顶</ListHeading>
+              {pinned.map(modelRow)}
+              {(showDefault || rows.length > 0) && (
+                <ListHeading>其他模型</ListHeading>
+              )}
+            </>
+          )}
           {showDefault && (
             <RowButton
               checked={selectedKey === DEFAULT_ROW_KEY}
@@ -1371,25 +1490,8 @@ function ModelPanel({
             />
           )}
           {showDefault && selectedKey === DEFAULT_ROW_KEY && effortRow}
-          {rows.map((row) => (
-            <Fragment key={row.key}>
-              <RowButton
-                checked={row.key === selectedKey}
-                disabled={disabled || !!optionStatus(row.option)}
-                onClick={() => onPick(row)}
-                mark={
-                  <VendorTile
-                    vendor={vendorOf(row.option, row.id)}
-                    name={row.option.name}
-                  />
-                }
-                title={row.id || '由中转站决定'}
-                detail={rowDetail(row)}
-              />
-              {row.key === selectedKey && effortRow}
-            </Fragment>
-          ))}
-          {rows.length === 0 && !showDefault && (
+          {rows.map(modelRow)}
+          {listed.length === 0 && !showDefault && (
             <p className="px-3 py-6 text-center text-caption text-muted-foreground">
               {recentView ? '还没有最近使用的模型' : '没有匹配的模型'}
             </p>
@@ -1403,17 +1505,22 @@ function ModelPanel({
             ? '切换模型会开启新的底层会话，并自动带上最近的对话记录；推理等级在输入框旁调整。'
             : '切换模型会开启新的底层会话，并自动带上最近的对话记录。'}
         </p>
-        {onAddModel && (
-          <button
-            type="button"
-            onClick={onAddModel}
-            className="-ml-1.5 inline-flex h-7 cursor-pointer items-center gap-1.5 rounded-md px-1.5 text-caption text-primary-text hover:bg-surface-hover focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:outline-none pointer-coarse:h-10"
-          >
-            <Plus className="size-3.5" aria-hidden="true" />
-            添加模型
-          </button>
+        {(onAddModel || footer) && (
+          // One row: adding a model on the left, the context use on the right.
+          <div className="flex items-center justify-between gap-3">
+            {onAddModel && (
+              <button
+                type="button"
+                onClick={onAddModel}
+                className="-ml-1.5 inline-flex h-7 shrink-0 cursor-pointer items-center gap-1.5 rounded-md px-1.5 text-caption text-primary-text hover:bg-surface-hover focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:outline-none pointer-coarse:h-10"
+              >
+                <Plus className="size-3.5" aria-hidden="true" />
+                添加模型
+              </button>
+            )}
+            <div className="min-w-0 text-right">{footer}</div>
+          </div>
         )}
-        {footer}
       </div>
     </div>
   );
@@ -1554,6 +1661,8 @@ function RowButton({
   title,
   detail,
   warning = false,
+  pin,
+  pinLabel = title,
 }: {
   checked: boolean;
   disabled: boolean;
@@ -1563,25 +1672,38 @@ function RowButton({
   detail: string;
   /** The second line says why this cannot run. */
   warning?: boolean;
+  /** How this row is pinned; undefined when it cannot be. */
+  pin?: RowPinControl;
+  /** The model the pin button names. */
+  pinLabel?: string;
 }) {
-  return (
+  const longPress = useLongPress(() => pin?.onLongPress());
+  // A pin button over the row's end on a desktop, room kept for it.
+  const hoverPin = pin?.input === 'pointer';
+  const held = !!pin && pin.input !== 'pointer';
+  const row = (
     <button
       type="button"
       role="radio"
       aria-checked={checked}
       data-model-row=""
+      data-pinned={pin?.pinned ? '' : undefined}
       disabled={disabled}
       onClick={onClick}
       title={title}
+      {...(held ? longPress : {})}
       className={cn(
         'flex w-full cursor-pointer items-center gap-2.5 rounded-lg px-2 py-1.5 text-left transition-colors duration-100 outline-none hover:bg-surface-hover focus-visible:bg-surface-hover disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent',
         checked && 'bg-surface-selected hover:bg-surface-selected',
+        hoverPin && 'pr-10 group-hover/row:bg-surface-hover',
+        hoverPin && checked && 'group-hover/row:bg-surface-selected',
       )}
     >
       {mark}
       <span className="min-w-0 flex-1">
         <span className="block truncate text-body font-medium text-foreground">
           {title}
+          {pin?.pinned && pin.input === 'phone' && <PinGlyph />}
         </span>
         <span
           className={cn(
@@ -1599,5 +1721,33 @@ function RowButton({
         />
       )}
     </button>
+  );
+  if (!pin) return row;
+  if (pin.input === 'touch') {
+    // Beside the row, not over it: a tap on the row always picks.
+    return (
+      <div data-pin-row="" className="flex items-center gap-1">
+        <div className="min-w-0 flex-1">{row}</div>
+        <PinToggle pin={pin} name={pinLabel} />
+      </div>
+    );
+  }
+  return (
+    <div data-pin-row="" className="group/row relative">
+      {row}
+      <PinToggle pin={pin} name={pinLabel} />
+    </div>
+  );
+}
+
+/** A heading over a part of the model list. */
+function ListHeading({ children }: { children: ReactNode }) {
+  return (
+    <p
+      role="presentation"
+      className="px-2 pt-2 pb-1 text-micro font-medium text-muted-foreground first:pt-1"
+    >
+      {children}
+    </p>
   );
 }

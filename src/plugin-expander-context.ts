@@ -5,8 +5,8 @@
  * expansion. One of four sibling modules (context / sentinel / store / core).
  *
  * Zero internal deps — the only external import is `path` for cwd resolution.
- * Specifically does NOT import DATA_DIR: makeExpandContext receives groupsDir
- * via its args and uses path.resolve only. DATA_DIR is consumed by
+ * Specifically does NOT import DATA_DIR: makeExpandContext receives the
+ * workspace's directory via its args and uses path.resolve only. DATA_DIR is consumed by
  * resolvePluginRoot in plugin-expander-core.ts.
  */
 
@@ -39,7 +39,8 @@ export function makeExpandContext(args: {
   ownerId: string | null | undefined;
   executionMode: 'host' | 'container' | string | null | undefined;
   customCwd?: string | null;
-  groupsDir: string;
+  /** The workspace's own directory (workspaceDirOf). */
+  workspaceDir: string;
   containerName: string | null;
 }): ExpandContext | null {
   if (!args.ownerId) return null;
@@ -49,7 +50,7 @@ export function makeExpandContext(args: {
   if (executionMode === 'host') {
     cwd = args.customCwd
       ? path.resolve(args.customCwd)
-      : path.resolve(args.groupsDir, args.groupFolder);
+      : path.resolve(args.workspaceDir);
   } else {
     cwd = '/workspace/group';
   }

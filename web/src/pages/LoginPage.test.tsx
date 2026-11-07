@@ -23,9 +23,11 @@ const mocks = vi.hoisted(() => {
     fetchAppearance: vi.fn().mockResolvedValue(undefined),
     user: null as { role: string; must_change_password: boolean } | null,
     setupStatus: null as { needsSetup: boolean } | null,
+    deploymentMode: undefined as string | undefined,
   };
   return {
     authState,
+    search: '',
     navigate: vi.fn(),
     getRegisterStatus: vi.fn().mockResolvedValue({
       allowRegistration: true,
@@ -42,7 +44,7 @@ vi.mock('react-router-dom', async () => {
   return {
     ...actual,
     useNavigate: () => mocks.navigate,
-    useSearchParams: () => [new URLSearchParams(), vi.fn()],
+    useSearchParams: () => [new URLSearchParams(mocks.search), vi.fn()],
   };
 });
 
@@ -72,6 +74,8 @@ beforeEach(() => {
   mocks.authState.login.mockReset();
   mocks.authState.user = null;
   mocks.authState.setupStatus = null;
+  mocks.authState.deploymentMode = undefined;
+  mocks.search = '';
   mocks.authState.fetchAppearance.mockClear();
   mocks.getRegisterStatus.mockClear();
   container = document.createElement('div');
@@ -136,4 +140,29 @@ describe('login before provider configuration', () => {
       );
     },
   );
+});
+
+describe('registration and the deployment mode', () => {
+  const registerLink = () =>
+    [...(container?.querySelectorAll('button') ?? [])].find(
+      (button) => button.textContent === '去注册',
+    );
+
+  test('multi_user (or an older server) offers registration', async () => {
+    await act(async () => {
+      root?.render(<LoginPage />);
+    });
+    expect(registerLink()).toBeDefined();
+  });
+
+  test('single-user host mode hides the register link and form', async () => {
+    mocks.authState.deploymentMode = 'single_user_host';
+    mocks.search = 'tab=register';
+    await act(async () => {
+      root?.render(<LoginPage />);
+    });
+    expect(registerLink()).toBeUndefined();
+    expect(container?.querySelector('#reg-username')).toBeNull();
+    expect(container?.textContent).toContain('欢迎回来');
+  });
 });

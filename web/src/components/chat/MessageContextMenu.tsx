@@ -1,5 +1,12 @@
 import { useState, type ReactElement } from 'react';
-import { Copy, FileText, ImageDown, TextSelect, Trash2 } from 'lucide-react';
+import {
+  Copy,
+  FileText,
+  ImageDown,
+  Quote,
+  TextSelect,
+  Trash2,
+} from 'lucide-react';
 import {
   ResponsiveMenu,
   type MenuAction,
@@ -8,6 +15,7 @@ import { useIsPhone } from '../layout/phone';
 import { DetailSheet } from './DetailSheet';
 import { useChatStore } from '../../stores/chat';
 import { useIsGuest } from '../../stores/auth';
+import { useShellStore } from '../../stores/shell';
 import { confirmDialog } from '../../stores/confirm';
 import { mediumTap } from '../../hooks/useHaptic';
 import { copyToClipboard } from '../../utils/clipboard';
@@ -19,6 +27,30 @@ function copyWithFeedback(text: string) {
     () => toast.success('已复制'),
     () => toast.error('复制失败，请手动选择文本复制'),
   );
+}
+
+/**
+ * Longest quote the composer takes, in code points (an emoji is one, never
+ * cut in half); past it the quote ends in an ellipsis.
+ */
+const QUOTE_MAX_CHARS = 300;
+
+/**
+ * A message as a Markdown quote for the composer: its plain text, each line
+ * behind `> `, then an empty line and the line the caret lands on. The empty
+ * line ends the quote, so what is typed next is not folded into it.
+ */
+export function quoteForComposer(content: string): string {
+  let text = markdownToPlainText(content).trim();
+  const chars = Array.from(text);
+  if (chars.length > QUOTE_MAX_CHARS) {
+    text = `${chars.slice(0, QUOTE_MAX_CHARS).join('').trimEnd()}…`;
+  }
+  const quoted = text
+    .split('\n')
+    .map((line) => (line.trim() ? `> ${line}` : '>'))
+    .join('\n');
+  return `${quoted}\n\n`;
 }
 
 interface MessageContextMenuProps {
@@ -35,7 +67,8 @@ interface MessageContextMenuProps {
 }
 
 /**
- * Per-message actions: copy as text / Markdown, share image, delete record.
+ * Per-message actions: quote into the composer, copy as text / Markdown,
+ * share image, delete record.
  * A desktop's anchored menu; a phone's action sheet, which a long press on the
  * message opens too. A held finger opens the menu instead of the system's
  * text selection, so the phone menu has 「选择文本」: the text in a sheet of
@@ -54,7 +87,8 @@ export function MessageContextMenu({
   const isPhone = useIsPhone();
   const [selecting, setSelecting] = useState(false);
   // Read-only guests may copy and share, never delete records.
-  const canDelete = !useIsGuest() && !!chatJid && !!messageId;
+  const isGuest = useIsGuest();
+  const canDelete = !isGuest && !!chatJid && !!messageId;
   const handleDelete = async () => {
     if (!chatJid || !messageId) return;
     const confirmed = await confirmDialog({
@@ -69,8 +103,22 @@ export function MessageContextMenu({
   };
 
   const hasText = !!content.trim();
+  // Guests have no composer to quote into.
+  const canQuote = hasText && !isGuest;
   const copy: MenuAction[] = hasText
     ? [
+        ...(canQuote
+          ? [
+              {
+                label: '引用',
+                icon: Quote,
+                onSelect: () =>
+                  useShellStore
+                    .getState()
+                    .requestComposerDraft(quoteForComposer(content)),
+              },
+            ]
+          : []),
         {
           label: '复制文本',
           icon: Copy,

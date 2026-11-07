@@ -31,6 +31,7 @@ import {
 import { createAutomationTools } from './automation-tools.js';
 import { createWorkTools, type WorkIpcCall } from './work-tools.js';
 import { createDelegationTools } from './delegation-tools.js';
+import { createSessionTools } from './session-tools.js';
 import { sessionKind } from './session-kind.js';
 import { teamLaneWithholdsTool, type TeamRole } from './work-items.js';
 
@@ -2323,7 +2324,23 @@ Use the skills panel in the UI to find the skill ID (directory name, e.g. "memor
 
   const workIpc: WorkIpcCall = (request, resultPrefix, timeoutMs) =>
     pollIpcResult(TASKS_DIR, request, resultPrefix, timeoutMs);
-  if (sessionKind(ctx) === 'multi') {
+  const kind = sessionKind(ctx);
+  // Ordinary conversation sessions only: a team router or worker (including a
+  // delegated Worker) reaches the workspace through its work tools alone.
+  if (kind === 'single' || kind === 'multi') {
+    tools.push(
+      ...createSessionTools(
+        (request, resultPrefix, timeoutMs) =>
+          pollIpcResult(TASKS_DIR, request, resultPrefix, timeoutMs),
+        () => ctx.currentInputTurnId,
+        {
+          isHome: ctx.isHome,
+          fence: (data) => untrustedChannelData('session', data),
+        },
+      ),
+    );
+  }
+  if (kind === 'multi') {
     tools.push(...createDelegationTools(workIpc, () => ctx.currentInputTurnId));
   }
   return applyToolLoadingHints(
@@ -2350,6 +2367,8 @@ function withTeamTools(
 const UNTRUSTED_CHANNEL_LABELS = {
   feishu: '飞书',
   discord: 'Discord',
+  // Other sessions' messages and names: they may relay any third party's text.
+  session: '其他会话',
 } as const;
 type UntrustedChannel = keyof typeof UNTRUSTED_CHANNEL_LABELS;
 
@@ -2396,6 +2415,8 @@ const READ_ONLY_TOOL_NAMES = new Set([
   'workspace_memory_get',
   'work_list',
   'work_delegations',
+  'session_list',
+  'session_get',
 ]);
 
 /**

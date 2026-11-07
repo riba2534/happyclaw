@@ -1,10 +1,50 @@
 import type { StreamEvent, WorkflowRunSnapshot } from './stream-event.types.js';
 
-export interface AdditionalMount {
+/** A host directory, bound into the container (or mounted from its NFS export). */
+export interface HostDirectoryMount {
   hostPath: string; // Absolute canonical path on host
   containerPath: string; // Relative suffix mounted below /workspace/extra
   readonly?: boolean; // Default: true for safety
 }
+
+/** A directory of an allowlisted storage source, mounted by Docker itself. */
+export interface StorageSourceMount {
+  source: string; // StorageSource.id in the mount allowlist
+  subPath?: string; // Relative directory inside the source; empty = its root
+  containerPath: string; // Relative suffix mounted below /workspace/extra
+  readonly?: boolean; // Default: true for safety
+}
+
+export type AdditionalMount = HostDirectoryMount | StorageSourceMount;
+
+interface StorageSourceBase {
+  // Stable identifier referenced by StorageSourceMount.source
+  id: string;
+  // Whether read-write mounts of this source are allowed
+  allowReadWrite: boolean;
+  description?: string;
+}
+
+/** An NFS export, mounted by the Docker daemon's kernel (no credentials). */
+export interface NfsStorageSource extends StorageSourceBase {
+  type: 'nfs';
+  server: string;
+  exportPath: string;
+  nfsVersion?: '3' | '4' | '4.1' | '4.2'; // Default: 3
+}
+
+/** An SMB share. The password lives in a 0600 file, never in this config. */
+export interface CifsStorageSource extends StorageSourceBase {
+  type: 'cifs';
+  server: string;
+  share: string;
+  username?: string; // Omitted = guest
+  domain?: string;
+  passwordFile?: string; // Absolute, or relative to the project root
+  smbVersion?: '2.1' | '3.0' | '3.1.1'; // Default: 3.0
+}
+
+export type StorageSource = NfsStorageSource | CifsStorageSource;
 
 /**
  * Mount Allowlist - Security configuration for additional mounts
@@ -17,6 +57,8 @@ export interface MountAllowlist {
   blockedPatterns: string[];
   // If true, non-main groups can only mount read-only regardless of config
   nonMainReadOnly: boolean;
+  // Network storage that workspaces may mount by id (optional; default none)
+  storageSources: StorageSource[];
 }
 
 export interface AllowedRoot {
@@ -26,6 +68,9 @@ export interface AllowedRoot {
   allowReadWrite: boolean;
   // Optional description for documentation
   description?: string;
+  // Host directories under this root that sit on an NFS mount are mounted by
+  // Docker straight from the export instead of bound (default false)
+  nfsDirectMount?: boolean;
 }
 
 export interface ContainerConfig {

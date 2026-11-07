@@ -27,6 +27,7 @@ import {
   toLocalDateString,
   toLocalMonthString,
 } from './db.js';
+import { isSingleUserHost } from './deployment-mode.js';
 import { getSystemSettings } from './runtime-config.js';
 import { logger } from './logger.js';
 import type {
@@ -41,7 +42,8 @@ import type {
 // No extra manual cache needed — avoids stale state when settings change.
 
 export function isBillingEnabled(): boolean {
-  return getSystemSettings().billingEnabled === true;
+  // Single-user host mode has no billing; the stored switch is kept as is.
+  return getSystemSettings().billingEnabled === true && !isSingleUserHost();
 }
 
 // --- Plan management ---
@@ -836,6 +838,16 @@ export function checkAndExpireSubscriptions(): void {
   } catch (err) {
     logger.error({ err }, 'Failed to check subscription expiry');
   }
+}
+
+/**
+ * The hourly expiry pass (index.ts). It runs whether billing is on or not,
+ * so subscriptions that ran out while billing was off are already expired
+ * when it is turned back on; single-user host mode has none and skips it.
+ */
+export function runScheduledSubscriptionExpiry(): void {
+  if (isSingleUserHost()) return;
+  checkAndExpireSubscriptions();
 }
 
 /**

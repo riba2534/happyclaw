@@ -416,6 +416,10 @@ Agent MCP 调用没有 Cookie，但必须携带由主进程创建的运行上下
 - 脚本和前置检查仅允许 admin 的 Host Workspace。
 - `adminHostOnlyMode` 仅允许 admin 配置；开启后 active admin 拥有的 Workspace
   强制使用 Host，所有 Container 写入入口都会拒绝。member 始终保留 Container 隔离。
+- `deploymentMode`、`workspaceRoot` 仅允许 admin 配置（`/api/config/host-integration`）。
+  单人宿主机模式等同管理员纯宿主机生效，并由后端拒绝：注册（403）、建用户、建邀请码、
+  重新启用用户或提升为 admin、建访客或重新启用访客、`POST /api/docker/pull`（409
+  `SINGLE_USER_HOST`）。读取、停用、删除不受影响；界面隐藏这些入口只是展示层面。
 
 自动化的 Agent 工具（`automation_*`）不接收任何 JID。主进程从 IPC 目录和正在执行的
 批次推出调用者（`src/automation-runtime.ts` 的 `deriveAutomationActor`），**admin
@@ -426,6 +430,33 @@ Agent MCP 调用没有 Cookie，但必须携带由主进程创建的运行上下
   新建的自动化绑定当前会话和这条输入的来源路由（例如飞书话题）。
 - 其他轮次（群成员、混合批次）只能列出。
 - 旧的 `schedule_task` 等请求一律返回错误，提示改用自动化工具。
+
+会话查询（`session_list`、`session_get`）是只读的 Agent 工具，不经过 HTTP，权限全部由宿主在 IPC
+侧（`src/session-inspect-service.ts`）判定，Runner 的参数裁剪只是少给模型看不该用的参数：
+
+- 调用者只由请求文件所在的 IPC 目录（工作区 folder 加会话 id）确定，请求体里的身份字段一律
+  忽略。团队路由会话、团队执行会话和派发 Worker 不注册这两个工具，宿主也拒绝它们的请求
+  （`TEAM_LANE_POLICY.withheldTools`）。
+- 可见范围永远是调用者所在工作区的主人（`created_by`）自己的工作区，不能查看其他用户的
+  工作区。非 Home 工作区只能查看本工作区；Home 工作区可以查看主人的全部工作区，但必须
+  写明工作区（`workspace` 参数或 `<工作区>/<会话>` 寻址），裸会话 id 不会跨工作区搜索。
+  Host 工作区与 Web 读取（`canViewHostGroup`）一致，只在主人仍是 admin 时可见：主人不是
+  admin 时它不出现在列表里、寻址返回 `not_found`，Host 工作区自己的会话也不能使用这两个
+  工具。工作区不存在、不属于主人、会话不存在或无权查看，一律返回同一条 `not_found`，
+  不泄露存在性。
+- 本轮必须是工作区主人亲自发起的（判定与 `install_skill` 相同，用请求里的 `inputTurnId`
+  指明这一轮，过期的不借用当前轮次），才能跨工作区、读取消息正文、读取执行轨迹和
+  工具入参。群成员轮次、自动化运行、`work_item_input` 回报轮只得到本工作区会话的运行
+  状态字段（不含最新消息预览、消息、轨迹、工具入参和进展文本），跨工作区请求返回
+  `owner_turn_required`，不做任何查找。
+- 已取消的输入（飞书撤回、`/break`，即 `is_from_me=0` 且 `delivery_status='cancelled'`）
+  与 Web 时间线一样不出现在最新消息预览和 `session_get` 的消息里；IM `/recall` 的摘要同样
+  跳过它们。
+- 返回的会话内容经 `untrusted_session_data` 围栏作为不可信数据交给模型，「匹配到多个会话」
+  的候选会话名也放在围栏里，不进错误文本。按 Runner 打印出的字节计，`session_get` 的消息
+  和轨迹合计最多 32 KiB，从最新的往旧的取、遇到第一条放不下的就停，并用 `truncated` 标明
+  省略了多少；`session_list` 的会话条目最多 24 KiB，超出的同样省略并标明。没有新增数据库
+  列，也没有界面开关。
 
 ## 11. 访客（只读）
 

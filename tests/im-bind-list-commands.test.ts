@@ -109,6 +109,8 @@ function commands() {
     imHealthCheckFailCounts: new Map(),
     formatWorkspaceList: imCommands.formatWorkspaceList,
     resolveLocationInfo: imCommands.resolveLocationInfo,
+    findWorkspaceBySpec: imCommands.findWorkspaceBySpec,
+    findSessionsBySpec: imCommands.findSessionsBySpec,
   };
   const harness = createRuntimeSourceHarness(globals);
   for (const name of [

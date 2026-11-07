@@ -15,6 +15,7 @@ import { StreamingMarkdown } from './StreamingMarkdown';
 import { REPLY_BODY_CLASS } from './MessageBubble';
 import { TodoProgressPanel } from './TodoProgressPanel';
 import { ToolActivityCard, ToolRow } from './ToolActivityCard';
+import { stepToolState } from './tool-status';
 import { AskUserQuestionCard } from './AskUserQuestionCard';
 import { ModelWaitRow } from './ModelWaitRow';
 import { ProcessCard, hasProcess } from './ProcessCard';
@@ -225,7 +226,7 @@ function StreamingContent({
                   toolName={step.toolName ?? 'unknown'}
                   skillName={step.skillName}
                   summary={step.summary}
-                  status={step.status}
+                  status={stepToolState(step)}
                   elapsedSeconds={
                     running ? Math.max(0, (now - step.at) / 1000) : undefined
                   }

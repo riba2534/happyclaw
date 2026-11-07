@@ -19,7 +19,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { DATA_DIR, GROUPS_DIR } from './config.js';
+import { DATA_DIR } from './config.js';
 import { getAgent } from './db.js';
 import {
   GitCommandError,
@@ -38,6 +38,7 @@ import {
   markSessionWorktreeBroken,
   type SessionWorktree,
 } from './session-worktree-store.js';
+import { workspaceDirOf } from './workspace-dir.js';
 import type {
   RegisteredGroup,
   SessionWorktreeInfo,
@@ -62,7 +63,8 @@ function isHostWorkspace(group: WorkspaceLike): boolean {
  * The directory a run of this workspace (or of one of its sessions) works in,
  * which is also its Claude project context root (`.claude/skills`, MCP) and
  * the file panel root: the session's worktree when it has one, a Host
- * workspace's custom directory, otherwise data/groups/<folder>.
+ * workspace's custom directory, otherwise the workspace's own directory
+ * (recorded in the workspace root, or data/groups/<folder>).
  *
  * A broken worktree still resolves to its own path so callers report the
  * missing directory instead of quietly switching to the main checkout.
@@ -92,7 +94,7 @@ function projectRootOf(
 ): string {
   if (worktree) return path.join(worktree.worktree_path, worktree.cwd_subpath);
   if (isHostWorkspace(group) && group.customCwd) return group.customCwd;
-  return path.join(GROUPS_DIR, group.folder);
+  return workspaceDirOf(group.folder);
 }
 
 function hasGitEntry(dir: string): boolean {
@@ -157,7 +159,7 @@ export function projectSkillRoots(
 
 /**
  * Project Skill roots for a run or a capability preview, lowest precedence
- * first. data/groups/<folder> is its own git root (the host initializes it
+ * first. The workspace's own directory is its own git root (the host initializes it
  * before every run) and is all a container sees at /workspace/group, so it
  * keeps a single root; a custom directory or worktree mirrors the CLI walk.
  */
@@ -208,9 +210,12 @@ export async function getWorktreeSupport(
   if (!fs.existsSync(dir)) {
     return { available: false, reason: 'directory_missing' };
   }
-  // data/groups/<folder> sits inside the HappyClaw checkout; only its own
-  // repository (the one the host initializes there) counts.
-  const repo = await locateGitRepo(dir, { requireTopLevel: !group.customCwd });
+  // The workspace's own directory (data/groups/<folder> sits inside the
+  // HappyClaw checkout) counts only with the repository the host initializes
+  // there; a custom directory may be nested in a larger repository.
+  const repo = await locateGitRepo(dir, {
+    requireTopLevel: !group.customCwd,
+  });
   if (!repo) return { available: false, reason: 'not_git_repo' };
   const baseCommit = await resolveHeadCommit(repo.topLevel);
   if (!baseCommit) return { available: false, reason: 'repo_has_no_commits' };

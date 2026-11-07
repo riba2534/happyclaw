@@ -111,6 +111,11 @@ function automationDefaults(): Record<string, unknown> {
       (WORK_IPC_TYPES as readonly unknown[]).includes(type),
     resolveTeamRole: () => null,
     teamLaneOf: () => null,
+    // Session inspection: its requests are not part of what these tests send.
+    isSessionInspectIpcType: (type: unknown) =>
+      type === 'session_list' || type === 'session_get',
+    handleSessionInspectIpc: () => ({ ok: false, error: 'not under test' }),
+    sessionInspectDeps: {},
     // processAgentConversation's own: extracted callbacks close over it.
     teamRole: null,
     resolveTeamRoute: () => null,

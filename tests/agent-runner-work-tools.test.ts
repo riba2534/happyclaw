@@ -72,6 +72,8 @@ const WITHHELD_TOOLS = [
   'automation_silence_current_run',
   'install_skill',
   'uninstall_skill',
+  'session_list',
+  'session_get',
 ];
 
 const roots: string[] = [];

@@ -447,6 +447,22 @@ export function getWorkItemByAgent(agentId: string): WorkItem | undefined {
   return row ? mapItem(row) : undefined;
 }
 
+/** The work item of each of these sessions that has one, in one read. */
+export function getWorkItemsByAgents(
+  agentIds: string[],
+): Map<string, WorkItem> {
+  const items = new Map<string, WorkItem>();
+  if (agentIds.length === 0) return items;
+  const rows = stmt(
+    'SELECT * FROM work_items WHERE agent_id IN (SELECT value FROM json_each(?)) ORDER BY rowid',
+  ).all(JSON.stringify(agentIds)) as WorkItemRow[];
+  for (const row of rows) {
+    const item = mapItem(row);
+    if (item.agentId && !items.has(item.agentId)) items.set(item.agentId, item);
+  }
+  return items;
+}
+
 export function listWorkItems(
   workspaceJid: string,
   options: { status?: WorkItemStatus; limit?: number } = {},

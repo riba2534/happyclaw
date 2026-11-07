@@ -28,8 +28,14 @@ import {
   resolveUncertainChannelOutbox,
 } from '../channel-reliability-store.js';
 import { CONTAINER_IMAGE } from '../config.js';
+import {
+  getDeploymentMode,
+  isAdminHostOnlyEffective,
+  isSingleUserHost,
+} from '../deployment-mode.js';
 import { getSystemSettings, getProviders } from '../runtime-config.js';
 import { logger } from '../logger.js';
+import { singleUserHostRefusal } from '../single-user-host-guard.js';
 import { stripVirtualJidSuffix } from '../utils.js';
 
 const execFileAsync = promisify(execFile);
@@ -99,6 +105,9 @@ const DOCKER_IMAGE_ID_TTL_MS = 30_000;
 let cachedDockerImageId: { id: string | null; fetchedAt: number } | null = null;
 
 async function getDockerImageId(): Promise<string | null> {
+  // Single-user host mode never runs Docker: no image, so no container
+  // version probe either.
+  if (isSingleUserHost()) return null;
   const now = Date.now();
   if (
     cachedDockerImageId &&
@@ -301,10 +310,14 @@ monitorRoutes.get('/status', authMiddleware, async (c) => {
   // 监控页面属于系统管理功能，admin 可见所有群组状态（不受工作区隔离约束）
   const filteredGroups = visibleQueueGroups(authUser, queueStatus.groups);
 
-  const dockerRequired = hasContainerModeGroups();
-  const dockerImageExists = dockerRequired
-    ? await checkDockerImageExists()
-    : false;
+  // Single-user host mode runs no Docker probe and reports Docker as n/a.
+  const singleUserHost = isSingleUserHost();
+  const dockerRequired = singleUserHost ? null : hasContainerModeGroups();
+  const dockerImageExists = singleUserHost
+    ? null
+    : dockerRequired
+      ? await checkDockerImageExists()
+      : false;
   const systemSettings = getSystemSettings();
 
   // For non-admin users, derive aggregate metrics from their own filtered groups only
@@ -366,12 +379,19 @@ monitorRoutes.get('/status', authMiddleware, async (c) => {
     groups: enrichedGroups,
     dockerImageExists,
     dockerRequired,
-    adminHostOnlyMode: isAdmin ? systemSettings.adminHostOnlyMode : undefined,
-    dockerPullInProgress: pullState.pulling,
+    adminHostOnlyMode: isAdmin ? isAdminHostOnlyEffective() : undefined,
+    deploymentMode: getDeploymentMode(),
+    dockerPullInProgress: singleUserHost ? null : pullState.pulling,
     claudeCodeVersions: isAdmin ? await getClaudeCodeVersions() : undefined,
     dockerPullLogs:
-      isAdmin && pullState.pulling ? pullState.logs.slice(-50) : undefined,
-    dockerPullResult: isAdmin ? pullState.result : undefined,
+      isAdmin && !singleUserHost && pullState.pulling
+        ? pullState.logs.slice(-50)
+        : undefined,
+    dockerPullResult: isAdmin
+      ? singleUserHost
+        ? null
+        : pullState.result
+      : undefined,
   });
 });
 
@@ -531,6 +551,9 @@ monitorRoutes.post(
   authMiddleware,
   systemConfigMiddleware,
   async (c) => {
+    if (isSingleUserHost()) {
+      return singleUserHostRefusal(c, '单人宿主机模式不使用 Docker。');
+    }
     if (pullState.pulling) {
       return c.json(
         {

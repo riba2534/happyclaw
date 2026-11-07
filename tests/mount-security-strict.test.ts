@@ -41,11 +41,13 @@ type AllowedRootInput = {
   path: string;
   allowReadWrite: boolean;
   description?: string;
+  nfsDirectMount?: unknown;
 };
 
 function writePolicy(
   roots: AllowedRootInput[],
   blockedPatterns: string[] = ['blocked'],
+  storageSources?: unknown[],
 ): void {
   fs.writeFileSync(
     allowlistPath,
@@ -53,6 +55,7 @@ function writePolicy(
       allowedRoots: roots,
       blockedPatterns,
       nonMainReadOnly: false,
+      ...(storageSources ? { storageSources } : {}),
     }),
   );
 }
@@ -267,5 +270,149 @@ describe.sequential('validateAdditionalMountsStrict', () => {
     expect(() => validate(mounts, 'replaced-workspace', false)).toThrow(
       ValidationError,
     );
+  });
+
+  test('resolves a storage-source mount next to a host directory', async () => {
+    const source = path.join(allowedRoot, 'beside-storage');
+    fs.mkdirSync(source, { recursive: true });
+    writePolicy(
+      [{ path: allowedRoot, allowReadWrite: false }],
+      ['blocked'],
+      [
+        {
+          id: 'nas',
+          type: 'nfs',
+          server: 'nas.lan',
+          exportPath: '/export',
+          allowReadWrite: true,
+        },
+      ],
+    );
+    const { validate } = await loadStrictValidator();
+
+    expect(
+      validate(
+        [
+          mount(source, 'local'),
+          {
+            source: 'nas',
+            subPath: 'team/a/',
+            containerPath: 'nas/team',
+            readonly: false,
+          },
+        ],
+        'storage-workspace',
+        false,
+      )[1],
+    ).toEqual({
+      hostPath: 'nfs://nas.lan/export/team/a',
+      containerPath: '/workspace/extra/nas/team',
+      readonly: false,
+      storage: {
+        type: 'nfs',
+        server: 'nas.lan',
+        device: '/export/team/a',
+        options: 'nfsvers=3,proto=tcp,hard,nolock',
+      },
+      persisted: {
+        source: 'nas',
+        subPath: 'team/a',
+        containerPath: 'nas/team',
+        readonly: false,
+      },
+    });
+  });
+
+  test.each([
+    [{ source: 'missing', containerPath: 'x' }],
+    [{ source: 'nas', containerPath: 'x', hostPath: '/tmp' }],
+    [{ source: 'nas', subPath: '../up', containerPath: 'x' }],
+    [{ source: 'nas', containerPath: '/abs' }],
+    [{ source: 'nas', subPath: 7, containerPath: 'x' }],
+    [{ source: 'nas', subPath: 'alice/.ssh', containerPath: 'x' }],
+    [{ source: 'nas', subPath: 'team/credentials/a', containerPath: 'x' }],
+    [{ source: 'nas', subPath: 'team/blocked', containerPath: 'x' }],
+  ])('rejects an invalid storage-source mount %#', async (raw) => {
+    writePolicy(
+      [{ path: allowedRoot, allowReadWrite: false }],
+      ['blocked'],
+      [
+        {
+          id: 'nas',
+          type: 'nfs',
+          server: 'nas.lan',
+          exportPath: '/export',
+          allowReadWrite: true,
+        },
+      ],
+    );
+    const { validate, ValidationError } = await loadStrictValidator();
+    expect(() => validate([raw], 'bad-storage', false)).toThrow(
+      ValidationError,
+    );
+  });
+
+  test('a storage source removed from the allowlist stops old workspaces', async () => {
+    const policy = (sources: unknown[]) =>
+      writePolicy(
+        [{ path: allowedRoot, allowReadWrite: false }],
+        ['blocked'],
+        sources,
+      );
+    policy([
+      {
+        id: 'nas',
+        type: 'nfs',
+        server: 'nas.lan',
+        exportPath: '/e',
+        allowReadWrite: false,
+      },
+    ]);
+    const { validate, ValidationError } = await loadStrictValidator();
+    const mounts = [{ source: 'nas', containerPath: 'nas' }];
+    expect(validate(mounts, 'storage-revoked', false)).toHaveLength(1);
+    policy([]);
+    expect(() => validate(mounts, 'storage-revoked', false)).toThrow(
+      ValidationError,
+    );
+  });
+
+  test('host directories stay binds unless their allowed root opts into NFS direct mounts', async () => {
+    const plain = path.join(allowedRoot, 'nfs-plain');
+    const direct = path.join(allowedRoot, 'nfs-direct', 'proj');
+    fs.mkdirSync(plain, { recursive: true });
+    fs.mkdirSync(direct, { recursive: true });
+    const directRoot = path.join(allowedRoot, 'nfs-direct');
+    writePolicy([
+      { path: allowedRoot, allowReadWrite: false },
+      { path: directRoot, allowReadWrite: false, nfsDirectMount: true },
+    ]);
+    const { validate } = await loadStrictValidator();
+
+    const [plainMount, directMount] = validate(
+      [mount(plain, 'plain'), mount(direct, 'direct')],
+      'nfs-direct-workspace',
+      false,
+    );
+    expect(plainMount).not.toHaveProperty('nfsDirectMountRoot');
+    expect(directMount.nfsDirectMountRoot).toBe(directRoot);
+    // The switch lives in the allowlist only, never in the workspace config.
+    expect(directMount.persisted).toEqual({
+      hostPath: fs.realpathSync(direct),
+      containerPath: 'direct',
+      readonly: true,
+    });
+  });
+
+  test('rejects an allowlist whose nfsDirectMount is not a boolean', async () => {
+    const source = path.join(allowedRoot, 'nfs-flag');
+    fs.mkdirSync(source, { recursive: true });
+    writePolicy([
+      { path: allowedRoot, allowReadWrite: false, nfsDirectMount: 'yes' },
+    ]);
+    const { validate, ValidationError } = await loadStrictValidator();
+    expect(() =>
+      validate([mount(source, 'flag')], 'nfs-flag-workspace', false),
+    ).toThrow(ValidationError);
   });
 });

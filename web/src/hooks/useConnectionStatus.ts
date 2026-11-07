@@ -3,6 +3,22 @@ import { wsManager } from '../api/ws';
 
 export type ConnectionStatus = 'connected' | 'reconnecting' | 'offline';
 
+/**
+ * The socket is the authority. An open one means connected even while the
+ * browser says offline (that flag flickers on a network handoff; wsManager
+ * pings the socket then, and drops it if the ping goes unanswered). A socket
+ * that is down is `offline` when the browser also has no network, otherwise
+ * `reconnecting`. Either is still unconfirmed: ConnectionBanner waits out a
+ * grace period before saying anything.
+ */
+export function deriveConnectionStatus(
+  wsConnected: boolean,
+  browserOnline: boolean,
+): ConnectionStatus {
+  if (wsConnected) return 'connected';
+  return browserOnline ? 'reconnecting' : 'offline';
+}
+
 export function useConnectionStatus(): ConnectionStatus {
   const [wsConnected, setWsConnected] = useState(wsManager.isConnected());
   const [online, setOnline] = useState(navigator.onLine);
@@ -23,7 +39,5 @@ export function useConnectionStatus(): ConnectionStatus {
     };
   }, []);
 
-  if (!online) return 'offline';
-  if (!wsConnected) return 'reconnecting';
-  return 'connected';
+  return deriveConnectionStatus(wsConnected, online);
 }

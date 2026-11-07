@@ -16,13 +16,17 @@ const ownPort = Boolean(process.env.PLAYWRIGHT_PORT);
 
 /** Specs whose composer and layout behaviour also run in a desktop window. */
 const desktopSpecs =
-  /(composer|model-selector|chat-scroll|chat-stream-render|phone-nav|reply-table|share-image|team-mode|multitask)\.spec\.ts$/;
+  /(composer|model-selector|chat-scroll|chat-stream-render|phone-nav|reply-table|share-image|team-mode|multitask|single-user-host|visual-baseline)\.spec\.ts$/;
 
 export default defineConfig({
   testDir: './tests/e2e',
   fullyParallel: false,
   forbidOnly: Boolean(process.env.CI),
   retries: process.env.CI ? 1 : 0,
+  // Only visual-baseline.spec.ts takes screenshots. A missing or changed
+  // baseline fails rather than being written next to the committed ones;
+  // `--update-snapshots` on the command line still records them.
+  updateSnapshots: 'none',
   reporter: 'line',
   use: {
     baseURL: `http://127.0.0.1:${port}`,
