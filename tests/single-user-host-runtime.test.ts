@@ -7,6 +7,7 @@ import { afterAll, describe, expect, test, vi } from 'vitest';
 import { canExecuteOnHost } from '../src/host-execution-policy.js';
 import { makeExpandContext } from '../src/plugin-expander-context.js';
 import { isValidWorkspaceFolderName } from '../src/workspace-folder.js';
+import { rootForNewWorkspaces } from '../src/workspace-root.js';
 import { createRuntimeSourceHarness } from './helpers/runtime-source.js';
 
 // index.ts functions run as written, with their collaborators passed in.
@@ -188,8 +189,9 @@ describe('the workspace root main() binds', () => {
     fallbackWarning: string | null;
   }): () => string | null {
     const globals: Record<string, any> = {
-      getWorkspaceRootResolution: () => resolution,
       getWorkspaceRootOccupancy: () => ({}),
+      // The real policy over the given resolution: main() must bind it.
+      getRootForNewWorkspaces: () => rootForNewWorkspaces(resolution),
     };
     createRuntimeSourceHarness(globals).installCallArgument(
       'rootResolver',
