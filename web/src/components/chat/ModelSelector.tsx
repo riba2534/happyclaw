@@ -605,6 +605,8 @@ export function ModelSelector({
   // A phone gets one pill for model and effort and picks the effort in the
   // sheet; a narrow window keeps the desktop controls but the sheet too.
   const phone = useIsPhone();
+  // A touch screen wider than a phone (a tablet) has no hover either.
+  const coarse = useMediaQuery('(pointer: coarse)');
   const narrow = useMediaQuery('(max-width: 639px)');
   const inSheet = phone || narrow;
   const compact = (useComposerDock()?.compact ?? false) && phone;
@@ -823,7 +825,8 @@ export function ModelSelector({
   };
 
   // A row that may be pinned, or is: a desktop's hover button toggles it, a
-  // phone's long press asks in a sheet (a tap still picks the model).
+  // tablet's always-shown one too; a long press on a touch screen asks in a
+  // sheet (a tap still picks the model).
   const togglePin = (row: ModelRow) => {
     const next = toggleModelPin(userId, rowModel(row));
     setPins(next);
@@ -834,7 +837,7 @@ export function ModelSelector({
     if (!pinned && !rowPin(row)) return undefined;
     return {
       pinned,
-      touch: phone,
+      input: phone ? 'phone' : coarse ? 'touch' : 'pointer',
       onToggle: () => void togglePin(row),
       onLongPress: () => {
         setPinTarget(row);
@@ -1056,6 +1059,8 @@ export function ModelSelector({
             className="flex max-h-[var(--radix-popover-content-available-height)] w-[min(460px,calc(100vw-2rem))] flex-col gap-0 overflow-hidden rounded-xl p-0"
           >
             {panel}
+            {/* A tablet's long press; inside, so opening it keeps this open. */}
+            {coarse && pinSheet}
           </PopoverContent>
         )}
       </Root>
@@ -1673,8 +1678,9 @@ function RowButton({
   pinLabel?: string;
 }) {
   const longPress = useLongPress(() => pin?.onLongPress());
-  // A pin button beside the row on a desktop, room kept for it.
-  const hoverPin = !!pin && !pin.touch;
+  // A pin button over the row's end on a desktop, room kept for it.
+  const hoverPin = pin?.input === 'pointer';
+  const held = !!pin && pin.input !== 'pointer';
   const row = (
     <button
       type="button"
@@ -1685,7 +1691,7 @@ function RowButton({
       disabled={disabled}
       onClick={onClick}
       title={title}
-      {...(pin?.touch ? longPress : {})}
+      {...(held ? longPress : {})}
       className={cn(
         'flex w-full cursor-pointer items-center gap-2.5 rounded-lg px-2 py-1.5 text-left transition-colors duration-100 outline-none hover:bg-surface-hover focus-visible:bg-surface-hover disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent',
         checked && 'bg-surface-selected hover:bg-surface-selected',
@@ -1697,7 +1703,7 @@ function RowButton({
       <span className="min-w-0 flex-1">
         <span className="block truncate text-body font-medium text-foreground">
           {title}
-          {pin?.pinned && pin.touch && <PinGlyph />}
+          {pin?.pinned && pin.input === 'phone' && <PinGlyph />}
         </span>
         <span
           className={cn(
@@ -1717,6 +1723,15 @@ function RowButton({
     </button>
   );
   if (!pin) return row;
+  if (pin.input === 'touch') {
+    // Beside the row, not over it: a tap on the row always picks.
+    return (
+      <div data-pin-row="" className="flex items-center gap-1">
+        <div className="min-w-0 flex-1">{row}</div>
+        <PinToggle pin={pin} name={pinLabel} />
+      </div>
+    );
+  }
   return (
     <div data-pin-row="" className="group/row relative">
       {row}

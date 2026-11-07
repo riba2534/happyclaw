@@ -682,6 +682,72 @@ test.describe('pinned models', () => {
     expect(puts).toHaveLength(0);
   });
 
+  test.describe('a tablet', () => {
+    // Wider than a phone, so the picker is the desktop popover, but nothing
+    // hovers there.
+    test.use({
+      viewport: { width: 1180, height: 820 },
+      hasTouch: true,
+      isMobile: false,
+    });
+
+    test('shows the pin beside the row, pins by a long press too, and a tap on the row picks', async ({
+      page,
+    }, testInfo) => {
+      test.skip(
+        testInfo.project.name !== 'chromium-desktop',
+        'one tablet window is enough',
+      );
+      const { puts } = await openHarness(page);
+      await modelButton(page).tap();
+      await expect(page.locator('[data-slot="sheet-content"]')).toHaveCount(0);
+      const row = modelRow(page, 'gpt-5.5');
+      await expect(row).toBeVisible();
+      const pin = page.getByRole('button', {
+        name: `置顶「${CHATGPT} · gpt-5.5」`,
+      });
+      await expect(pin).toHaveCSS('opacity', '1');
+      // Its layout size: the popover may still be scaling in.
+      const size = await pin.evaluate((el: HTMLElement) => ({
+        width: el.offsetWidth,
+        height: el.offsetHeight,
+      }));
+      expect(size.width).toBeGreaterThanOrEqual(44);
+      expect(size.height).toBeGreaterThanOrEqual(44);
+      const pinBox = (await pin.boundingBox())!;
+      const rowBox = (await row.boundingBox())!;
+      // Beside the row, not over its end.
+      expect(pinBox.x).toBeGreaterThanOrEqual(rowBox.x + rowBox.width);
+      await pin.tap();
+      await expect(firstRow(page)).toHaveAttribute('title', 'gpt-5.5');
+      expect(puts).toHaveLength(0);
+
+      await longPress(modelRow(page, 'gpt-6-astra'));
+      await page.getByRole('button', { name: '置顶「gpt-6-astra」' }).tap();
+      await expect(page.locator('[data-model-row][data-pinned]')).toHaveCount(
+        2,
+      );
+      expect(puts).toHaveLength(0);
+      await expect(page.locator('[data-slot="sheet-content"]')).toHaveCount(0);
+
+      // The row's own end picks its model; it does not pin or unpin.
+      const astra = (await modelRow(page, 'gpt-6-astra').boundingBox())!;
+      await page.touchscreen.tap(
+        astra.x + astra.width - 4,
+        astra.y + astra.height / 2,
+      );
+      await expect.poll(() => puts.length).toBe(1);
+      expect(puts[0]).toMatchObject({
+        modelConfigId: 'chatgpt',
+        model: 'gpt-6-astra',
+      });
+      await modelButton(page).tap();
+      await expect(page.locator('[data-model-row][data-pinned]')).toHaveCount(
+        2,
+      );
+    });
+  });
+
   test('a phone pins by a long press in the sheet, a tap still picks', async ({
     page,
     isMobile,
