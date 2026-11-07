@@ -459,6 +459,12 @@ export interface NewMessage {
    * Derived when a message is listed or announced; never persisted.
    */
   has_trace?: boolean;
+  /**
+   * Set when an agent reply is announced that the server also sends as a Web
+   * Push (src/web-push.ts): a page on a subscribed device leaves the
+   * background notification to the push. Never persisted or listed.
+   */
+  web_push?: boolean;
   turn_id?: string | null;
   session_id?: string | null;
   sdk_message_uuid?: string | null;

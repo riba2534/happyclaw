@@ -113,6 +113,8 @@ function createNoticeRuntime(imSend: (...args: unknown[]) => Promise<void>) {
     broadcastNewMessage: vi.fn(),
     // Web Push has its own tests (web-push.test.ts); no push here.
     pushWebTurnOutcome: vi.fn(),
+    webTurnPushNotice: vi.fn(() => null),
+    notifyWebTurn: vi.fn(),
     flushAcknowledgedIpcForJid: vi.fn(),
     FEISHU_UNCERTAIN_REPLAY_DELAY_MS: 0,
     FEISHU_OUTBOX_LEASE_MS: 120_000,

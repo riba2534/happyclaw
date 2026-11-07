@@ -5,6 +5,7 @@ const toastMock = vi.hoisted(() => vi.fn());
 vi.mock('sonner', () => ({ toast: toastMock }));
 
 import { notifyIfHidden, showToast } from './toast';
+import { setPushSubscribed } from './webPush';
 
 function setHidden(hidden: boolean) {
   Object.defineProperty(document, 'hidden', {
@@ -17,6 +18,7 @@ afterEach(() => {
   toastMock.mockReset();
   vi.unstubAllGlobals();
   setHidden(false);
+  setPushSubscribed(false);
 });
 
 describe('showToast', () => {
@@ -113,5 +115,40 @@ describe('notifyIfHidden', () => {
     setHidden(false);
     notifyIfHidden('HappyClaw');
     expect(Ctor).not.toHaveBeenCalled();
+  });
+
+  describe('on a device subscribed to Web Push', () => {
+    test('leaves to the push only what the server pushes', () => {
+      const Ctor = vi.fn();
+      vi.stubGlobal(
+        'Notification',
+        Object.assign(Ctor, { permission: 'granted' }),
+      );
+      setHidden(true);
+      setPushSubscribed(true);
+
+      // A Web-typed turn's reply: the server pushes it.
+      notifyIfHidden('ws', 'done', { pushCovered: true });
+      expect(Ctor).not.toHaveBeenCalled();
+
+      // Automation and IM replies, background tasks: no push is sent.
+      notifyIfHidden('ws', 'automation reply');
+      notifyIfHidden('HappyClaw: 后台任务 已完成', 'summary', {
+        pushCovered: false,
+      });
+      expect(Ctor).toHaveBeenCalledTimes(2);
+    });
+
+    test('a device that is not subscribed notifies for everything', () => {
+      const Ctor = vi.fn();
+      vi.stubGlobal(
+        'Notification',
+        Object.assign(Ctor, { permission: 'granted' }),
+      );
+      setHidden(true);
+      setPushSubscribed(false);
+      notifyIfHidden('ws', 'done', { pushCovered: true });
+      expect(Ctor).toHaveBeenCalledTimes(1);
+    });
   });
 });
