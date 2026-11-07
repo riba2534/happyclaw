@@ -8,6 +8,7 @@ import {
   type FeishuTransportIssue,
 } from './feishu-connection-conflict.js';
 import { createFeishuPermissionNotifier } from './feishu-permission-notice.js';
+import type { ChatReachability } from './im-channel.js';
 import {
   answerQuestionMessage,
   CARD_ACTION_ANSWER_QUESTION,
@@ -76,6 +77,7 @@ import {
   classifyFeishuError,
   feishuErrorCode,
   feishuErrorMessageText,
+  isFeishuChatGoneError,
   isFeishuMissingScopeError,
   neutralizeFeishuMentions,
 } from './feishu-errors.js';
@@ -351,6 +353,8 @@ export interface FeishuConnection {
   isConnected(): boolean;
   syncGroups(): Promise<void>;
   getChatInfo(chatId: string): Promise<FeishuChatInfo | null>;
+  /** Whether the bot can still see this chat; see `IMChannel.probeChat`. */
+  probeChat(chatId: string): Promise<ChatReachability>;
   executeCapability(
     context: ChannelTurnContext,
     request: FeishuCapabilityRequest,
@@ -5923,6 +5927,40 @@ export function createFeishuConnection(
     );
   }
 
+  /** One `chat.get`; a failure is reported and handed back with no info. */
+  async function readChatInfo(
+    chatId: string,
+  ): Promise<{ info: FeishuChatInfo | null; error?: unknown }> {
+    if (!client) return { info: null };
+    try {
+      const target = parseFeishuRouteTarget(chatId);
+      const res = await client.im.v1.chat.get({
+        path: { chat_id: target.chatId },
+      });
+      if (!res.data) return { info: null };
+      const info = {
+        avatar: res.data.avatar,
+        name: res.data.name,
+        user_count: res.data.user_count,
+        chat_type: res.data.chat_type,
+        chat_mode: res.data.chat_mode,
+        group_message_type: (res.data as { group_message_type?: string })
+          .group_message_type,
+      };
+      chatInfoById.set(target.chatId, {
+        name: info.name,
+        chatType: info.chat_type,
+        chatMode: info.chat_mode,
+        groupMessageType: info.group_message_type,
+      });
+      return { info };
+    } catch (err) {
+      permissionNotices.report('chat_info', err);
+      logger.warn({ err, chatId }, 'Failed to get Feishu chat info');
+      return { info: null, error: err };
+    }
+  }
+
   const connection: FeishuConnection = {
     async connect(opts: ConnectOptions): Promise<boolean> {
       const { onReady } = opts;
@@ -6552,34 +6590,15 @@ export function createFeishuConnection(
     },
 
     async getChatInfo(chatId: string): Promise<FeishuChatInfo | null> {
-      if (!client) return null;
-      try {
-        const target = parseFeishuRouteTarget(chatId);
-        const res = await client.im.v1.chat.get({
-          path: { chat_id: target.chatId },
-        });
-        if (!res.data) return null;
-        const info = {
-          avatar: res.data.avatar,
-          name: res.data.name,
-          user_count: res.data.user_count,
-          chat_type: res.data.chat_type,
-          chat_mode: res.data.chat_mode,
-          group_message_type: (res.data as { group_message_type?: string })
-            .group_message_type,
-        };
-        chatInfoById.set(target.chatId, {
-          name: info.name,
-          chatType: info.chat_type,
-          chatMode: info.chat_mode,
-          groupMessageType: info.group_message_type,
-        });
-        return info;
-      } catch (err) {
-        permissionNotices.report('chat_info', err);
-        logger.warn({ err, chatId }, 'Failed to get Feishu chat info');
-        return null;
-      }
+      return (await readChatInfo(chatId)).info;
+    },
+
+    async probeChat(chatId: string): Promise<ChatReachability> {
+      const { info, error } = await readChatInfo(chatId);
+      if (info) return 'reachable';
+      return error !== undefined && isFeishuChatGoneError(error)
+        ? 'gone'
+        : 'unknown';
     },
 
     async executeCapability(context, request) {

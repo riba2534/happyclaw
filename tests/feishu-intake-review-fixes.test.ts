@@ -1337,6 +1337,33 @@ describe('intake lanes (inbound P2-1, optional part)', () => {
   });
 });
 
+describe('chat reachability probe (binding health check)', () => {
+  test('only a received refusal reports the chat as gone', async () => {
+    const { connection } = await connect(`probe-${Date.now()}`);
+    controls.chatGet.mockResolvedValueOnce({ data: { name: '下帖子' } });
+    expect(await connection.probeChat('oc_probe_ok')).toBe('reachable');
+
+    controls.chatGet.mockRejectedValueOnce(
+      Object.assign(new Error('connect EHOSTUNREACH 198.18.0.16:443'), {
+        code: 'EHOSTUNREACH',
+      }),
+    );
+    expect(await connection.probeChat('oc_probe_offline')).toBe('unknown');
+
+    controls.chatGet.mockRejectedValueOnce({
+      code: 'ERR_BAD_REQUEST',
+      response: { status: 400, data: { code: 99991672, msg: 'scope' } },
+    });
+    expect(await connection.probeChat('oc_probe_scope')).toBe('unknown');
+
+    controls.chatGet.mockRejectedValueOnce({
+      code: 'ERR_BAD_REQUEST',
+      response: { status: 400, data: { code: 232011, msg: 'not in chat' } },
+    });
+    expect(await connection.probeChat('oc_probe_gone')).toBe('gone');
+  });
+});
+
 describe('chat identity (inbound P2-11, P2-13)', () => {
   test('a bound private chat is not renamed back to the placeholder', async () => {
     const onNewChat = vi.fn();
