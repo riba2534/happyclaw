@@ -444,8 +444,15 @@ describe('the bound connection and the session choices win', () => {
     expect(runner).toContain(
       '...webFetchPreflightSettings(containerInput.webFetchPreflightPolicy)',
     );
+    // Inside the query's try: a failed write still reaches the finally that
+    // closes the IPC watcher.
     expect(runner).toContain(
-      'writeCliSecretFiles(flagSettings, externalMcpServers)',
+      '  try {\n    cliSecretFiles = writeCliSecretFiles(flagSettings, externalMcpServers);',
+    );
+    expect(runner).toContain('    cliSecretFiles?.dispose();\n  }\n}');
+    // What a SIGKILLed Runner left is removed when the next one starts.
+    expect(runner).toContain(
+      'async function main(): Promise<void> {\n  // SIGKILL gives a Runner no chance to remove its CLI secret files.\n  const sweptCliSecretDirs = sweepOrphanCliSecretDirs();',
     );
     expect(runner).toContain('      settings: cliSecretFiles.settingsPath,');
     expect(runner).toContain(

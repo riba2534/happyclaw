@@ -216,6 +216,7 @@ import {
 } from './silent-stop.js';
 import { ToolLoopDetector } from './tool-loop-detector.js';
 import {
+  type CliSecretFiles,
   sweepOrphanCliSecretDirs,
   writeCliSecretFiles,
 } from './cli-secret-files.js';
@@ -3077,10 +3078,12 @@ async function runQueryAttempt(
   const { happyclaw: _shadowed, ...externalMcpServers } = userMcpServers;
   // Flag settings carry the connection token and user MCP servers their
   // credentials: they go to the CLI as 0600 files, not argv (see
-  // cli-secret-files.ts). Removed in the finally below.
-  const cliSecretFiles = writeCliSecretFiles(flagSettings, externalMcpServers);
+  // cli-secret-files.ts). Written inside the try so a failed write still
+  // closes the IPC watcher; removed in the finally below.
+  let cliSecretFiles: CliSecretFiles | undefined;
 
   try {
+    cliSecretFiles = writeCliSecretFiles(flagSettings, externalMcpServers);
     const agentEffort = resolveRunSdkEffort(containerInput);
     log(
       agentEffort
@@ -4553,7 +4556,7 @@ async function runQueryAttempt(
     // 定时器，以及旧 watcher 抢先 drain 本应进入新 query 的 IPC 消息。
     ipcPolling = false;
     ipcQueryWatcher.close();
-    cliSecretFiles.dispose();
+    cliSecretFiles?.dispose();
   }
 }
 
