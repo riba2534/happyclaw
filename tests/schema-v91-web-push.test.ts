@@ -72,6 +72,29 @@ function subscribe(
   );
 }
 
+const PRE_SESSION_TABLE = `
+  CREATE TABLE web_push_subscriptions (
+    endpoint TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    p256dh TEXT NOT NULL,
+    auth TEXT NOT NULL,
+    user_agent TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    last_success_at TEXT
+  );
+  CREATE INDEX idx_web_push_subscriptions_user
+    ON web_push_subscriptions(user_id);
+`;
+
+function columnNames(conn: Database.Database): string[] {
+  return (
+    conn.prepare('PRAGMA table_info(web_push_subscriptions)').all() as Array<{
+      name: string;
+    }>
+  ).map((column) => column.name);
+}
+
 function tableNames(conn: Database.Database): string[] {
   return (
     conn
@@ -155,6 +178,58 @@ describe('schema v91 web push subscriptions', () => {
         // Idempotent: binding again changes nothing.
         store.initWebPushStore(conn);
         expect(tableNames(conn)).toContain('web_push_subscriptions');
+      } finally {
+        store.initWebPushStore(null);
+        conn.close();
+      }
+    } finally {
+      fs.rmSync(fresh, { recursive: true, force: true });
+    }
+  });
+
+  test('a table from the build before session binding is recreated', () => {
+    const fresh = fs.mkdtempSync(path.join(os.tmpdir(), 'schema-v90-old-'));
+    try {
+      const conn = new Database(path.join(fresh, 'old.db'));
+      try {
+        conn.exec('CREATE TABLE user_sessions (id TEXT PRIMARY KEY);');
+        conn.exec(PRE_SESSION_TABLE);
+        conn
+          .prepare(
+            `INSERT INTO web_push_subscriptions
+               (endpoint, user_id, p256dh, auth, created_at, updated_at)
+             VALUES ('https://fcm.googleapis.com/old', 'u', 'k', 'a', ?, ?)`,
+          )
+          .run(NOW, NOW);
+        // Creating the session index on the old table used to fail here.
+        expect(() => store.initWebPushStore(conn)).not.toThrow();
+        expect(columnNames(conn)).toContain('session_id');
+        // Rows tied to no login are dropped; browsers register again.
+        expect(
+          conn
+            .prepare('SELECT COUNT(*) AS n FROM web_push_subscriptions')
+            .get(),
+        ).toEqual({ n: 0 });
+        expect(
+          conn
+            .prepare("SELECT name FROM sqlite_master WHERE type = 'trigger'")
+            .all(),
+        ).toEqual([{ name: 'trg_web_push_subscriptions_session_end' }]);
+
+        // A current table is kept as it is.
+        store.upsertWebPushSubscription({
+          endpoint: 'https://fcm.googleapis.com/new',
+          userId: 'u',
+          sessionId: 's',
+          p256dh: 'k',
+          auth: 'a',
+        });
+        store.initWebPushStore(conn);
+        expect(
+          conn
+            .prepare('SELECT COUNT(*) AS n FROM web_push_subscriptions')
+            .get(),
+        ).toEqual({ n: 1 });
       } finally {
         store.initWebPushStore(null);
         conn.close();
@@ -321,6 +396,27 @@ describe('schema v91 web push subscriptions', () => {
     db.deleteUser('push-owner');
     expect(store.listWebPushSubscriptions('push-owner')).toEqual([]);
     expect(store.listWebPushSubscriptions('other-user')).toHaveLength(1);
+  });
+
+  test('a database the build before session binding started still starts', () => {
+    db.closeDatabase();
+    const conn = new Database(databasePath);
+    conn.exec(`
+      DROP TRIGGER trg_web_push_subscriptions_session_end;
+      DROP TABLE web_push_subscriptions;
+    `);
+    conn.exec(PRE_SESSION_TABLE);
+    conn.close();
+
+    expect(() => db.initDatabase()).not.toThrow();
+    const check = new Database(databasePath, { readonly: true });
+    try {
+      expect(columnNames(check)).toContain('session_id');
+    } finally {
+      check.close();
+    }
+    expect(store.listWebPushSubscriptions('other-user')).toEqual([]);
+    subscribe('https://fcm.googleapis.com/e/4', 'other-user', 's-other');
   });
 
   test('re-running the current schema is a no-op and newer schemas are refused', () => {

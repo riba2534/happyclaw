@@ -29,7 +29,6 @@ import {
   createInitialAdminUser,
   createUserSession,
   deleteUserSession,
-  deleteUserSessionsByUserId,
   updateUserFields,
   getSessionWithUser,
   getUserSessions,
@@ -38,6 +37,7 @@ import {
   registerUserWithoutInvite,
   logAuthEvent,
   ensureUserHomeGroup,
+  replaceUserSessions,
 } from '../db.js';
 import {
   getRegistrationConfig,
@@ -803,16 +803,14 @@ authRoutes.put('/password', authMiddleware, async (c) => {
     must_change_password: false,
   });
 
-  // Revoke all existing sessions for this user
+  // Revoke all existing sessions for this user and give the current request
+  // a fresh one; this device keeps its Web Push subscription.
   invalidateUserSessions(user.id);
-  deleteUserSessionsByUserId(user.id);
-
-  // Create a fresh session for the current request
   const now = new Date().toISOString();
   const ip = getClientIp(c);
   const ua = c.req.header('user-agent') || null;
   const newToken = generateSessionToken();
-  createUserSession({
+  replaceUserSessions(user.id, c.get('sessionId'), {
     id: newToken,
     user_id: user.id,
     ip_address: ip,

@@ -70,6 +70,14 @@ export function initWebPushStore(db: SqliteDatabase | null): void {
   database = db;
   statements.clear();
   if (!db) return;
+  // An earlier build created the table without session_id. Its rows are not
+  // tied to a login, so they are dropped with it; browsers register again.
+  const columns = db
+    .prepare('PRAGMA table_info(web_push_subscriptions)')
+    .all() as Array<{ name: string }>;
+  if (columns.length > 0 && !columns.some((c) => c.name === 'session_id')) {
+    db.exec('DROP TABLE web_push_subscriptions');
+  }
   db.exec(`
     CREATE TABLE IF NOT EXISTS web_push_subscriptions (
       endpoint TEXT PRIMARY KEY,
@@ -201,6 +209,21 @@ export function listStaleWebPushSubscriptions(
      WHERE user_id = ? ORDER BY updated_at DESC, endpoint DESC
      LIMIT -1 OFFSET ?`,
   ).all(userId, Math.max(0, keep)) as WebPushSubscription[];
+}
+
+/**
+ * Move a session's subscriptions to the session replacing it, so the device
+ * that changed the password keeps its push while the old session ends.
+ */
+export function moveWebPushSubscriptionsToSession(
+  userId: string,
+  fromSessionId: string,
+  toSessionId: string,
+): number {
+  return stmt(
+    `UPDATE web_push_subscriptions SET session_id = ?
+     WHERE user_id = ? AND session_id = ?`,
+  ).run(toSessionId, userId, fromSessionId).changes;
 }
 
 export function deleteWebPushSubscriptionsForUser(userId: string): number {
