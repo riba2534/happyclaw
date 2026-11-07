@@ -14,6 +14,9 @@ export const VERSION_CHECK_INTERVAL_MS = 30 * 60_000;
 
 export const UPDATE_TOAST_ID = 'app-update-available';
 
+/** Meta tag the build-info plugin in web/vite.config.ts adds to index.html. */
+export const BUILD_META_NAME = 'happyclaw-build';
+
 // Same rules as parseBuildInfo in src/build-info.ts; keep the two in sync.
 export function parseBuildInfo(raw: unknown): BuildInfo | null {
   if (!raw || typeof raw !== 'object') return null;
@@ -24,9 +27,30 @@ export function parseBuildInfo(raw: unknown): BuildInfo | null {
   return { id, builtAt };
 }
 
-/** 只有服务端比本页新才算过期；相同或更旧（回滚部署）都不提示。 */
+/**
+ * This page's build, read from the meta tag the build put into index.html.
+ * The dev server and unbuilt environments have none.
+ */
+export function readLocalBuild(doc: Document): BuildInfo | null {
+  const content = doc
+    .querySelector(`meta[name="${BUILD_META_NAME}"]`)
+    ?.getAttribute('content');
+  if (!content) return null;
+  try {
+    return parseBuildInfo(JSON.parse(content));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The id is a hash of the build output, so a rebuild of the same frontend
+ * (every deploy rebuilds, including backend-only ones) keeps it and never
+ * prompts. A different frontend prompts only when it was built later, which
+ * also covers a rollback: it is rebuilt at deploy time.
+ */
 export function isServerNewer(server: BuildInfo, local: BuildInfo): boolean {
-  return server.builtAt > local.builtAt;
+  return server.id !== local.id && server.builtAt > local.builtAt;
 }
 
 export interface VersionChecker {

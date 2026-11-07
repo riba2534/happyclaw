@@ -6,8 +6,10 @@ import {
   VERSION_CHECK_MIN_GAP_MS,
   createVersionChecker,
   installVersionCheck,
+  BUILD_META_NAME,
   isServerNewer,
   parseBuildInfo,
+  readLocalBuild,
   type BuildInfo,
 } from './versionCheck';
 
@@ -45,14 +47,54 @@ describe('parseBuildInfo', () => {
   });
 });
 
+describe('readLocalBuild', () => {
+  afterEach(() => {
+    document.head
+      .querySelectorAll(`meta[name="${BUILD_META_NAME}"]`)
+      .forEach((meta) => meta.remove());
+  });
+
+  const addMeta = (content: string) => {
+    const meta = document.createElement('meta');
+    meta.name = BUILD_META_NAME;
+    meta.content = content;
+    document.head.append(meta);
+  };
+
+  test('reads the build the page was served with', () => {
+    addMeta(JSON.stringify(local));
+    expect(readLocalBuild(document)).toEqual(local);
+  });
+
+  test.each([
+    '',
+    'not json',
+    JSON.stringify({ id: 'a' }),
+    JSON.stringify({ id: 'x'.repeat(201), builtAt: 5 }),
+  ])('malformed meta %j means no local build', (content) => {
+    addMeta(content);
+    expect(readLocalBuild(document)).toBeNull();
+  });
+
+  test('no meta (dev server, unbuilt page) means no local build', () => {
+    expect(readLocalBuild(document)).toBeNull();
+  });
+});
+
 describe('isServerNewer', () => {
-  test('only a strictly later server build counts', () => {
+  test('only a different, later server build counts', () => {
     expect(isServerNewer(newer, local)).toBe(true);
     expect(isServerNewer(local, local)).toBe(false);
     expect(isServerNewer({ id: 'x', builtAt: 1_000 }, local)).toBe(false);
   });
 
-  test('a rollback to an older build is not an update', () => {
+  test('a rebuild of the same frontend is not an update', () => {
+    // Every deploy rebuilds, so a backend-only deploy serves the same id with
+    // a later builtAt.
+    expect(isServerNewer({ id: local.id, builtAt: 2_000 }, local)).toBe(false);
+  });
+
+  test('an older build of a different frontend is not an update', () => {
     expect(isServerNewer({ id: 'old', builtAt: 500 }, local)).toBe(false);
   });
 });
@@ -84,6 +126,15 @@ describe('createVersionChecker', () => {
 
   test('same build: no prompt', async () => {
     const { checker, prompt } = setup(async () => ({ ...local }));
+    await checker.check();
+    expect(prompt).not.toHaveBeenCalled();
+  });
+
+  test('same frontend rebuilt later: no prompt', async () => {
+    const { checker, prompt } = setup(async () => ({
+      id: local.id,
+      builtAt: local.builtAt + 60_000,
+    }));
     await checker.check();
     expect(prompt).not.toHaveBeenCalled();
   });

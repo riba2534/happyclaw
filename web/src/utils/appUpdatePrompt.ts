@@ -6,6 +6,7 @@ import {
   createVersionChecker,
   installVersionCheck,
   parseBuildInfo,
+  readLocalBuild,
   type BuildInfo,
 } from './versionCheck';
 
@@ -35,7 +36,7 @@ async function fetchServerBuild(): Promise<BuildInfo | null> {
  */
 export function startAppUpdateCheck(): (() => void) | null {
   if (import.meta.env.DEV) return null;
-  const local = typeof __APP_BUILD__ === 'undefined' ? null : __APP_BUILD__;
+  const local = readLocalBuild(document);
   if (!local) return null;
   const checker = createVersionChecker({
     local,

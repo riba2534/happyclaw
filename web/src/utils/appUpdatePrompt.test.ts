@@ -19,9 +19,17 @@ vi.mock('../api/ws', () => ({
 }));
 
 import { showUpdateToast, startAppUpdateCheck } from './appUpdatePrompt';
-import { UPDATE_TOAST_ID } from './versionCheck';
+import { BUILD_META_NAME, UPDATE_TOAST_ID } from './versionCheck';
 
 const LOCAL = { id: 'v-local', builtAt: 1_000 };
+
+/** What the build-info plugin in web/vite.config.ts puts into index.html. */
+function serveBuild(build: { id: string; builtAt: number }) {
+  const meta = document.createElement('meta');
+  meta.name = BUILD_META_NAME;
+  meta.content = JSON.stringify(build);
+  document.head.append(meta);
+}
 
 describe('showUpdateToast', () => {
   beforeEach(() => toastMock.mockClear());
@@ -52,26 +60,27 @@ describe('startAppUpdateCheck', () => {
   });
   afterEach(() => {
     vi.unstubAllEnvs();
-    vi.unstubAllGlobals();
+    document.head
+      .querySelectorAll(`meta[name="${BUILD_META_NAME}"]`)
+      .forEach((meta) => meta.remove());
   });
 
   test('is off in dev mode', () => {
     vi.stubEnv('DEV', true);
-    vi.stubGlobal('__APP_BUILD__', LOCAL);
+    serveBuild(LOCAL);
     expect(startAppUpdateCheck()).toBeNull();
     expect(wsHandlers.size).toBe(0);
     expect(apiFetchMock).not.toHaveBeenCalled();
   });
 
-  test('is off without a compiled-in build id', () => {
+  test('is off when the page carries no build id', () => {
     vi.stubEnv('DEV', false);
-    vi.stubGlobal('__APP_BUILD__', undefined);
     expect(startAppUpdateCheck()).toBeNull();
   });
 
   test('a WebSocket (re)connect against a newer server shows the notice', async () => {
     vi.stubEnv('DEV', false);
-    vi.stubGlobal('__APP_BUILD__', LOCAL);
+    serveBuild(LOCAL);
     apiFetchMock.mockResolvedValue({ id: 'v-new', builtAt: 2_000 });
     const stop = startAppUpdateCheck();
     expect(stop).toBeTypeOf('function');
@@ -83,9 +92,21 @@ describe('startAppUpdateCheck', () => {
     stop?.();
   });
 
+  test('the same frontend rebuilt by a later deploy shows nothing', async () => {
+    vi.stubEnv('DEV', false);
+    serveBuild(LOCAL);
+    apiFetchMock.mockResolvedValue({ id: LOCAL.id, builtAt: 9_000 });
+    const stop = startAppUpdateCheck();
+    wsHandlers.get('connected')?.();
+    await vi.waitFor(() => expect(apiFetchMock).toHaveBeenCalledTimes(1));
+    await Promise.resolve();
+    expect(toastMock).not.toHaveBeenCalled();
+    stop?.();
+  });
+
   test('an identical server build shows nothing', async () => {
     vi.stubEnv('DEV', false);
-    vi.stubGlobal('__APP_BUILD__', LOCAL);
+    serveBuild(LOCAL);
     apiFetchMock.mockResolvedValue({ ...LOCAL });
     const stop = startAppUpdateCheck();
     wsHandlers.get('connected')?.();

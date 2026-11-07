@@ -2,16 +2,18 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 /**
- * 前端构建标识：vite 构建时写进 `web/dist/build.json`，同一份值也编译进前端
- * 代码。后端据此告诉已打开的旧页面「服务端的前端已经更新」。
+ * Frontend build identity. The build-info plugin in web/vite.config.ts writes
+ * it to dist/build.json and the same value into a meta tag in index.html, so
+ * open tabs can tell that a different frontend is deployed.
  *
- * 本机部署常常只重建前端、不重启后端，所以不能在启动时固定读一次：每次请求
- * stat 一下文件，mtime 或大小变了才重新解析。
+ * Deploys often rebuild the frontend without restarting the backend, so the
+ * file is not read once at startup: every request stats it and re-parses only
+ * when its mtime or size changed.
  */
 export interface BuildInfo {
-  /** 展示与去重用的构建标识。 */
+  /** Hash of the build output: the same source always builds the same id. */
   id: string;
-  /** 构建时刻（毫秒时间戳），比较新旧只看它。 */
+  /** Build time in ms; orders builds whose ids differ. */
   builtAt: number;
 }
 
