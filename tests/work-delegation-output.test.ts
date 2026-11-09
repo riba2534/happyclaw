@@ -2,9 +2,9 @@
  * A delegated worker's terminal outputs, run through the production
  * handleAgentOutput of processAgentConversation: a finished turn asks whether
  * the worker handed back a result, and a run whose connections all failed
- * fails the item. Every output also tells stuck recovery whether the Runner
- * still holds its result for background work. Each hook is a spy that stops
- * the run where it is called.
+ * fails the item. Every output also tells stuck recovery which query the
+ * Runner serves and whether it still holds its result for background work.
+ * Each hook is a spy that stops the run where it is called.
  */
 import { describe, expect, test, vi } from 'vitest';
 
@@ -33,6 +33,7 @@ function host(teamRole: Record<string, unknown>) {
     queue: {
       markRunnerActivity: vi.fn(),
       markRunnerBackgroundHold: vi.fn(),
+      markRunnerServingQuery: vi.fn(),
       markRunnerQueryIdle: vi.fn(),
     },
     virtualJid: LANE,
@@ -243,6 +244,36 @@ describe('the background hold each output reports to stuck recovery', () => {
     await run.emit(output);
 
     expect(run.hold).toHaveBeenLastCalledWith(LANE, false);
+  });
+});
+
+describe('the query id each output echoes to stuck recovery', () => {
+  test('a stream event reports its queryRunId; other outputs report none', async () => {
+    const run = host(DELEGATED);
+    run.globals.bindRunnerActiveIpcCoverage = vi.fn(() => {
+      throw STOP;
+    });
+    const serving = (
+      run.globals.queue as { markRunnerServingQuery: ReturnType<typeof vi.fn> }
+    ).markRunnerServingQuery;
+
+    await expect(
+      run.emit({
+        status: 'stream',
+        result: null,
+        streamEvent: {
+          eventType: 'memory_recall',
+          queryRunId: 'query-2',
+          turnId: 't-1',
+        },
+      }),
+    ).rejects.toBe(STOP);
+    expect(serving).toHaveBeenLastCalledWith(LANE, 'query-2');
+
+    await expect(
+      run.emit({ status: 'success', result: null, newSessionId: 's-1' }),
+    ).rejects.toBe(STOP);
+    expect(serving).toHaveBeenLastCalledWith(LANE, undefined);
   });
 });
 

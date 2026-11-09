@@ -12864,6 +12864,9 @@ async function processAgentConversation(
     // a substantive result / interruption so the runner can be kept warm.
     queue.markRunnerActivity(virtualJid);
     if (isProviderQuotaControlOutput(output)) return;
+    // The query's own id on a stream event shows the Runner took the input
+    // that opened it over IPC; that input's stuck-recovery debt is paid.
+    queue.markRunnerServingQuery(virtualJid, output.streamEvent?.queryRunId);
     const isInterruptStatus =
       output.status === 'stream' &&
       output.streamEvent?.eventType === 'status' &&

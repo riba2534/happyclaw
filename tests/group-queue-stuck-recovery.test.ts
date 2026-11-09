@@ -1,9 +1,13 @@
-import { afterEach, describe, expect, test, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import fs from 'fs';
 import path from 'path';
 
 import { GroupQueue } from '../src/group-queue.js';
 import { DATA_DIR } from '../src/config.js';
+import {
+  decideStuckRunnerRecovery,
+  type RunnerCpuActivity,
+} from '../src/stuck-runner-recovery.js';
 
 // Regression coverage for #618: warm-path IPC follow-ups must be visible to
 // stuck-runner recovery. Follow-ups injected into a live runner establish a
@@ -571,6 +575,223 @@ describe('#618: IPC-injected follow-ups are visible to stuck recovery', () => {
     expect(getState(q, jid).queryInFlight).toBe(false);
     expect(getState(q, jid).ipcOwedSinceAt).toBeNull();
     expect(q.getStuckPendingGroups(IDLE_THRESHOLD_MS)).toHaveLength(0);
+  });
+
+  describe('the input that opens a warm query over IPC', () => {
+    const FORCE_RESTART_MS = 10 * 60 * 1000;
+    const MINUTE = 60 * 1000;
+    let clock = 0;
+    let exitRunner: (() => void) | undefined;
+
+    beforeEach(() => {
+      clock = Date.now();
+      vi.spyOn(Date, 'now').mockImplementation(() => clock);
+    });
+
+    afterEach(() => {
+      vi.restoreAllMocks();
+      exitRunner?.();
+      exitRunner = undefined;
+    });
+
+    /** A Host runner whose cold turn has ended: warm, between queries. */
+    function warmRunner(): GroupQueue {
+      const q = new GroupQueue();
+      q.setHostModeChecker(() => true);
+      q.enqueueTask(
+        jid,
+        'cold-turn',
+        () => new Promise<void>((resolve) => (exitRunner = resolve)),
+      );
+      q.registerProcess(jid, { pid: 4300 } as never, {
+        containerName: null,
+        groupFolder: folder,
+        agentId: AGENT_ID,
+      });
+      q.markRunnerQueryIdle(jid);
+      return q;
+    }
+
+    function inject(q: GroupQueue, text = 'follow-up'): string {
+      expect(q.sendMessage(jid, text)).toBe('sent');
+      return q.getActiveQueryId(jid)!;
+    }
+
+    /**
+     * Let `ms` pass as in production: an output every 5 s when `outputs`,
+     * the supervisor's check every 30 s. Returns the first restart decided,
+     * with the time it came at.
+     */
+    function patrol(
+      q: GroupQueue,
+      ms: number,
+      { outputs, cpu }: { outputs: boolean; cpu: RunnerCpuActivity },
+    ) {
+      const start = clock;
+      for (let elapsed = 5_000; elapsed <= ms; elapsed += 5_000) {
+        clock = start + elapsed;
+        if (outputs) q.markRunnerActivity(jid);
+        if (elapsed % 30_000 !== 0) continue;
+        for (const candidate of q.getStuckPendingGroups(
+          IDLE_THRESHOLD_MS,
+          FORCE_RESTART_MS,
+        )) {
+          const decision = decideStuckRunnerRecovery(
+            candidate,
+            cpu,
+            FORCE_RESTART_MS,
+          );
+          if (decision.action === 'restart') {
+            return { atMs: elapsed, reason: decision.reason };
+          }
+        }
+      }
+      return null;
+    }
+
+    test('a query that echoed its id runs past the ceiling while it keeps working', () => {
+      const q = warmRunner();
+      const queryId = inject(q);
+      clock += 2_000;
+      q.markRunnerActivity(jid);
+      q.markRunnerServingQuery(jid, queryId);
+
+      expect(patrol(q, 15 * MINUTE, { outputs: true, cpu: 'active' })).toBe(
+        null,
+      );
+      expect(getState(q, jid).ipcOwedSinceAt).toBeNull();
+    });
+
+    test('a query that never echoes and stays silent is restarted when idle', () => {
+      const q = warmRunner();
+      inject(q);
+      expect(
+        patrol(q, 4 * MINUTE, { outputs: false, cpu: 'inactive' }),
+      ).toEqual({ atMs: 3 * MINUTE, reason: 'idle' });
+    });
+
+    test('a query that never echoes is restarted at the ceiling despite CPU', () => {
+      const q = warmRunner();
+      inject(q);
+      expect(patrol(q, 11 * MINUTE, { outputs: false, cpu: 'active' })).toEqual(
+        { atMs: FORCE_RESTART_MS, reason: 'absolute_ipc_ceiling' },
+      );
+    });
+
+    test('a late event of the previous query pays nothing for the next one', () => {
+      const q = warmRunner();
+      const previous = inject(q, 'first');
+      q.markRunnerServingQuery(jid, previous);
+      q.markRunnerQueryIdle(jid);
+      const next = inject(q, 'second');
+      const injectedAt = clock;
+      expect(next).not.toBe(previous);
+
+      clock += 1_000;
+      q.markRunnerServingQuery(jid, previous);
+      q.markRunnerServingQuery(jid, undefined);
+      expect(getState(q, jid).ipcOwedSinceAt).toBe(injectedAt);
+
+      // Output keeps coming, none of it stamped with the new query.
+      expect(patrol(q, 11 * MINUTE, { outputs: true, cpu: 'active' })).toEqual({
+        atMs: FORCE_RESTART_MS,
+        reason: 'absolute_ipc_ceiling',
+      });
+    });
+
+    test('input appended before the echo is owed from when it arrived', () => {
+      const q = warmRunner();
+      const queryId = inject(q);
+      clock += MINUTE;
+      inject(q, 'appended');
+      const appendedAt = clock;
+      clock += 1_000;
+      q.markRunnerServingQuery(jid, queryId);
+
+      expect(getState(q, jid).ipcOwedSinceAt).toBe(appendedAt);
+      // Ten minutes after the appended input, not after the opening one.
+      expect(patrol(q, 11 * MINUTE, { outputs: true, cpu: 'active' })).toEqual({
+        atMs: FORCE_RESTART_MS,
+        reason: 'absolute_ipc_ceiling',
+      });
+    });
+
+    test('input appended after the echo starts its own clock', () => {
+      const q = warmRunner();
+      const queryId = inject(q);
+      q.markRunnerServingQuery(jid, queryId);
+      clock += 5 * MINUTE;
+      expect(inject(q, 'appended')).toBe(queryId);
+      const appendedAt = clock;
+
+      // More events of the same query do not pay the appended input.
+      clock += 1_000;
+      q.markRunnerServingQuery(jid, queryId);
+      expect(getState(q, jid).ipcOwedSinceAt).toBe(appendedAt);
+
+      q.markRunnerQueryIdle(jid);
+      expect(getState(q, jid).ipcOwedSinceAt).toBeNull();
+    });
+
+    test('input appended to a cold query is not paid by its echo', () => {
+      const q = new GroupQueue();
+      q.enqueueTask(
+        jid,
+        'cold-turn',
+        () => new Promise<void>((resolve) => (exitRunner = resolve)),
+      );
+      q.registerProcess(jid, { pid: 4301 } as never, {
+        containerName: null,
+        groupFolder: folder,
+        agentId: AGENT_ID,
+      });
+      const coldQuery = q.getActiveQueryId(jid)!;
+      clock += MINUTE;
+      expect(inject(q, 'appended')).toBe(coldQuery);
+      const appendedAt = clock;
+
+      q.markRunnerServingQuery(jid, coldQuery);
+      expect(getState(q, jid).ipcOwedSinceAt).toBe(appendedAt);
+    });
+
+    test('an echoed input a continue leaves unconsumed is owed again', () => {
+      const q = warmRunner();
+      const queryId = inject(q);
+      q.markRunnerServingQuery(jid, queryId);
+      clock += 12 * MINUTE;
+      q.markRunnerActivity(jid);
+
+      // A compaction continue ends; the input file is still on disk.
+      q.markRunnerQueryIdle(jid, { preserveIpcDebt: true });
+      expect(q.getActiveQueryId(jid)).toBe(queryId);
+      expect(getState(q, jid).ipcOwedSinceAt).toBe(clock);
+      expect(
+        patrol(q, 4 * MINUTE, { outputs: false, cpu: 'inactive' }),
+      ).toEqual({ atMs: 3 * MINUTE, reason: 'idle' });
+    });
+
+    test("a reservation's first input opens the query", () => {
+      const q = warmRunner();
+      const reservation = q.reserveNextQuery(jid)!;
+      expect(inject(q)).toBe(reservation);
+
+      q.markRunnerServingQuery(jid, reservation);
+      expect(getState(q, jid).ipcOwedSinceAt).toBeNull();
+    });
+
+    test('the end of a hold restarts the appended clock too', () => {
+      const q = warmRunner();
+      const queryId = inject(q);
+      clock += MINUTE;
+      inject(q, 'appended');
+      q.markRunnerBackgroundHold(jid, true);
+      clock += 20 * MINUTE;
+      q.markRunnerBackgroundHold(jid, false);
+      const releasedAt = clock;
+
+      q.markRunnerServingQuery(jid, queryId);
+      expect(getState(q, jid).ipcOwedSinceAt).toBe(releasedAt);
+    });
   });
 
   describe('background work holding the result', () => {

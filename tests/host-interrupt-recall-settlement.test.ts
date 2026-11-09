@@ -138,6 +138,7 @@ function agentRun(name: string) {
     queue: {
       markRunnerActivity: vi.fn(),
       markRunnerBackgroundHold: vi.fn(),
+      markRunnerServingQuery: vi.fn(),
       markRunnerQueryIdle: vi.fn(),
     },
     steeringTransitions: { shouldSuppressOutput: () => false },
