@@ -12864,6 +12864,14 @@ async function processAgentConversation(
     // a substantive result / interruption so the runner can be kept warm.
     queue.markRunnerActivity(virtualJid);
     if (isProviderQuotaControlOutput(output)) return;
+    // Every result the Runner publishes says whether it still holds the turn
+    // for unsettled background work; stuck recovery defers while it does.
+    if (output.status === 'success') {
+      queue.markRunnerBackgroundHold(
+        virtualJid,
+        (output.pendingBgTasks ?? 0) > 0,
+      );
+    }
     bindRunnerActiveIpcCoverage(virtualJid, output.activeIpcReceipts);
     const isInterruptStatus =
       output.status === 'stream' &&

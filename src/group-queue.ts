@@ -241,6 +241,10 @@ interface GroupState {
   /** Oldest IPC inject still owed by the current logical query. Unlike
    * lastActivityAt, ordinary runner output must never refresh this timestamp. */
   ipcOwedSinceAt: number | null;
+  /** Query whose result the runner holds while blocking background work
+   * (sub-agent Tasks, workflows) is still unsettled. Only meaningful while it
+   * equals `queryId`; a later query never inherits it. */
+  backgroundHoldQueryId?: string | null;
   /** IPC deliveries written to this runner but not yet acknowledged by a
    * healthy agent query result. Keyed by deliveryId for out-of-order acks. */
   pendingIpcDeliveries: Map<string, IpcDeliveryReceipt>;
@@ -1515,6 +1519,27 @@ export class GroupQueue {
     state.lastActivityAt = Date.now();
   }
 
+  /**
+   * Record whether the query in flight is holding its result for unsettled
+   * background work: the Runner reports `pendingBgTasks > 0` on every result it
+   * publishes while such work runs, and a result without it once the work has
+   * settled. While held, the CLI cannot take owed IPC input, so stuck recovery
+   * defers instead of restarting (the runner's no-output watchdog still bounds
+   * a silent stall). When the hold ends, owed IPC debt starts aging from then:
+   * the Runner could not have paid it earlier.
+   */
+  markRunnerBackgroundHold(groupJid: string, held: boolean): void {
+    const state = this.resolveActiveState(groupJid);
+    if (!state?.active || !state.queryInFlight || !state.queryId) return;
+    if (held) {
+      state.backgroundHoldQueryId = state.queryId;
+      return;
+    }
+    if (state.backgroundHoldQueryId !== state.queryId) return;
+    state.backgroundHoldQueryId = null;
+    if (state.ipcOwedSinceAt !== null) state.ipcOwedSinceAt = Date.now();
+  }
+
   acknowledgeIpcDeliveries(
     groupJid: string,
     receipts: IpcDeliveryReceipt[],
@@ -1608,6 +1633,7 @@ export class GroupQueue {
     const completedQueryId = state.queryId;
     state.queryInFlight = false;
     state.ipcOwedSinceAt = null;
+    state.backgroundHoldQueryId = null;
     state.queryId = null;
     state.queryStartedAt = null;
     state.announcedQueryId = null;
@@ -1788,6 +1814,10 @@ export class GroupQueue {
       runnerPid: state.process?.pid ?? null,
       ipcOwedSinceAt,
       ipcOwedMs,
+      backgroundTasksHeld:
+        state.queryInFlight &&
+        state.queryId !== null &&
+        state.backgroundHoldQueryId === state.queryId,
     };
   }
 
@@ -3075,6 +3105,7 @@ export class GroupQueue {
       state.drainSentinelWritten = false;
       state.lastActivityAt = null;
       state.ipcOwedSinceAt = null;
+      state.backgroundHoldQueryId = null;
       state.queryInFlight = false;
       state.queryId = null;
       state.queryStartedAt = null;

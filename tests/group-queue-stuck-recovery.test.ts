@@ -30,6 +30,7 @@ interface SeedOpts {
   /** Number of turns queued behind the runner. */
   pendingTasks?: number;
   ipcOwedSinceAt?: number | null;
+  backgroundHoldQueryId?: string | null;
 }
 
 function queuedTask(id: string) {
@@ -67,6 +68,7 @@ function seedRunner(q: GroupQueue, jid: string, opts: SeedOpts = {}) {
     selectedProviderId: null,
     drainSentinelWritten: false,
     ipcOwedSinceAt: opts.ipcOwedSinceAt ?? null,
+    backgroundHoldQueryId: opts.backgroundHoldQueryId ?? null,
     pendingIpcDeliveries: new Map(),
     acknowledgedIpcDeliveryIds: new Set(),
   });
@@ -569,5 +571,102 @@ describe('#618: IPC-injected follow-ups are visible to stuck recovery', () => {
     expect(getState(q, jid).queryInFlight).toBe(false);
     expect(getState(q, jid).ipcOwedSinceAt).toBeNull();
     expect(q.getStuckPendingGroups(IDLE_THRESHOLD_MS)).toHaveLength(0);
+  });
+
+  describe('background work holding the result', () => {
+    const FORCE_RESTART_MS = 10 * 60 * 1000;
+
+    function seedHeldTurn(q: GroupQueue) {
+      seedRunner(q, jid, {
+        groupFolder: folder,
+        queryInFlight: true,
+        queryId: 'held-query',
+        ipcOwedSinceAt: Date.now() - FORCE_RESTART_MS - 1000,
+        lastActivityAt: Date.now() - IDLE_THRESHOLD_MS - 1000,
+      });
+    }
+
+    test('a held result marks the candidate, whichever rule selected it', () => {
+      const q = new GroupQueue();
+      seedHeldTurn(q);
+      q.markRunnerBackgroundHold(jid, true);
+
+      const [candidate] = q.getStuckPendingGroups(
+        IDLE_THRESHOLD_MS,
+        FORCE_RESTART_MS,
+      );
+      expect(candidate.reason).toBe('ipc_injected');
+      expect(candidate.backgroundTasksHeld).toBe(true);
+      // A later result still reporting live work keeps the hold.
+      q.markRunnerBackgroundHold(jid, true);
+      expect(
+        q.revalidateStuckRecoveryCandidate(
+          candidate,
+          IDLE_THRESHOLD_MS,
+          FORCE_RESTART_MS,
+        )?.backgroundTasksHeld,
+      ).toBe(true);
+    });
+
+    test('settling the work ends the hold and restarts the IPC debt clock', () => {
+      const q = new GroupQueue();
+      seedHeldTurn(q);
+      q.markRunnerBackgroundHold(jid, true);
+      const before = Date.now();
+
+      q.markRunnerBackgroundHold(jid, false);
+
+      expect(getState(q, jid).backgroundHoldQueryId).toBeNull();
+      expect(getState(q, jid).ipcOwedSinceAt).toBeGreaterThanOrEqual(before);
+      // Still silent past the idle threshold: judged like any other turn.
+      const [candidate] = q.getStuckPendingGroups(
+        IDLE_THRESHOLD_MS,
+        FORCE_RESTART_MS,
+      );
+      expect(candidate.backgroundTasksHeld).toBe(false);
+      expect(candidate.ipcOwedMs).toBeLessThan(FORCE_RESTART_MS);
+    });
+
+    test('a result without live work leaves an unheld debt clock alone', () => {
+      const q = new GroupQueue();
+      seedHeldTurn(q);
+      const owedSince = getState(q, jid).ipcOwedSinceAt;
+
+      q.markRunnerBackgroundHold(jid, false);
+
+      expect(getState(q, jid).ipcOwedSinceAt).toBe(owedSince);
+      const [candidate] = q.getStuckPendingGroups(
+        IDLE_THRESHOLD_MS,
+        FORCE_RESTART_MS,
+      );
+      expect(candidate.backgroundTasksHeld).toBe(false);
+      expect(candidate.ipcOwedMs).toBeGreaterThanOrEqual(FORCE_RESTART_MS);
+    });
+
+    test('a hold never carries over to the next query', () => {
+      const q = new GroupQueue();
+      seedHeldTurn(q);
+      q.markRunnerBackgroundHold(jid, true);
+
+      q.markRunnerQueryIdle(jid);
+      expect(getState(q, jid).backgroundHoldQueryId).toBeNull();
+
+      expect(q.sendMessage(jid, 'next turn')).toBe('sent');
+      getState(q, jid).ipcOwedSinceAt = Date.now() - FORCE_RESTART_MS - 1000;
+      const [candidate] = q.getStuckPendingGroups(
+        IDLE_THRESHOLD_MS,
+        FORCE_RESTART_MS,
+      );
+      expect(candidate.backgroundTasksHeld).toBe(false);
+    });
+
+    test('an idle runner records no hold', () => {
+      const q = new GroupQueue();
+      seedRunner(q, jid, { groupFolder: folder, queryInFlight: false });
+
+      q.markRunnerBackgroundHold(jid, true);
+
+      expect(getState(q, jid).backgroundHoldQueryId).toBeNull();
+    });
   });
 });

@@ -28,7 +28,11 @@ function host(teamRole: Record<string, unknown>) {
     settleDelegatedWorkerTurn,
     failDelegatedWorkerRun,
     automationTurns: new AutomationTurnTracker(),
-    queue: { markRunnerActivity: vi.fn(), markRunnerQueryIdle: vi.fn() },
+    queue: {
+      markRunnerActivity: vi.fn(),
+      markRunnerBackgroundHold: vi.fn(),
+      markRunnerQueryIdle: vi.fn(),
+    },
     virtualJid: LANE,
     virtualChatJid: LANE,
     chatJid: 'web:mt-ws',
@@ -126,6 +130,36 @@ describe("a delegated worker's finished turn", () => {
       inputTurnCompleted: false,
     });
     expect(run.settleDelegatedWorkerTurn).not.toHaveBeenCalled();
+  });
+
+  test('each result tells stuck recovery whether background work holds the turn', async () => {
+    const run = host(DELEGATED);
+    const queue = run.globals.queue as {
+      markRunnerBackgroundHold: ReturnType<typeof vi.fn>;
+    };
+    await run.emit({
+      status: 'success',
+      result: null,
+      inputTurnId: 'in-1',
+      inputTurnCompleted: false,
+      pendingBgTasks: 2,
+    });
+    expect(queue.markRunnerBackgroundHold).toHaveBeenLastCalledWith(LANE, true);
+
+    await run
+      .emit({
+        status: 'success',
+        result: null,
+        inputTurnId: 'in-1',
+        inputTurnCompleted: true,
+      })
+      .catch((err) => {
+        if (err !== STOP) throw err;
+      });
+    expect(queue.markRunnerBackgroundHold).toHaveBeenLastCalledWith(
+      LANE,
+      false,
+    );
   });
 });
 

@@ -25,6 +25,9 @@ export interface StuckRecoveryCandidate {
   ipcOwedSinceAt: number | null;
   /** Age of the oldest IPC input still owed by the current logical query. */
   ipcOwedMs: number | null;
+  /** The query in flight holds its result for unsettled background work
+   * (sub-agent Tasks, workflows); see GroupQueue.markRunnerBackgroundHold. */
+  backgroundTasksHeld: boolean;
 }
 
 export type StuckRecoveryDecision =
@@ -34,7 +37,11 @@ export type StuckRecoveryDecision =
     }
   | {
       action: 'defer';
-      reason: 'container_grace' | 'cpu_active' | 'cpu_unknown';
+      reason:
+        | 'background_tasks'
+        | 'container_grace'
+        | 'cpu_active'
+        | 'cpu_unknown';
     };
 
 export type HostProcessTableReader = () => Promise<string>;
@@ -138,12 +145,23 @@ export async function resolveRunnerCpuActivity(
  * an absolute debt age that ordinary output cannot refresh. Before that
  * ceiling, container work is conservatively preserved because host `ps`
  * cannot observe CPU inside Docker; host probe failures are likewise deferred.
+ *
+ * A query holding its result for unsettled background work is not stuck: the
+ * CLI takes owed input only after that work settles, and a sub-agent waiting
+ * on the network shows neither output nor CPU. Restarting would kill it. Such
+ * a runner is bounded instead by the no-output watchdog (CONTAINER_TIMEOUT),
+ * which kills it after a fully silent stall; the IPC ceiling resumes, from the
+ * moment the hold ends, for input still owed afterwards.
  */
 export function decideStuckRunnerRecovery(
   candidate: StuckRecoveryCandidate,
   cpuActivity: RunnerCpuActivity,
   forceRestartMs: number,
 ): StuckRecoveryDecision {
+  if (candidate.backgroundTasksHeld) {
+    return { action: 'defer', reason: 'background_tasks' };
+  }
+
   if (
     candidate.reason === 'ipc_injected' &&
     candidate.ipcOwedMs !== null &&
