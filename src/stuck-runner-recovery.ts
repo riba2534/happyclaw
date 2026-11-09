@@ -23,7 +23,9 @@ export interface StuckRecoveryCandidate {
   runnerPid: number | null;
   /** Absolute debt clock used to reject a later query's fresh IPC work. */
   ipcOwedSinceAt: number | null;
-  /** Age of the oldest IPC input still owed by the current logical query. */
+  /** Age of the oldest IPC input still owed by the current logical query;
+   * null for an `ipc_injected` candidate whose opening input the model has
+   * answered, which only the idle rule can restart. */
   ipcOwedMs: number | null;
   /** The query in flight holds its result for unsettled background work;
    * see GroupQueue.markRunnerBackgroundHold. */

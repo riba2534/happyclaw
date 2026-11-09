@@ -13,6 +13,7 @@ import type {
   RunnerRuntime,
   StuckRecoveryCandidate,
 } from './stuck-runner-recovery.js';
+import type { StreamEvent } from './stream-event.types.js';
 import type { ChannelTurnContext, InteractionMode } from './types.js';
 export type SendMessageResult = 'sent' | 'no_active';
 export interface IpcMessageCursor {
@@ -238,15 +239,16 @@ interface GroupState {
   interactionMode: InteractionMode | null;
   /** True when a _drain sentinel has been written for the current active runner. */
   drainSentinelWritten: boolean;
-  /** Oldest IPC inject still owed by the current logical query: the input
-   * that opened it over IPC until the Runner echoes the query's queryRunId,
-   * then the oldest input appended to it (see markRunnerServingQuery).
-   * Unlike lastActivityAt, ordinary runner output never refreshes it. */
+  /** Oldest IPC inject still owed by the current logical query, the clock
+   * of the absolute ceiling: the input that opened it over IPC until model
+   * output carries the query's queryRunId, then the oldest input appended
+   * to it (see markRunnerServingQuery). Unlike lastActivityAt, ordinary
+   * runner output never refreshes it. */
   ipcOwedSinceAt: number | null;
   /** How the query in flight got its opening input: `stdin` at a cold
-   * start; `ipc` when an inject opened it, `ipc_echoed` once the Runner
-   * stamped its queryRunId on an output. Null while a reservation still
-   * waits for its input, and between queries. */
+   * start; `ipc` when an inject opened it, `ipc_echoed` once model output
+   * carried its queryRunId. Null while a reservation still waits for its
+   * input, and between queries. */
   queryOpening?: 'stdin' | 'ipc' | 'ipc_echoed' | null;
   /** Oldest IPC inject appended to the query in flight after its opening
    * input. */
@@ -293,6 +295,20 @@ type ActiveGroupState = GroupState & { groupFolder: string; agentId: string };
 /** The runner registered its session, so its IPC directory is known. */
 function hasRunnerIpc(state: GroupState): state is ActiveGroupState {
   return !!state.groupFolder && !!state.agentId;
+}
+
+/**
+ * Output of the model or its tools and sub-agents, not a system event. The
+ * Runner emits its memory recall for an input as soon as it reads it and
+ * audits the context when it opens the SDK query; status lines, hooks and
+ * the CLI's system frames can likewise all come before a model request.
+ */
+function isModelOutput(event: StreamEvent): boolean {
+  return (
+    event.agentScope !== 'system' &&
+    event.isSynthetic !== true &&
+    event.eventType !== 'status'
+  );
 }
 
 export interface QueueGroupStatus {
@@ -1532,19 +1548,23 @@ export class GroupQueue {
   }
 
   /**
-   * The Runner stamped `queryRunId` on a stream event. It switches to a
-   * query's id only once it has read that query's input, so an echo of the
-   * query in flight, opened over IPC, pays the debt of that opening input
-   * (#618 guards a Runner that never takes it). The clock then follows the
-   * oldest input appended to the query, if any, which only the query's end
-   * pays. A late event of an earlier query carries that query's id and pays
-   * nothing.
+   * A stream event of the Runner. The Runner stamps a query's id on its
+   * events once that query's input is the turn it serves, so model output
+   * carrying the id of the query in flight, opened over IPC, shows the CLI
+   * at work on that input: the input's debt stops aging toward the absolute
+   * ceiling, which guards a Runner whose output never gets to the input.
+   * The query still meets the idle rule until it ends (#618 is a CLI gone
+   * quiet after the Runner took the input), and the debt clock follows the
+   * oldest input appended to it, which only the query's end pays. A system
+   * event proves nothing (see isModelOutput), nor does a late event of an
+   * earlier query, which carries that query's id.
    */
   markRunnerServingQuery(
     groupJid: string,
-    queryRunId: string | undefined,
+    event: StreamEvent | undefined,
   ): void {
-    if (!queryRunId) return;
+    const queryRunId = event?.queryRunId;
+    if (!queryRunId || !isModelOutput(event)) return;
     const state = this.resolveActiveState(groupJid);
     if (
       !state?.active ||
@@ -1564,10 +1584,10 @@ export class GroupQueue {
    * `pendingBgTasks`: the SDK background tasks still running other than a
    * backgrounded Bash (sub-agents and workflows, but also monitors and MCP
    * tasks), 0 once they settle. The CLI keeps answering input meanwhile, but
-   * the Runner sends no completion receipt, so IPC input appended to this
-   * query cannot be paid and stuck recovery defers instead of restarting.
-   * When the hold ends, debt still owed starts aging from then: the Runner
-   * could not have paid it earlier.
+   * the Runner sends no completion receipt, so the query's IPC debt cannot be
+   * paid and stuck recovery defers instead of restarting. When the hold
+   * ends, debt still owed starts aging from then: the Runner could not have
+   * paid it earlier.
    */
   markRunnerBackgroundHold(groupJid: string, held: boolean): void {
     const state = this.resolveActiveState(groupJid);
@@ -1838,14 +1858,22 @@ export class GroupQueue {
     // Owed work: IPC input still owed by the query in flight (#618), or tasks
     // queued behind a runner that runs no query and never takes them. Tasks
     // waiting behind an in-flight query are not owed: a silent long tool call
-    // is not a stuck runner. The debt timestamp is cleared when the query
-    // reports idle and ordinary output never refreshes it.
+    // is not a stuck runner. A query opened over IPC stays owed until it
+    // reports idle, so a CLI that goes quiet after taking the input still
+    // meets the idle rule; its echo (markRunnerServingQuery) only stops the
+    // debt clock that drives the absolute ceiling. That clock then follows
+    // input appended to the query, and ordinary output never refreshes it.
     const ipcOwedSinceAt = state.ipcOwedSinceAt ?? null;
-    const hasIpcOwed = ipcOwedSinceAt !== null && state.queryInFlight;
+    const hasIpcOwed =
+      state.queryInFlight &&
+      (ipcOwedSinceAt !== null || state.queryOpening === 'ipc_echoed');
     const lastActivityAt = state.lastActivityAt ?? 0;
     if (lastActivityAt <= 0) return null;
     const idleMs = now - lastActivityAt;
-    const ipcOwedMs = hasIpcOwed ? Math.max(0, now - ipcOwedSinceAt) : null;
+    const ipcOwedMs =
+      hasIpcOwed && ipcOwedSinceAt !== null
+        ? Math.max(0, now - ipcOwedSinceAt)
+        : null;
     const reachedIdleThreshold = idleMs >= idleThresholdMs;
     const reachedAbsoluteIpcCeiling =
       ipcOwedMs !== null && ipcOwedMs >= ipcForceThresholdMs;

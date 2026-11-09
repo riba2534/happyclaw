@@ -99,8 +99,13 @@ describe('releasing a follow-up reservation', () => {
     const run = idleRunner('published-echoed');
     const reservation = queue.reserveNextQuery(run.jid)!;
     expect(queue.sendMessage(run.jid, 'direct turn')).toBe('sent');
-    // Its first stream event pays the stuck-recovery debt of that input.
-    queue.markRunnerServingQuery(run.jid, reservation);
+    // The model's first output pays the stuck-recovery debt of that input.
+    queue.markRunnerServingQuery(run.jid, {
+      eventType: 'text_delta',
+      agentScope: 'main',
+      text: 'On it',
+      queryRunId: reservation,
+    });
 
     expect(queue.releaseQueryReservation(run.jid, reservation)).toBe(false);
     expect(queue.getActiveQueryId(run.jid)).toBe(reservation);

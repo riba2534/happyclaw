@@ -4,6 +4,7 @@ import path from 'path';
 
 import { GroupQueue } from '../src/group-queue.js';
 import { DATA_DIR } from '../src/config.js';
+import type { StreamEvent } from '../src/stream-event.types.js';
 import {
   decideStuckRunnerRecovery,
   type RunnerCpuActivity,
@@ -594,17 +595,17 @@ describe('#618: IPC-injected follow-ups are visible to stuck recovery', () => {
       exitRunner = undefined;
     });
 
-    /** A Host runner whose cold turn has ended: warm, between queries. */
-    function warmRunner(): GroupQueue {
+    /** A runner whose cold turn has ended: warm, between queries. */
+    function warmRunner(runtime: 'host' | 'container' = 'host'): GroupQueue {
       const q = new GroupQueue();
-      q.setHostModeChecker(() => true);
+      q.setHostModeChecker(() => runtime === 'host');
       q.enqueueTask(
         jid,
         'cold-turn',
         () => new Promise<void>((resolve) => (exitRunner = resolve)),
       );
       q.registerProcess(jid, { pid: 4300 } as never, {
-        containerName: null,
+        containerName: runtime === 'host' ? null : 'happyclaw-stuck-test',
         groupFolder: folder,
         agentId: AGENT_ID,
       });
@@ -615,6 +616,16 @@ describe('#618: IPC-injected follow-ups are visible to stuck recovery', () => {
     function inject(q: GroupQueue, text = 'follow-up'): string {
       expect(q.sendMessage(jid, text)).toBe('sent');
       return q.getActiveQueryId(jid)!;
+    }
+
+    /** Model output the CLI streams for the query `queryRunId`. */
+    function answer(queryRunId: string): StreamEvent {
+      return {
+        eventType: 'text_delta',
+        agentScope: 'main',
+        text: 'On it',
+        queryRunId,
+      };
     }
 
     /**
@@ -649,17 +660,88 @@ describe('#618: IPC-injected follow-ups are visible to stuck recovery', () => {
       return null;
     }
 
-    test('a query that echoed its id runs past the ceiling while it keeps working', () => {
+    test('a query the model answers runs past the ceiling while it keeps working', () => {
       const q = warmRunner();
       const queryId = inject(q);
       clock += 2_000;
       q.markRunnerActivity(jid);
-      q.markRunnerServingQuery(jid, queryId);
+      q.markRunnerServingQuery(jid, answer(queryId));
 
       expect(patrol(q, 15 * MINUTE, { outputs: true, cpu: 'active' })).toBe(
         null,
       );
       expect(getState(q, jid).ipcOwedSinceAt).toBeNull();
+    });
+
+    // #618: the Runner takes the input and the CLI goes quiet for good.
+    test.each([
+      ['Host', 'host', 'inactive', { atMs: 3 * MINUTE, reason: 'idle' }],
+      [
+        'Container',
+        'container',
+        'unavailable',
+        { atMs: FORCE_RESTART_MS, reason: 'idle_ceiling' },
+      ],
+    ] as const)(
+      '%s: a query the model answered and then fell silent is restarted when idle',
+      (_name, runtime, cpu, restart) => {
+        const q = warmRunner(runtime);
+        const queryId = inject(q);
+        clock += 1_000;
+        q.markRunnerActivity(jid);
+        q.markRunnerServingQuery(jid, answer(queryId));
+
+        expect(patrol(q, 11 * MINUTE, { outputs: false, cpu })).toEqual(
+          restart,
+        );
+      },
+    );
+
+    test.each([
+      [
+        'the model message starting',
+        {
+          eventType: 'raw_sdk_event',
+          agentScope: 'main',
+          rawType: 'stream_event/message_start',
+        },
+      ],
+      ['a tool call', { eventType: 'tool_use_start', toolName: 'Bash' }],
+      ['a sub-agent starting', { eventType: 'task_start', agentScope: 'task' }],
+    ] as const)('%s answers the query', (_name, event) => {
+      const q = warmRunner();
+      const queryId = inject(q);
+      q.markRunnerServingQuery(jid, { ...event, queryRunId: queryId });
+      expect(getState(q, jid).ipcOwedSinceAt).toBeNull();
+    });
+
+    // The Runner traces the memory it recalled for the input, and audits the
+    // context it opens the SDK query with, before the CLI sends a request.
+    test("the Runner's own events do not answer the query", () => {
+      const q = warmRunner();
+      const queryId = inject(q);
+      const injectedAt = clock;
+      clock += 1_000;
+      const runnerEvents: StreamEvent[] = [
+        {
+          eventType: 'memory_recall',
+          agentScope: 'system',
+          isSynthetic: true,
+        },
+        { eventType: 'context_audit', agentScope: 'system' },
+        { eventType: 'hook_started', agentScope: 'system' },
+        { eventType: 'status', statusText: '接近 API 限流阈值' },
+      ];
+      for (const event of runnerEvents) {
+        q.markRunnerServingQuery(jid, { ...event, queryRunId: queryId });
+      }
+      expect(getState(q, jid).ipcOwedSinceAt).toBe(injectedAt);
+
+      // They keep coming; the model never answers.
+      expect(patrol(q, 11 * MINUTE, { outputs: true, cpu: 'active' })).toEqual({
+        atMs: FORCE_RESTART_MS,
+        reason: 'absolute_ipc_ceiling',
+      });
     });
 
     test('a query that never echoes and stays silent is restarted when idle', () => {
@@ -681,14 +763,14 @@ describe('#618: IPC-injected follow-ups are visible to stuck recovery', () => {
     test('a late event of the previous query pays nothing for the next one', () => {
       const q = warmRunner();
       const previous = inject(q, 'first');
-      q.markRunnerServingQuery(jid, previous);
+      q.markRunnerServingQuery(jid, answer(previous));
       q.markRunnerQueryIdle(jid);
       const next = inject(q, 'second');
       const injectedAt = clock;
       expect(next).not.toBe(previous);
 
       clock += 1_000;
-      q.markRunnerServingQuery(jid, previous);
+      q.markRunnerServingQuery(jid, answer(previous));
       q.markRunnerServingQuery(jid, undefined);
       expect(getState(q, jid).ipcOwedSinceAt).toBe(injectedAt);
 
@@ -706,7 +788,7 @@ describe('#618: IPC-injected follow-ups are visible to stuck recovery', () => {
       inject(q, 'appended');
       const appendedAt = clock;
       clock += 1_000;
-      q.markRunnerServingQuery(jid, queryId);
+      q.markRunnerServingQuery(jid, answer(queryId));
 
       expect(getState(q, jid).ipcOwedSinceAt).toBe(appendedAt);
       // Ten minutes after the appended input, not after the opening one.
@@ -719,14 +801,14 @@ describe('#618: IPC-injected follow-ups are visible to stuck recovery', () => {
     test('input appended after the echo starts its own clock', () => {
       const q = warmRunner();
       const queryId = inject(q);
-      q.markRunnerServingQuery(jid, queryId);
+      q.markRunnerServingQuery(jid, answer(queryId));
       clock += 5 * MINUTE;
       expect(inject(q, 'appended')).toBe(queryId);
       const appendedAt = clock;
 
       // More events of the same query do not pay the appended input.
       clock += 1_000;
-      q.markRunnerServingQuery(jid, queryId);
+      q.markRunnerServingQuery(jid, answer(queryId));
       expect(getState(q, jid).ipcOwedSinceAt).toBe(appendedAt);
 
       q.markRunnerQueryIdle(jid);
@@ -750,14 +832,14 @@ describe('#618: IPC-injected follow-ups are visible to stuck recovery', () => {
       expect(inject(q, 'appended')).toBe(coldQuery);
       const appendedAt = clock;
 
-      q.markRunnerServingQuery(jid, coldQuery);
+      q.markRunnerServingQuery(jid, answer(coldQuery));
       expect(getState(q, jid).ipcOwedSinceAt).toBe(appendedAt);
     });
 
     test('an echoed input a continue leaves unconsumed is owed again', () => {
       const q = warmRunner();
       const queryId = inject(q);
-      q.markRunnerServingQuery(jid, queryId);
+      q.markRunnerServingQuery(jid, answer(queryId));
       clock += 12 * MINUTE;
       q.markRunnerActivity(jid);
 
@@ -775,7 +857,7 @@ describe('#618: IPC-injected follow-ups are visible to stuck recovery', () => {
       const reservation = q.reserveNextQuery(jid)!;
       expect(inject(q)).toBe(reservation);
 
-      q.markRunnerServingQuery(jid, reservation);
+      q.markRunnerServingQuery(jid, answer(reservation));
       expect(getState(q, jid).ipcOwedSinceAt).toBeNull();
     });
 
@@ -789,7 +871,7 @@ describe('#618: IPC-injected follow-ups are visible to stuck recovery', () => {
       q.markRunnerBackgroundHold(jid, false);
       const releasedAt = clock;
 
-      q.markRunnerServingQuery(jid, queryId);
+      q.markRunnerServingQuery(jid, answer(queryId));
       expect(getState(q, jid).ipcOwedSinceAt).toBe(releasedAt);
     });
   });

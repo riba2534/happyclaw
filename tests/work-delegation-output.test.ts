@@ -247,8 +247,8 @@ describe('the background hold each output reports to stuck recovery', () => {
   });
 });
 
-describe('the query id each output echoes to stuck recovery', () => {
-  test('a stream event reports its queryRunId; other outputs report none', async () => {
+describe('the stream event each output shows stuck recovery', () => {
+  test('a stream event is passed on; other outputs pass none', async () => {
     const run = host(DELEGATED);
     run.globals.bindRunnerActiveIpcCoverage = vi.fn(() => {
       throw STOP;
@@ -257,18 +257,17 @@ describe('the query id each output echoes to stuck recovery', () => {
       run.globals.queue as { markRunnerServingQuery: ReturnType<typeof vi.fn> }
     ).markRunnerServingQuery;
 
+    const streamEvent = {
+      eventType: 'text_delta',
+      agentScope: 'main',
+      text: 'On it',
+      queryRunId: 'query-2',
+      turnId: 't-1',
+    };
     await expect(
-      run.emit({
-        status: 'stream',
-        result: null,
-        streamEvent: {
-          eventType: 'memory_recall',
-          queryRunId: 'query-2',
-          turnId: 't-1',
-        },
-      }),
+      run.emit({ status: 'stream', result: null, streamEvent }),
     ).rejects.toBe(STOP);
-    expect(serving).toHaveBeenLastCalledWith(LANE, 'query-2');
+    expect(serving).toHaveBeenLastCalledWith(LANE, streamEvent);
 
     await expect(
       run.emit({ status: 'success', result: null, newSessionId: 's-1' }),
