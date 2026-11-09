@@ -1873,6 +1873,17 @@ export class GroupQueue {
     };
   }
 
+  /** A task serving conversation input runs or waits on the lane of `jid`. */
+  private laneHasInputTask(jid: string): boolean {
+    const key = this.getSerializationKey(jid);
+    for (const [otherJid, other] of this.groups) {
+      if (this.getSerializationKey(otherJid) !== key) continue;
+      if (other.active && other.activeTask?.acceptsInput) return true;
+      if (other.pendingTasks.some((task) => task.acceptsInput)) return true;
+    }
+    return false;
+  }
+
   /** Tasks queued for the lane of `jid` (its serialization key). */
   private laneHasQueuedTasks(jid: string): boolean {
     let key: string | undefined;
@@ -3054,7 +3065,12 @@ export class GroupQueue {
       logger.info({ groupJid: targetJid }, 'Restarting container');
       // The exit deferred the lane's queued work to this point.
       this.drainGroup(targetJid);
-      this.startLane(groupJid, 'restart');
+      // A conversation task already started or waiting (the replay of an
+      // unacknowledged delivery, a turn queued behind the old runner) reads
+      // the lane's input as the host's start would. Another start would only
+      // queue behind the runner it leaves warm, until stuck recovery
+      // restarts that too.
+      if (!this.laneHasInputTask(groupJid)) this.startLane(groupJid, 'restart');
     } finally {
       state.restarting = false;
     }

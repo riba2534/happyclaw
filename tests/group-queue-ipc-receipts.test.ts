@@ -902,6 +902,40 @@ describe('GroupQueue IPC delivery receipts', () => {
     expect(readPayloads()).toEqual([]);
   });
 
+  test('a restart that replays a delivery leaves no lane start queued behind it', async () => {
+    const tasks: string[] = [];
+    // The host's wiring: a rewound delivery and a lane start each enqueue
+    // the lane's conversation task.
+    queue.setOnUnacknowledgedIpcDeliveries(() => {
+      tasks.push('agent-delivery-recovery');
+      enqueueTurn();
+    });
+    queue.setLaneStarter(() => {
+      tasks.push('agent-restart');
+      enqueueTurn();
+    });
+
+    await startRunner();
+    queue.markRunnerQueryIdle(JID);
+    inject('stuck-follow-up');
+
+    const restarting = queue.restartGroup(JID);
+    releaseRun?.();
+    await restarting;
+    await tick();
+
+    expect(tasks).toEqual(['agent-delivery-recovery']);
+    expect(queue.getStatus().groups).toMatchObject([
+      { jid: JID, active: true, pendingTasks: 0 },
+    ]);
+    // The replay's runner idles warm: nothing waits behind it for stuck
+    // recovery to restart it again.
+    queue.markRunnerQueryIdle(JID);
+    const later = Date.now() + 3 * 60 * 1000 + 1000;
+    vi.spyOn(Date, 'now').mockReturnValue(later);
+    expect(queue.getStuckPendingGroups(3 * 60 * 1000)).toEqual([]);
+  });
+
   test('explicit stop abandons instead of replaying accepted deliveries', async () => {
     await startRunner();
     const receipt = inject('cancelled');

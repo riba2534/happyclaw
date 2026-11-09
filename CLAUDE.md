@@ -290,7 +290,8 @@ Web UI 约定：
   还清。欠账且静默满 3 分钟时，Host 若 CPU 空闲就重启，CPU 忙或 Container（看不到 CPU）等
   静默满 `STUCK_RUNNER_FORCE_RESTART_MINUTES` 再重启；IPC 债务满这个上限时不看输出和 CPU
   直接重启。暖 Runner 上已开始输出的一轮因此与冷启动一样，只由 `CONTAINER_TIMEOUT` 看门狗
-  兜底。
+  兜底。重启后，已为该会话启动或排队的会话任务（例如未确认投递的回放）就是下一轮，宿主不再
+  另起一个。
 - 后台工作（除已转后台的 Bash 外的所有 SDK 后台任务，含子代理、监视器、MCP 任务）结清前，
   CLI 照常接收输入，但 Runner 不发完成回执，追加进这一 query 的输入因此还不上 IPC 债务
   （少见：query 在跑时新消息走 durable 队列）。Runner 发布的每个 result 都带
