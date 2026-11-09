@@ -668,5 +668,47 @@ describe('#618: IPC-injected follow-ups are visible to stuck recovery', () => {
 
       expect(getState(q, jid).backgroundHoldQueryId).toBeNull();
     });
+
+    test('a hold recorded for an earlier query does not mark the current one', () => {
+      const q = new GroupQueue();
+      seedRunner(q, jid, {
+        groupFolder: folder,
+        queryInFlight: true,
+        queryId: 'held-query',
+        backgroundHoldQueryId: 'earlier-query',
+        ipcOwedSinceAt: Date.now() - FORCE_RESTART_MS - 1000,
+        lastActivityAt: Date.now() - IDLE_THRESHOLD_MS - 1000,
+      });
+
+      const [candidate] = q.getStuckPendingGroups(
+        IDLE_THRESHOLD_MS,
+        FORCE_RESTART_MS,
+      );
+      expect(candidate.backgroundTasksHeld).toBe(false);
+    });
+
+    test('a runner that exits drops its hold', async () => {
+      const q = new GroupQueue();
+      let finish!: () => void;
+      q.enqueueTask(
+        jid,
+        'held-turn',
+        () => new Promise<void>((resolve) => (finish = resolve)),
+      );
+      q.registerProcess(jid, { pid: 4243 } as never, {
+        containerName: null,
+        groupFolder: folder,
+        agentId: AGENT_ID,
+      });
+      q.markRunnerBackgroundHold(jid, true);
+      // The lane state is dropped once idle; keep it to read the teardown.
+      const state = getState(q, jid);
+      expect(state.backgroundHoldQueryId).toBe(state.queryId);
+
+      finish();
+
+      await vi.waitFor(() => expect(state.active).toBe(false));
+      expect(state.backgroundHoldQueryId).toBeNull();
+    });
   });
 });

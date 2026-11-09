@@ -12864,19 +12864,31 @@ async function processAgentConversation(
     // a substantive result / interruption so the runner can be kept warm.
     queue.markRunnerActivity(virtualJid);
     if (isProviderQuotaControlOutput(output)) return;
-    // Every result the Runner publishes says whether it still holds the turn
-    // for unsettled background work; stuck recovery defers while it does.
-    if (output.status === 'success') {
-      queue.markRunnerBackgroundHold(
-        virtualJid,
-        (output.pendingBgTasks ?? 0) > 0,
-      );
-    }
-    bindRunnerActiveIpcCoverage(virtualJid, output.activeIpcReceipts);
     const isInterruptStatus =
       output.status === 'stream' &&
       output.streamEvent?.eventType === 'status' &&
       output.streamEvent.statusText === 'interrupted';
+    // Stuck recovery defers while the Runner holds its result for unsettled
+    // background work. Only a result says so: publishResultCandidate always
+    // sets a numeric pendingBgTasks (0 once settled); notices such as
+    // compact_partial or an image rejection carry none and keep the hold. An
+    // output that ends the SDK query releases it, since that work stops with
+    // the query; a retried or next query reports its own. (A model-fallback
+    // retry's own control frame never reaches here; its notice does.)
+    if (
+      output.status === 'success' &&
+      typeof output.pendingBgTasks === 'number'
+    ) {
+      queue.markRunnerBackgroundHold(virtualJid, output.pendingBgTasks > 0);
+    } else if (
+      isInterruptStatus ||
+      output.providerFailure ||
+      output.sourceKind === 'provider_fallback_notice' ||
+      output.sourceKind === 'overflow_partial'
+    ) {
+      queue.markRunnerBackgroundHold(virtualJid, false);
+    }
+    bindRunnerActiveIpcCoverage(virtualJid, output.activeIpcReceipts);
     const isUsageEvent =
       output.status === 'stream' && output.streamEvent?.eventType === 'usage';
     const outputTurnId = output.turnId || output.streamEvent?.turnId;
