@@ -32,6 +32,7 @@ function ipcCandidate(overrides: Partial<Candidate> = {}): Candidate {
     runnerPid: 4242,
     ipcOwedSinceAt: 1,
     ipcOwedMs: 3 * 60 * 1000,
+    backgroundTasksHeld: false,
     ...overrides,
   };
 }
@@ -166,5 +167,70 @@ describe('stuck runner recovery policy', () => {
     expect(
       decideStuckRunnerRecovery(pending, 'unavailable', FORCE_RESTART_MS),
     ).toEqual({ action: 'defer', reason: 'container_grace' });
+  });
+
+  test('a result held for background work defers every restart rule', () => {
+    const held = { backgroundTasksHeld: true };
+    const deferred = { action: 'defer', reason: 'background_tasks' };
+
+    // absolute_ipc_ceiling: owed IPC past the ceiling with fresh output.
+    expect(
+      decideStuckRunnerRecovery(
+        ipcCandidate({ ...held, idleMs: 400, ipcOwedMs: FORCE_RESTART_MS }),
+        'active',
+        FORCE_RESTART_MS,
+      ),
+    ).toEqual(deferred);
+    // idle: a sub-agent waiting on the network shows no CPU.
+    expect(
+      decideStuckRunnerRecovery(
+        ipcCandidate(held),
+        'inactive',
+        FORCE_RESTART_MS,
+      ),
+    ).toEqual(deferred);
+    // idle_ceiling: silent past the ceiling, left to the no-output watchdog.
+    expect(
+      decideStuckRunnerRecovery(
+        ipcCandidate({
+          ...held,
+          idleMs: FORCE_RESTART_MS,
+          ipcOwedMs: FORCE_RESTART_MS,
+        }),
+        'inactive',
+        FORCE_RESTART_MS,
+      ),
+    ).toEqual(deferred);
+    expect(
+      decideStuckRunnerRecovery(
+        ipcCandidate({
+          ...held,
+          runtime: 'container',
+          ipcOwedMs: FORCE_RESTART_MS,
+        }),
+        'unavailable',
+        FORCE_RESTART_MS,
+      ),
+    ).toEqual(deferred);
+  });
+
+  test('once background work settles the original rules apply again', () => {
+    expect(
+      decideStuckRunnerRecovery(
+        ipcCandidate({ ipcOwedMs: FORCE_RESTART_MS }),
+        'active',
+        FORCE_RESTART_MS,
+      ),
+    ).toEqual({ action: 'restart', reason: 'absolute_ipc_ceiling' });
+    expect(
+      decideStuckRunnerRecovery(ipcCandidate(), 'inactive', FORCE_RESTART_MS),
+    ).toEqual({ action: 'restart', reason: 'idle' });
+    expect(
+      decideStuckRunnerRecovery(
+        ipcCandidate({ idleMs: FORCE_RESTART_MS, ipcOwedMs: null }),
+        'active',
+        FORCE_RESTART_MS,
+      ),
+    ).toEqual({ action: 'restart', reason: 'idle_ceiling' });
   });
 });

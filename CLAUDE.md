@@ -283,6 +283,10 @@ Web UI 约定：
   的启动、终态和最终答复按发起它的输入写入 `subagent_checkpoints`；重跑同一输入时
   这些断点作为上下文回注给主 Agent：已完成的直接汇总，未完成的标明中断，部署、迁移、
   推送等非幂等操作要求先核实实际状态。宿主不会自动重跑任何子任务。
+- 卡死检测（`src/stuck-runner-recovery.ts`）不重启扣着结果等后台工作的 Runner：Runner 每次
+  发布 result 都带 `pendingBgTasks`，大于 0 时宿主把这一 query 记为扣住，IPC 债务上限和
+  空闲规则一律 defer（`background_tasks`）。完全没有输出的卡死由 `CONTAINER_TIMEOUT`
+  看门狗兜底；扣住解除时仍欠的 IPC 债务从解除时刻重新计时。
 - 一轮成功结束、最后一次模型响应只有思考而没有正文（静默停止）时，Claude Code 会先在
   轮内自行补问一次；仍无正文时 Runner 在同一 SDK 流里再要一次答复，每条输入最多一次。
   主动模式、已有后续输入排队、后台任务未结清时不续写。

@@ -155,7 +155,7 @@ function makeOutputRuntime() {
     logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
     steeringTransitions: { shouldSuppressOutput: () => false },
     rememberScheduledGroupRuns: vi.fn(),
-    queue: { markRunnerActivity: vi.fn() },
+    queue: { markRunnerActivity: vi.fn(), markRunnerBackgroundHold: vi.fn() },
     bindRunnerActiveIpcCoverage: vi.fn(),
     isProviderQuotaControlOutput: () => false,
     rotateProviderAfterAgentTurn: false,
