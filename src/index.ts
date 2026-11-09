@@ -15163,13 +15163,45 @@ async function startRunnerSupervisor(): Promise<void> {
   }
 }
 
+/** Per lane, the held query whose background_tasks defer was logged at info. */
+const loggedBackgroundHoldQueries = new Map<string, string>();
+
 async function recoverStuckPendingGroups(): Promise<void> {
+  for (const [jid, queryId] of loggedBackgroundHoldQueries) {
+    if (queue.getActiveQueryId(jid) !== queryId) {
+      loggedBackgroundHoldQueries.delete(jid);
+    }
+  }
   const stuckGroups = queue.getStuckPendingGroups(
     STUCK_RUNNER_IDLE_MS,
     STUCK_RUNNER_FORCE_RESTART_MS,
   );
   for (const candidate of stuckGroups) {
     const pid = candidate.runnerPid ?? undefined;
+    // A held result defers whatever the CPU shows (decideStuckRunnerRecovery),
+    // so skip the probe. The hold can last as long as its background work:
+    // log it at info once per query.
+    if (candidate.backgroundTasksHeld) {
+      const firstForQuery =
+        loggedBackgroundHoldQueries.get(candidate.jid) !== candidate.queryId;
+      if (candidate.queryId) {
+        loggedBackgroundHoldQueries.set(candidate.jid, candidate.queryId);
+      }
+      logger[firstForQuery ? 'info' : 'debug'](
+        {
+          chatJid: candidate.jid,
+          queryId: candidate.queryId,
+          idleMs: candidate.idleMs,
+          ipcOwedMs: candidate.ipcOwedMs,
+          pid,
+          reason: candidate.reason,
+          runtime: candidate.runtime,
+          deferReason: 'background_tasks',
+        },
+        'Runner recovery deferred while background work holds the result',
+      );
+      continue;
+    }
     const cpuActivity = await resolveRunnerCpuActivity(candidate);
     const currentCandidate = queue.revalidateStuckRecoveryCandidate(
       candidate,
