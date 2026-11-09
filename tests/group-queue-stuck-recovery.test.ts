@@ -2,13 +2,14 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import fs from 'fs';
 import path from 'path';
 
-import { GroupQueue } from '../src/group-queue.js';
+import { GroupQueue, type IpcDeliveryReceipt } from '../src/group-queue.js';
 import { DATA_DIR } from '../src/config.js';
 import type { StreamEvent } from '../src/stream-event.types.js';
 import {
   decideStuckRunnerRecovery,
   type RunnerCpuActivity,
 } from '../src/stuck-runner-recovery.js';
+import { createRuntimeSourceHarness } from './helpers/runtime-source.js';
 
 // Regression coverage for #618: warm-path IPC follow-ups must be visible to
 // stuck-runner recovery. Follow-ups injected into a live runner establish a
@@ -836,20 +837,166 @@ describe('#618: IPC-injected follow-ups are visible to stuck recovery', () => {
       expect(getState(q, jid).ipcOwedSinceAt).toBe(appendedAt);
     });
 
-    test('an echoed input a continue leaves unconsumed is owed again', () => {
+    // A continue the Runner runs on its own (compaction or truncation) ends
+    // with IPC of the query still unacknowledged or on disk, and the query
+    // stays in flight. It is owed from its opening input again, as if the
+    // model had never answered: restarted no later than before the echo.
+    test.each([
+      [
+        'Host',
+        'host',
+        'inactive',
+        9,
+        { atMs: MINUTE, reason: 'absolute_ipc_ceiling' },
+      ],
+      [
+        'Container',
+        'container',
+        'unavailable',
+        6,
+        { atMs: 4 * MINUTE, reason: 'absolute_ipc_ceiling' },
+      ],
+    ] as const)(
+      '%s: an answered query a continue keeps in flight is owed from its opening input',
+      (_name, runtime, cpu, minutes, restart) => {
+        const q = warmRunner(runtime);
+        const queryId = inject(q);
+        const injectedAt = clock;
+        q.markRunnerServingQuery(jid, answer(queryId));
+        expect(patrol(q, minutes * MINUTE, { outputs: true, cpu })).toBeNull();
+
+        // The input file is still on disk.
+        q.markRunnerQueryIdle(jid, { preserveIpcDebt: true });
+        expect(q.getActiveQueryId(jid)).toBe(queryId);
+        expect(getState(q, jid).ipcOwedSinceAt).toBe(injectedAt);
+        // Ten minutes after the input came.
+        expect(patrol(q, 11 * MINUTE, { outputs: false, cpu })).toEqual(
+          restart,
+        );
+      },
+    );
+
+    test('a continue owes the opening input before one appended later', () => {
+      const q = warmRunner();
+      const queryId = inject(q);
+      const injectedAt = clock;
+      q.markRunnerServingQuery(jid, answer(queryId));
+      clock += 5 * MINUTE;
+      inject(q, 'appended');
+      clock += MINUTE;
+
+      q.markRunnerQueryIdle(jid, { preserveIpcDebt: true });
+      expect(getState(q, jid).ipcOwedSinceAt).toBe(injectedAt);
+    });
+
+    test('a continue after a hold owes the opening input from its end', () => {
       const q = warmRunner();
       const queryId = inject(q);
       q.markRunnerServingQuery(jid, answer(queryId));
-      clock += 12 * MINUTE;
-      q.markRunnerActivity(jid);
+      q.markRunnerBackgroundHold(jid, true);
+      clock += 20 * MINUTE;
+      q.markRunnerBackgroundHold(jid, false);
+      const releasedAt = clock;
+      clock += MINUTE;
 
-      // A compaction continue ends; the input file is still on disk.
       q.markRunnerQueryIdle(jid, { preserveIpcDebt: true });
+      expect(getState(q, jid).ipcOwedSinceAt).toBe(releasedAt);
+    });
+
+    test('an idle report for another query leaves the one in flight alone', () => {
+      const q = warmRunner();
+      const queryId = inject(q);
+
+      q.markRunnerQueryIdle(jid, { queryId: 'an-earlier-query' });
       expect(q.getActiveQueryId(jid)).toBe(queryId);
-      expect(getState(q, jid).ipcOwedSinceAt).toBe(clock);
-      expect(
-        patrol(q, 4 * MINUTE, { outputs: false, cpu: 'inactive' }),
-      ).toEqual({ atMs: 3 * MINUTE, reason: 'idle' });
+      q.markRunnerQueryIdle(jid, { queryId });
+      expect(q.getActiveQueryId(jid)).toBeNull();
+    });
+
+    // The result of a continue that answers the input reports the query idle
+    // and carries the input's receipt, which wrappedOnOutput acknowledges
+    // only after handleAgentOutput has taken the output.
+    describe("a continue's result, through wrappedOnOutput", () => {
+      function host(q: GroupQueue) {
+        const commit = vi.fn();
+        const globals: Record<string, unknown> = {
+          queue: q,
+          virtualJid: jid,
+          // What handleAgentOutput does with a continue's idle report.
+          handleAgentOutput: async () =>
+            q.markRunnerQueryIdle(jid, { preserveIpcDebt: true }),
+          commitIpcDeliveryReceipts: commit,
+          hadError: false,
+          lastError: undefined,
+          retryUnfinishedTurn: false,
+        };
+        createRuntimeSourceHarness(globals).install(
+          'wrappedOnOutput',
+          'processAgentConversation',
+        );
+        const emit = globals.wrappedOnOutput as (
+          output: object,
+        ) => Promise<void>;
+        return { emit, commit };
+      }
+
+      function injectWithReceipt(q: GroupQueue, id: string) {
+        let receipt: IpcDeliveryReceipt | undefined;
+        const cursor = { timestamp: new Date(clock).toISOString(), id };
+        expect(
+          q.sendMessage(
+            jid,
+            id,
+            undefined,
+            (injected) => (receipt = injected),
+            jid,
+            { chatJid: jid, coveredCursors: [cursor], cursor },
+          ),
+        ).toBe('sent');
+        return receipt!;
+      }
+
+      function continueResult(receipts: IpcDeliveryReceipt[]) {
+        return {
+          status: 'success',
+          result: 'the rest of the answer',
+          sourceKind: 'truncation_continue',
+          inputTurnCompleted: true,
+          queryIdle: true,
+          ipcReceipts: receipts,
+        };
+      }
+
+      test('ends the query once the receipt it carries is acknowledged', async () => {
+        const q = warmRunner('container');
+        q.setIpcDeliveryCommitEligibilityChecker(() => true);
+        const receipt = injectWithReceipt(q, 'question');
+        q.markRunnerServingQuery(jid, answer(q.getActiveQueryId(jid)!));
+        clock += 6 * MINUTE;
+        const run = host(q);
+
+        await run.emit(continueResult([receipt]));
+        expect(run.commit).toHaveBeenCalledWith([receipt]);
+        expect(q.getActiveQueryId(jid)).toBeNull();
+        expect(
+          patrol(q, 11 * MINUTE, { outputs: false, cpu: 'unavailable' }),
+        ).toBeNull();
+      });
+
+      test('keeps it in flight for input the continue did not take', async () => {
+        const q = warmRunner('container');
+        q.setIpcDeliveryCommitEligibilityChecker(() => true);
+        const receipt = injectWithReceipt(q, 'question');
+        const queryId = q.getActiveQueryId(jid)!;
+        q.markRunnerServingQuery(jid, answer(queryId));
+        clock += MINUTE;
+        injectWithReceipt(q, 'appended');
+        const run = host(q);
+
+        await run.emit(continueResult([receipt]));
+        expect(run.commit).toHaveBeenCalledWith([receipt]);
+        expect(q.getActiveQueryId(jid)).toBe(queryId);
+      });
     });
 
     test("a reservation's first input opens the query", () => {

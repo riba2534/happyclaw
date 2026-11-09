@@ -14211,6 +14211,7 @@ async function processAgentConversation(
   };
 
   const wrappedOnOutput = async (output: ContainerOutput): Promise<void> => {
+    const outputQueryId = queue.getActiveQueryId(virtualJid);
     try {
       await handleAgentOutput(output);
     } catch (err) {
@@ -14232,6 +14233,17 @@ async function processAgentConversation(
         output.ipcReceipts,
         commitIpcDeliveryReceipts,
       );
+      // A continue the Runner runs on its own (compaction or truncation)
+      // reports its query idle before these receipts are acknowledged, and
+      // the queue keeps a query with unacknowledged IPC in flight. Ask again:
+      // the query ends unless other IPC still waits for it. Any other idle
+      // report has already ended its query.
+      if (output.queryIdle === true && outputQueryId) {
+        queue.markRunnerQueryIdle(virtualJid, {
+          preserveIpcDebt: true,
+          queryId: outputQueryId,
+        });
+      }
     }
   };
 
