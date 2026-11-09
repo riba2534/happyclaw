@@ -283,10 +283,15 @@ Web UI 约定：
   的启动、终态和最终答复按发起它的输入写入 `subagent_checkpoints`；重跑同一输入时
   这些断点作为上下文回注给主 Agent：已完成的直接汇总，未完成的标明中断，部署、迁移、
   推送等非幂等操作要求先核实实际状态。宿主不会自动重跑任何子任务。
-- 卡死检测（`src/stuck-runner-recovery.ts`）不重启扣着结果等后台工作的 Runner：Runner 每次
-  发布 result 都带 `pendingBgTasks`，大于 0 时宿主把这一 query 记为扣住，IPC 债务上限和
-  空闲规则一律 defer（`background_tasks`）。完全没有输出的卡死由 `CONTAINER_TIMEOUT`
-  看门狗兜底；扣住解除时仍欠的 IPC 债务从解除时刻重新计时。
+- 后台工作（除已转后台的 Bash 外的所有 SDK 后台任务，含子代理、监视器、MCP 任务）结清前，
+  CLI 照常接收输入，但 Runner 不发完成回执，宿主的 IPC 债务因此还不上；这笔债通常就是该
+  query 自己经 IPC 开场的那条输入（query 在跑时新消息走 durable 队列）。Runner 发布的每个
+  result 都带 `pendingBgTasks`（结清后为 0），宿主只看 result 上的这个值：大于 0 时把这一
+  query 记为扣住，卡死检测（`src/stuck-runner-recovery.ts`）不做 CPU 探测，IPC 债务上限和
+  空闲规则一律 defer（`background_tasks`），每个 query 只记一条 info 日志。中断、provider
+  失败、模型回退重试、上下文溢出等结束 SDK query 的输出也解除扣住；解除时仍欠的 IPC 债务
+  从解除时刻重新计时。扣住期间完全没有输出时，宿主在静默满
+  min(`CONTAINER_TIMEOUT`, `IDLE_TIMEOUT`) 后关闭 Runner，`CONTAINER_TIMEOUT` 看门狗随后兜底。
 - 一轮成功结束、最后一次模型响应只有思考而没有正文（静默停止）时，Claude Code 会先在
   轮内自行补问一次；仍无正文时 Runner 在同一 SDK 流里再要一次答复，每条输入最多一次。
   主动模式、已有后续输入排队、后台任务未结清时不续写。
@@ -727,7 +732,7 @@ Web 持久设置 > 环境变量 > 代码默认值
 | `CONTAINER_IMAGE`                    | `riba2534/happyclaw-agent:latest` | GitHub Actions 发布的 Runner 镜像                                     |
 | `CONTAINER_TIMEOUT`                  | `1800000`                         | Runner 无输出看门狗                                                   |
 | `IDLE_TIMEOUT`                       | `1800000`                         | 暖 Runner 空闲时间                                                    |
-| `STUCK_RUNNER_FORCE_RESTART_MINUTES` | `10`                              | IPC 债务强制恢复上限（4–120 分钟）                                    |
+| `STUCK_RUNNER_FORCE_RESTART_MINUTES` | `10`                              | IPC 债务强制恢复上限（4–120 分钟）；扣住结果等后台工作时不适用        |
 | `MAX_CONCURRENT_CONTAINERS`          | `20`                              | Docker 并发                                                           |
 | `CONTAINER_MEMORY_LIMIT`             | 不限制                            | 单个容器内存上限，须带单位，同设 swap                                 |
 | `MAX_FILE_SIZE_MB`                   | `50`                              | Web/IM 入站文件上限                                                   |

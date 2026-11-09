@@ -241,9 +241,9 @@ interface GroupState {
   /** Oldest IPC inject still owed by the current logical query. Unlike
    * lastActivityAt, ordinary runner output must never refresh this timestamp. */
   ipcOwedSinceAt: number | null;
-  /** Query whose result the runner holds while blocking background work
-   * (sub-agent Tasks, workflows) is still unsettled. Only meaningful while it
-   * equals `queryId`; a later query never inherits it. */
+  /** Query whose result the runner holds while background work (any SDK
+   * background task but a backgrounded Bash) is unsettled. Only meaningful
+   * while it equals `queryId`; a later query never inherits it. */
   backgroundHoldQueryId?: string | null;
   /** IPC deliveries written to this runner but not yet acknowledged by a
    * healthy agent query result. Keyed by deliveryId for out-of-order acks. */
@@ -1520,13 +1520,15 @@ export class GroupQueue {
   }
 
   /**
-   * Record whether the query in flight is holding its result for unsettled
-   * background work: the Runner reports `pendingBgTasks > 0` on every result it
-   * publishes while such work runs, and a result without it once the work has
-   * settled. While held, the CLI cannot take owed IPC input, so stuck recovery
-   * defers instead of restarting (the runner's no-output watchdog still bounds
-   * a silent stall). When the hold ends, owed IPC debt starts aging from then:
-   * the Runner could not have paid it earlier.
+   * Record whether the query in flight holds its result for unsettled
+   * background work. Every result the Runner publishes carries
+   * `pendingBgTasks`: the SDK background tasks still running other than a
+   * backgrounded Bash (sub-agents and workflows, but also monitors and MCP
+   * tasks), 0 once they settle. The CLI keeps answering input meanwhile, but
+   * the Runner sends no completion receipt, so the IPC debt (usually the
+   * input that opened this query over IPC) cannot be paid and stuck recovery
+   * defers instead of restarting. When the hold ends, debt still owed starts
+   * aging from then: the Runner could not have paid it earlier.
    */
   markRunnerBackgroundHold(groupJid: string, held: boolean): void {
     const state = this.resolveActiveState(groupJid);

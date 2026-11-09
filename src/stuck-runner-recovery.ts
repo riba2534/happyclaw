@@ -25,8 +25,8 @@ export interface StuckRecoveryCandidate {
   ipcOwedSinceAt: number | null;
   /** Age of the oldest IPC input still owed by the current logical query. */
   ipcOwedMs: number | null;
-  /** The query in flight holds its result for unsettled background work
-   * (sub-agent Tasks, workflows); see GroupQueue.markRunnerBackgroundHold. */
+  /** The query in flight holds its result for unsettled background work;
+   * see GroupQueue.markRunnerBackgroundHold. */
   backgroundTasksHeld: boolean;
 }
 
@@ -146,12 +146,14 @@ export async function resolveRunnerCpuActivity(
  * ceiling, container work is conservatively preserved because host `ps`
  * cannot observe CPU inside Docker; host probe failures are likewise deferred.
  *
- * A query holding its result for unsettled background work is not stuck: the
- * CLI takes owed input only after that work settles, and a sub-agent waiting
- * on the network shows neither output nor CPU. Restarting would kill it. Such
- * a runner is bounded instead by the no-output watchdog (CONTAINER_TIMEOUT),
- * which kills it after a fully silent stall; the IPC ceiling resumes, from the
- * moment the hold ends, for input still owed afterwards.
+ * A query holding its result for unsettled background work is deferred: the
+ * Runner sends no completion receipt until that work settles, so its IPC debt
+ * cannot be paid, and a sub-agent waiting on the network shows neither output
+ * nor CPU. Restarting would kill it. Such a runner is bounded instead by
+ * silence: with no output for min(CONTAINER_TIMEOUT, IDLE_TIMEOUT) the host
+ * closes it, and the CONTAINER_TIMEOUT watchdog follows; the main agent,
+ * which keeps answering input while held, is left to the same bounds. The IPC
+ * ceiling resumes, from the moment the hold ends, for input still owed.
  */
 export function decideStuckRunnerRecovery(
   candidate: StuckRecoveryCandidate,
