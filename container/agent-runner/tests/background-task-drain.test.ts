@@ -4,6 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
+  BackgroundHoldKeepalive,
   BackgroundProtocolDebtWatchdog,
   BackgroundTaskDrainTracker,
   DurableInputTurnCompletion,
@@ -350,5 +351,59 @@ describe('StreamEventProcessor background protocol integration', () => {
     expect(processor.getPendingSdkTaskCount()).toBe(0);
     expect(processor.getBlockingBackgroundCompletionDebtCount()).toBe(1);
     expect(processor.observeBackgroundResult()).toBe(false);
+  });
+});
+
+describe('BackgroundHoldKeepalive', () => {
+  test('repeats while tasks run, stops when they finish, and is bounded', () => {
+    vi.useFakeTimers();
+    try {
+      let pending = 1;
+      const ticks: number[] = [];
+      const keepalive = new BackgroundHoldKeepalive({
+        intervalMs: 1_000,
+        maxMs: 10_000,
+        pendingCount: () => pending,
+        onTick: (count) => ticks.push(count),
+      });
+      keepalive.start();
+      keepalive.start();
+      vi.advanceTimersByTime(3_000);
+      expect(ticks).toEqual([1, 1, 1]);
+
+      pending = 0;
+      vi.advanceTimersByTime(1_000);
+      expect(keepalive.running).toBe(false);
+      expect(ticks).toHaveLength(3);
+
+      // A later hold in the same query shares the original bound.
+      pending = 2;
+      keepalive.start();
+      vi.advanceTimersByTime(20_000);
+      expect(keepalive.running).toBe(false);
+      expect(ticks.length).toBeLessThan(10);
+      expect(ticks.at(-1)).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('stop clears a running keepalive', () => {
+    vi.useFakeTimers();
+    try {
+      const ticks: number[] = [];
+      const keepalive = new BackgroundHoldKeepalive({
+        intervalMs: 1_000,
+        maxMs: 60_000,
+        pendingCount: () => 1,
+        onTick: (count) => ticks.push(count),
+      });
+      keepalive.start();
+      keepalive.stop();
+      vi.advanceTimersByTime(5_000);
+      expect(ticks).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

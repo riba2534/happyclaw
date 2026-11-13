@@ -7,7 +7,10 @@ import { killProcessTree } from './container-runner.js';
 import { getSystemSettings } from './runtime-config.js';
 import { logger } from './logger.js';
 import { resolveFeishuCliBoundAccountId } from './feishu-cli-runtime.js';
-import { isIpcInputPayloadFilename } from './ipc-delivery-recovery.js';
+import {
+  isIpcInputClaimFilename,
+  isIpcInputPayloadFilename,
+} from './ipc-delivery-recovery.js';
 import { agentIdOfJid, sessionIpcDir } from './utils.js';
 import type {
   RunnerRuntime,
@@ -1515,6 +1518,29 @@ export class GroupQueue {
     state.lastActivityAt = Date.now();
   }
 
+  /**
+   * The runner answered injected input in a result it holds open for
+   * background work. That input is no longer owed: stop the #618 debt clock
+   * once every pending delivery is answered and no unclaimed input waits on
+   * disk. The deliveries stay pending until their turn completes.
+   */
+  markIpcInputAnswered(groupJid: string, deliveryIds: string[]): void {
+    const state = this.resolveActiveState(groupJid);
+    if (!state?.active || !state.queryInFlight) return;
+    if (state.ipcOwedSinceAt === null || deliveryIds.length === 0) return;
+    const answered = new Set(deliveryIds);
+    for (const deliveryId of state.pendingIpcDeliveries?.keys() ?? []) {
+      if (!answered.has(deliveryId)) return;
+    }
+    if (
+      state.groupFolder &&
+      this.hasUnclaimedIpcMessages(state.groupFolder, state.agentId)
+    ) {
+      return;
+    }
+    state.ipcOwedSinceAt = null;
+  }
+
   acknowledgeIpcDeliveries(
     groupJid: string,
     receipts: IpcDeliveryReceipt[],
@@ -2506,6 +2532,23 @@ export class GroupQueue {
     state.pendingIpcDeliveries.clear();
     state.pendingIpcQueryIds?.clear();
     state.acknowledgedIpcDeliveryIds.clear();
+  }
+
+  /** IPC input on disk the runner has not claimed yet. */
+  private hasUnclaimedIpcMessages(
+    groupFolder: string,
+    agentId: string | null,
+  ): boolean {
+    if (!agentId) return false;
+    try {
+      const files = fs.readdirSync(sessionIpcInputDir(groupFolder, agentId));
+      return files.some(
+        (file) =>
+          isIpcInputPayloadFilename(file) && !isIpcInputClaimFilename(file),
+      );
+    } catch {
+      return false;
+    }
   }
 
   private hasRemainingIpcMessages(

@@ -12,6 +12,11 @@ export function isIpcInputPayloadFilename(filename: string): boolean {
   );
 }
 
+/** A payload the runner has claimed (renamed) but not yet acknowledged. */
+export function isIpcInputClaimFilename(filename: string): boolean {
+  return filename.includes(IPC_INPUT_CLAIM_MARKER);
+}
+
 // `<request type>_result_<requestId>.json`, as written by the host's
 // writeTaskResult and polled by the runner's pollIpcResult.
 const IPC_TASK_RESULT_FILE_RE = /^[a-z][a-z0-9_]*_result_[A-Za-z0-9_-]+\.json$/;

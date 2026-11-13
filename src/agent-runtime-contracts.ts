@@ -62,6 +62,9 @@ export interface ContainerOutput {
   queryIdle?: boolean;
   ipcReceipts?: RuntimeIpcReceipt[];
   activeIpcReceipts?: RuntimeIpcReceipt[];
+  /** Pending IPC deliveries a result held open for background work already
+   * answered (no receipt: the turn has not completed). */
+  answeredIpcDeliveryIds?: string[];
 }
 
 export interface RuntimeIpcReceipt {

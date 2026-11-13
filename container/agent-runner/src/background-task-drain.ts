@@ -423,3 +423,50 @@ export function shouldFailIncompleteQueryExit(
     !state.durableInputTurnCompleted
   );
 }
+
+/**
+ * Repeats a held reply's status while background tasks run. Such a reply
+ * emits nothing until they finish, and the host's idle close and process
+ * watchdog read that silence as a hung runner. Bounded by `maxMs` from the
+ * first start, so a task that never ends still lets the runner go idle.
+ */
+export class BackgroundHoldKeepalive {
+  private timer: ReturnType<typeof setInterval> | undefined;
+  private startedAt: number | null = null;
+
+  constructor(
+    private readonly options: {
+      intervalMs: number;
+      maxMs: number;
+      pendingCount: () => number;
+      onTick: (pending: number) => void;
+      now?: () => number;
+    },
+  ) {}
+
+  start(): void {
+    const now = this.options.now ?? Date.now;
+    this.startedAt ??= now();
+    if (this.timer) return;
+    this.timer = setInterval(() => {
+      const pending = this.options.pendingCount();
+      if (pending <= 0 || now() - (this.startedAt ?? 0) >= this.options.maxMs) {
+        this.stop();
+        return;
+      }
+      this.options.onTick(pending);
+    }, this.options.intervalMs);
+    this.timer.unref?.();
+  }
+
+  stop(): void {
+    if (this.timer) {
+      clearInterval(this.timer);
+      this.timer = undefined;
+    }
+  }
+
+  get running(): boolean {
+    return this.timer !== undefined;
+  }
+}

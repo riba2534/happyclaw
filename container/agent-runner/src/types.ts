@@ -474,6 +474,9 @@ export interface ContainerOutput {
    * this completion. Present only while the same streaming query stays busy.
    * Hosts use it to bind provider coalescing to the real current turn rather
    * than to a later IPC message that merely entered the stream. */
+  /** Pending IPC deliveries a result held open for background work already
+   * answered. Not receipts: their cursors commit only when the turn completes. */
+  answeredIpcDeliveryIds?: string[];
   activeIpcReceipts?: Array<{
     deliveryId: string;
     chatJid: string;
