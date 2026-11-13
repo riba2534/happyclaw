@@ -347,6 +347,17 @@ export class IpcTurnDeliveryTracker {
     return receipts;
   }
 
+  /** Delivery ids of pending turns whose input a finished SDK turn already
+   * answered, though no result completed them (e.g. held for background
+   * tasks). */
+  get answeredPendingDeliveryIds(): string[] {
+    return this.turns
+      .filter((turn) => this.isAnswered(turn))
+      .flatMap((turn) => turn)
+      .map((message) => message.receipt?.deliveryId)
+      .filter((id): id is string => !!id);
+  }
+
   private isAnswered(turn: readonly IpcInputMessage[]): boolean {
     return turn.some((message) => {
       const sdkUuid = this.sdkUuidByMessage.get(message);

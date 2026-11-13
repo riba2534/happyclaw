@@ -12865,6 +12865,9 @@ async function processAgentConversation(
     queue.markRunnerActivity(virtualJid);
     if (isProviderQuotaControlOutput(output)) return;
     bindRunnerActiveIpcCoverage(virtualJid, output.activeIpcReceipts);
+    if (output.answeredIpcDeliveryIds) {
+      queue.markIpcInputAnswered(virtualJid, output.answeredIpcDeliveryIds);
+    }
     const isInterruptStatus =
       output.status === 'stream' &&
       output.streamEvent?.eventType === 'status' &&

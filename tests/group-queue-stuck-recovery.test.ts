@@ -555,6 +555,76 @@ describe('#618: IPC-injected follow-ups are visible to stuck recovery', () => {
     expect(q.getStuckPendingGroups(IDLE_THRESHOLD_MS)).toHaveLength(0);
   });
 
+  test('input answered while the reply is held for background work is no longer owed', () => {
+    const q = new GroupQueue();
+    const forceRestartMs = 10 * 60 * 1000;
+    seedRunner(q, jid, {
+      groupFolder: folder,
+      queryInFlight: true,
+      ipcOwedSinceAt: Date.now() - forceRestartMs - 1000,
+      lastActivityAt: Date.now() - 30_000,
+    });
+    const deliveries = getState(q, jid).pendingIpcDeliveries as Map<
+      string,
+      unknown
+    >;
+    deliveries.set('delivery-a', {});
+    fs.mkdirSync(inputDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(inputDir, 'a.json.happyclaw-claimed-123-1-test'),
+      '{}',
+    );
+
+    q.markIpcInputAnswered(jid, ['delivery-a']);
+
+    expect(getState(q, jid).ipcOwedSinceAt).toBeNull();
+    // Still pending: the cursor commits only when the turn completes.
+    expect(deliveries.has('delivery-a')).toBe(true);
+    expect(
+      q.getStuckPendingGroups(IDLE_THRESHOLD_MS, forceRestartMs),
+    ).toHaveLength(0);
+  });
+
+  test('an unanswered delivery keeps the IPC debt clock running', () => {
+    const q = new GroupQueue();
+    seedRunner(q, jid, {
+      groupFolder: folder,
+      queryInFlight: true,
+      ipcOwedSinceAt: 1,
+      lastActivityAt: 1,
+    });
+    const deliveries = getState(q, jid).pendingIpcDeliveries as Map<
+      string,
+      unknown
+    >;
+    deliveries.set('delivery-a', {});
+    deliveries.set('delivery-b', {});
+
+    q.markIpcInputAnswered(jid, ['delivery-a']);
+
+    expect(getState(q, jid).ipcOwedSinceAt).toBe(1);
+  });
+
+  test('unclaimed input on disk keeps the IPC debt clock running', () => {
+    const q = new GroupQueue();
+    seedRunner(q, jid, {
+      groupFolder: folder,
+      queryInFlight: true,
+      ipcOwedSinceAt: 1,
+      lastActivityAt: 1,
+    });
+    (getState(q, jid).pendingIpcDeliveries as Map<string, unknown>).set(
+      'delivery-a',
+      {},
+    );
+    fs.mkdirSync(inputDir, { recursive: true });
+    fs.writeFileSync(path.join(inputDir, 'later.json'), '{}');
+
+    q.markIpcInputAnswered(jid, ['delivery-a']);
+
+    expect(getState(q, jid).ipcOwedSinceAt).toBe(1);
+  });
+
   test('ordinary query idle still clears IPC debt', () => {
     const q = new GroupQueue();
     seedRunner(q, jid, {

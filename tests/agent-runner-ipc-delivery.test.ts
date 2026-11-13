@@ -414,6 +414,27 @@ describe('agent-runner IPC delivery turn tracker', () => {
     expect(shouldAcceptIpcMessagesDuringQuery(true, true)).toBe(true);
   });
 
+  test('names answered pending deliveries without completing their turns', () => {
+    const a = message('1');
+    const b = message('2');
+    const c = message('3');
+    const tracker = new IpcTurnDeliveryTracker([a]);
+    tracker.bindSdkMessageUuid([a], 'uuid-a');
+    tracker.acceptTurn([b]);
+    tracker.bindSdkMessageUuid([b], 'uuid-b');
+    tracker.acceptTurn([c]);
+    tracker.bindSdkMessageUuid([c], 'uuid-c');
+
+    // A result held open for background work answered A and B; C is unread.
+    tracker.observeAnsweredSdkUuids(['uuid-a', 'uuid-b']);
+    expect(tracker.answeredPendingDeliveryIds).toEqual([
+      'delivery-1',
+      'delivery-2',
+    ]);
+    expect(tracker.pendingTurnCount).toBe(3);
+    expect(tracker.unacknowledgedMessages).toEqual([a, b, c]);
+  });
+
   test('pending background, truncation, error and interrupt are not completions', () => {
     expect(isHealthyInputTurnCompletion(1, false)).toBe(false);
     expect(isHealthyInputTurnCompletion(0, true)).toBe(false);
