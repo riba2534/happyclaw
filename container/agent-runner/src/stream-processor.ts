@@ -272,6 +272,8 @@ export class StreamEventProcessor {
       description: string;
       taskType?: string;
       isBackgrounded: boolean;
+      /** task_started reported is_backgrounded (notice-worthy completion). */
+      startedInBackground?: boolean;
       /** Launched by a sub-agent rather than the main Agent. */
       launchedBySubAgent: boolean;
     }
@@ -1473,6 +1475,7 @@ export class StreamEventProcessor {
               ? message.task_type
               : undefined,
           isBackgrounded: false,
+          startedInBackground: message.is_backgrounded === true,
           launchedBySubAgent:
             subAgentOwned || typeof message.parent_task_id === 'string',
         });
@@ -2437,6 +2440,7 @@ export class StreamEventProcessor {
       this.backgroundDrain.markNonBlocking(message.task_id);
     }
     this.backgroundDrain.taskNotification(message.task_id);
+    const isBackground = this.isBackgroundTaskNotification(message);
     this.settlePendingSdkTask(
       message.task_id,
       `task_notification:${message.status}`,
@@ -2476,7 +2480,7 @@ export class StreamEventProcessor {
         outputFile: message.output_file,
         sdkTaskUsage: this.normalizeTaskUsage(message.usage),
         workflowRun: completedWorkflowRun,
-        isBackground: true,
+        isBackground,
         displayLevel: 'primary',
       },
     });
@@ -2502,6 +2506,26 @@ export class StreamEventProcessor {
     }
     // Clean up the mapping entry
     this.sdkTaskIdToToolUseId.delete(message.task_id);
+  }
+
+  /**
+   * The SDK also sends task_notification for foreground tasks (a Bash call
+   * that ran past the progress threshold, a blocking sub-agent). Only a task
+   * that actually ran in the background is news to the reader; one this
+   * process never registered (e.g. from before a restart) counts as
+   * background. Must run before the pending entry is settled.
+   */
+  private isBackgroundTaskNotification(message: {
+    task_id: string;
+    tool_use_id?: string;
+  }): boolean {
+    const pending = this.pendingSdkTasks.get(message.task_id);
+    if (!pending) return true;
+    if (pending.isBackgrounded || pending.startedInBackground) return true;
+    if (this.backgroundLevelTaskIds.has(message.task_id)) return true;
+    const toolUseId =
+      message.tool_use_id || this.sdkTaskIdToToolUseId.get(message.task_id);
+    return !!toolUseId && this.backgroundTaskToolUseIds.has(toolUseId);
   }
 
   /**
