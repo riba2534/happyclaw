@@ -1,4 +1,12 @@
-import { useState, useMemo, memo, lazy, Suspense, type ReactNode } from 'react';
+import {
+  Fragment,
+  useState,
+  useMemo,
+  memo,
+  lazy,
+  Suspense,
+  type ReactNode,
+} from 'react';
 import {
   Copy,
   Check,
@@ -69,6 +77,12 @@ import {
   getPrimaryModelUsage,
   parseTokenUsage,
 } from '../../lib/token-usage-presentation';
+import {
+  cacheHitRate,
+  formatHitRate,
+  formatTokensPerSecond,
+  generationTokensPerSecond,
+} from '../../lib/usage-metrics';
 import { WorkflowRunCard } from './WorkflowRunCard';
 import { formatTokens } from '../billing/utils';
 import type { WorkflowRunSnapshot } from '../../stream-event.types';
@@ -175,52 +189,87 @@ function tokenUsageView(
     workflowRuns.map((run) => run.totalTokens),
   );
   if (displayTotal === 0 && !usage.durationMs) return null;
+  const hitRate = cacheHitRate(usage);
+  const tps = generationTokensPerSecond(usage);
 
+  // A first turn, or one right after the context was reset, reads nothing
+  // from the cache: leave 0% out of the one-line summary, not the details.
+  const showHitRate = hitRate !== null && breakdown.cacheReadInputTokens > 0;
+  const summaryParts: ReactNode[] = [];
+  if (displayTotal > 0) {
+    summaryParts.push(`${formatTokens(displayTotal)} tokens`);
+  }
+  if (showHitRate) summaryParts.push(`命中 ${formatHitRate(hitRate)}`);
+  if (tps !== null) summaryParts.push(formatTokensPerSecond(tps));
+  if (usage.durationMs) {
+    summaryParts.push(`${(usage.durationMs / 1000).toFixed(1)}s`);
+  }
   const summary = (
     <>
-      {displayTotal > 0 && <span>{formatTokens(displayTotal)} tokens</span>}
-      {usage.durationMs ? (
-        <>
-          {displayTotal > 0 && <span className="opacity-60">·</span>}
-          <span>{(usage.durationMs / 1000).toFixed(1)}s</span>
-        </>
-      ) : null}
+      {summaryParts.map((part, index) => (
+        <Fragment key={index}>
+          {index > 0 && <span className="opacity-60">·</span>}
+          <span>{part}</span>
+        </Fragment>
+      ))}
     </>
   );
+
+  const rows: Array<[string, ReactNode, string?]> = [];
+  if (breakdown.totalTokens > 0) {
+    rows.push(['输入', formatTokens(breakdown.inputTokens)]);
+    rows.push(['输出', formatTokens(breakdown.outputTokens)]);
+    if (breakdown.reasoningTokens > 0) {
+      rows.push(['推理', formatTokens(breakdown.reasoningTokens)]);
+    }
+    if (
+      breakdown.cacheReadInputTokens > 0 ||
+      breakdown.cacheCreationInputTokens > 0
+    ) {
+      rows.push(['缓存读取', formatTokens(breakdown.cacheReadInputTokens)]);
+      rows.push(['缓存写入', formatTokens(breakdown.cacheCreationInputTokens)]);
+    }
+  }
+  if (hitRate !== null) {
+    rows.push([
+      '缓存命中率',
+      formatHitRate(hitRate),
+      breakdown.cacheReadInputTokens > 0
+        ? '缓存读取占全部输入的比例'
+        : '首轮或上下文刚重置时没有可读的缓存',
+    ]);
+  }
+  if (tps !== null) {
+    rows.push([
+      '生成速度',
+      formatTokensPerSecond(tps),
+      `${formatTokens(usage.streamOutputTokens || 0)} tokens 用时 ${((usage.streamMs || 0) / 1000).toFixed(1)}s，不含工具执行`,
+    ]);
+  }
+  if (workflowTokens > 0) {
+    rows.push(['Workflow Agent', formatTokens(workflowTokens)]);
+  }
   const details =
-    displayTotal > 0 || primary !== null ? (
-      <div className="text-xs space-y-0.5">
+    rows.length > 0 || primary !== null ? (
+      <div className="min-w-48 text-caption">
         {primary && (
-          <div className="opacity-70 font-medium mb-1">
-            主模型：{primary[0]}
+          <div className="mb-1.5 truncate font-medium opacity-80">
+            {primary[0]}
           </div>
         )}
-        {breakdown.totalTokens > 0 && (
-          <div>
-            输入 {formatTokens(breakdown.inputTokens)} / 输出{' '}
-            {formatTokens(breakdown.outputTokens)}
-          </div>
-        )}
-        {workflowTokens > 0 && (
-          <div className="opacity-70">
-            Workflow Agent 合计 {formatTokens(workflowTokens)}
-          </div>
-        )}
-        {(breakdown.cacheReadInputTokens > 0 ||
-          breakdown.cacheCreationInputTokens > 0 ||
-          breakdown.reasoningTokens > 0) && (
-          <div className="opacity-70">
-            缓存读取 {formatTokens(breakdown.cacheReadInputTokens)} / 缓存写入{' '}
-            {formatTokens(breakdown.cacheCreationInputTokens)} / 推理{' '}
-            {formatTokens(breakdown.reasoningTokens)}
-          </div>
-        )}
-        {primary && (
-          <div className="opacity-70">
-            主模型输入 {formatTokens(primary[1].inputTokens || 0)} / 输出{' '}
-            {formatTokens(primary[1].outputTokens || 0)}
-          </div>
-        )}
+        <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-0.5">
+          {rows.map(([label, value, hint]) => (
+            <Fragment key={label}>
+              <dt className="opacity-70">{label}</dt>
+              <dd className="text-right tabular-nums">
+                {value}
+                {hint && (
+                  <span className="block text-micro opacity-60">{hint}</span>
+                )}
+              </dd>
+            </Fragment>
+          ))}
+        </dl>
       </div>
     ) : null;
   return { summary, details };

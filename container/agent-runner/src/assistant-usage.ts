@@ -175,6 +175,18 @@ export function parseAssistantUsage(
   };
 }
 
+/**
+ * How long one streamed API call spent producing its output: from its
+ * message_start to the message_delta that carried its stop_reason. Prefill
+ * happens before message_start and tool runs happen between calls, so
+ * output tokens over this time is the model's generation speed. Absent for a
+ * call that was not streamed or never finished.
+ */
+export interface StreamGeneration {
+  streamOutputTokens?: number;
+  streamMs?: number;
+}
+
 export interface AssistantUsageBatch {
   eventId: string;
   tokens: Pick<
@@ -185,7 +197,8 @@ export interface AssistantUsageBatch {
     | 'cacheCreationInputTokens'
     | 'reasoningTokens'
     | 'modelUsage'
-  >;
+  > &
+    StreamGeneration;
   /**
    * A message_delta with a stop_reason arrived before the flush. Claude
    * Code 2.1.296 adds the call to modelUsage before it yields that event,
@@ -224,6 +237,13 @@ export class AssistantUsageCollector {
   /** Message IDs whose message_delta with a stop_reason was observed. */
   private readonly finalIds = new Set<string>();
   private readonly contentById = new Map<string, TurnContentFootprint>();
+  /** message_start and final message_delta arrival times, by message ID. */
+  private readonly streamTimingById = new Map<
+    string,
+    { startedAt: number; stoppedAt?: number }
+  >();
+
+  constructor(private readonly now: () => number = Date.now) {}
 
   private collectContent(sdkMessage: Record<string, unknown>): void {
     const message = sdkMessage.message as Record<string, unknown> | undefined;
@@ -301,6 +321,9 @@ export class AssistantUsageCollector {
       id = typeof message?.id === 'string' ? message.id.trim() : undefined;
       if (!id) return;
       this.streamIdByScope.set(scope, id);
+      if (!this.flushedIds.has(id) && !this.streamTimingById.has(id)) {
+        this.streamTimingById.set(id, { startedAt: this.now() });
+      }
       usage = message?.usage;
     } else if (event.type === 'message_delta') {
       id = this.streamIdByScope.get(scope);
@@ -316,6 +339,10 @@ export class AssistantUsageCollector {
         stopReason !== ''
       ) {
         this.finalIds.add(id);
+        const timing = this.streamTimingById.get(id);
+        if (timing && timing.stoppedAt === undefined) {
+          timing.stoppedAt = this.now();
+        }
       }
     }
     if (!id || this.flushedIds.has(id)) return;
@@ -354,6 +381,15 @@ export class AssistantUsageCollector {
       total: snapshotTotal(merged),
     };
     const final = this.finalIds.has(entry.id);
+    const timing = this.streamTimingById.get(entry.id);
+    const streamMs =
+      timing?.stoppedAt !== undefined ? timing.stoppedAt - timing.startedAt : 0;
+    // Output tokens before the reasoning split below: thinking is generated
+    // at the same speed as text.
+    const generation: StreamGeneration =
+      streamMs > 0 && merged.outputTokens > 0
+        ? { streamOutputTokens: merged.outputTokens, streamMs }
+        : {};
     const completed = final || transcriptHit?.stopped === true;
     // One stable Anthropic message ID must remain one ledger event. Aggregating
     // several IDs behind the last ID would make resume/fork transcript replays
@@ -372,6 +408,7 @@ export class AssistantUsageCollector {
       this.flushedIds.add(entry.id);
       this.streamFinalById.delete(entry.id);
       this.finalIds.delete(entry.id);
+      this.streamTimingById.delete(entry.id);
       const model = modelUsage[entry.model] || {
         inputTokens: 0,
         outputTokens: 0,
@@ -411,7 +448,7 @@ export class AssistantUsageCollector {
     // when a fork gets a different SDK session ID.
     return {
       eventId: `claude-code:${entry.id}`,
-      tokens: { ...root, modelUsage },
+      tokens: { ...root, modelUsage, ...generation },
       final,
       completed,
     };

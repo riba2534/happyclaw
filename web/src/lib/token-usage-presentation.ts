@@ -14,6 +14,8 @@ export interface TokenUsagePayload {
   costUSD?: number;
   durationMs?: number;
   numTurns?: number;
+  streamOutputTokens?: number;
+  streamMs?: number;
   modelUsage?: Record<string, ModelTokenUsage>;
 }
 

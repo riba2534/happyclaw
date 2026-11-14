@@ -460,6 +460,13 @@ export interface StreamEvent {
     costUSD: number;
     durationMs: number;
     numTurns: number;
+    /**
+     * Output tokens of the streamed API calls and the time they spent
+     * generating (message_start to the final message_delta, summed). Their
+     * ratio is the generation speed; tool runs and prefill are excluded.
+     */
+    streamOutputTokens?: number;
+    streamMs?: number;
     modelUsage?: Record<
       string,
       {
