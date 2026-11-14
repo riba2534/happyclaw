@@ -773,7 +773,10 @@ authRoutes.put('/password', authMiddleware, async (c) => {
   const validation = ChangePasswordSchema.safeParse(body);
   if (!validation.success) {
     return c.json(
-      { error: 'Invalid request', details: validation.error.format() },
+      {
+        error: '请填写当前密码，新密码 8–128 位',
+        details: validation.error.format(),
+      },
       400,
     );
   }
@@ -786,10 +789,18 @@ authRoutes.put('/password', authMiddleware, async (c) => {
     validation.data.current_password,
     fullUser.password_hash,
   );
-  if (!match) return c.json({ error: 'Current password is incorrect' }, 401);
+  // 400, not 401: the session is fine. The Web client treats any 401 as an
+  // expired login and leaves for the login page, so a mistyped current
+  // password looked like being signed out with the password changed.
+  if (!match) {
+    return c.json(
+      { error: '当前密码不正确', code: 'CURRENT_PASSWORD_INCORRECT' },
+      400,
+    );
+  }
   if (validation.data.current_password === validation.data.new_password) {
     return c.json(
-      { error: 'New password must be different from current password' },
+      { error: '新密码不能与当前密码相同', code: 'PASSWORD_UNCHANGED' },
       400,
     );
   }

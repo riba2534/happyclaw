@@ -89,10 +89,13 @@ export function SecuritySection() {
     confirmPassword.length >= newPassword.length &&
     confirmPassword.length > 0 &&
     confirmPassword !== newPassword;
+  const sameAsCurrent =
+    newPassword.length > 0 && newPassword === currentPassword;
   const canChangePassword =
     !changingPassword &&
     !!currentPassword &&
     newPassword.length >= 8 &&
+    !sameAsCurrent &&
     confirmPassword === newPassword;
 
   const handleChangePassword = async () => {
@@ -176,6 +179,13 @@ export function SecuritySection() {
           <SettingsRow
             label="新密码"
             htmlFor="new-password"
+            description={
+              sameAsCurrent ? (
+                <span id="new-password-error" className="text-error">
+                  新密码不能与当前密码相同
+                </span>
+              ) : undefined
+            }
             control={
               <PasswordInput
                 id="new-password"
@@ -183,6 +193,10 @@ export function SecuritySection() {
                 onChange={(event) => setNewPassword(event.target.value)}
                 placeholder="至少 8 位"
                 autoComplete="new-password"
+                aria-invalid={sameAsCurrent || undefined}
+                aria-describedby={
+                  sameAsCurrent ? 'new-password-error' : undefined
+                }
                 containerClassName="sm:w-64"
               />
             }

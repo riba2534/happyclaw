@@ -82,6 +82,14 @@ describe('SecuritySection change password', () => {
     expect(field('confirm-new-password').value).toBe('');
   });
 
+  test('a new password equal to the current one is flagged', async () => {
+    await type('current-password', 'same-password-1');
+    await type('new-password', 'same-password-1');
+    await type('confirm-new-password', 'same-password-1');
+    expect(container.textContent).toContain('新密码不能与当前密码相同');
+    expect(submitButton().disabled).toBe(true);
+  });
+
   test('does not flag a mismatch while the confirmation is still short', async () => {
     await type('new-password', 'new-password-1');
     await type('confirm-new-password', 'new-pa');
