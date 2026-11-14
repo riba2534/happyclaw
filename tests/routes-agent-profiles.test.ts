@@ -1817,6 +1817,56 @@ describe('/api/agent-profiles model within a configuration', () => {
     );
   });
 
+  test('sub-agent models must be models of the Agent’s connection', async () => {
+    const subagents = (model: string) => ({
+      model,
+      definitions: [
+        {
+          name: 'reviewer',
+          description: 'Reviews diffs',
+          prompt: 'Review.',
+          model,
+        },
+      ],
+    });
+    const created = await send('POST', '/', {
+      name: 'Sub-agent Agent',
+      model_config_id: listed.id,
+      runtime_policy: { subagents: subagents('list-fast') },
+    });
+    expect(created.status).toBe(201);
+    expect(created.body.profile.runtime_policy.subagents).toMatchObject({
+      model: 'list-fast',
+      definitions: [{ name: 'reviewer', model: 'list-fast' }],
+    });
+
+    const refused = await send('POST', '/', {
+      name: 'Foreign Sub-agent Agent',
+      model_config_id: listed.id,
+      runtime_policy: { subagents: subagents('other-default') },
+    });
+    expect(refused).toMatchObject({
+      status: 400,
+      body: { code: 'SUBAGENT_MODEL_NOT_IN_CONNECTION' },
+    });
+    const unbound = await send('POST', '/', {
+      name: 'Unbound Sub-agent Agent',
+      runtime_policy: { subagents: subagents('list-fast') },
+    });
+    expect(unbound.body.code).toBe('SUBAGENT_MODEL_NOT_IN_CONNECTION');
+
+    // Moving to another connection would strand them: refused until cleared.
+    const at = `/${created.body.profile.id}`;
+    const moved = await send('PATCH', at, { model_config_id: null });
+    expect(moved.body.code).toBe('SUBAGENT_MODEL_NOT_IN_CONNECTION');
+    const cleared = await send('PATCH', at, {
+      model_config_id: null,
+      runtime_policy: { subagents: null },
+    });
+    expect(cleared.status).toBe(200);
+    expect(cleared.body.profile.runtime_policy.subagents).toBeUndefined();
+  });
+
   test('PATCH checks a model against the configuration it will belong to', async () => {
     const created = (
       await send('POST', '/', {

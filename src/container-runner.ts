@@ -62,6 +62,7 @@ import {
   getClaudeProviderConfig,
   getContainerEnvConfig,
   getProviders,
+  providerModels,
   providerHasCredentials,
   getSystemSettings,
   getEffectiveExternalDir,
@@ -101,9 +102,14 @@ import {
   effectiveProviderModels,
   findModelEntry,
   launchModelName,
+  splitOneMillionSuffix,
   windowOf,
   type ModelEffort,
 } from './model-providers.js';
+import {
+  resolveSubagentLaunch,
+  type SubagentLaunch,
+} from './agent-subagents.js';
 import { recordUsageEventConnection } from './runtime-state-store.js';
 import {
   normalizeUsageLimitResetAt,
@@ -114,6 +120,7 @@ import {
 import {
   chatGptDefaultModel,
   chatGptLaunchModel,
+  listConnectionModels,
   resolveAgentLaunchModel,
   resolveLaunchEffort,
   resolveSessionLaunchOverrides,
@@ -180,6 +187,7 @@ import { RegisteredGroup } from './types.js';
 import type {
   AgentProfile,
   AgentProfileRuntimePolicy,
+  AgentSubagentPolicy,
   ChannelTurnContext,
   InteractionMode,
 } from './types.js';
@@ -684,6 +692,11 @@ export interface ContainerInput {
    * the Agent's effort then goes as before.
    */
   launchEffort?: string | null;
+  /**
+   * The Agent's sub-agents resolved for this launch's connection
+   * (agent-subagents.ts): SDK definitions and the concurrency cap.
+   */
+  subagents?: SubagentLaunch;
   /** Exact GroupQueue query attempt for Web stream fencing. */
   queryRunId?: string;
   groupFolder: string;
@@ -1771,6 +1784,7 @@ export function trySelectPoolProvider(
   modelConfigId?: string | null,
   agentModel?: string | null,
   agentEffort?: SdkAgentEffort,
+  subagentPolicy?: AgentSubagentPolicy,
 ): PoolProviderSelection | null {
   const binding = resolveModelBinding(
     { modelConfigId, model: agentModel },
@@ -1795,13 +1809,29 @@ export function trySelectPoolProvider(
     getSystemSettings().fallbackModel,
     provider,
   );
+  const subagents = resolveLaunchSubagents(
+    subagentPolicy,
+    provider,
+    !!modelConfigId && modelConfigId === provider.id,
+    launch.model ?? provider.anthropicModel,
+  );
+  const launchConfig = launch.model
+    ? { ...resolved.config, anthropicModel: launch.model }
+    : resolved.config;
   return withSessionModel(
     {
       profileId: provider.id,
+      ...(Object.keys(subagents).length > 0 ? { subagents } : {}),
       resolved: {
-        config: launch.model
-          ? { ...resolved.config, anthropicModel: launch.model }
-          : resolved.config,
+        config: subagents.defaultModel
+          ? {
+              ...launchConfig,
+              roles: {
+                ...launchConfig.roles,
+                subagent: subagents.defaultModel,
+              },
+            }
+          : launchConfig,
         customEnv: resolved.customEnv,
         ...(launch.effort ? { launchEffort: launch.effort } : {}),
         ...(fallbackModel ? { fallbackModel } : {}),
@@ -1820,6 +1850,39 @@ export function trySelectPoolProvider(
     groupFolder,
     agentId,
   );
+}
+
+/**
+ * The Agent's sub-agents on this connection. Names of the Agent's connection
+ * apply only there; a ChatGPT subscription runs every tier on the turn's
+ * model, so none apply on it. Efforts go only to models that take them.
+ */
+function resolveLaunchSubagents(
+  policy: AgentSubagentPolicy | undefined,
+  provider: UnifiedProvider,
+  onAgentConnection: boolean,
+  turnModel: string,
+): SubagentLaunch {
+  if (!policy) return {};
+  const choices = provider.codexOAuthCredentials
+    ? []
+    : listConnectionModels(provider);
+  const effortsOf = (id: string): string[] | null => {
+    const choice = choices.find(
+      (entry) => entry.id === splitOneMillionSuffix(id).model,
+    );
+    return choice && choice.efforts.length > 0 ? choice.efforts : null;
+  };
+  const appliesHere = onAgentConnection && choices.length > 0;
+  const inheritedModel =
+    (appliesHere && policy.model) || provider.roles?.subagent || turnModel;
+  return resolveSubagentLaunch({
+    policy,
+    onAgentConnection: appliesHere,
+    models: providerModels(provider),
+    effortsOf,
+    inheritedEfforts: inheritedModel ? effortsOf(inheritedModel) : null,
+  });
 }
 
 export interface PoolProviderSelection {
@@ -1844,6 +1907,8 @@ export interface PoolProviderSelection {
   gatewayAgentEffort?: string;
   /** ContainerInput.launchEffort for this launch; absent on ChatGPT. */
   launchEffort?: string | null;
+  /** ContainerInput.subagents for this launch. */
+  subagents?: SubagentLaunch;
 }
 
 /**
@@ -1875,9 +1940,22 @@ export function prepareLaunchInput(
     input,
     selection ?? leaveSessionConnection(input.groupFolder, input.agentId),
   );
+  // Without a connection (the Workspace's own environment) no model of the
+  // Agent's connection applies; the definitions and the cap still do.
+  const subagents =
+    selection?.subagents ??
+    resolveSubagentLaunch({
+      policy: input.agentProfile?.runtimePolicy?.subagents,
+      onAgentConnection: false,
+      models: [],
+      effortsOf: () => null,
+      inheritedEfforts: null,
+    });
+  const withSubagents =
+    Object.keys(subagents).length > 0 ? { ...switched, subagents } : switched;
   return selection?.launchEffort !== undefined
-    ? { ...switched, launchEffort: selection.launchEffort }
-    : switched;
+    ? { ...withSubagents, launchEffort: selection.launchEffort }
+    : withSubagents;
 }
 
 /**
@@ -3167,6 +3245,7 @@ export async function runContainerAgent(
     input.agentProfile?.modelConfigId,
     input.agentProfile?.model,
     resolveAgentSdkEffort(input.agentProfile?.runtimePolicy),
+    input.agentProfile?.runtimePolicy?.subagents,
   );
   const selectedProfileId = poolResult?.profileId ?? null;
   const selectedProviderQuotaEpoch = selectedProfileId
@@ -4247,6 +4326,7 @@ export async function runHostAgent(
     input.agentProfile?.modelConfigId,
     input.agentProfile?.model,
     resolveAgentSdkEffort(input.agentProfile?.runtimePolicy),
+    input.agentProfile?.runtimePolicy?.subagents,
   );
   const hostSelectedProfileId = hostPoolResult?.profileId ?? null;
   const hostProviderQuotaEpoch = hostSelectedProfileId

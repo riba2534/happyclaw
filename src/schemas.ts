@@ -2,6 +2,16 @@
 
 import { z } from 'zod';
 import { AGENT_EFFORT_LEVELS } from './agent-effort.js';
+import {
+  MAX_CONCURRENT_SUBAGENTS,
+  MAX_SUBAGENT_DEFINITIONS,
+  MAX_SUBAGENT_DESCRIPTION_CHARS,
+  MAX_SUBAGENT_PROMPT_CHARS,
+  MAX_SUBAGENT_TOOLS,
+  RESERVED_SUBAGENT_NAMES,
+  SUBAGENT_EFFORT_LEVELS,
+  SUBAGENT_NAME_RE,
+} from './agent-subagents.js';
 import { ALL_PERMISSIONS } from './permissions.js';
 import type { Permission } from './types.js';
 import { MAX_GROUP_NAME_LEN } from './group-constants.js';
@@ -345,6 +355,61 @@ const McpPolicyReferenceSchema = z
     'MCP id is too long',
   );
 
+const SubagentModelSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(MAX_PROVIDER_MODEL_ID_LENGTH)
+  .nullable()
+  .optional();
+
+const AgentSubagentDefinitionSchema = z
+  .object({
+    name: z
+      .string()
+      .trim()
+      .regex(
+        SUBAGENT_NAME_RE,
+        '子代理名须为 2-48 位小写字母、数字或连字符，以字母开头',
+      )
+      .refine(
+        (name) => !RESERVED_SUBAGENT_NAMES.has(name),
+        '子代理名与内置子代理重名',
+      ),
+    description: z.string().trim().min(1).max(MAX_SUBAGENT_DESCRIPTION_CHARS),
+    prompt: z.string().trim().min(1).max(MAX_SUBAGENT_PROMPT_CHARS),
+    tools: z
+      .array(z.string().trim().min(1).max(200))
+      .max(MAX_SUBAGENT_TOOLS)
+      .nullable()
+      .optional(),
+    model: SubagentModelSchema,
+    effort: z.enum(SUBAGENT_EFFORT_LEVELS).nullable().optional(),
+  })
+  .strict();
+
+const AgentSubagentPolicySchema = z
+  .object({
+    model: SubagentModelSchema,
+    max_concurrent: z
+      .number()
+      .int()
+      .min(1)
+      .max(MAX_CONCURRENT_SUBAGENTS)
+      .nullable()
+      .optional(),
+    definitions: z
+      .array(AgentSubagentDefinitionSchema)
+      .max(MAX_SUBAGENT_DEFINITIONS)
+      .refine(
+        (items) =>
+          new Set(items.map((item) => item.name)).size === items.length,
+        '子代理名不能重复',
+      )
+      .optional(),
+  })
+  .strict();
+
 export const AgentProfileRuntimePolicySchema = z
   .object({
     reasoning: z
@@ -391,6 +456,7 @@ export const AgentProfileRuntimePolicySchema = z
         ids: z.array(McpPolicyReferenceSchema).max(100).optional(),
       })
       .optional(),
+    subagents: AgentSubagentPolicySchema.nullable().optional(),
   })
   .strict();
 

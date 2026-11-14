@@ -2989,6 +2989,15 @@ async function runQueryAttempt(
     }),
     ...webFetchPreflightSettings(containerInput.webFetchPreflightPolicy),
   };
+  // The Agent's cap goes in flag settings too, so a settings file the CLI
+  // reads cannot raise it; unset, the CLI's own default stays.
+  const subagentCap = containerInput.subagents?.maxConcurrent;
+  if (subagentCap) {
+    const cap = String(subagentCap);
+    claudeRuntimeEnv.CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS = cap;
+    const pinned = flagSettings.env as Record<string, string> | undefined;
+    flagSettings.env = { ...pinned, CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS: cap };
+  }
   const claudeMdExcludes = resolveHostClaudeMdExcludes({
     executionMode: contextAuditBase.executionMode,
     runtimePolicy: containerInput.agentProfile?.runtimePolicy,
@@ -3116,6 +3125,9 @@ async function runQueryAttempt(
       disallowedTools: effectiveDisallowedTools,
       thinking: { type: 'adaptive' as const, display: 'summarized' as const },
       ...(agentEffort ? { effort: agentEffort } : {}),
+      ...(containerInput.subagents?.agents
+        ? { agents: containerInput.subagents.agents }
+        : {}),
       permissionMode: 'bypassPermissions' as const,
       allowDangerouslySkipPermissions: true,
       // Registers AskUserQuestion, which the CLI omits without a handler.

@@ -74,6 +74,7 @@ import {
   summarizeModelBinding,
 } from '../container-runner.js';
 import { resolveAgentSdkEffort } from '../agent-effort.js';
+import { subagentPolicyModels } from '../agent-subagents.js';
 import {
   SYSTEM_CAPABILITY_LOCK_KEY,
   userCapabilityLockKey,
@@ -165,6 +166,8 @@ agentProfileRoutes.get('/', authMiddleware, (c) => {
       model: provider.anthropicModel,
       usable: providerHasCredentials(provider),
       models: listConnectionModels(provider),
+      // A ChatGPT subscription runs sub-agents on the turn's model.
+      ...(provider.codexOAuthCredentials ? { chatgpt: true } : {}),
     })),
     // What an Agent without its own binding follows, for 「跟随主智能体」.
     inherited_model: {
@@ -274,6 +277,44 @@ function agentModelRejection(
   };
 }
 
+/**
+ * Why a sub-agent policy cannot belong to an Agent on `modelConfigId`, or
+ * null: every model it names must be offered by that connection, since a
+ * sub-agent runs on the same endpoint as the Agent.
+ */
+function subagentModelRejection(
+  modelConfigId: string | null | undefined,
+  policy: AgentProfileRuntimePolicy,
+): { error: string; code: 'SUBAGENT_MODEL_NOT_IN_CONNECTION' } | null {
+  const models = subagentPolicyModels(policy.subagents);
+  if (models.length === 0) return null;
+  const provider = modelConfigId
+    ? getProviders().find((item) => item.id === modelConfigId)
+    : undefined;
+  if (!provider) {
+    return {
+      error: '为子代理指定模型前，需要先为智能体选择模型连接',
+      code: 'SUBAGENT_MODEL_NOT_IN_CONNECTION',
+    };
+  }
+  if (provider.codexOAuthCredentials) {
+    return {
+      error: 'ChatGPT 订阅连接的子代理固定使用本轮模型，不能单独指定子代理模型',
+      code: 'SUBAGENT_MODEL_NOT_IN_CONNECTION',
+    };
+  }
+  const offered = new Set(listConnectionModels(provider).map((e) => e.id));
+  const missing = models.filter(
+    (model) => !offered.has(splitOneMillionSuffix(model).model),
+  );
+  return missing.length === 0
+    ? null
+    : {
+        error: `子代理模型 ${missing.join('、')} 不在智能体所选模型连接中（子代理只能使用同一连接的模型）`,
+        code: 'SUBAGENT_MODEL_NOT_IN_CONNECTION',
+      };
+}
+
 const AGENT_PROMPT_FIELD_LABELS: Record<string, string> = {
   identity_prompt: '身份定位（IDENTITY）',
   soul_prompt: '人格与表达（SOUL）',
@@ -375,6 +416,11 @@ function newProfileRejection(
     const rejection = agentModelRejection(input.modelConfigId, input.model);
     if (rejection) return { status: 400, body: rejection };
   }
+  const subagentRejection = subagentModelRejection(
+    input.modelConfigId,
+    input.runtimePolicy,
+  );
+  if (subagentRejection) return { status: 400, body: subagentRejection };
   if (hasEmptyCustomHostSkillSelection(input.runtimePolicy)) {
     return {
       status: 400,
@@ -1021,6 +1067,15 @@ agentProfileRoutes.patch('/:id', authMiddleware, async (c) => {
         ) {
           return c.json({ error: 'host skills require an admin role' }, 403);
         }
+        // Checked against the connection the Agent will be on after this
+        // save, so moving to another connection cannot strand them.
+        const subagentRejection = subagentModelRejection(
+          parsed.data.model_config_id === undefined
+            ? existing.model_config_id
+            : parsed.data.model_config_id,
+          effectiveRuntimePolicy,
+        );
+        if (subagentRejection) return c.json(subagentRejection, 400);
         if (hasEmptyCustomHostSkillSelection(effectiveRuntimePolicy)) {
           return c.json(
             { error: 'Custom host skills require at least one selected skill' },

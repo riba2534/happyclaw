@@ -455,6 +455,35 @@ export interface AgentProfileRuntimePolicy {
     mode: 'inherit' | 'custom' | 'disabled';
     ids: string[];
   };
+  /** Sub-agents (Agent tool). Absent when none of it is set. */
+  subagents?: AgentSubagentPolicy;
+}
+
+/** A sub-agent's own effort; it has no 'inherit' (null follows the CLI). */
+export type SubagentEffortLevel = Exclude<AgentEffortLevel, 'inherit'>;
+
+/**
+ * A user-defined sub-agent, passed to the SDK as an AgentDefinition. Its
+ * model names a model of the Agent's own connection: one Claude Code process
+ * talks to one endpoint, so a sub-agent cannot run on another connection.
+ */
+export interface AgentSubagentDefinition {
+  name: string;
+  description: string;
+  prompt: string;
+  /** Allowed tools; null inherits every tool of the main Agent. */
+  tools: string[] | null;
+  /** A model of the Agent's connection; null inherits. */
+  model: string | null;
+  effort: SubagentEffortLevel | null;
+}
+
+export interface AgentSubagentPolicy {
+  /** Default sub-agent model, of the Agent's connection; null follows the connection's role. */
+  model: string | null;
+  /** CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS (1–20); null keeps the CLI default. */
+  max_concurrent: number | null;
+  definitions: AgentSubagentDefinition[];
 }
 
 export interface AgentBuilderDefinition extends AgentProfilePrompts {

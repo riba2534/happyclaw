@@ -482,3 +482,24 @@ describe('buildClaudeEnvLines', () => {
     expect(env.ANTHROPIC_CUSTOM_HEADERS).toBe('x-current-provider: yes');
   });
 });
+
+describe('official endpoint sub-agent model', () => {
+  test('only an explicit sub-agent model is sent', () => {
+    const official = config({
+      anthropicBaseUrl: '',
+      anthropicApiKey: 'key',
+      anthropicModel: 'claude-opus-5-5',
+    });
+    expect(
+      buildClaudeEnvLines(official, NO_CUSTOM_ENV).some((line) =>
+        line.startsWith('CLAUDE_CODE_SUBAGENT_MODEL='),
+      ),
+    ).toBe(false);
+    expect(
+      buildClaudeEnvLines(
+        { ...official, roles: { subagent: 'claude-haiku-5-5' } },
+        NO_CUSTOM_ENV,
+      ),
+    ).toContain('CLAUDE_CODE_SUBAGENT_MODEL=claude-haiku-5-5');
+  });
+});

@@ -222,7 +222,8 @@ Runner 启动时，选中的模型取代配置的默认模型成为 `ANTHROPIC_M
 环境由 `buildConnectionModelEnv` 按本轮模型生成：上下文长度大于 200K 时模型名加 `[1m]`
 （Claude Code 的开关，请求前剥掉，只把上下文上限抬到 1M），小于 1M 且不等于 200K 时
 写 `CLAUDE_CODE_AUTO_COMPACT_WINDOW` 压回实际长度，未知时两者都不写；opus/sonnet/haiku
-档与 `CLAUDE_CODE_SUBAGENT_MODEL` 取连接的 `roles`，未设置时跟随本轮模型。官方连接只在
+档与 `CLAUDE_CODE_SUBAGENT_MODEL` 取连接的 `roles`，未设置时跟随本轮模型（智能体设置了
+默认子代理模型时以它为准，见 Agent Profile 的 `runtime_policy.subagents`）。官方连接只在
 模型条目声明了大于 200K 的上下文时加 `[1m]`（可能按长上下文计费）。已选模型被移出列表
 后，按配置默认模型运行并记录告警，不让本轮失败。
 
@@ -812,6 +813,19 @@ hook）。HappyClaw 本身不访问网络，但 LFS 或 partial clone 仓库在 
 
 每个 profile 的 `runtime_policy.skills.host` 都是显式值（schema v84 起），宿主机
 Skills 不再随有效上下文来源隐式继承。
+
+`runtime_policy.subagents`（可选，整体保存，`null` 清除）是智能体的子代理设置：
+`model`（默认子代理模型）、`max_concurrent`（1–20，写成
+`CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS`，未设置时用 CLI 默认 20）、`definitions`（最多
+20 个自定义子代理，每个有 `name`、`description`、`prompt`、`tools`（`null` 为全部）、
+`model`、`effort`，经 SDK `options.agents` 注入）。名称为 2–48 位小写字母、数字或连字符，
+不能与内置子代理重名。子代理与主 Agent 在同一个 Claude Code 进程里运行，只能用智能体
+所绑连接里的模型：保存时逐一校验，不在其中、智能体没有绑定连接，或连接是 ChatGPT 订阅时
+返回 400 与 `code: SUBAGENT_MODEL_NOT_IN_CONNECTION`；把智能体换到别的连接时同样校验。
+运行时，会话手选了别的连接或该模型已被移出列表，这些模型名不生效：默认子代理模型回到
+连接的 `roles.subagent`，定义改为继承。推理等级只下发给支持该档位的模型。CLI 里定义的
+`model` 优先于 `CLAUDE_CODE_SUBAGENT_MODEL`。改动随 `runtime_policy` 一起停相关 Runner、
+开新 SDK 会话。
 
 `duplicate` 新建「<名称> 副本」（重名时为「副本 2」「副本 3」…），复制四段 Prompt、
 `prompt_mode`、`runtime_policy`、模型绑定、头像 Emoji/背景色与上传的头像文件（复制为

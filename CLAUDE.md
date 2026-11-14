@@ -380,6 +380,11 @@ preset 的身份和默认风格，只低于平台的安全、权限、工具和�
   模型相关的键（`CONNECTION_MODEL_ENV_KEYS`）不接受自由填写。这些都存在 V5 配置文件的
   可选字段里，不升文件版本。测试连接和获取模型列表只有在上游确实接受了凭据时才记录
   认证头方式。
+- 子代理设置在 `runtime_policy.subagents`（`src/agent-subagents.ts`）：默认子代理模型、
+  同时运行上限（`CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS`）和自定义子代理（SDK `options.agents`）。
+  一个 Claude Code 进程只连一个端点，子代理不能跨连接，模型只能取智能体所绑连接里的，
+  保存时校验；运行时会话手选了别的连接或模型已移出列表，这些名字不生效，回到连接的
+  `roles.subagent` 与继承。宿主解析后经 `ContainerInput.subagents` 交给 Runner。
 - 宿主机 Skills 由 `runtime_policy.skills.host` 独立选择，不能通过
   `host_claude` 开关隐式获得；每个智能体都存显式值，新建、复制、导入一律写显式值。
 - 工作区 `CLAUDE.md`、项目 `.claude/skills` 和项目 MCP 属于项目上下文层。项目根按 CLI
