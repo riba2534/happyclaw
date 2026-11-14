@@ -1111,6 +1111,11 @@ describe('a reply on a phone', () => {
     );
     expect(inline?.textContent).toContain('命中 99.8%');
     expect(inline?.textContent).toContain('63.0 tok/s');
+    // A phone shows the two at a glance on the button that opens the rest.
+    const phoneButton = container.querySelector(
+      'button[aria-label^="用量详情"]',
+    );
+    expect(phoneButton?.textContent).toBe('99.8% · 63.0 tok/s');
   });
 
   it('leaves a 0% hit rate out of the usage line', async () => {

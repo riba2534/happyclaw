@@ -165,6 +165,8 @@ function formatShortTime(value: string): string {
 interface TokenUsageView {
   summary: ReactNode;
   details: ReactNode | null;
+  /** Hit rate and speed for a phone's 「详情」 button; null when neither. */
+  glance: string | null;
 }
 
 /** A reply's usage, read once for both ways it is shown; `null` for none. */
@@ -272,7 +274,13 @@ function tokenUsageView(
         </dl>
       </div>
     ) : null;
-  return { summary, details };
+  const glance = [
+    showHitRate ? formatHitRate(hitRate) : null,
+    tps !== null ? formatTokensPerSecond(tps) : null,
+  ]
+    .filter(Boolean)
+    .join(' · ');
+  return { summary, details, glance: glance || null };
 }
 
 /** A reply's usage in its action row, the breakdown on hover. */
@@ -305,16 +313,20 @@ function TokenUsageDisplay({
   );
 }
 
-/** A phone's action row keeps the usage behind 「详情」, out of the row. */
+/**
+ * A phone's action row keeps the usage behind one button: it reads the hit
+ * rate and speed when the reply has them, 「详情」 otherwise.
+ */
 function TokenUsagePopover({ view }: { view: TokenUsageView }) {
   return (
     <Popover>
       <PopoverTrigger asChild>
         <button
           type="button"
-          className="hidden h-11 cursor-pointer items-center rounded-md px-2 font-sans text-caption text-faint-foreground transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:outline-none phone:inline-flex"
+          aria-label={view.glance ? `用量详情：${view.glance}` : '用量详情'}
+          className="hidden h-11 cursor-pointer items-center rounded-md px-2 font-sans text-caption text-faint-foreground tabular-nums transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:outline-none phone:inline-flex"
         >
-          详情
+          {view.glance ?? '详情'}
         </button>
       </PopoverTrigger>
       <PopoverContent side="top" align="start" className="w-auto max-w-72">
