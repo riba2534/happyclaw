@@ -867,6 +867,23 @@ export const AppearanceConfigSchema = z.object({
     .optional(),
 });
 
+/** A TOTP code or a recovery code; long enough for either, bounded. */
+const SecondFactorCodeSchema = z.string().trim().min(6).max(32);
+
+export const LoginSecondFactorSchema = z.object({
+  challenge: z.string().min(16).max(128),
+  code: SecondFactorCodeSchema,
+});
+
+export const TwoFactorCodeSchema = z.object({
+  code: SecondFactorCodeSchema,
+});
+
+export const TwoFactorDisableSchema = z.object({
+  password: z.string().min(1).max(256),
+  code: SecondFactorCodeSchema,
+});
+
 export const ChangePasswordSchema = z.object({
   current_password: z.string().min(1),
   new_password: z.string().min(8).max(128),

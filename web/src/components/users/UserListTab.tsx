@@ -117,6 +117,7 @@ export function UserListTab({
     deleteUser,
     restoreUser,
     revokeUserSessions,
+    resetUserTwoFactor,
   } = useUsersStore();
 
   const [query, setQuery] = useState<UserQuery>({
@@ -225,6 +226,23 @@ export function UserListTab({
     }
   };
 
+  const handleResetTwoFactor = async (user: UserPublic) => {
+    const confirmed = await confirmDialog({
+      title: '重置二次验证',
+      message: `关闭 ${user.username} 的二次验证并作废其恢复码？对方下次只需密码即可登录，可以重新设置。`,
+      confirmText: '重置',
+      variant: 'danger',
+    });
+    if (!confirmed) return;
+    try {
+      await resetUserTwoFactor(user.id);
+      setNotice(`已重置 ${user.username} 的二次验证`);
+      await fetchUsers(query);
+    } catch (err) {
+      setError(getErrorMessage(err, '操作失败'));
+    }
+  };
+
   const renderActions = (user: UserPublic) => {
     if (!canOperateTargetUser(user)) return null;
     const isSelf = user.id === currentUser?.id;
@@ -284,6 +302,15 @@ export function UserListTab({
                   icon: LogOut,
                   onSelect: () => void handleRevokeAll(user),
                 },
+                ...(user.two_factor_enabled
+                  ? [
+                      {
+                        label: '重置二次验证',
+                        icon: ShieldOff,
+                        onSelect: () => void handleResetTwoFactor(user),
+                      },
+                    ]
+                  : []),
                 {
                   label: '删除',
                   icon: Trash2,

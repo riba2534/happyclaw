@@ -1,4 +1,6 @@
 import fs from 'fs';
+import { removeTwoFactor } from '../auth-mfa.js';
+import { isTotpEnabled } from '../auth-factor-store.js';
 import path from 'path';
 import { Hono } from 'hono';
 import type { Variables } from '../web-context.js';
@@ -297,7 +299,13 @@ adminRoutes.get('/users', authMiddleware, usersManageMiddleware, (c) => {
     page: Number.isFinite(page) ? page : 1,
     pageSize: Number.isFinite(pageSize) ? pageSize : 50,
   });
-  return c.json(result);
+  return c.json({
+    ...result,
+    users: result.users.map((user) => ({
+      ...user,
+      two_factor_enabled: isTotpEnabled(user.id),
+    })),
+  });
 });
 
 // GET /api/admin/permission-templates - 获取权限模板
@@ -1045,6 +1053,51 @@ adminRoutes.delete(
     });
 
     return c.json({ success: true });
+  },
+);
+
+// DELETE /api/admin/users/:id/2fa - 清除用户的二次验证（丢失验证器时的恢复路径）
+adminRoutes.delete(
+  '/users/:id/2fa',
+  authMiddleware,
+  usersManageMiddleware,
+  (c) => {
+    const id = c.req.param('id');
+    const target = getUserById(id);
+    if (!target) return c.json({ error: 'User not found' }, 404);
+    const actor = c.get('user') as AuthUser;
+    // One's own factor is turned off in Settings with a password and a code.
+    if (actor.id === target.id) {
+      return c.json(
+        { error: 'Turn off your own two-factor authentication in Settings' },
+        400,
+      );
+    }
+    if (actor.role !== 'admin' && target.role === 'admin') {
+      return c.json(
+        { error: 'Forbidden: only admin can reset admin two-factor' },
+        403,
+      );
+    }
+    {
+      const denial = denyEscalationToTarget(
+        c,
+        actor,
+        target,
+        'reset two-factor for',
+      );
+      if (denial) return denial;
+    }
+    const removed = removeTwoFactor(id);
+    if (removed) {
+      logAuthEvent({
+        event_type: 'mfa_reset',
+        username: target.username,
+        actor_username: actor.username,
+        ip_address: getClientIp(c),
+      });
+    }
+    return c.json({ success: true, removed });
   },
 );
 

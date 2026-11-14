@@ -4,7 +4,7 @@ import { Loader2, Globe, Sparkles } from 'lucide-react';
 import { useAuthStore } from '../stores/auth';
 import { LogoLoading } from '../components/common/LogoLoading';
 import { api } from '../api/client';
-import { extractErrorMessage } from '../utils/error';
+import { apiErrorBody, extractErrorMessage } from '../utils/error';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
@@ -30,6 +30,7 @@ export function LoginPage() {
   const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
   const login = useAuthStore((state) => state.login);
+  const loginSecondFactor = useAuthStore((state) => state.loginSecondFactor);
   const register = useAuthStore((state) => state.register);
   const initialized = useAuthStore((state) => state.initialized);
   const checkStatus = useAuthStore((state) => state.checkStatus);
@@ -44,6 +45,9 @@ export function LoginPage() {
   // Login fields
   const [loginUsername, setLoginUsername] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
+  // Two-factor step: the challenge a correct password earned, and the code.
+  const [mfaChallenge, setMfaChallenge] = useState<string | null>(null);
+  const [mfaCode, setMfaCode] = useState('');
 
   // Register fields
   const [regUsername, setRegUsername] = useState('');
@@ -92,11 +96,43 @@ export function LoginPage() {
     setLoading(true);
 
     try {
-      await login(loginUsername, loginPassword);
-      const mustChange = useAuthStore.getState().user?.must_change_password;
-      navigate(mustChange ? '/settings' : '/chat');
+      const pending = await login(loginUsername, loginPassword);
+      if (pending) {
+        setMfaChallenge(pending.mfaChallenge);
+        setMfaCode('');
+        return;
+      }
+      enterApp();
     } catch (err) {
       setError(extractErrorMessage(err) || '登录失败');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const enterApp = () => {
+    const mustChange = useAuthStore.getState().user?.must_change_password;
+    navigate(mustChange ? '/settings' : '/chat');
+  };
+
+  const handleSecondFactor = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!mfaChallenge) return;
+    setError('');
+    setLoading(true);
+    try {
+      await loginSecondFactor(mfaChallenge, mfaCode);
+      enterApp();
+    } catch (err) {
+      const code = apiErrorBody(err)?.code;
+      if (code === 'MFA_EXPIRED') {
+        setMfaChallenge(null);
+        setError('验证已过期或尝试次数过多，请重新输入密码');
+      } else if (code === 'MFA_INVALID') {
+        setError('验证码不正确');
+      } else {
+        setError(extractErrorMessage(err) || '验证失败');
+      }
     } finally {
       setLoading(false);
     }
@@ -209,7 +245,47 @@ export function LoginPage() {
             )}
 
             {/* ── Login form ── */}
-            {tab === 'login' && (
+            {tab === 'login' && mfaChallenge && (
+              <form onSubmit={handleSecondFactor} className="mt-6 space-y-4">
+                <div className="space-y-1.5">
+                  <Label htmlFor="login-mfa-code" className="text-label">
+                    验证码
+                  </Label>
+                  <Input
+                    id="login-mfa-code"
+                    variant="code"
+                    value={mfaCode}
+                    onChange={(e) => setMfaCode(e.target.value)}
+                    placeholder="6 位验证码或恢复码"
+                    inputMode="numeric"
+                    autoComplete="one-time-code"
+                    required
+                    autoFocus
+                    className="h-9 tracking-widest"
+                  />
+                  <p className="text-caption text-muted-foreground">
+                    打开验证器 App 查看验证码；手机丢失时可输入一个恢复码。
+                  </p>
+                </div>
+                <Button type="submit" disabled={loading} className="h-9 w-full">
+                  {loading && <Loader2 className="animate-spin" />}
+                  验证
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  onClick={() => {
+                    setMfaChallenge(null);
+                    setError('');
+                  }}
+                  className="h-9 w-full"
+                >
+                  返回
+                </Button>
+              </form>
+            )}
+
+            {tab === 'login' && !mfaChallenge && (
               <>
                 <form onSubmit={handleLogin} className="mt-6 space-y-4">
                   <div className="space-y-1.5">

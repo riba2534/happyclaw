@@ -42,6 +42,7 @@
 | `/api/auth/status`                   | GET  | 无                     |
 | `/api/auth/setup`                    | POST | 仅用户表为空           |
 | `/api/auth/login`                    | POST | 登录限流               |
+| `/api/auth/login/2fa`                | POST | 有效 challenge、限流   |
 | `/api/auth/register/status`          | GET  | 无                     |
 | `/api/auth/register`                 | POST | 注册策略、邀请码、限流 |
 | `/api/auth/avatars/:filename`        | GET  | 仅允许受管头像路径     |
@@ -64,6 +65,7 @@ token（Runner/查询退出即吊销），并拒绝带 `Forwarded`、`X-Forwarde
 | 路由族                                              | 权限                                          |
 | --------------------------------------------------- | --------------------------------------------- |
 | `/api/auth/me`、profile、password、sessions、avatar | Login，仅本人                                 |
+| `/api/auth/2fa/*`                                   | Login，仅本人；访客 403                       |
 | `/api/agent-profiles/*`                             | Login，仅本人 Agent                           |
 | `/api/channel-accounts/*`                           | Login，仅本人渠道账号                         |
 | `/api/skills/*`                                     | Login，仅本人用户 Skills                      |
@@ -299,21 +301,22 @@ admin。admin 没有跨 owner bypass，不存在与无权限都返回 404。
 
 ## 6. 系统和管理权限
 
-| 路由族/操作                                       | 权限                                               |
-| ------------------------------------------------- | -------------------------------------------------- |
-| Provider、系统容量、Host 集成、注册策略、系统外观 | `manage_system_config`                             |
-| Plugin Catalog 手动扫描                           | admin / `manage_system_config` 路径中的 admin 检查 |
-| 系统 MCP 写入                                     | admin                                              |
-| 用户创建、禁用、恢复、角色与权限                  | `manage_users`                                     |
-| 邀请码                                            | `manage_invites`                                   |
-| 审计日志和导出                                    | `view_audit_log`                                   |
-| `/api/billing/admin/*`                            | `manage_billing`                                   |
-| `/api/docker/pull`、运行监控管理                  | `manage_system_config`                             |
-| `/api/status/channel-outbox/*` 人工裁决           | `manage_system_config`                             |
-| 系统外观读写（`GET/PUT /api/config/appearance`）  | `manage_system_config`                             |
-| 品牌资源上传/删除（图标、横幅头像文件写入）       | admin（`adminRoleMiddleware`）                     |
-| 存储源（`/api/config/storage-sources*`）          | admin（`adminRoleMiddleware`）；密码只写不读       |
-| `POST /api/groups/:jid/reset-owner`               | admin break-glass，同时仍验证目标资源              |
+| 路由族/操作                                        | 权限                                                |
+| -------------------------------------------------- | --------------------------------------------------- |
+| Provider、系统容量、Host 集成、注册策略、系统外观  | `manage_system_config`                              |
+| Plugin Catalog 手动扫描                            | admin / `manage_system_config` 路径中的 admin 检查  |
+| 系统 MCP 写入                                      | admin                                               |
+| 用户创建、禁用、恢复、角色与权限                   | `manage_users`                                      |
+| 重置他人二次验证 `DELETE /api/admin/users/:id/2fa` | `manage_users`，不能是自己，admin 只能由 admin 重置 |
+| 邀请码                                             | `manage_invites`                                    |
+| 审计日志和导出                                     | `view_audit_log`                                    |
+| `/api/billing/admin/*`                             | `manage_billing`                                    |
+| `/api/docker/pull`、运行监控管理                   | `manage_system_config`                              |
+| `/api/status/channel-outbox/*` 人工裁决            | `manage_system_config`                              |
+| 系统外观读写（`GET/PUT /api/config/appearance`）   | `manage_system_config`                              |
+| 品牌资源上传/删除（图标、横幅头像文件写入）        | admin（`adminRoleMiddleware`）                      |
+| 存储源（`/api/config/storage-sources*`）           | admin（`adminRoleMiddleware`）；密码只写不读        |
+| `POST /api/groups/:jid/reset-owner`                | admin break-glass，同时仍验证目标资源               |
 
 系统 MCP 默认仅 admin 可用；只有显式设置为 shared 后，普通成员的 Agent 才能进入
 有效能力清单。API 不回传 Secret 明文。
@@ -479,7 +482,7 @@ Agent MCP 调用没有 Cookie，但必须携带由主进程创建的运行上下
   `Guest accounts are read-only`，新路由默认拒绝。每次访客请求都重新读取 owner
   状态，owner 被禁用/删除或 `allowMemberGuests` 关闭（member owner）后立即 403，
   登录也失败；owner 被禁用/删除时同时注销其访客的会话。
-- 放行清单：Public 登录相关接口、`GET /api/auth/me`、`POST /api/auth/logout`、
+- 放行清单：Public 登录相关接口（含 `POST /api/auth/login/2fa`）、`GET /api/auth/me`、`POST /api/auth/logout`、
   `PUT /api/auth/password`、`GET/DELETE /api/auth/sessions[/:id]`；
   `GET /api/groups`、`GET /api/groups/:jid/{messages,agents,sessions}`、消息附件原图、
   `GET /api/groups/:jid/turn-traces/:turnId`、`GET /api/follow-ups`、
