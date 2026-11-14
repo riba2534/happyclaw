@@ -1,5 +1,6 @@
 /**
- * Second login factors: a TOTP authenticator and its one-time recovery codes.
+ * Login factors beyond the password: a TOTP authenticator with its one-time
+ * recovery codes, and passkeys (WebAuthn credentials).
  *
  * db.ts binds this module to its connection; no other module touches these
  * tables directly. The TOTP secret is stored sealed (see sealSecret); a row
@@ -65,6 +66,19 @@ export function initAuthFactorStore(db: SqliteDatabase | null): void {
       used_at TEXT,
       PRIMARY KEY (user_id, code_hash)
     );
+    CREATE TABLE IF NOT EXISTS webauthn_credentials (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      rp_id TEXT NOT NULL,
+      public_key TEXT NOT NULL,
+      counter INTEGER NOT NULL DEFAULT 0,
+      transports TEXT,
+      name TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      last_used_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_webauthn_credentials_user
+      ON webauthn_credentials(user_id);
   `);
 }
 
@@ -161,10 +175,96 @@ export function remainingRecoveryCodes(userId: string): number {
   return row.n;
 }
 
-/** Remove every second factor of a user (disable, admin reset, deletion). */
-export function deleteAuthFactorsForUser(userId: string): void {
+/** Remove the authenticator and recovery codes (disable, admin reset). */
+export function deleteTwoFactorForUser(userId: string): void {
   requireDatabase().transaction(() => {
     stmt('DELETE FROM user_totp WHERE user_id = ?').run(userId);
     stmt('DELETE FROM user_recovery_codes WHERE user_id = ?').run(userId);
   })();
+}
+
+/** Remove every login factor of a user, passkeys included (deletion). */
+export function deleteAuthFactorsForUser(userId: string): void {
+  requireDatabase().transaction(() => {
+    deleteTwoFactorForUser(userId);
+    stmt('DELETE FROM webauthn_credentials WHERE user_id = ?').run(userId);
+  })();
+}
+
+// --- Passkeys ---
+
+export interface PasskeyRow {
+  /** Credential ID, base64url. */
+  id: string;
+  user_id: string;
+  /** The RP ID (host name) it was created for; only usable there. */
+  rp_id: string;
+  /** COSE public key, base64url. */
+  public_key: string;
+  counter: number;
+  /** JSON array of transports, or null. */
+  transports: string | null;
+  name: string;
+  created_at: string;
+  last_used_at: string | null;
+}
+
+export function insertPasskey(row: Omit<PasskeyRow, 'last_used_at'>): void {
+  stmt(
+    `INSERT INTO webauthn_credentials
+       (id, user_id, rp_id, public_key, counter, transports, name, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    row.id,
+    row.user_id,
+    row.rp_id,
+    row.public_key,
+    row.counter,
+    row.transports,
+    row.name,
+    row.created_at,
+  );
+}
+
+export function getPasskey(id: string): PasskeyRow | undefined {
+  return stmt('SELECT * FROM webauthn_credentials WHERE id = ?').get(id) as
+    | PasskeyRow
+    | undefined;
+}
+
+export function listPasskeys(userId: string): PasskeyRow[] {
+  return stmt(
+    'SELECT * FROM webauthn_credentials WHERE user_id = ? ORDER BY created_at',
+  ).all(userId) as PasskeyRow[];
+}
+
+export function recordPasskeyUse(
+  id: string,
+  counter: number,
+  now = new Date().toISOString(),
+): void {
+  stmt(
+    'UPDATE webauthn_credentials SET counter = ?, last_used_at = ? WHERE id = ?',
+  ).run(counter, now, id);
+}
+
+export function renamePasskey(
+  userId: string,
+  id: string,
+  name: string,
+): boolean {
+  return (
+    stmt(
+      'UPDATE webauthn_credentials SET name = ? WHERE id = ? AND user_id = ?',
+    ).run(name, id, userId).changes > 0
+  );
+}
+
+export function deletePasskey(userId: string, id: string): boolean {
+  return (
+    stmt('DELETE FROM webauthn_credentials WHERE id = ? AND user_id = ?').run(
+      id,
+      userId,
+    ).changes > 0
+  );
 }

@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => {
   const authState = {
     login: vi.fn(),
     loginSecondFactor: vi.fn(),
+    loginWithPasskey: vi.fn(async () => false),
     register: vi.fn(),
     initialized: true as boolean | null,
     checkStatus: vi.fn(),

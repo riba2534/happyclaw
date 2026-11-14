@@ -50,6 +50,11 @@ export const GUEST_ROUTE_ALLOWLIST: ReadonlyArray<{
     note: 'log in again (second factor)',
   },
   {
+    method: 'POST',
+    pattern: /^\/api\/auth\/passkey\/login(\/options)?$/,
+    note: 'log in again (passkey)',
+  },
+  {
     method: 'GET',
     pattern: new RegExp(`^/api/auth/avatars/${SEG}$`),
     note: 'avatar images',

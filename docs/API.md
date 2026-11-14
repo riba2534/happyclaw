@@ -60,6 +60,9 @@ Public：
 - `POST /api/auth/login/2fa`：`{ challenge, code }`，`code` 为验证器的 6 位验证码或一个恢复码；
   成功后下发会话。challenge 只在内存中，绑定用户，5 分钟过期，最多试 5 次，用过即作废；
   失败返回 400（`code: MFA_INVALID`，过期或用尽为 `MFA_EXPIRED`），并与密码失败共用登录限流
+- `POST /api/auth/passkey/login/options`：无用户名登录（可发现凭据）的 WebAuthn 选项
+- `POST /api/auth/passkey/login`：`{ response }`（`navigator.credentials.get` 的 JSON），成功即下发
+  会话，视同已过二次验证；失败返回 400 `PASSKEY_INVALID`
 - `GET /api/auth/register/status`：单人宿主机模式下恒为关闭
 - `POST /api/auth/register`：单人宿主机模式下 403
 - `GET /api/auth/avatars/:filename`
@@ -82,6 +85,23 @@ Public：
 
 二次验证的接口在验证码或密码错误时返回 400 而不是 401（Web 客户端把 401 当作登录失效）。
 同一个 30 秒步长的验证码只接受一次。访客没有二次验证，这些接口不在访客放行清单里。
+
+通行密钥（WebAuthn，`src/passkeys.ts`、`src/routes/passkeys.ts`）：
+
+- `GET /api/auth/passkeys`：`{ passkeys: [{ id, name, rp_id, created_at, last_used_at }], rp_id,
+unavailable_reason }`，`unavailable_reason` 说明当前页面地址为什么不能用通行密钥
+- `POST /api/auth/passkeys/options`：注册选项（要求可发现凭据与用户验证，attestation `none`）；
+  每人最多 20 个，超出 409
+- `POST /api/auth/passkeys`：`{ response, name? }`，验证后保存，写审计 `passkey_added`
+- `PATCH /api/auth/passkeys/:id`：`{ name }`
+- `POST /api/auth/passkeys/:id/delete`：`{ password }`，密码错误 400，写审计 `passkey_removed`
+
+没有配置的公网地址，仪式的 origin 取请求的 `Origin` 头，只在它与 `Host` 同源、是
+localhost/127.0.0.1（`CORS_ALLOW_LOCALHOST=false` 时除外）或列在 `CORS_ALLOWED_ORIGINS`
+（`*` 不算）时接受，且必须是 HTTPS（localhost 可用 HTTP）；否则 400，`code` 为
+`PASSKEY_NO_ORIGIN`、`PASSKEY_INSECURE` 或 `PASSKEY_NOT_ALLOWED`。RP ID 是该 origin 的主机名，
+随凭据保存，登录时只接受同一 RP ID 的凭据。challenge 存在内存里，绑定用途、用户、origin 和
+RP ID，5 分钟过期，只能用一次。管理员重置二次验证不删除通行密钥；删除用户时一并删除。
 
 `POST /api/auth/login` 的失败次数按三个桶计数，任一超限返回 429：用户名+IP
 （`maxLoginAttempts`/`loginLockoutMinutes`）、用户名（4 倍/1 小时）、客户端 IP
@@ -1498,7 +1518,7 @@ Web 和 Runtime 不再把它们当作第二个可写真相源。
 - `PATCH|DELETE /api/admin/users/:id`
 - `POST /api/admin/users/:id/restore`
 - `DELETE /api/admin/users/:id/sessions`
-- `DELETE /api/admin/users/:id/2fa`：清除他人的二次验证与恢复码（丢失验证器时的恢复路径），
+- `DELETE /api/admin/users/:id/2fa`：清除他人的二次验证与恢复码（丢失验证器时的恢复路径，不动通行密钥），
   写审计 `mfa_reset`；不能用于自己。用户列表的每行带 `two_factor_enabled`
 - `GET /api/admin/permission-templates`
 - `GET|POST /api/admin/invites`

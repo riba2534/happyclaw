@@ -232,6 +232,8 @@ describe('schema version head', () => {
     // web-push-store.ts (schema-v91-web-push.test.ts).
     // v92: second login factors, user_totp and user_recovery_codes, created
     // by auth-factor-store.ts (auth-two-factor.test.ts).
-    expect(db.CURRENT_SCHEMA_VERSION).toBe(92);
+    // v93: passkeys, webauthn_credentials, created by auth-factor-store.ts
+    // (schema-v93-passkeys.test.ts).
+    expect(db.CURRENT_SCHEMA_VERSION).toBe(93);
   });
 });

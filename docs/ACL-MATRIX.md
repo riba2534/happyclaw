@@ -43,6 +43,8 @@
 | `/api/auth/setup`                    | POST | 仅用户表为空           |
 | `/api/auth/login`                    | POST | 登录限流               |
 | `/api/auth/login/2fa`                | POST | 有效 challenge、限流   |
+| `/api/auth/passkey/login/options`    | POST | 页面来源可用           |
+| `/api/auth/passkey/login`            | POST | 有效 challenge、签名   |
 | `/api/auth/register/status`          | GET  | 无                     |
 | `/api/auth/register`                 | POST | 注册策略、邀请码、限流 |
 | `/api/auth/avatars/:filename`        | GET  | 仅允许受管头像路径     |
@@ -66,6 +68,7 @@ token（Runner/查询退出即吊销），并拒绝带 `Forwarded`、`X-Forwarde
 | --------------------------------------------------- | --------------------------------------------- |
 | `/api/auth/me`、profile、password、sessions、avatar | Login，仅本人                                 |
 | `/api/auth/2fa/*`                                   | Login，仅本人；访客 403                       |
+| `/api/auth/passkeys*`                               | Login，仅本人；访客 403；删除需当前密码       |
 | `/api/agent-profiles/*`                             | Login，仅本人 Agent                           |
 | `/api/channel-accounts/*`                           | Login，仅本人渠道账号                         |
 | `/api/skills/*`                                     | Login，仅本人用户 Skills                      |
@@ -482,7 +485,7 @@ Agent MCP 调用没有 Cookie，但必须携带由主进程创建的运行上下
   `Guest accounts are read-only`，新路由默认拒绝。每次访客请求都重新读取 owner
   状态，owner 被禁用/删除或 `allowMemberGuests` 关闭（member owner）后立即 403，
   登录也失败；owner 被禁用/删除时同时注销其访客的会话。
-- 放行清单：Public 登录相关接口（含 `POST /api/auth/login/2fa`）、`GET /api/auth/me`、`POST /api/auth/logout`、
+- 放行清单：Public 登录相关接口（含 `POST /api/auth/login/2fa`、`POST /api/auth/passkey/login[/options]`）、`GET /api/auth/me`、`POST /api/auth/logout`、
   `PUT /api/auth/password`、`GET/DELETE /api/auth/sessions[/:id]`；
   `GET /api/groups`、`GET /api/groups/:jid/{messages,agents,sessions}`、消息附件原图、
   `GET /api/groups/:jid/turn-traces/:turnId`、`GET /api/follow-ups`、

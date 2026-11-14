@@ -2628,8 +2628,9 @@ export function initDatabase(
   // v90 -> v91: Web Push subscriptions (web_push_subscriptions). The table is
   // new and additive, nothing is backfilled.
   initWebPushStore(db);
-  // v91 -> v92: second login factors (user_totp, user_recovery_codes). The
-  // tables are new and additive, nothing is backfilled.
+  // v91 -> v92: second login factors (user_totp, user_recovery_codes).
+  // v92 -> v93: passkeys (webauthn_credentials). The tables are new and
+  // additive, nothing is backfilled.
   initAuthFactorStore(db);
 
   // v63 -> v64: early Feishu reply enrichment embedded quoted ancestors in

@@ -56,6 +56,7 @@ import { getGuestAccountState } from './guest-accounts.js';
 
 // Route modules
 import authRoutes from './routes/auth.js';
+import passkeyRoutes from './routes/passkeys.js';
 import groupRoutes from './routes/groups.js';
 import memoryRoutes from './routes/memory.js';
 import configRoutes, { injectConfigDeps } from './routes/config.js';
@@ -361,6 +362,7 @@ let deps: WebDeps | null = null;
 // --- Route Mounting ---
 
 app.route('/api/auth', authRoutes);
+app.route('/api/auth', passkeyRoutes);
 app.route('/api/groups', groupRoutes);
 app.route('/api/groups', fileRoutes); // File routes also under /api/groups
 app.route('/api/memory', memoryRoutes);

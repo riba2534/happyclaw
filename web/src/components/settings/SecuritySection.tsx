@@ -12,6 +12,7 @@ import { api } from '../../api/client';
 import { useAuthStore } from '../../stores/auth';
 import { SettingsGroup, SettingsRow, SettingsSection } from './SettingsLayout';
 import { SettingsFormFooter } from './SettingsFormControls';
+import { PasskeySection } from './PasskeySection';
 import { TwoFactorSection } from './TwoFactorSection';
 import { getErrorMessage, type SessionInfo } from './types';
 
@@ -190,6 +191,7 @@ export function SecuritySection() {
       </SettingsSection>
 
       {user?.role !== 'guest' && <TwoFactorSection />}
+      {user?.role !== 'guest' && <PasskeySection />}
 
       <SettingsSection
         title="登录设备"

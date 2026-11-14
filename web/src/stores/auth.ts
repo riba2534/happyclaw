@@ -114,6 +114,12 @@ interface AuthState {
     password: string,
   ) => Promise<{ mfaChallenge: string } | null>;
   loginSecondFactor: (challenge: string, code: string) => Promise<void>;
+  /**
+   * Log in with a passkey. `autofill` waits on the browser's passkey
+   * suggestions in the username field instead of opening a prompt; it
+   * resolves false when that wait is cancelled.
+   */
+  loginWithPasskey: (options?: { autofill?: boolean }) => Promise<boolean>;
   register: (data: {
     username: string;
     password: string;
@@ -226,6 +232,38 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       code,
     });
     set(signedInState(data));
+  },
+
+  loginWithPasskey: async ({ autofill = false } = {}) => {
+    const { startAuthentication } = await import('@simplewebauthn/browser');
+    const optionsJSON = await api.post<
+      Parameters<typeof startAuthentication>[0]['optionsJSON']
+    >('/api/auth/passkey/login/options', {});
+    let response;
+    try {
+      response = await startAuthentication({
+        optionsJSON,
+        useBrowserAutofill: autofill,
+      });
+    } catch (err) {
+      // Cancelled by the user, or by a newer ceremony (the button aborts
+      // the autofill wait).
+      if (
+        err instanceof Error &&
+        /abort|NotAllowed/i.test(err.name + err.message)
+      ) {
+        return false;
+      }
+      throw err;
+    }
+    resetUserScopedStores();
+    discardPrewarms();
+    await clearMessageSnapshotCache();
+    const data = await api.post<LoginResponse>('/api/auth/passkey/login', {
+      response,
+    });
+    set(signedInState(data));
+    return true;
   },
 
   register: async (payload) => {
