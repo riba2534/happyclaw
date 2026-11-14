@@ -11,6 +11,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
+import { PasswordInput } from '@/components/common/PasswordInput';
 import { Label } from '@/components/ui/label';
 import {
   Select,
@@ -177,9 +178,8 @@ export function CreateUserDialog({
               />
             </SettingsField>
             <SettingsField label="密码" htmlFor="create-user-password">
-              <Input
+              <PasswordInput
                 id="create-user-password"
-                type="password"
                 value={newPassword}
                 onChange={(e) => setNewPassword(e.target.value)}
                 placeholder="密码（至少8位）"
@@ -441,9 +441,8 @@ export function EditUserDialog({
               )}
             </SettingsField>
             <SettingsField label="重置密码" htmlFor="edit-user-password">
-              <Input
+              <PasswordInput
                 id="edit-user-password"
-                type="password"
                 value={editPassword}
                 onChange={(e) => setEditPassword(e.target.value)}
                 placeholder="重置密码（可选）"
@@ -563,8 +562,7 @@ export function ResetPasswordDialog({
 
           <FormError message={error} />
 
-          <Input
-            type="password"
+          <PasswordInput
             value={value}
             onChange={(e) => setValue(e.target.value)}
             placeholder="输入新密码"
