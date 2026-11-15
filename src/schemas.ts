@@ -315,6 +315,18 @@ export const SessionModelSelectionSchema = z.object({
 });
 
 /**
+ * The model a new session starts on (POST sessions): the same choice as the
+ * composer's, made before the session exists. Leaving the configuration out
+ * follows the default.
+ */
+export const SessionCreateModelChoiceSchema = SessionModelSelectionSchema.pick({
+  model: true,
+  effort: true,
+}).extend({
+  modelConfigId: SessionModelSelectionSchema.shape.modelConfigId.optional(),
+});
+
+/**
  * An Agent's model within its configuration; null runs the configuration's
  * default. Whether the configuration offers it is checked by the route.
  */

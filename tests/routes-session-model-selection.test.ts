@@ -1,7 +1,9 @@
 /**
  * GET/PUT /:jid/model-selection — the chat composer's per-conversation model
  * picker. Reading needs workspace Access, changing it needs Modify; a change
- * drains only the runners of the affected conversation.
+ * drains only the runners of the affected conversation. Also the choices made
+ * before a session exists: GET /:jid/model-options and the model a new
+ * session (POST /:jid/sessions, alias /agents) starts on.
  */
 import fs from 'fs';
 import os from 'os';
@@ -1074,5 +1076,152 @@ describe('model-selection inside a configuration that is not ChatGPT', () => {
     } finally {
       db.deleteWorkspaceAgentProfile(GROUP_FOLDER);
     }
+  });
+});
+
+describe('GET /:jid/model-options', () => {
+  const HOST_JID = 'web:model-options-host';
+
+  beforeAll(() => {
+    db.setRegisteredGroup(HOST_JID, {
+      name: 'Host Group',
+      folder: 'model-options-host',
+      added_at: new Date().toISOString(),
+      executionMode: 'host',
+      created_by: OWNER_ID,
+      is_home: false,
+    } as any);
+  });
+
+  const options = async (jid = GROUP_JID) => {
+    const res = await groupRoutes.request(
+      `/${encodeURIComponent(jid)}/model-options`,
+    );
+    return { status: res.status, body: await res.json().catch(() => ({})) };
+  };
+
+  test('needs no session and answers what a session would be offered', async () => {
+    bindOwnerMain('glm');
+    const { status, body } = await options();
+    expect(status).toBe(200);
+    expect(Object.keys(body).sort()).toEqual(['default', 'options']);
+    const selection = await call('GET');
+    expect(body.default).toEqual(selection.body.default);
+    expect(body.default.modelConfigId).toBe('glm');
+    expect(body.options).toEqual(selection.body.options);
+  });
+
+  test("a session's own pick is not the default", async () => {
+    db.setSessionModelSelection(GROUP_FOLDER, SESSION_ID, 'official', OWNER_ID);
+    const { body } = await options();
+    expect(body.default.source).toBe('none');
+  });
+
+  test('hidden from other users; a Host workspace needs Host permission', async () => {
+    mocks.userId = 'mallory';
+    expect((await options()).status).toBe(404);
+    mocks.userId = OWNER_ID;
+    expect((await options(HOST_JID)).status).toBe(403);
+  });
+});
+
+describe('POST /:jid/sessions with a model choice', () => {
+  const agentRoutes = async () =>
+    (await import('../src/routes/agents.js')).default;
+
+  beforeAll(() => {
+    webContext.setWebDeps({
+      queue: {
+        drainRunnersForModelSelection: (
+          jids: string[],
+          target: string | null,
+        ) => {
+          mocks.drainCalls.push({ jids: [...jids], target });
+          return 1;
+        },
+      },
+      broadcastAgentStatus: () => {},
+    } as unknown as Parameters<typeof webContext.setWebDeps>[0]);
+  });
+
+  const create = async (
+    body: Record<string, unknown>,
+    path: 'sessions' | 'agents' = 'sessions',
+  ) => {
+    const res = await (
+      await agentRoutes()
+    ).request(`/${encodeURIComponent(GROUP_JID)}/${path}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    return { status: res.status, body: await res.json().catch(() => ({})) };
+  };
+  const sessionCount = () =>
+    db.listAgentsByJid(GROUP_JID).filter((a) => a.kind === 'conversation')
+      .length;
+
+  test('the new session starts on the checked choice, made by the requester', async () => {
+    const { status, body } = await create({
+      name: 'GLM session',
+      modelConfigId: 'glm',
+      model: 'glm-5.3[1m]',
+      effort: 'high',
+    });
+    expect(status).toBe(200);
+    expect(
+      db.getSessionModelSelectionDetail(GROUP_FOLDER, body.session.id),
+    ).toEqual({
+      modelConfigId: 'glm',
+      model: 'glm-5.3',
+      effort: 'high',
+      updatedBy: OWNER_ID,
+    });
+    // It has never run: nothing to retire.
+    expect(mocks.drainCalls).toEqual([]);
+  });
+
+  test('the alias route takes the same choice; none follows the default', async () => {
+    const aliased = await create({ modelConfigId: 'official' }, 'agents');
+    expect(aliased.status).toBe(200);
+    expect(
+      db.getSessionModelSelectionDetail(GROUP_FOLDER, aliased.body.agent.id),
+    ).toMatchObject({ modelConfigId: 'official', model: null, effort: null });
+    const plain = await create({ name: 'Default' });
+    expect(
+      db.getSessionModelSelectionDetail(GROUP_FOLDER, plain.body.session.id),
+    ).toBeNull();
+  });
+
+  test('a refused choice is a 400 with its code and creates no session', async () => {
+    const before = sessionCount();
+    for (const [choice, code] of [
+      [
+        { modelConfigId: 'glm', model: 'gpt-6-astra' },
+        'MODEL_NOT_IN_CONNECTION',
+      ],
+      [{ modelConfigId: 'glm', effort: 'medium' }, 'EFFORT_NOT_SUPPORTED'],
+      [{ modelConfigId: 'nope' }, 'MODEL_CONFIG_NOT_FOUND'],
+      [{ modelConfigId: 'copy' }, 'MODEL_CONFIG_NO_CREDENTIALS'],
+      [{ model: 'glm-5.3' }, 'MODEL_CONFIG_REQUIRED'],
+      [{ modelConfigId: 42 }, 'INVALID_MODEL_CHOICE'],
+    ] as const) {
+      for (const path of ['sessions', 'agents'] as const) {
+        const { status, body } = await create(
+          { name: 'Refused', ...choice },
+          path,
+        );
+        expect(status).toBe(400);
+        expect(body.code).toBe(code);
+      }
+    }
+    expect(sessionCount()).toBe(before);
+  });
+
+  test('only the owner may create one', async () => {
+    mocks.userId = 'mallory';
+    const before = sessionCount();
+    expect((await create({ modelConfigId: 'glm' })).status).toBe(404);
+    expect(sessionCount()).toBe(before);
   });
 });
