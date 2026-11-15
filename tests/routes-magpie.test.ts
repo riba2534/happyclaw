@@ -97,6 +97,11 @@ interface Seen {
 const seen: Seen[] = [];
 let models = magpieModelList;
 let quotasStatus = 200;
+/** Answer HappyClaw's own agent string with a 502, as a flaky proxy might. */
+let failHappyClawReads = false;
+/** While set, model lists are answered only once it resolves. */
+let holdModelLists: Promise<void> | null = null;
+let modelListArrived: (() => void) | null = null;
 let server: http.Server;
 let magpieUrl = '';
 
@@ -119,6 +124,23 @@ beforeAll(async () => {
       send(401, {
         type: 'error',
         error: { type: 'authentication_error', message: 'invalid key' },
+      });
+      return;
+    }
+    if (
+      req.url?.startsWith('/v1/models') &&
+      failHappyClawReads &&
+      req.headers['user-agent']?.startsWith('HappyClaw/')
+    ) {
+      send(502, { error: { message: 'bad gateway' } });
+      return;
+    }
+    if (req.url?.startsWith('/v1/models') && holdModelLists) {
+      const held = holdModelLists;
+      modelListArrived?.();
+      void held.then(() => {
+        const ua = req.headers['user-agent'] ?? '';
+        send(200, models({ forClaudeCode: /^claude-cli\/\d/.test(ua) }));
       });
       return;
     }
@@ -151,6 +173,9 @@ beforeEach(() => {
   seen.length = 0;
   models = magpieModelList;
   quotasStatus = 200;
+  failHappyClawReads = false;
+  holdModelLists = null;
+  modelListArrived = null;
   for (const fn of Object.values(queue)) {
     if (vi.isMockFunction(fn)) fn.mockClear();
   }
@@ -241,17 +266,99 @@ describe('model discovery on magpie', () => {
     expect(agents[1]).toMatch(/^HappyClaw\//);
   });
 
-  test('aliases are dropped even when the second read shows them too', async () => {
+  test('without the real ids the read fails rather than answer a partial list', async () => {
+    // The second read still shows aliases.
     models = () => magpieModelList({ forClaudeCode: true });
-    const { body } = await request('POST', '/providers/discover-models', {
+    const draft = {
       type: 'third_party',
       anthropicBaseUrl: magpieUrl,
       anthropicAuthToken: GATEWAY_KEY,
+    };
+    let { body } = await request('POST', '/providers/discover-models', draft);
+    expect(body).toMatchObject({ ok: false, code: 'UNKNOWN' });
+    // The second read fails outright.
+    models = magpieModelList;
+    failHappyClawReads = true;
+    ({ body } = await request('POST', '/providers/discover-models', draft));
+    expect(body).toMatchObject({
+      ok: false,
+      code: 'UPSTREAM_ERROR',
+      status: 502,
     });
-    expect(body.ok).toBe(true);
-    expect(body.models.map((model: { id: string }) => model.id)).toEqual([
-      'claude/claude-opus-5-5',
+  });
+
+  test('an edit saved while the list is read is merged into, not overwritten', async () => {
+    const created = createMagpie({
+      models: [
+        { id: 'codex/gpt-5.6-sol' },
+        { id: 'relaya/glm-5' },
+        { id: 'relaya/deepseek-chat' },
+      ],
+    });
+    const now = Date.parse('2026-11-15T00:00:00.000Z');
+    await catalog.syncProviderCatalog(created.id, { now });
+    let release!: () => void;
+    holdModelLists = new Promise<void>((resolve) => (release = resolve));
+    const arrived = new Promise<void>(
+      (resolve) => (modelListArrived = resolve),
+    );
+    const syncing = catalog.syncProviderCatalog(created.id, {
+      now: now + 7 * 3_600_000,
+    });
+    await arrived;
+    // The admin removes a model and turns auto-add on meanwhile; magpie
+    // lists a new model in the answer still on its way.
+    runtimeConfig.updateProvider(created.id, {
+      models: [{ id: 'codex/gpt-5.6-sol' }, { id: 'relaya/glm-5' }],
+      catalogAutoAdd: true,
+    });
+    models = () => {
+      const list = magpieModelList();
+      return {
+        ...list,
+        data: [
+          ...list.data,
+          { ...list.data[0], id: 'codex/gpt-6-luna', display_name: 'Luna' },
+        ],
+      };
+    };
+    release();
+    expect(await syncing).toMatchObject({
+      ok: true,
+      added: ['codex/gpt-6-luna'],
+    });
+    const stored = runtimeConfig.getProviderById(created.id)!;
+    // Removed stays removed; the new model joins under the admin's auto-add.
+    expect(stored.models?.map((entry) => entry.id)).toEqual([
+      'codex/gpt-5.6-sol',
+      'relaya/glm-5',
+      'codex/gpt-6-luna',
     ]);
+    expect(stored.catalog?.autoAdd).toBe(true);
+    // The sync's own findings landed on the edited list.
+    expect(stored.models?.[1]).toMatchObject({
+      displayName: 'GLM-5',
+      maxOutputTokens: 131_072,
+    });
+  });
+
+  test('a catalog sync whose second read fails records a failure and merges nothing', async () => {
+    const created = createMagpie({
+      models: [{ id: 'codex/gpt-5.6-sol' }, { id: 'relaya/glm-5' }],
+    });
+    const now = Date.parse('2026-11-15T00:00:00.000Z');
+    await catalog.syncProviderCatalog(created.id, { now });
+    failHappyClawReads = true;
+    const result = await catalog.syncProviderCatalog(created.id, {
+      now: now + 7 * 3_600_000,
+    });
+    expect(result).toMatchObject({ ok: false, code: 'UPSTREAM_ERROR' });
+    const stored = runtimeConfig.getProviderById(created.id)!;
+    expect(stored.models?.some((entry) => entry.upstreamMissingSince)).toBe(
+      false,
+    );
+    expect(stored.catalog?.failures).toBe(1);
+    expect(stored.catalog?.knownIds).toHaveLength(MAGPIE_MODELS.length);
   });
 
   test('a list without aliases is read once', async () => {
@@ -507,6 +614,22 @@ describe('catalog sync', () => {
     // magpie is synced again only after six hours.
     expect(catalog.catalogSyncDue(marked, now + 17 * 60_000)).toBe(false);
     expect(catalog.catalogSyncDue(marked, now + 7 * 3_600_000)).toBe(true);
+  });
+
+  test('a detail reopened moments after a sync spends no upstream checks', async () => {
+    const created = createMagpie();
+    expect(
+      (await request('POST', `/providers/${created.id}/catalog/sync`)).status,
+    ).toBe(200);
+    // More than the per-minute budget of ten, all answered from the last sync.
+    for (let index = 0; index < 12; index += 1) {
+      const again = await request(
+        'POST',
+        `/providers/${created.id}/catalog/sync`,
+      );
+      expect(again.status).toBe(200);
+      expect(again.body.result.skipped).toBe('recent');
+    }
   });
 
   test('official and ChatGPT connections have no catalog', async () => {

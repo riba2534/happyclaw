@@ -647,8 +647,9 @@ function parseJsonAnswer<T>(
  * The list is read the way Claude Code would read it, which magpie answers
  * with its discovery aliases (`anthropic/magpie-<n>`) in place of most ids.
  * A magpie list showing aliases is read once more under HappyClaw's own
- * agent string, which magpie answers with the real ids; whatever the second
- * read gives, no alias is ever returned.
+ * agent string, which magpie answers with the real ids. When that read
+ * fails or still shows aliases, the whole read fails: the aliased list is
+ * missing most models. No alias is ever returned.
  */
 export async function discoverEndpointModels(
   input: {
@@ -689,11 +690,35 @@ export async function discoverEndpointModels(
     isMagpieModelList(models) &&
     models.some((model) => isMagpieAliasModelId(model.id))
   ) {
-    const reread = parseJsonAnswer(
-      await read(authMode ?? input.authMode, happyClawUserAgent()),
-      parseModelList,
-    );
-    if (reread && isMagpieModelList(reread)) models = reread;
+    const second = await read(authMode ?? input.authMode, happyClawUserAgent());
+    const reread = parseJsonAnswer(second, parseModelList);
+    // Without the real ids the first list is missing most models: a catalog
+    // sync would take them for gone. The read fails instead.
+    if (
+      !reread ||
+      !isMagpieModelList(reread) ||
+      reread.some((model) => isMagpieAliasModelId(model.id))
+    ) {
+      if (!second.ok) {
+        const probe = answerProbe(second, [
+          input.credential,
+          ...customHeaderValues(input.customHeaders),
+        ]);
+        return {
+          ok: false,
+          code: probe.code!,
+          status: second.status,
+          message: probe.message!,
+        };
+      }
+      return {
+        ok: false,
+        code: 'UNKNOWN',
+        status: second.status,
+        message: 'magpie 没有给出真实的模型名，请稍后重试',
+      };
+    }
+    models = reread;
   }
   if (models) {
     return {

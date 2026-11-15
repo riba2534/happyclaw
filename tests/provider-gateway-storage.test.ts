@@ -124,6 +124,24 @@ describe('magpie connections', () => {
         (err as InstanceType<typeof runtimeConfig.ProviderWriteError>).code,
       ).toBe('MAGPIE_MODELS_REQUIRED');
     }
+    // A relay without models detected as magpie later still takes other edits.
+    const bare = runtimeConfig.createProvider({
+      name: 'Bare relay',
+      type: 'third_party',
+      anthropicBaseUrl: 'https://relay.example.com',
+      anthropicAuthToken: 'relay-key-1234567',
+    });
+    const relay = runtimeConfig.recordProviderCatalog(bare.id, bare, () => ({
+      gateway: 'magpie',
+      catalog: { checkedAt: '2026-11-15T00:00:00.000Z' },
+    }))!;
+    expect(relay.gateway).toBe('magpie');
+    expect(
+      runtimeConfig.updateProvider(relay.id, { name: 'Renamed' }).name,
+    ).toBe('Renamed');
+    expect(() =>
+      runtimeConfig.updateProvider(relay.id, { models: [] }),
+    ).toThrow(runtimeConfig.ProviderWriteError);
     // A pass-through relay elsewhere may still have none.
     expect(
       runtimeConfig.createProvider({
@@ -186,17 +204,21 @@ describe('model metadata', () => {
       },
       { id: 'relaya/deepseek-chat', efforts: [] },
     ]);
-    const synced = runtimeConfig.recordProviderCatalog(created.id, created, {
-      models: [
-        {
-          id: 'codex/gpt-5.6-sol',
-          displayName: 'GPT-5.6-Sol',
-          contextWindow: 400_000,
-          synced: { contextWindow: 400_000 },
-        },
-      ],
-      catalog: { syncedAt: '2026-11-15T00:00:00.000Z' },
-    })!;
+    const synced = runtimeConfig.recordProviderCatalog(
+      created.id,
+      created,
+      () => ({
+        models: [
+          {
+            id: 'codex/gpt-5.6-sol',
+            displayName: 'GPT-5.6-Sol',
+            contextWindow: 400_000,
+            synced: { contextWindow: 400_000 },
+          },
+        ],
+        catalog: { syncedAt: '2026-11-15T00:00:00.000Z' },
+      }),
+    )!;
     expect(synced.models?.[0].synced).toEqual({ contextWindow: 400_000 });
     expect(runtimeConfig.toPublicProvider(synced).models[0]).toEqual({
       id: 'codex/gpt-5.6-sol',
@@ -249,12 +271,12 @@ describe('model metadata', () => {
 
   test('a new model the admin adds leaves the catalog of new models', () => {
     const created = createMagpie();
-    runtimeConfig.recordProviderCatalog(created.id, created, {
+    runtimeConfig.recordProviderCatalog(created.id, created, () => ({
       catalog: {
         syncedAt: '2026-11-15T00:00:00.000Z',
         newModels: [{ id: 'relaya/glm-5' }, { id: 'relaya/kimi' }],
       },
-    });
+    }));
     const updated = runtimeConfig.updateProvider(created.id, {
       models: [{ id: 'codex/gpt-5.6-sol' }, { id: 'relaya/glm-5' }],
     });
@@ -268,9 +290,9 @@ describe('model metadata', () => {
       anthropicAuthToken: 'another-gateway-key-456',
     });
     expect(
-      runtimeConfig.recordProviderCatalog(created.id, created, {
+      runtimeConfig.recordProviderCatalog(created.id, created, () => ({
         catalog: { syncedAt: '2026-11-15T00:00:00.000Z' },
-      }),
+      })),
     ).toBeNull();
   });
 });
@@ -304,11 +326,22 @@ describe('the reply limit at launch', () => {
     ).toMatch(/正整数/);
   });
 
-  test('an inherited value never reaches a launch', () => {
+  test("it is not HappyClaw's: an admin's own value is neither stripped nor pinned", async () => {
     const env: Record<string, string | undefined> = {
-      CLAUDE_CODE_MAX_OUTPUT_TOKENS: '1',
+      CLAUDE_CODE_MAX_OUTPUT_TOKENS: '64000',
     };
     runtimeConfig.clearInheritedClaudeProviderEnv(env);
-    expect(env.CLAUDE_CODE_MAX_OUTPUT_TOKENS).toBeUndefined();
+    expect(env.CLAUDE_CODE_MAX_OUTPUT_TOKENS).toBe('64000');
+    const { pinBoundProviderSettings } =
+      await import('../container/agent-runner/src/provider-env-pin.js');
+    expect(
+      pinBoundProviderSettings({ CLAUDE_CODE_MAX_OUTPUT_TOKENS: '64000' }).env,
+    ).not.toHaveProperty('CLAUDE_CODE_MAX_OUTPUT_TOKENS');
+    // An official launch derives nothing.
+    expect(
+      runtimeConfig
+        .buildClaudeEnvLines({ ...config, anthropicBaseUrl: '' }, {})
+        .some((line) => line.startsWith('CLAUDE_CODE_MAX_OUTPUT_TOKENS=')),
+    ).toBe(false);
   });
 });

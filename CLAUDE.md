@@ -351,9 +351,9 @@ preset 的身份和默认风格，只低于平台的安全、权限、工具和�
   不存在默认 `max`。模型支持哪些档位见
   `resolveModelCapabilities`（`shared/model-providers.ts`）：连接上声明的 → 能力表 →
   同系列推断（如 `gpt-6.1-terra` 取 `gpt-6.1-sol`）→ 未知。声明为空（`efforts: []`，如
-  magpie 的 `reasoning_levels: []`）表示不支持档位：HappyClaw 不传档位，并以 SDK
-  `thinking: {type: 'disabled'}`（`ContainerInput.thinking`）关闭本轮思考，除非条目带
-  `thinks`（上游 `reasoning: true`，没有档位但会推理）。档位未知时按上面的顺序取第一个
+  magpie 的 `reasoning_levels: []`，或管理员取消了全部档位）表示不传档位；只有同时声明
+  `thinks: false`（上游 `reasoning: false`）时才以 SDK `thinking: {type: 'disabled'}`
+  （`ContainerInput.thinking`）关闭本轮思考，`thinks` 为 `true` 或缺省时思考照常。档位未知时按上面的顺序取第一个
   合法档位原样下发，都没有就不传，会话选择接受任何档位，Web 标「未验证」。HappyClaw
   不传档位时 Claude Code 对第三方模型仍会自带 `effort: high`。ChatGPT 订阅连接仍用账号目录。
 - HappyClaw 拥有的 Claude 环境（后端开关、端点、凭据、模型层级、会话的 effort/压缩/
@@ -388,16 +388,18 @@ preset 的身份和默认风格，只低于平台的安全、权限、工具和�
   仍优先。连接环境变量只注入用户保存的非空值，新连接预填
   `API_TIMEOUT_MS`、`CLAUDE_CODE_NO_FLICKER`、`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`；
   模型相关的键（`CONNECTION_MODEL_ENV_KEYS`）不接受自由填写。模型条目还存上游给的显示名、
-  最大输出和供应商：第三方端点上，本轮模型和各角色模型都声明了最大输出时，取其中最小值、
-  再与 128000 取小，大于 32000 才写 `CLAUDE_CODE_MAX_OUTPUT_TOKENS`；连接环境变量里自己写的
-  同名键优先。这些都存在 V5 配置文件的可选字段里，不升文件版本。测试连接和获取模型列表只有在上游确实接受了凭据时才记录
+  最大输出和供应商：第三方端点上，本轮模型、各角色模型和本次注入的同轮备用模型都声明了
+  最大输出时，取其中最小值、再与 128000 取小，大于 32000 才写 `CLAUDE_CODE_MAX_OUTPUT_TOKENS`；
+  连接环境变量里自己写的同名键优先。这个键不属于 HappyClaw 拥有的环境：不写时（官方连接、
+  有模型未声明）管理员 settings 或宿主环境里的值照常生效。这些都存在 V5 配置文件的可选字段里，不升文件版本。测试连接和获取模型列表只有在上游确实接受了凭据时才记录
   认证头方式；两者都带打包 Claude Code 版本的 User-Agent（从 SDK 的 package.json 读）。
 - magpie 网关（连接的 `gateway: 'magpie'`）：模型列表带 `magpie_label` 即识别，任何
   一次成功的模型发现或目录同步都会标记，从 magpie 预设（默认 `http://127.0.0.1:3425`，地址
   可改、改后保留预设，WebFetch 域名检查默认 `skip`）创建的直接标记；地址变更清除检测到的
   标记。magpie 对带 `anthropic-version` 和 `claude-cli/`、`claude-code/` User-Agent 的列表
   请求把大多数 id 改写成 `anthropic/magpie-<数字>`，发现到别名时用 `HappyClaw/<版本>` 重取，
-  任何情况下别名都不写进模型列表。magpie 连接至少要有一个模型（`MAGPIE_MODELS_REQUIRED`）；
+  重取失败或仍是别名时本次发现或同步失败（不合并残缺列表），任何情况下别名都不写进模型列表。
+  magpie 连接至少要有一个模型（`MAGPIE_MODELS_REQUIRED`，在创建和修改模型列表或默认模型时校验）；
   全局 `fallbackModel` 只在它在该连接的模型列表里时才注入。目录同步
   （`src/model-catalog-sync.ts`，由 `startWebServer` 启动，每 6 小时一次加打开连接详情时）：
   显示名、最大输出、供应商总是更新，上下文长度和档位只在当前值为空或等于上次同步写入的值时

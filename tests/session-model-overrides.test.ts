@@ -680,8 +680,8 @@ describe('efforts a model is declared to take none of, or nothing is known of', 
     ...thirdParty('glm'),
     models: [
       { id: 'mystery' },
-      { id: 'none', efforts: [] },
-      { id: 'thinker', efforts: [], thinks: true },
+      { id: 'none', efforts: [], thinks: false },
+      { id: 'thinker', efforts: [] },
       { id: 'glm-5.3' },
     ],
   };

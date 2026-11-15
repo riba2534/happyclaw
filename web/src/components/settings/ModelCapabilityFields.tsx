@@ -30,6 +30,8 @@ const EFFORTS_UNVERIFIED_TITLE =
   '没有这个模型的资料，先按全部档位列出；不支持的档位请取消';
 const EFFORTS_UNKNOWN_TITLE =
   '没有这个模型的资料，对话里可以选任意档位；点选档位后只提供所选的';
+const EFFORTS_NONE_TITLE = '不向这个模型传推理等级；点选档位后只提供所选的';
+const NO_THINKING_TITLE = '服务商声明这个模型不推理，对话会关闭思考';
 
 /**
  * What a model added to a connection starts with. A third-party connection
@@ -133,17 +135,22 @@ export function ModelCapabilityFields({
   };
 
   const automaticDefault = defaultEffortFor(efforts, known.defaultEffort);
-  // An empty list is either the vendor's word that the model takes none, or
-  // nothing known at all (a model a catalog sync added): only the second
-  // offers the levels to declare, since a launch may try any of them.
+  // An empty list is either a declaration (the vendor's, or the admin who
+  // unticked every level: no effort is passed) or nothing known at all (a
+  // launch may try any level). Both keep the levels to tick.
   const unknown = resolved.effortsSource === 'none';
+  const declaredNone = !unknown && efforts.length === 0;
   const effortBadge = effortsUnverified
     ? { label: '未验证', title: EFFORTS_UNVERIFIED_TITLE }
     : unknown
       ? { label: '未知', title: EFFORTS_UNKNOWN_TITLE }
-      : resolved.effortsSource === 'family'
-        ? { label: '推断', title: '按同系列模型推断' }
-        : null;
+      : declaredNone
+        ? resolved.thinkingDisabled
+          ? { label: '不推理', title: NO_THINKING_TITLE }
+          : { label: '不传档位', title: EFFORTS_NONE_TITLE }
+        : resolved.effortsSource === 'family'
+          ? { label: '推断', title: '按同系列模型推断' }
+          : null;
 
   return (
     <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2">
@@ -159,31 +166,25 @@ export function ModelCapabilityFields({
         aria-label={`${entry.id} 的推理等级`}
         className="flex min-w-0 flex-wrap items-center gap-1"
       >
-        {efforts.length === 0 && !unknown ? (
-          <span className="text-caption text-muted-foreground">
-            不支持推理等级
-          </span>
-        ) : (
-          MODEL_EFFORTS.map((effort) => {
-            const on = efforts.includes(effort);
-            return (
-              <Toggle
-                key={effort}
-                variant="outline"
-                size="sm"
-                pressed={on}
-                onPressedChange={() => toggleEffort(effort)}
-                // Without any effort the model falls back to what is
-                // inferred, so the last one stays.
-                disabled={disabled || (on && efforts.length === 1)}
-                title={effort}
-                className="text-caption text-faint-foreground data-[state=on]:text-foreground pointer-coarse:h-11 pointer-coarse:min-w-11"
-              >
-                {effortLabel(effort)}
-              </Toggle>
-            );
-          })
-        )}
+        {MODEL_EFFORTS.map((effort) => {
+          const on = efforts.includes(effort);
+          return (
+            <Toggle
+              key={effort}
+              variant="outline"
+              size="sm"
+              pressed={on}
+              onPressedChange={() => toggleEffort(effort)}
+              // Unticking the last level leaves an empty list: no effort is
+              // passed, and thinking stays as the vendor says.
+              disabled={disabled}
+              title={effort}
+              className="text-caption text-faint-foreground data-[state=on]:text-foreground pointer-coarse:h-11 pointer-coarse:min-w-11"
+            >
+              {effortLabel(effort)}
+            </Toggle>
+          );
+        })}
         {effortBadge && (
           <Badge
             variant={effortsUnverified || unknown ? 'warning' : 'neutral'}

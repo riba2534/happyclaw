@@ -255,6 +255,7 @@ import {
 } from '../model-providers.js';
 import { isCodexGatewayBaseUrl } from '../codex-gateway/resolve-gateway-url.js';
 import {
+  catalogSyncSkip,
   noteConnectionModelList,
   setCatalogToolSearchChangeListener,
   storedConnectionAccess,
@@ -2631,8 +2632,8 @@ configRoutes.post(
       );
     }
     const user = c.get('user') as AuthUser;
-    const reads = provider.gateway === 'magpie' || !provider.catalog?.checkedAt;
-    if (reads && !takeConnectivityCheck(user.id)) {
+    // Only a sync that reads upstream spends the admin's per-minute checks.
+    if (!catalogSyncSkip(provider) && !takeConnectivityCheck(user.id)) {
       return c.json({ error: '测试过于频繁，请稍后再试' }, 429);
     }
     const result = await syncProviderCatalog(id);

@@ -41,17 +41,29 @@ describe('efforts: declared none versus unknown', () => {
     ).toEqual([{ id: 'a', efforts: [] }, { id: 'b' }]);
   });
 
-  test('declared none turns thinking off unless the model thinks', () => {
+  test('only a declaration that the model does not reason turns thinking off', () => {
+    // No effort passed, thinking as usual: an admin who unticked every level.
     const none = resolveModelCapabilities({ id: 'mystery', efforts: [] });
     expect(none).toMatchObject({
       efforts: [],
       effortsSource: 'declared',
       defaultEffort: null,
-      thinkingDisabled: true,
+      thinkingDisabled: false,
     });
     expect(
       resolveModelCapabilities({ id: 'mystery', efforts: [], thinks: true }),
     ).toMatchObject({ effortsSource: 'declared', thinkingDisabled: false });
+    expect(
+      resolveModelCapabilities({ id: 'mystery', efforts: [], thinks: false }),
+    ).toMatchObject({ effortsSource: 'declared', thinkingDisabled: true });
+    // Saying it does not reason means nothing for a model with levels.
+    expect(
+      resolveModelCapabilities({
+        id: 'mystery',
+        efforts: ['low'],
+        thinks: false,
+      }).thinkingDisabled,
+    ).toBe(false);
     expect(resolveModelCapabilities({ id: 'mystery' })).toMatchObject({
       efforts: [],
       effortsSource: 'none',
@@ -59,7 +71,11 @@ describe('efforts: declared none versus unknown', () => {
     });
     // A declaration outranks the registry, an empty one too.
     expect(
-      resolveModelCapabilities({ id: 'claude-opus-5-5', efforts: [] }),
+      resolveModelCapabilities({
+        id: 'claude-opus-5-5',
+        efforts: [],
+        thinks: false,
+      }),
     ).toMatchObject({ efforts: [], thinkingDisabled: true });
   });
 });
@@ -84,12 +100,15 @@ describe('magpie model lists', () => {
       thinks: true,
       vendor: 'Relay A',
     });
+    // `reasoning: false` is kept as such: it is what turns thinking off.
     expect(
       models.find((model) => model.id === 'relaya/deepseek-chat'),
-    ).toMatchObject({ efforts: [] });
+    ).toMatchObject({ efforts: [], thinks: false });
     expect(
-      models.find((model) => model.id === 'relaya/deepseek-chat')?.thinks,
-    ).toBeUndefined();
+      discoveredModelEntry(
+        models.find((model) => model.id === 'relaya/deepseek-chat')!,
+      ),
+    ).toMatchObject({ efforts: [], thinks: false });
   });
 
   test('a list without magpie labels is not magpie', () => {
@@ -182,6 +201,10 @@ describe('the launch reply limit', () => {
     // One model declares nothing: it might refuse a longer request.
     expect(maxOutputTokensFor(models, 'big', { opus: 'silent' })).toBe(null);
     expect(maxOutputTokensFor(models, '', {})).toBe(null);
+    // The same-turn fallback counts too; one that declares nothing stops it.
+    expect(maxOutputTokensFor(models, 'big', {}, 'mid[1m]')).toBe(64_000);
+    expect(maxOutputTokensFor(models, 'big', {}, 'silent')).toBe(null);
+    expect(maxOutputTokensFor(models, 'big', {}, 'not-listed')).toBe(null);
   });
 
   test('buildConnectionModelEnv writes it', () => {
@@ -248,6 +271,43 @@ describe('magpie quotas', () => {
       magpieUsageLimitResetAt(accounts, 'claude/claude-opus-5-5'),
     ).toBeNull();
     expect(magpieUsageLimitResetAt(accounts, 'gpt-5.6-sol')).toBeNull();
+  });
+
+  test('an account returns when its last spent window renews; the soonest account wins', () => {
+    const at = (hours: number) =>
+      new Date(now + hours * 3_600_000).toISOString();
+    const accounts = parseMagpieQuotas({
+      data: [
+        {
+          provider: 'codex',
+          name: 'work',
+          windows: [
+            { name: '5h', remaining: 0, resetsAt: at(1) },
+            { name: 'weekly', remaining: 0, resetsAt: at(50) },
+          ],
+        },
+        {
+          provider: 'codex',
+          name: 'home',
+          windows: [{ name: '5h', remaining: 0, resetsAt: at(4) }],
+        },
+        {
+          provider: 'codex',
+          name: 'untold',
+          windows: [{ name: '5h', remaining: 0 }],
+        },
+      ],
+    })!;
+    expect(magpieUsageLimitResetAt(accounts, 'codex/gpt-5.6-sol')).toBe(
+      now + 4 * 3_600_000,
+    );
+    // Without the second account, the first waits for its weekly window.
+    expect(
+      magpieUsageLimitResetAt([accounts[0], accounts[2]], 'codex/gpt-5.6-sol'),
+    ).toBe(now + 50 * 3_600_000);
+    expect(magpieUsageLimitResetAt([accounts[2]], 'codex/gpt-5.6-sol')).toBe(
+      null,
+    );
   });
 
   test('a window with room left never sets the wait, even when it renews sooner', () => {

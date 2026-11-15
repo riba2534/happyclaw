@@ -163,6 +163,15 @@ describe('a magpie launch', () => {
     );
   });
 
+  test("the fallback's reply limit counts toward the launch's", () => {
+    // GLM-5 declares 131072: the 128K cap still applies.
+    runtimeConfig.saveSystemSettings({ fallbackModel: 'relaya/glm-5' });
+    expect(envOf(select())('CLAUDE_CODE_MAX_OUTPUT_TOKENS')).toBe('128000');
+    // DeepSeek Chat declares 8192: a reply that long might be refused there.
+    runtimeConfig.saveSystemSettings({ fallbackModel: 'relaya/deepseek-chat' });
+    expect(envOf(select())('CLAUDE_CODE_MAX_OUTPUT_TOKENS')).toBeUndefined();
+  });
+
   test('tool search is on by default and follows the setting', () => {
     expect(runner.resolveProviderToolSearch(magpie.id)).toBe(true);
     runtimeConfig.updateProvider(magpie.id, { toolSearch: 'off' });

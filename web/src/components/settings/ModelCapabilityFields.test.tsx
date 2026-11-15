@@ -76,10 +76,42 @@ describe('ModelCapabilityFields', () => {
     container.querySelector('[role="group"][aria-label$="的推理等级"]')!;
   const chips = () => [...group().querySelectorAll('button')];
 
-  test('a model declared to take none says so and offers no level', async () => {
+  test('a model declared to take none keeps the levels to tick again', async () => {
     await render({ id: 'acme/vx-mini', efforts: [] });
-    expect(group().textContent).toBe('不支持推理等级');
-    expect(chips()).toHaveLength(0);
+    expect(group().textContent).toContain('不传档位');
+    expect(chips().map((chip) => chip.getAttribute('aria-pressed'))).toEqual(
+      FULL.map(() => 'false'),
+    );
+    await click(chips().find((chip) => chip.textContent === '高'));
+    expect(onChange).toHaveBeenCalledWith(
+      { id: 'acme/vx-mini', efforts: ['high'] },
+      true,
+    );
+  });
+
+  test('only a vendor that says the model does not reason marks it so', async () => {
+    await render({ id: 'acme/vx-mini', efforts: [], thinks: false });
+    expect(group().textContent).toContain('不推理');
+  });
+
+  test('unticking the last level stops passing an effort', async () => {
+    await render({
+      id: 'acme/vx-pro',
+      efforts: ['high'],
+      defaultEffort: 'high',
+    });
+    const high = chips().find((chip) => chip.textContent === '高')!;
+    expect(high.disabled).toBe(false);
+    await click(high);
+    expect(onChange).toHaveBeenCalledWith(
+      { id: 'acme/vx-pro', efforts: [] },
+      true,
+    );
+    // An admin's empty list passes no effort but keeps thinking on.
+    expect(
+      resolveModelCapabilities({ id: 'acme/vx-pro', efforts: [] })
+        .thinkingDisabled,
+    ).toBe(false);
   });
 
   test('a model nothing is known about offers the levels to declare, marked 未知', async () => {

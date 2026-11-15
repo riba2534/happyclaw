@@ -1291,7 +1291,7 @@ describe('magpie', () => {
     expect(text()).toContain('VX Pro · Relay A · 最长回复 128K');
 
     // Declared to take none: shown as such, never filled in.
-    expect(efforts('acme/vx-mini')?.textContent).toContain('不支持推理等级');
+    expect(efforts('acme/vx-mini')?.textContent).toContain('不传档位');
     expect(efforts('acme/vx-mini')?.textContent).not.toContain('未验证');
     // Nothing known: every level, unverified.
     expect(efforts('acme/vx-lab')?.textContent).toContain('未验证');

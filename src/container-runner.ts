@@ -871,7 +871,11 @@ export function applyProviderFailureDisposition(
 /**
  * applyProviderFailureDisposition for a launch on `model`, once magpie has
  * said when a model it refused for its usage limit renews, so that the
- * input can wait for it.
+ * input can wait for it. The quotas read is bounded to a few seconds
+ * (MAGPIE_LIMIT_QUOTAS_TIMEOUT_MS) rather than deciding first and parking
+ * later: a decided failure has already been projected to the user, and a
+ * second, later verdict on the same input would be harder to keep right
+ * than a short wait before the one verdict.
  */
 async function settleProviderFailure(
   output: ContainerOutput,
@@ -1837,9 +1841,12 @@ export function trySelectPoolProvider(
     {
       profileId: provider.id,
       resolved: {
-        config: launch.model
-          ? { ...resolved.config, anthropicModel: launch.model }
-          : resolved.config,
+        // The fallback rides along so its reply limit counts too.
+        config: {
+          ...resolved.config,
+          ...(launch.model ? { anthropicModel: launch.model } : {}),
+          ...(fallbackModel ? { fallbackModel } : {}),
+        },
         customEnv: resolved.customEnv,
         ...(launch.effort ? { launchEffort: launch.effort } : {}),
         ...(fallbackModel ? { fallbackModel } : {}),
