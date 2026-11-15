@@ -63,6 +63,7 @@ describe('guest route allowlist', () => {
     ['GET', `/api/groups/${WS}/git/diff`],
     ['GET', `/api/groups/${WS}/git/worktree-support`],
     ['GET', `/api/groups/${WS}/model-selection`],
+    ['GET', `/api/groups/${WS}/model-options`],
     ['GET', `/api/groups/${WS}/context-usage`],
     ['GET', `/api/groups/${WS}/env`],
     ['GET', `/api/groups/${WS}/mcp`],
