@@ -431,10 +431,9 @@ describe('catalog sync', () => {
       const list = magpieModelList();
       return { ...list, data: list.data.slice(0, 2) };
     };
-    await catalog.syncProviderCatalog(created.id, { force: true, now: start });
+    await catalog.syncProviderCatalog(created.id, { now: start });
     models = magpieModelList;
     let result = await catalog.syncProviderCatalog(created.id, {
-      force: true,
       now: start + 7 * 3_600_000,
     });
     expect(result).toMatchObject({ ok: true, added: [] });
@@ -474,7 +473,6 @@ describe('catalog sync', () => {
       };
     };
     result = await catalog.syncProviderCatalog(created.id, {
-      force: true,
       now: start + 14 * 3_600_000,
     });
     expect(result).toMatchObject({ ok: true, added: ['codex/gpt-6-luna'] });

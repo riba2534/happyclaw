@@ -14,10 +14,7 @@
  * the list as it is.
  */
 import { logger } from './logger.js';
-import {
-  discoverEndpointModels,
-  type ModelDiscoveryResult,
-} from './provider-connectivity.js';
+import { discoverEndpointModels } from './provider-connectivity.js';
 import {
   discoveredModelEntry,
   effectiveProviderModels,
@@ -252,15 +249,8 @@ export type CatalogSyncResult =
     }
   | { ok: false; code: ProviderErrorCode; message: string };
 
-type Discover = (
-  input: Parameters<typeof discoverEndpointModels>[0],
-) => Promise<ModelDiscoveryResult>;
-
 interface SyncOptions {
-  /** Read now even when the schedule would wait. */
-  force?: boolean;
   now?: number;
-  discover?: Discover;
 }
 
 /** Runners of a connection retire after their turn when its tool search flips. */
@@ -315,8 +305,10 @@ export function noteConnectionModelList(
 }
 
 /**
- * Check a saved connection for a gateway and, for magpie, sync its list.
- * Never throws: a failure is recorded with a backoff for the schedule.
+ * Check a saved connection for a gateway and, for magpie, sync its list,
+ * now: the schedule decides when (catalogSyncDue), an opened detail asks
+ * itself. Never throws: a failure is recorded with a backoff for the
+ * schedule.
  */
 export async function syncProviderCatalog(
   providerId: string,
@@ -334,16 +326,6 @@ export async function syncProviderCatalog(
   const now = options.now ?? Date.now();
   const at = new Date(now).toISOString();
   const catalog = provider.catalog ?? {};
-  if (!options.force) {
-    // The schedule's own pass: not before the backoff allows.
-    if (catalog.retryAt && Date.parse(catalog.retryAt) > now) {
-      return {
-        ok: false,
-        code: catalog.error?.code ?? 'UNKNOWN',
-        message: catalog.error?.message ?? '稍后重试',
-      };
-    }
-  }
   if (provider.gateway !== 'magpie' && catalog.checkedAt) {
     return {
       ok: true,
@@ -372,7 +354,7 @@ export async function syncProviderCatalog(
   }
   const url = storedModelsUrl(provider);
   const result = url
-    ? await (options.discover ?? discoverEndpointModels)({
+    ? await discoverEndpointModels({
         url,
         credential: access.credential,
         authMode: access.authMode,
@@ -475,7 +457,7 @@ export function catalogSyncDue(
 
 /** One pass over every connection that is due, one at a time. */
 export async function runCatalogSyncPass(
-  options: Omit<SyncOptions, 'force'> = {},
+  options: SyncOptions = {},
 ): Promise<void> {
   const now = options.now ?? Date.now();
   for (const provider of getProviders()) {

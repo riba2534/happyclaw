@@ -2649,7 +2649,7 @@ configRoutes.post(
     if (reads && !takeConnectivityCheck(user.id)) {
       return c.json({ error: '测试过于频繁，请稍后再试' }, 429);
     }
-    const result = await syncProviderCatalog(id, { force: true });
+    const result = await syncProviderCatalog(id);
     const current = getProviderById(id);
     return c.json({
       provider: toPublicProvider(current ?? provider),
