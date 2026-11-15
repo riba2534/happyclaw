@@ -31,6 +31,7 @@ import {
   type Automation,
   type AutomationIpcRequest,
   type AutomationIpcResult,
+  type AutomationModelChoice,
 } from './automation.js';
 import {
   isAutomationTurnInput,
@@ -60,6 +61,7 @@ import { resolveInputChannelReplySource } from './channel-reply-source.js';
 import { canExecuteOnHost } from './host-execution-policy.js';
 import { getChannelType } from './im-channel.js';
 import { logger } from './logger.js';
+import { getProviders, providerHasCredentials } from './runtime-config.js';
 import {
   saveSessionModelChoice,
   sessionHasModelChoice,
@@ -294,6 +296,29 @@ function isOwnRunSession(
   );
 }
 
+/**
+ * The model choice a run session of `automation` takes, if any: only an
+ * agent automation's own sessions take one, and only while its connection
+ * exists and holds a credential. A connection gone stale is not written
+ * into the session: the run follows the session's default instead of
+ * failing on it.
+ */
+function runSessionModelChoice(
+  automation: Automation,
+): AutomationModelChoice | null {
+  const choice = automationTakesModel(automation) ? automation.model : null;
+  if (!choice) return null;
+  const provider = getProviders().find(
+    (item) => item.id === choice.modelConfigId,
+  );
+  if (provider && providerHasCredentials(provider)) return choice;
+  logger.warn(
+    { automationId: automation.id, modelConfigId: choice.modelConfigId },
+    'Automation model connection is gone or has no credential; its run follows the session default',
+  );
+  return null;
+}
+
 export function createAutomationRuntimeDeps(
   hooks: AutomationRuntimeHooks,
 ): AutomationRuntimeDeps {
@@ -311,11 +336,9 @@ export function createAutomationRuntimeDeps(
       // automation's current model before the input goes in, which retires a
       // warm runner still on the old one. An automation without a model, or
       // a session it did not create, keeps the session's own choice.
-      const choice =
-        automationTakesModel(req.automation) &&
-        isOwnRunSession(session, req.automation)
-          ? req.automation.model
-          : null;
+      const choice = isOwnRunSession(session, req.automation)
+        ? runSessionModelChoice(req.automation)
+        : null;
       if (
         choice &&
         !sessionHasModelChoice(session.group.folder, session.agentId, choice)
@@ -396,11 +419,12 @@ export function createAutomationRuntimeDeps(
         automationId: automation.id,
       });
       // A new run session starts on the automation's model.
-      if (automationTakesModel(automation) && automation.model) {
+      const choice = runSessionModelChoice(automation);
+      if (choice) {
         setNewSessionModelChoice(
           group.folder,
           session.id,
-          automation.model,
+          choice,
           automation.createdBy,
         );
       }
