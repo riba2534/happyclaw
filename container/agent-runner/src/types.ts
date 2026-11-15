@@ -211,6 +211,8 @@ export function normalizeChannelTurnContext(
 export interface ContainerInput {
   prompt: string;
   sessionId?: string;
+  /** Host-derived accounting semantics for the selected Codex gateway only. */
+  usageAccountingMode?: 'codex';
   /**
    * The effort the host resolved for this launch: Claude Code runs at it, and
    * null means none is sent at all, not even the Agent's own effort as the

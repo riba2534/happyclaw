@@ -166,6 +166,7 @@ import {
 import {
   AssistantUsageCollector,
   type AssistantUsageBatch,
+  type UsageFlushBoundary,
 } from './assistant-usage.js';
 import { createTranscriptUsageLoader } from './transcript-usage.js';
 import {
@@ -2254,7 +2255,10 @@ async function runQueryAttempt(
       ? readUsageBaseline(resolveTranscriptDir(), sessionId, logWarn)
       : null,
   });
-  const assistantUsageCollector = new AssistantUsageCollector();
+  const usageOptions = {
+    codex: containerInput.usageAccountingMode === 'codex',
+  };
+  const assistantUsageCollector = new AssistantUsageCollector(usageOptions);
   // Live assistant snapshots carry message_start's placeholder output count;
   // the main and sidechain transcripts carry the CLI-merged final usage. The
   // loader reads only appended bytes, so every flushed message consults it.
@@ -2262,26 +2266,41 @@ async function runQueryAttempt(
     const activeSessionId = newSessionId || sessionId;
     if (!activeSessionId) return undefined;
     return path.join(resolveTranscriptDir(), `${activeSessionId}.jsonl`);
-  });
+  }, usageOptions);
   const emitResultUsage = (
     resultMessage: Record<string, unknown>,
     fallbackEventId: string,
+    boundary: UsageFlushBoundary = resultMessage.type === 'result'
+      ? 'result'
+      : 'interrupt',
   ): void => {
     const activeSessionId = newSessionId || sessionId;
     const assistantBatches: AssistantUsageBatch[] = [];
-    for (;;) {
-      const batch = assistantUsageCollector.drain(
-        activeSessionId,
-        transcriptUsageLoader,
-      );
-      if (!batch) break;
+    const recordBatch = (batch: AssistantUsageBatch) => {
       assistantBatches.push(batch);
       usageReconciler.recordAccounted(batch.tokens.modelUsage, {
         final: batch.final,
         completed: batch.completed,
       });
-    }
+    };
     const isResult = resultMessage.type === 'result';
+    const codexCumulative =
+      usageOptions.codex &&
+      isResult &&
+      Object.keys(resultMessage.modelUsage ?? {}).length > 0;
+    const lateChildren = codexCumulative
+      ? assistantUsageCollector.childrenWithResiduals()
+      : undefined;
+    for (;;) {
+      const batch = assistantUsageCollector.drain(
+        activeSessionId,
+        transcriptUsageLoader,
+        boundary,
+        lateChildren,
+      );
+      if (!batch) break;
+      recordBatch(batch);
+    }
     const reconciled = isResult
       ? usageReconciler.applyResult({
           usage: resultMessage.usage as SdkResultUsage | undefined,
@@ -2292,6 +2311,21 @@ async function runQueryAttempt(
           fallbackModelKey: queryModelRuntime.usageModelKey,
         })
       : { costUSD: 0 };
+    if (codexCumulative) {
+      // A late child may already be in an earlier result. Use this result's
+      // unassigned growth first, then its earlier possible coverage. Only
+      // uncovered tokens enter the reconciler's pending usage for later results.
+      const remaining = reconciled.residual && { ...reconciled.residual };
+      if (lateChildren) {
+        for (const batch of assistantUsageCollector.settleCumulativeChildren(
+          lateChildren,
+          transcriptUsageLoader,
+          remaining,
+        ))
+          recordBatch(batch);
+      }
+      if (remaining) assistantUsageCollector.recordChildResidual(remaining);
+    }
     if (
       activeSessionId &&
       (isResult || assistantBatches.length > 0) &&
@@ -4557,6 +4591,14 @@ async function runQueryAttempt(
     // 定时器，以及旧 watcher 抢先 drain 本应进入新 query 的 IPC 消息。
     ipcPolling = false;
     ipcQueryWatcher.close();
+    // A child's final stream event or sidechain may follow the last result.
+    if (usageOptions.codex) {
+      try {
+        emitResultUsage({}, '', 'query-end');
+      } catch (err) {
+        logWarn(`Failed to flush final Codex child usage: ${String(err)}`);
+      }
+    }
     cliSecretFiles?.dispose();
   }
 }
