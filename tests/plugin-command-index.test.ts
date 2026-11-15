@@ -113,10 +113,11 @@ afterEach(() => {
 });
 
 describe('isBuiltinCommandName', () => {
-  test('covers all 18 builtin command names', () => {
+  test('covers all 19 builtin command names', () => {
     for (const name of [
       'clear',
       'fresh',
+      'model',
       'list',
       'ls',
       'status',

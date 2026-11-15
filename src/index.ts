@@ -414,6 +414,7 @@ import {
   type BoundChatTarget,
   type WorkspaceInfo,
 } from './im-command-utils.js';
+import { runModelCommand } from './im-model-command.js';
 import { sortSessionsForList } from './session-order.js';
 import { resolveImGroupDefaults } from './im-group-defaults.js';
 import { canSendCrossGroupMessage as canSendCrossGroupMessagePure } from './cross-group-acl.js';
@@ -5223,6 +5224,8 @@ async function handleCommand(
       return handleClearCommand(chatJid, messageMeta);
     case 'fresh':
       return handleFreshCommand(chatJid, rawArgs, messageMeta);
+    case 'model':
+      return handleModelCommand(chatJid, rawArgs, messageMeta);
     case 'list':
     case 'ls':
       return handleListCommand(chatJid);
@@ -5377,6 +5380,52 @@ async function handleFreshCommand(
       'handleCommand /fresh failed',
     );
     return FRESH_WINDOW_FAILURE_REPLY;
+  }
+}
+
+/**
+ * `/model`: the model of the session this message routes to, resolved like
+ * `/clear`. The workspace owner chooses (the owner gate already ran), so IM
+ * offers what the owner's Web picker offers.
+ */
+function handleModelCommand(
+  chatJid: string,
+  rawArgs: string,
+  messageMeta?: ChannelMessageMeta,
+): string {
+  const group = registeredGroups[chatJid] ?? getRegisteredGroup(chatJid);
+  const target = resolveCommandSession('model', chatJid, group, messageMeta);
+  if (typeof target === 'string') return target;
+  const workspace =
+    registeredGroups[target.baseChatJid] ??
+    getRegisteredGroup(target.baseChatJid);
+  const owner = workspace?.created_by
+    ? getUserById(workspace.created_by)
+    : undefined;
+  if (!workspace || !owner || owner.status !== 'active') {
+    return '⚠️ 无法确定工作区主人，不能切换模型';
+  }
+  if (
+    (workspace.executionMode || 'container') === 'host' &&
+    owner.role !== 'admin'
+  ) {
+    return '⚠️ 宿主机工作区需要管理员权限';
+  }
+  try {
+    return runModelCommand({
+      args: rawArgs,
+      workspace,
+      workspaceJid: target.baseChatJid,
+      agentId: target.agentId,
+      chooser: owner,
+      runners: queue,
+    });
+  } catch (err) {
+    logger.error(
+      { chatJid, agentId: target.agentId, err },
+      'handleCommand /model failed',
+    );
+    return '切换模型失败，请稍后重试';
   }
 }
 
