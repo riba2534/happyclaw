@@ -130,12 +130,18 @@ import {
 } from './claude-runtime-env.js';
 import { pinBoundProviderSettings } from './provider-env-pin.js';
 import { webFetchPreflightSettings } from './web-fetch-preflight.js';
+import { pinToolSearch } from './tool-search.js';
+import { pinMaxOutputTokens } from './max-output-pin.js';
+import {
+  assistantMessageText,
+  providerErrorText,
+} from './provider-error-text.js';
 import {
   resolveClaudeProviderRuntime,
   resolveClaudeQueryModelRuntime,
   resolveProviderReportedModelTier,
 } from './provider-runtime.js';
-import { resolveRunSdkEffort } from './agent-effort.js';
+import { resolveRunSdkEffort, resolveRunSdkThinking } from './agent-effort.js';
 import {
   resolveAssistantErrorAttemptBoundary,
   decideProviderLimitAction,
@@ -2085,6 +2091,8 @@ async function runQueryAttempt(
     failureNotice?: string;
     rateLimitScope?: 'account' | 'model';
     livenessTimeout?: boolean;
+    /** What the upstream itself said, when the SDK passed it on. */
+    errorText?: string | null;
   }): void => {
     const {
       error,
@@ -2093,9 +2101,11 @@ async function runQueryAttempt(
       failureNotice,
       rateLimitScope = 'account',
       livenessTimeout = false,
+      errorText,
     } = options;
     if (providerFailurePublished) return;
     providerFailurePublished = true;
+    const upstreamText = providerErrorText(errorText);
     // Produce the exact receipt candidates for a terminal host projection.
     // The host ACKs them only when no healthy provider remains; otherwise its
     // durable IPC recovery rewinds the input for failover replay.
@@ -2111,6 +2121,7 @@ async function runQueryAttempt(
         ? { providerRateLimitResetsAt: rateLimitResetsAt }
         : {}),
       ...(failureNotice ? { providerFailureNotice: failureNotice } : {}),
+      ...(upstreamText ? { providerErrorText: upstreamText } : {}),
       providerRateLimitScope: rateLimitScope,
       providerRateLimitModel: resolveProviderReportedModelTier(
         CLAUDE_PROVIDER_RUNTIME,
@@ -2983,10 +2994,16 @@ async function runQueryAttempt(
   // admin's, the workspace's project and local ones), in host and container
   // mode alike.
   const flagSettings: Record<string, unknown> = {
-    ...pinBoundProviderSettings({
-      ...process.env,
-      ...claudeRuntimeEnv,
-    }),
+    ...pinMaxOutputTokens(
+      pinToolSearch(
+        pinBoundProviderSettings({
+          ...process.env,
+          ...claudeRuntimeEnv,
+        }),
+        containerInput.toolSearch,
+      ),
+      containerInput.maxOutputTokens,
+    ),
     ...webFetchPreflightSettings(containerInput.webFetchPreflightPolicy),
   };
   const claudeMdExcludes = resolveHostClaudeMdExcludes({
@@ -3090,9 +3107,17 @@ async function runQueryAttempt(
       agentEffort
         ? `Run effort: ${agentEffort}`
         : containerInput.launchEffort === null
-          ? 'Run effort: none (the model takes no effort)'
+          ? 'Run effort: none passed (nothing picked for a model whose efforts are unknown, or the model takes none)'
           : 'Run effort: inherit Provider/SDK default',
     );
+    const runThinking = resolveRunSdkThinking(containerInput);
+    if (runThinking.type === 'disabled') {
+      log('Run thinking: off (the model does not reason)');
+    }
+    if (containerInput.toolSearch) log('Run tool search: on');
+    if (containerInput.maxOutputTokens) {
+      log(`Run reply limit: ${containerInput.maxOutputTokens} (pinned)`);
+    }
     if (Object.keys(claudeRuntimeEnv).length > 0) {
       log(
         `Claude runtime env: ${Object.entries(claudeRuntimeEnv)
@@ -3114,7 +3139,7 @@ async function runQueryAttempt(
       systemPrompt,
       allowedTools,
       disallowedTools: effectiveDisallowedTools,
-      thinking: { type: 'adaptive' as const, display: 'summarized' as const },
+      thinking: runThinking,
       ...(agentEffort ? { effort: agentEffort } : {}),
       permissionMode: 'bypassPermissions' as const,
       allowDangerouslySkipPermissions: true,
@@ -3809,6 +3834,7 @@ async function runQueryAttempt(
           publishProviderFailure({
             error: assistantError,
             failureClass: assistantErrorClass,
+            errorText: assistantMessageText(message),
           });
           processor.discardPendingTextOutput();
           processor.cleanup();
@@ -3953,6 +3979,7 @@ async function runQueryAttempt(
           publishProviderFailure({
             error: 'rate_limit',
             failureClass: 'account',
+            errorText: textResult,
           });
           emitResultUsage(resultMsg, containerInput.turnId || generateTurnId());
           processor.discardPendingTextOutput();

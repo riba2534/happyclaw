@@ -70,6 +70,25 @@ describe('sdkQuery', () => {
     expect(env).not.toHaveProperty('CLAUDE_CODE_EFFORT_LEVEL');
   });
 
+  test("without a caller's model, the global connection's background model runs", async () => {
+    providerConfig.current = {
+      anthropicModel: 'big-model',
+      roles: { smallFast: 'small-model' },
+    } as never;
+    query.mockReturnValue(successfulConversation('title'));
+    await sdkQuery('generate a title');
+    expect(query.mock.calls[0][0].options.model).toBe('small-model');
+    // A caller's model (RECALL_MODEL) still wins.
+    query.mockReturnValue(successfulConversation('title'));
+    await sdkQuery('recall', { model: 'recall-model' });
+    expect(query.mock.calls[1][0].options.model).toBe('recall-model');
+    // No background model: the connection's own, as before.
+    providerConfig.current = { anthropicModel: 'big-model' };
+    query.mockReturnValue(successfulConversation('title'));
+    await sdkQuery('generate a title');
+    expect(query.mock.calls[2][0].options.model).toBe('big-model');
+  });
+
   test('never returns the API error text of an is_error result', async () => {
     query.mockReturnValue(
       successfulConversation('API Error: 401 invalid x-api-key', true),

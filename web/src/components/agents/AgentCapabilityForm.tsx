@@ -10,6 +10,8 @@ import { SettingsGroup } from '@/components/settings/SettingsLayout';
 import {
   AgentModelSelect,
   modelBindingChanges,
+  modelLabel,
+  selectableEfforts,
 } from '@/components/settings/AgentModelSelect';
 import { effortLabel } from '@/components/settings/model-connections';
 import { useMcpServersStore } from '@/stores/mcp-servers';
@@ -199,7 +201,9 @@ function followOptionLabel(
   const runs = resolveBinding(FOLLOWING, configs, follow, inherited);
   const name = follow === 'owner_main' ? '跟随主智能体' : '跟随主 HappyClaw';
   const label = runs
-    ? [runs.config.name, runs.model].filter(Boolean).join(' · ')
+    ? [runs.config.name, runs.model && modelLabel(runs.config, runs.model)]
+        .filter(Boolean)
+        .join(' · ')
     : '未设置';
   return `${name}（${label}）`;
 }
@@ -218,14 +222,15 @@ function boundModelEntry(
 /**
  * A binding change keeps the picked effort only if the new model takes it;
  * otherwise the Agent returns to the model's default. A model nothing is
- * known about keeps it, and the server decides.
+ * known about keeps it (it may run at any level), and so does a binding the
+ * list cannot resolve, for the server to decide.
  */
 function keepSupportedEffort(
   effort: AgentEffortLevel,
   entry: ConnectionModel | null,
 ): AgentEffortLevel {
   if (effort === 'inherit' || !entry) return effort;
-  return entry.efforts.includes(effort) ? effort : 'inherit';
+  return selectableEfforts(entry).efforts.includes(effort) ? effort : 'inherit';
 }
 
 export function AgentCapabilityForm({
@@ -286,7 +291,9 @@ export function AgentCapabilityForm({
       ),
     });
   const entry = boundModelEntry(value, modelConfigs, follow, inheritedModel);
-  const efforts = entry?.efforts ?? [];
+  const { efforts, unverified } = selectableEfforts(entry);
+  const takesNone =
+    entry?.effortsSource === 'declared' && entry.efforts.length === 0;
   // A saved level the model does not list stays visible as what is saved.
   const unsupportedEffort =
     value.effort !== 'inherit' && !efforts.includes(value.effort)
@@ -334,7 +341,9 @@ export function AgentCapabilityForm({
                 {modelConfigs.map((config) => (
                   <SelectItem key={config.id} value={config.id}>
                     {config.name}
-                    {config.model ? ` · ${config.model}` : ''}
+                    {config.model
+                      ? ` · ${modelLabel(config, config.model)}`
+                      : ''}
                     {config.usable === false ? '（缺少凭据）' : ''}
                   </SelectItem>
                 ))}
@@ -360,7 +369,19 @@ export function AgentCapabilityForm({
         />
         <AgentControlRow
           label="推理等级"
-          description="模型默认使用该模型自己的默认等级；只列出所选模型支持的等级。"
+          description={
+            <>
+              模型默认使用该模型自己的默认等级；只列出所选模型支持的等级。
+              {unverified && (
+                <span className="mt-1 block text-warning">
+                  未验证：没有这个模型的资料，先列出全部等级。
+                </span>
+              )}
+              {takesNone && (
+                <span className="mt-1 block">这个模型不支持推理等级。</span>
+              )}
+            </>
+          }
           control={
             <Select
               value={value.effort}

@@ -42,11 +42,18 @@ type ReplyBlock =
 
 type Frame = Record<string, any>;
 
+interface MainRequest {
+  max_tokens?: number;
+  messages?: unknown[];
+  thinking?: { type?: string };
+  tools?: Array<{ name?: string; defer_loading?: boolean }>;
+}
+
 interface RunnerRun {
   frames: Frame[];
   stderr: string;
   /** Request bodies of main-loop model calls (those that offer tools). */
-  mainRequests: Array<{ messages?: unknown[] }>;
+  mainRequests: MainRequest[];
   exitCode: number | null;
 }
 
@@ -155,6 +162,8 @@ function runnerEnv(
           'ANTHROPIC_MODEL',
           'ANTHROPIC_CUSTOM_HEADERS',
           'CLAUDE_CONFIG_DIR',
+          'ENABLE_TOOL_SEARCH',
+          'CLAUDE_CODE_MAX_OUTPUT_TOKENS',
         ].includes(entry[0]),
     ),
   );
@@ -208,6 +217,15 @@ async function runRunner(options: {
   reply: (call: number) => ReplyBlock[];
   /** Stop reason of each main call; derived from its blocks by default. */
   stopReason?: (call: number) => string | undefined;
+  /**
+   * An error the endpoint answers a main call with instead of `reply`. It
+   * says not to retry, so Claude Code gives up on the first one.
+   */
+  reject?: (call: number) => { status: number; body: unknown } | undefined;
+  /** Extra ContainerInput fields, as the Host sets them for the launch. */
+  input?: Record<string, unknown>;
+  /** The workspace's own .claude/settings.json. */
+  projectSettings?: object;
   /** Close the runner once this frame arrives. */
   settled: (frame: Frame) => boolean;
   /**
@@ -227,6 +245,13 @@ async function runRunner(options: {
   const tasksDir = path.join(dirs.ipc, 'tasks');
   for (const dir of [dirs.group, inputDir, tasksDir, dirs.config, dirs.home]) {
     fs.mkdirSync(dir, { recursive: true });
+  }
+  if (options.projectSettings) {
+    fs.mkdirSync(path.join(dirs.group, '.claude'));
+    fs.writeFileSync(
+      path.join(dirs.group, '.claude', 'settings.json'),
+      JSON.stringify(options.projectSettings),
+    );
   }
   // A durable Host input: its receipt must come back exactly once.
   const writeInput = (index: number, text: string): void => {
@@ -261,7 +286,7 @@ async function runRunner(options: {
         response.end(JSON.stringify({ input_tokens: 1 }));
         return;
       }
-      let body: { tools?: unknown[]; messages?: unknown[] } = {};
+      let body: MainRequest = {};
       try {
         body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
       } catch {
@@ -273,6 +298,15 @@ async function runRunner(options: {
       }
       mainRequests.push(body);
       const call = mainRequests.length;
+      const rejection = options.reject?.(call);
+      if (rejection) {
+        response.writeHead(rejection.status, {
+          'content-type': 'application/json',
+          'x-should-retry': 'false',
+        });
+        response.end(JSON.stringify(rejection.body));
+        return;
+      }
       sendMessage(
         response,
         `msg_main_${call}`,
@@ -330,6 +364,7 @@ async function runRunner(options: {
       queryRunId: 'query-run-1',
       isHome: false,
       isAdminHome: false,
+      ...options.input,
     }),
   );
   const exitCode = await new Promise<number | null>((resolve) =>
@@ -601,5 +636,116 @@ describe('Agent Runner process against a fake Anthropic endpoint', () => {
     });
     // Nothing about it reaches the Host.
     expect(JSON.stringify(run.frames)).not.toContain('suspected rule=');
+  }, 60_000);
+
+  test("a model declared not to reason runs without thinking, and the connection's tool search outranks the workspace's settings", async () => {
+    const deferred = (request: MainRequest): boolean =>
+      (request.tools ?? []).some((tool) => tool.defer_loading === true);
+    const run = await runRunner({
+      name: 'thinking-off-tool-search',
+      reply: () => [{ type: 'text', text: 'PLAIN_ANSWER' }],
+      settled: isFinalResult,
+      input: { launchEffort: null, thinking: 'disabled', toolSearch: true },
+      projectSettings: { env: { ENABLE_TOOL_SEARCH: 'false' } },
+    });
+    expect(run.exitCode).toBe(0);
+    expect(run.frames.filter(isFinalResult).map((f) => f.result)).toEqual([
+      'PLAIN_ANSWER',
+    ]);
+    expect(run.mainRequests.length).toBeGreaterThan(0);
+    for (const request of run.mainRequests) {
+      // Claude Code 2.1.296 sends {type:'disabled'} for a Claude model name
+      // and no thinking field for any other.
+      expect(request.thinking ?? { type: 'disabled' }).toEqual({
+        type: 'disabled',
+      });
+      expect(deferred(request)).toBe(true);
+    }
+    expect(runnerLines(run.stderr, 'Run thinking: off')).toHaveLength(1);
+
+    // Control: without the launch's choices the model thinks, and the
+    // workspace's own tool search stands because nothing was pinned.
+    const control = await runRunner({
+      name: 'thinking-default-tool-search',
+      reply: () => [{ type: 'text', text: 'PLAIN_ANSWER' }],
+      settled: isFinalResult,
+      projectSettings: { env: { ENABLE_TOOL_SEARCH: 'true' } },
+    });
+    expect(control.exitCode).toBe(0);
+    expect(control.mainRequests.length).toBeGreaterThan(0);
+    for (const request of control.mainRequests) {
+      expect(request.thinking?.type).toBeDefined();
+      expect(request.thinking?.type).not.toBe('disabled');
+      expect(deferred(request)).toBe(true);
+    }
+    expect(runnerLines(control.stderr, 'Run thinking: off')).toEqual([]);
+  }, 120_000);
+
+  test("the host's reply limit outranks a workspace's settings; without one the settings stand", async () => {
+    const run = await runRunner({
+      name: 'reply-limit-pinned',
+      reply: () => [{ type: 'text', text: 'PLAIN_ANSWER' }],
+      settled: isFinalResult,
+      // Both values stay under the 64K Claude Code allows this model, so
+      // each is sent as set.
+      input: { maxOutputTokens: 20_000 },
+      projectSettings: { env: { CLAUDE_CODE_MAX_OUTPUT_TOKENS: '50000' } },
+    });
+    expect(run.exitCode).toBe(0);
+    expect(run.mainRequests.length).toBeGreaterThan(0);
+    for (const request of run.mainRequests) {
+      expect(request.max_tokens).toBe(20_000);
+    }
+    const control = await runRunner({
+      name: 'reply-limit-settings',
+      reply: () => [{ type: 'text', text: 'PLAIN_ANSWER' }],
+      settled: isFinalResult,
+      projectSettings: { env: { CLAUDE_CODE_MAX_OUTPUT_TOKENS: '50000' } },
+    });
+    expect(control.exitCode).toBe(0);
+    expect(control.mainRequests.length).toBeGreaterThan(0);
+    for (const request of control.mainRequests) {
+      expect(request.max_tokens).toBe(50_000);
+    }
+  }, 120_000);
+
+  test("an upstream rejection reaches the Host in the upstream's own words", async () => {
+    const run = await runRunner({
+      name: 'provider-error-text',
+      reply: () => [{ type: 'text', text: 'NEVER_SENT' }],
+      reject: () => ({
+        status: 429,
+        body: {
+          type: 'error',
+          error: {
+            type: 'rate_limit_error',
+            message: 'usage limit reached: resets at 18:00',
+          },
+        },
+      }),
+      settled: (frame) => frame.providerFailure === true,
+    });
+    const failures = run.frames.filter((frame) => frame.providerFailure);
+    expect(failures).toHaveLength(1);
+    expect(failures[0]).toMatchObject({
+      providerFailureClass: 'account',
+      providerErrorText:
+        'API Error: Request rejected (429) · usage limit reached: resets at 18:00',
+    });
+  }, 60_000);
+
+  test('a limit notice in the result text is passed on as the upstream words', async () => {
+    const notice = 'Claude usage limit reached. Your limit will reset at 6pm.';
+    const run = await runRunner({
+      name: 'provider-error-text-compat',
+      reply: () => [{ type: 'text', text: notice }],
+      settled: (frame) => frame.providerFailure === true,
+    });
+    const failures = run.frames.filter((frame) => frame.providerFailure);
+    expect(failures).toHaveLength(1);
+    expect(failures[0]).toMatchObject({
+      providerFailureClass: 'account',
+      providerErrorText: notice,
+    });
   }, 60_000);
 });
