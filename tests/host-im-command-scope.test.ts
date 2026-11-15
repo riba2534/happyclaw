@@ -19,6 +19,11 @@ import { isNativeContextContainer } from '../src/channel-mount-service.js';
 import { resolveNativeThreadContext } from '../src/channel-native-context.js';
 import { DefinitiveChannelDeliveryError } from '../src/channel-outbox-delivery.js';
 import { isCancelledInput } from '../src/follow-up-policy.js';
+import {
+  beginHostPrivilegeRevocation,
+  canExecuteOnHost,
+  endHostPrivilegeRevocation,
+} from '../src/host-execution-policy.js';
 import { getChannelType } from '../src/im-channel.js';
 import {
   OWNER_REQUIRED_IM_COMMANDS,
@@ -503,7 +508,10 @@ describe('/model has the owner boundary of /clear', () => {
 });
 
 describe('/model acts on the session the chat routes to', () => {
-  const lane = (owner: Record<string, unknown> | undefined) => {
+  const lane = (
+    owner: Record<string, unknown> | undefined,
+    executionMode: 'container' | 'host' = 'container',
+  ) => {
     const groups: Record<string, any> = {
       'feishu:oc_unbound': {
         name: 'unbound',
@@ -518,7 +526,12 @@ describe('/model acts on the session the chat routes to', () => {
         owner_im_id: OWNER,
         target_agent_id: 'session-dm',
       },
-      'web:ws': { name: 'Workspace', folder: 'ws', created_by: 'u1' },
+      'web:ws': {
+        name: 'Workspace',
+        folder: 'ws',
+        created_by: 'u1',
+        executionMode,
+      },
     };
     const runModelCommand = vi.fn(() => 'RAN');
     const queue = { drainRunnersForModelSelection: vi.fn() };
@@ -539,6 +552,7 @@ describe('/model acts on the session the chat routes to', () => {
       resolveSessionTarget,
       runModelCommand,
       queue,
+      canExecuteOnHost,
     };
     const harness = createRuntimeSourceHarness(globals);
     for (const name of [
@@ -583,6 +597,27 @@ describe('/model acts on the session the chat routes to', () => {
       '⚠️ 无法确定工作区主人，不能切换模型',
     );
     expect(l.runModelCommand).not.toHaveBeenCalled();
+  });
+
+  test('a Host workspace needs an owner who may run on the host right now', () => {
+    const admin = { ...owner, role: 'admin' };
+    expect(lane(admin, 'host').model('feishu:oc_dm', '2.1')).toBe('RAN');
+    const member = lane(owner, 'host');
+    expect(member.model('feishu:oc_dm', '2.1')).toBe(
+      '⚠️ 宿主机工作区需要管理员权限',
+    );
+    expect(member.runModelCommand).not.toHaveBeenCalled();
+    // An admin whose Host privilege is being revoked no longer chooses.
+    beginHostPrivilegeRevocation('u1');
+    try {
+      const revoking = lane(admin, 'host');
+      expect(revoking.model('feishu:oc_dm', '2.1')).toBe(
+        '⚠️ 宿主机工作区需要管理员权限',
+      );
+      expect(revoking.runModelCommand).not.toHaveBeenCalled();
+    } finally {
+      endHostPrivilegeRevocation('u1');
+    }
   });
 });
 
