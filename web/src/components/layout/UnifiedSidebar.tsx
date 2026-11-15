@@ -21,6 +21,7 @@ import { useShellStore } from '../../stores/shell';
 import { useClearWorkspace } from '../../hooks/useClearWorkspace';
 import { useDeleteWorkspace } from '../../hooks/useDeleteWorkspace';
 import { useNewConversation } from '../../hooks/useNewConversation';
+import type { NewSessionOptions } from '../../hooks/useSessionActions';
 import { useWorkspaceTree } from '../../hooks/useWorkspaceTree';
 import { useStableCallback } from '../../hooks/useStableCallback';
 import { ConfirmDialog } from '@/components/common';
@@ -160,12 +161,10 @@ export function UnifiedSidebar() {
   );
   const navigateTo = useStableCallback((to: string) => navigate(to));
   // "+" on a workspace row: a new conversation there (or the blank one it
-  // already has); 新建独立 worktree 会话 always creates one.
+  // already has); the new-session dialog (新建会话…, 新建独立 worktree 会话…)
+  // always creates one.
   const createWorkspaceSession = useStableCallback(
-    async (
-      group: GroupEntry,
-      options?: { name?: string; worktree?: boolean },
-    ) => {
+    async (group: GroupEntry, options?: NewSessionOptions) => {
       revealWorkspace(group.jid);
       return startNewConversation({
         target: { jid: group.jid },

@@ -3,6 +3,7 @@ import {
   formatAutomationTime,
   type Automation,
   type AutomationDraft,
+  type AutomationModelChoice,
   type AutomationRun,
   type AutomationRunStatus,
   type AutomationSchedule,
@@ -440,6 +441,8 @@ export interface AutomationFormValues {
   preRunCheckTimeout: string;
   prompt: string;
   scriptCommand: string;
+  /** Null follows the default; sent only where it applies (automationTakesModel). */
+  model: AutomationModelChoice | null;
 }
 
 export function emptyAutomationForm(
@@ -464,6 +467,7 @@ export function emptyAutomationForm(
     ),
     prompt: '',
     scriptCommand: '',
+    model: null,
   };
 }
 
@@ -489,7 +493,44 @@ export function automationFormFrom(
     ),
     prompt: automation.prompt,
     scriptCommand: automation.scriptCommand ?? '',
+    model: automation.model ?? null,
   };
+}
+
+/**
+ * Whether the runs take a model of their own: the sessions they create
+ * (每次新建, 持续会话) do; a bound session keeps its own choice, and a
+ * script runs no model.
+ */
+export function automationTakesModel(
+  values: Pick<AutomationFormValues, 'execution' | 'sessionMode'>,
+): boolean {
+  return values.execution === 'agent' && values.sessionMode !== 'bound';
+}
+
+function sameModelChoice(
+  a: AutomationModelChoice | null,
+  b: AutomationModelChoice | null,
+): boolean {
+  if (!a || !b) return !a && !b;
+  return (
+    a.modelConfigId === b.modelConfigId &&
+    (a.model ?? null) === (b.model ?? null) &&
+    (a.effort ?? null) === (b.effort ?? null)
+  );
+}
+
+/**
+ * The model an edit sends: only a change, as an omitted model stays as it
+ * is. One that no longer applies (the runs moved to a bound session) is
+ * cleared, which the server requires before it takes the move.
+ */
+export function modelPatchFromForm(
+  values: AutomationFormValues,
+  automation: Pick<Automation, 'model'>,
+): { model?: AutomationModelChoice | null } {
+  const next = automationTakesModel(values) ? values.model : null;
+  return sameModelChoice(next, automation.model ?? null) ? {} : { model: next };
 }
 
 /** The draft the form submits; the shared validator checks it. */
@@ -516,6 +557,10 @@ export function draftFromForm(values: AutomationFormValues): AutomationDraft {
         : null,
     execution: values.execution,
     scriptCommand: script ? values.scriptCommand.trim() : null,
+    // A creation names a model only when one is picked and the runs take it.
+    ...(automationTakesModel(values) && values.model
+      ? { model: values.model }
+      : {}),
   };
 }
 
