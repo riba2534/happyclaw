@@ -12,6 +12,7 @@ import type {
   AutomationDraft,
   AutomationIpcRequest,
   AutomationIpcResult,
+  AutomationModelChoice,
   AutomationRun,
 } from './automation.js';
 
@@ -129,6 +130,16 @@ export interface AutomationRuntimeDeps {
     sessionJid: string;
     archived: boolean;
   }>;
+  /**
+   * The automation no longer gives its run session `previous`: the session,
+   * if it is the automation's own and still holds that choice, goes back to
+   * its default (and a warm runner on it retires).
+   */
+  releaseAutomationSessionModel(req: {
+    automation: Automation;
+    sessionJid: string;
+    previous: AutomationModelChoice;
+  }): void;
   /** Hide an old fresh-mode run session (status completed); keeps history. */
   archiveAutomationSession(sessionJid: string): Promise<void>;
   /** Delete a run session (delete dialog「删除会话」). */

@@ -95,6 +95,8 @@ const MANUAL_CANCEL_ERROR = '已手动终止';
 const MODEL_BOUND_SESSION_ERROR =
   '绑定已有会话的自动化沿用该会话自己的模型，不能另选模型';
 const MODEL_SCRIPT_ERROR = '脚本不调用模型，不能选择模型';
+const MODEL_FOREIGN_SESSION_ERROR =
+  '持续会话接上的是已有会话时沿用该会话自己的模型，不能另选模型';
 /** interval upper bound: beyond a year `Date` arithmetic gets close to its range. */
 const INTERVAL_MAX_MS = 365 * 24 * 60 * 60 * 1000;
 const RUNS_DEFAULT_LIMIT = 50;
@@ -348,6 +350,31 @@ export function createAutomationCore(
   }
 
   /**
+   * A persistent automation gives its model only to a session it created.
+   * One pointed at an existing conversation leaves that conversation's own
+   * choice alone, as a bound one does; a new automation has created none.
+   */
+  function assertModelTarget(
+    automationId: string | null,
+    model: AutomationDraft['model'],
+    sessionMode: Automation['sessionMode'],
+    targetSessionJid: string | null,
+  ): void {
+    if (!model || sessionMode !== 'persistent' || !targetSessionJid) return;
+    const own =
+      automationId !== null &&
+      deps
+        .listAutomationSessions(automationId)
+        .some((session) => session.sessionJid === targetSessionJid);
+    if (!own)
+      throw new AutomationError(
+        400,
+        MODEL_FOREIGN_SESSION_ERROR,
+        'automation_model_bound_session',
+      );
+  }
+
+  /**
    * A model choice as the automation stores it: checked like a pick in the
    * chat, as its creator would make it, whoever edits it, since the runs
    * act for the creator.
@@ -363,11 +390,13 @@ export function createAutomationCore(
     assertModelFits(requested, sessionMode, execution);
     const workspace = getRegisteredGroup(workspaceJid);
     if (!workspace) throw new AutomationError(404, WORKSPACE_NOT_FOUND_ERROR);
-    // A creator no longer on file chooses with no permissions at all.
-    const chooser: SessionModelChooser = getUserById(createdBy) ?? {
-      role: 'member',
-      permissions: [],
-    };
+    // A creator no longer on file or no longer active chooses with no
+    // permissions at all, as a launch judges the chooser.
+    const creator = getUserById(createdBy);
+    const chooser: SessionModelChooser =
+      creator?.status === 'active'
+        ? creator
+        : { role: 'member', permissions: [] };
     const checked = checkSessionModelChoice(workspace, requested, chooser);
     if (!checked.ok)
       throw new AutomationError(
@@ -398,6 +427,7 @@ export function createAutomationCore(
       input.targetSessionJid,
       input.workspaceJid,
     );
+    assertModelTarget(null, input.model, input.sessionMode, targetSessionJid);
     const model = checkModel(
       input.model,
       input.sessionMode,
@@ -500,6 +530,7 @@ export function createAutomationCore(
     } else {
       assertModelFits(model, draft.sessionMode, current.execution);
     }
+    assertModelTarget(current.id, model, draft.sessionMode, targetSessionJid);
 
     const nowDate = now();
     const next: Automation = {
@@ -520,6 +551,22 @@ export function createAutomationCore(
     }
     if (!saveAutomation(next, expectedRevision))
       throw new AutomationError(409, STALE_REVISION_ERROR);
+    // Back to the default: the session the runs went to no longer keeps the
+    // model the automation gave it (runs only ever set one).
+    if (current.model && !next.model && current.targetSessionJid) {
+      try {
+        deps.releaseAutomationSessionModel({
+          automation: next,
+          sessionJid: current.targetSessionJid,
+          previous: current.model,
+        });
+      } catch (error) {
+        logger.warn(
+          { err: error, automationId: next.id },
+          'Could not return the run session of an automation to its default model',
+        );
+      }
+    }
     engine.emitChanged(next);
     engine.poke();
     return decorate(next);

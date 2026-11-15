@@ -28,6 +28,7 @@ import {
 } from './automation-contract.js';
 import {
   automationTakesModel,
+  type Automation,
   type AutomationIpcRequest,
   type AutomationIpcResult,
 } from './automation.js';
@@ -277,6 +278,22 @@ function automationRunIdOfInputMessageId(messageId: string): string | null {
     : null;
 }
 
+/**
+ * Whether `session` is one `automation` created for its runs. Only such a
+ * session takes the automation's model: any other session (a conversation
+ * a persistent automation was pointed at, a bound one) keeps the choice its
+ * user made.
+ */
+function isOwnRunSession(
+  session: ResolvedAutomationSession,
+  automation: Pick<Automation, 'id'>,
+): boolean {
+  return (
+    session.agent.source_kind === 'automation' &&
+    session.agent.automation_id === automation.id
+  );
+}
+
 export function createAutomationRuntimeDeps(
   hooks: AutomationRuntimeHooks,
 ): AutomationRuntimeDeps {
@@ -292,11 +309,13 @@ export function createAutomationRuntimeDeps(
       // Every run enters its session here, however it fired. A persistent
       // session outlives edits of the automation, so it is brought to the
       // automation's current model before the input goes in, which retires a
-      // warm runner still on the old one. An automation without a model
-      // leaves the session's choice alone.
-      const choice = automationTakesModel(req.automation)
-        ? req.automation.model
-        : null;
+      // warm runner still on the old one. An automation without a model, or
+      // a session it did not create, keeps the session's own choice.
+      const choice =
+        automationTakesModel(req.automation) &&
+        isOwnRunSession(session, req.automation)
+          ? req.automation.model
+          : null;
       if (
         choice &&
         !sessionHasModelChoice(session.group.folder, session.agentId, choice)
@@ -386,6 +405,25 @@ export function createAutomationRuntimeDeps(
         );
       }
       return { sessionJid: `${automation.workspaceJid}#agent:${session.id}` };
+    },
+
+    releaseAutomationSessionModel({ automation, sessionJid, previous }) {
+      const session = resolveAutomationSession(sessionJid, hooks.getGroup);
+      // What the user chose in the session since then stays.
+      if (
+        !session ||
+        !isOwnRunSession(session, automation) ||
+        !sessionHasModelChoice(session.group.folder, session.agentId, previous)
+      ) {
+        return;
+      }
+      saveSessionModelChoice({
+        group: session.group,
+        workspaceJid: session.workspaceJid,
+        agentId: session.agentId,
+        choice: { modelConfigId: null, model: null, effort: null },
+        updatedBy: automation.createdBy,
+      });
     },
 
     isAutomationInputPending({ sessionJid, inputMessageId }) {

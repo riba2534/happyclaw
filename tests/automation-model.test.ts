@@ -65,6 +65,19 @@ vi.mock('../src/runtime-config.js', async (importOriginal) => ({
       ],
       codexOAuthCredentials: null,
     },
+    {
+      id: 'chatgpt',
+      name: 'ChatGPT 订阅',
+      type: 'official',
+      enabled: true,
+      anthropicModel: 'gpt-6-sol',
+      anthropicAuthToken: 'gateway-id',
+      codexOAuthCredentials: {
+        accessToken: 'secret',
+        accountId: 'acct-1',
+        planType: null,
+      },
+    },
   ],
 }));
 
@@ -293,6 +306,42 @@ describe('saving an automation model', () => {
     expect(store.listAutomations({})).toEqual([]);
   });
 
+  test('a creator who is no longer active chooses without permissions', () => {
+    const ADMIN = 'model-admin';
+    const ADMIN_WS = 'web:model-admin-ws';
+    const at = new Date().toISOString();
+    db.createUser({
+      id: ADMIN,
+      username: ADMIN,
+      password_hash: 'test-only',
+      display_name: ADMIN,
+      role: 'admin',
+      status: 'disabled',
+      created_at: at,
+      updated_at: at,
+      must_change_password: false,
+    });
+    harness.seedWorkspace(db, { jid: ADMIN_WS, owner: ADMIN });
+    const service = core();
+    const create = () =>
+      service.create(
+        { kind: 'web', userId: ADMIN, isAdmin: true },
+        {
+          workspaceJid: ADMIN_WS,
+          ...harness.draft(),
+          // Above the ceiling: an active admin may pick it.
+          model: {
+            modelConfigId: 'chatgpt',
+            model: 'gpt-6-astra',
+            effort: 'ultra',
+          },
+        },
+      );
+    expect(refusal(create)).toMatchObject({ code: 'EFFORT_RESTRICTED' });
+    db.updateUserFields(ADMIN, { status: 'active' });
+    expect(create().model).toMatchObject({ effort: 'ultra' });
+  });
+
   test('PATCH: omitted keeps, null clears, an object is checked and set', () => {
     const service = core();
     const made = service.create(owner, {
@@ -473,6 +522,107 @@ async function inject(
   });
 }
 
+describe('a persistent automation and the session it is pointed at', () => {
+  function setup() {
+    const clock = new harness.FakeClock(Date.parse('2026-10-30T00:00:00Z'));
+    const fake = harness.createFakeRuntime();
+    fake.sessions.add(BOUND);
+    const { service } = createAutomationCore(fake.deps, { now: clock.now });
+    return { fake, service };
+  }
+
+  test('a model only for a session it created; an existing conversation keeps its own', async () => {
+    const { fake, service } = setup();
+    // Pointed at the user's conversation with a model: refused like bound.
+    expect(
+      refusal(() =>
+        service.create(owner, {
+          workspaceJid: WS,
+          ...harness.draft({ sessionMode: 'persistent' }),
+          targetSessionJid: BOUND,
+          model: GLM,
+        }),
+      ),
+    ).toMatchObject({ status: 400, code: 'automation_model_bound_session' });
+
+    // Without a model it is accepted as before, and a model cannot be added.
+    const pointed = service.create(owner, {
+      workspaceJid: WS,
+      ...harness.draft({ sessionMode: 'persistent' }),
+      targetSessionJid: BOUND,
+    });
+    expect(pointed.targetSessionJid).toBe(BOUND);
+    expect(
+      refusal(() =>
+        service.update(owner, pointed.id, pointed.revision, { model: GLM }),
+      ),
+    ).toMatchObject({ code: 'automation_model_bound_session' });
+
+    // From bound to persistent the conversation stays the target: no model.
+    const bound = service.create(owner, {
+      workspaceJid: WS,
+      ...harness.draft({ sessionMode: 'bound' }),
+      targetSessionJid: BOUND,
+    });
+    expect(
+      refusal(() =>
+        service.update(owner, bound.id, bound.revision, {
+          sessionMode: 'persistent',
+          model: GLM,
+        }),
+      ),
+    ).toMatchObject({ code: 'automation_model_bound_session' });
+
+    // Its own run session takes one.
+    const own = service.create(owner, {
+      workspaceJid: WS,
+      ...harness.draft({ sessionMode: 'persistent' }),
+    });
+    const { sessionJid } = await fake.deps.createAutomationSession({
+      automation: own,
+      title: '日报',
+    });
+    const reused = service.update(owner, own.id, own.revision, {
+      targetSessionJid: sessionJid,
+    });
+    expect(
+      service.update(owner, own.id, reused.revision, { model: GLM }).model,
+    ).toEqual(GLM);
+  });
+
+  test('back to the default, its own session no longer keeps the model', async () => {
+    const { fake, service } = setup();
+    const made = service.create(owner, {
+      workspaceJid: WS,
+      ...harness.draft({ sessionMode: 'persistent' }),
+      model: GLM,
+    });
+    // Never ran: no session to return.
+    const unrun = service.update(owner, made.id, made.revision, {
+      model: null,
+    });
+    expect(fake.released).toEqual([]);
+
+    const chosen = service.update(owner, made.id, unrun.revision, {
+      model: GLM,
+    });
+    const { sessionJid } = await fake.deps.createAutomationSession({
+      automation: chosen,
+      title: '日报',
+    });
+    const ran = service.update(owner, made.id, chosen.revision, {
+      targetSessionJid: sessionJid,
+    });
+    // Another model is set by the next run; only clearing releases.
+    const other = service.update(owner, made.id, ran.revision, {
+      model: { ...GLM, effort: 'low' },
+    });
+    expect(fake.released).toEqual([]);
+    service.update(owner, made.id, other.revision, { model: null });
+    expect(fake.released).toEqual([sessionJid]);
+  });
+});
+
 describe('the run sessions of an automation', () => {
   test('a new run session starts on the automation model', async () => {
     const deps = runtime.createAutomationRuntimeDeps(hooks());
@@ -545,6 +695,60 @@ describe('the run sessions of an automation', () => {
       BOUND,
     );
     expect(selectionOf(BOUND)).toEqual({ ...own, updatedBy: 'bob' });
+    expect(mocks.drainCalls).toEqual([]);
+  });
+
+  test("a session it did not create keeps the user's choice", async () => {
+    const deps = runtime.createAutomationRuntimeDeps(hooks());
+    db.setSessionModelSelection(FOLDER, BOUND_ID, 'official', 'bob');
+    await inject(deps, automation({ targetSessionJid: BOUND }), BOUND);
+    expect(selectionOf(BOUND)).toEqual({
+      modelConfigId: 'official',
+      model: null,
+      effort: null,
+      updatedBy: 'bob',
+    });
+    expect(mocks.drainCalls).toEqual([]);
+  });
+
+  test('released, its own session returns to the default unless the user chose since', async () => {
+    const deps = runtime.createAutomationRuntimeDeps(hooks());
+    const { sessionJid } = await deps.createAutomationSession({
+      automation: automation(),
+      title: '日报',
+    });
+    deps.releaseAutomationSessionModel({
+      automation: automation({ model: null }),
+      sessionJid,
+      previous: GLM,
+    });
+    expect(selectionOf(sessionJid)).toBeNull();
+    expect(mocks.drainCalls).toEqual([{ jids: [sessionJid], target: null }]);
+
+    // A choice made in the session since then, or a session the automation
+    // did not create, is left alone.
+    mocks.drainCalls.length = 0;
+    db.setSessionModelSelection(
+      FOLDER,
+      agentIdOf(sessionJid),
+      'official',
+      'bob',
+    );
+    db.setSessionModelSelection(FOLDER, BOUND_ID, 'glm', OWNER, {
+      model: 'glm-5.3',
+      effort: 'high',
+    });
+    for (const jid of [sessionJid, BOUND]) {
+      deps.releaseAutomationSessionModel({
+        automation: automation({ model: null }),
+        sessionJid: jid,
+        previous: GLM,
+      });
+    }
+    expect(selectionOf(sessionJid)).toMatchObject({
+      modelConfigId: 'official',
+    });
+    expect(selectionOf(BOUND)).toMatchObject({ modelConfigId: 'glm' });
     expect(mocks.drainCalls).toEqual([]);
   });
 
