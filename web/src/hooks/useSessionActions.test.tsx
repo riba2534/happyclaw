@@ -142,6 +142,63 @@ describe('creating a session twice at once', () => {
   });
 });
 
+describe('creating a session with a model', () => {
+  test('the model goes to the store; a refusal goes to whoever shows it', async () => {
+    store.createConversation.mockReset();
+    toast.error.mockClear();
+    const model = { modelConfigId: 'glm', model: 'glm-4.6', effort: null };
+    store.createConversation.mockImplementationOnce(async () => {
+      store.error = '所选模型已不在该模型配置的模型列表里';
+      return null;
+    });
+    const actions = await renderActions();
+    const onError = vi.fn();
+    let created: AgentInfo | null = session(null);
+    await act(async () => {
+      created = await actions.createSession('web:ws', { model, onError });
+    });
+    expect(created).toBeNull();
+    expect(store.createConversation.mock.calls[0][3]).toEqual({ model });
+    expect(onError).toHaveBeenCalledWith(
+      '所选模型已不在该模型配置的模型列表里',
+    );
+    expect(toast.error).not.toHaveBeenCalled();
+
+    // Without a reporter the refusal is a toast, as before.
+    store.createConversation.mockResolvedValueOnce(null);
+    await act(async () => {
+      await actions.createSession('web:ws', { model });
+    });
+    expect(toast.error).toHaveBeenCalledWith(
+      '所选模型已不在该模型配置的模型列表里',
+    );
+    store.error = null;
+    toast.error.mockClear();
+  });
+
+  test('another model is another request, not the one running', async () => {
+    store.createConversation.mockReset();
+    let finish!: (created: AgentInfo) => void;
+    store.createConversation
+      .mockImplementationOnce(
+        () => new Promise<AgentInfo>((resolve) => (finish = resolve)),
+      )
+      .mockResolvedValueOnce(session(null));
+    const actions = await renderActions();
+    let plain!: Promise<AgentInfo | null>;
+    let picked!: Promise<AgentInfo | null>;
+    await act(async () => {
+      plain = actions.createSession('web:ws');
+      picked = actions.createSession('web:ws', {
+        model: { modelConfigId: 'glm', model: null, effort: null },
+      });
+    });
+    await act(async () => finish(session(null)));
+    await Promise.all([plain, picked]);
+    expect(store.createConversation).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe('deleting a session', () => {
   const flush = () => act(async () => await new Promise((r) => setTimeout(r)));
 

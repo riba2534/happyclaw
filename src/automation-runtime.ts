@@ -27,6 +27,7 @@ import {
   type InjectAutomationInputRequest,
 } from './automation-contract.js';
 import type {
+  Automation,
   AutomationIpcRequest,
   AutomationIpcResult,
 } from './automation.js';
@@ -58,6 +59,11 @@ import { resolveInputChannelReplySource } from './channel-reply-source.js';
 import { canExecuteOnHost } from './host-execution-policy.js';
 import { getChannelType } from './im-channel.js';
 import { logger } from './logger.js';
+import {
+  saveSessionModelChoice,
+  sessionHasModelChoice,
+  type SessionModelChoice,
+} from './session-model-service.js';
 import { resolveWorkspaceProjectRoot } from './session-worktree.js';
 import {
   archiveConversationSession,
@@ -271,6 +277,25 @@ function automationRunIdOfInputMessageId(messageId: string): string | null {
     : null;
 }
 
+/**
+ * The model choice the run sessions of `automation` hold: its own, for the
+ * sessions it creates (fresh, persistent) and agent runs only. A bound
+ * session keeps the choice its user made, and an automation without one
+ * leaves every session's choice alone.
+ */
+function runSessionModelChoice(
+  automation: Automation,
+): SessionModelChoice | null {
+  if (
+    !automation.model ||
+    automation.sessionMode === 'bound' ||
+    automation.execution !== 'agent'
+  ) {
+    return null;
+  }
+  return automation.model;
+}
+
 export function createAutomationRuntimeDeps(
   hooks: AutomationRuntimeHooks,
 ): AutomationRuntimeDeps {
@@ -283,6 +308,23 @@ export function createAutomationRuntimeDeps(
   return {
     async injectAutomationInput(req: InjectAutomationInputRequest) {
       const session = requireSession(req.sessionJid);
+      // Every run enters its session here, however it fired. A persistent
+      // session outlives edits of the automation, so it is brought to the
+      // automation's current model before the input goes in, which retires a
+      // warm runner still on the old one.
+      const choice = runSessionModelChoice(req.automation);
+      if (
+        choice &&
+        !sessionHasModelChoice(session.group.folder, session.agentId, choice)
+      ) {
+        saveSessionModelChoice({
+          group: session.group,
+          workspaceJid: session.workspaceJid,
+          agentId: session.agentId,
+          choice,
+          updatedBy: req.automation.createdBy,
+        });
+      }
       const messageId = automationInputMessageId(req.run.id);
       const timestamp = new Date().toISOString();
       const sourceJid = req.deliveryRouteJid ?? session.laneJid;
@@ -350,6 +392,19 @@ export function createAutomationRuntimeDeps(
         sourceKind: 'automation',
         automationId: automation.id,
       });
+      // A new run session starts on the automation's model; nothing runs in
+      // it yet, so there is no runner to retire.
+      const choice = runSessionModelChoice(automation);
+      if (choice) {
+        saveSessionModelChoice({
+          group,
+          workspaceJid: automation.workspaceJid,
+          agentId: session.id,
+          choice,
+          updatedBy: automation.createdBy,
+          runners: null,
+        });
+      }
       return { sessionJid: `${automation.workspaceJid}#agent:${session.id}` };
     },
 

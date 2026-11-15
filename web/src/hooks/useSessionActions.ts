@@ -21,7 +21,21 @@ import {
   sessionDisplayName,
 } from '../lib/session-presentation';
 import { sessionJidOf } from '../lib/session-jid';
+import type { ModelChoice } from '../lib/session-model-choice';
 import type { AgentInfo } from '../types';
+
+/** What a new session is created with, beyond its workspace. */
+export interface NewSessionOptions {
+  name?: string;
+  worktree?: boolean;
+  /** Its model; absent or null follows the default. */
+  model?: ModelChoice | null;
+  /**
+   * Shows a refusal itself (the new-session dialog says it inline, next to
+   * the choice it is about) instead of a toast.
+   */
+  onError?: (message: string) => void;
+}
 
 /** Picked in the 改绑到 dropdown to delete without moving the chats. */
 const NO_REBIND = '';
@@ -55,12 +69,13 @@ const creationsInFlight = new Map<string, Promise<AgentInfo | null>>();
  */
 function createSessionOnce(
   groupJid: string,
-  options?: { name?: string; worktree?: boolean },
+  options?: NewSessionOptions,
 ): Promise<AgentInfo | null> {
   const key = JSON.stringify([
     groupJid,
     options?.name ?? '',
     !!options?.worktree,
+    options?.model ?? null,
   ]);
   const running = creationsInFlight.get(key);
   if (running) return running;
@@ -69,9 +84,12 @@ function createSessionOnce(
       .getState()
       .createConversation(groupJid, options?.name ?? '', undefined, {
         worktree: options?.worktree,
+        model: options?.model,
       });
     if (!agent) {
-      toast.error(useChatStore.getState().error || '创建 Web 会话失败');
+      const message = useChatStore.getState().error || '创建 Web 会话失败';
+      if (options?.onError) options.onError(message);
+      else toast.error(message);
       return null;
     }
     const incomplete = agent.worktree?.include_incomplete;
@@ -97,7 +115,7 @@ export function useSessionActions() {
   const createSession = useCallback(
     async (
       groupJid: string,
-      options?: { name?: string; worktree?: boolean },
+      options?: NewSessionOptions,
     ): Promise<AgentInfo | null> => {
       setCreatingSession(true);
       try {

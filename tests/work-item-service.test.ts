@@ -254,6 +254,12 @@ afterAll(async () => {
 
 describe('team mount settings', () => {
   test('enabling creates the router session and bumps the version', async () => {
+    // The group was talking to its bound session: the router takes its
+    // model choice, as it stands, chooser included.
+    db.setSessionModelSelection(FOLDER, BOUND_SESSION, 'conn-bound', OWNER, {
+      model: 'model-bound',
+      effort: 'high',
+    });
     const first = await enable();
     expect(first.settings.version).toBe(1);
     const router = db.getAgent(first.routerAgentId!);
@@ -262,6 +268,15 @@ describe('team mount settings', () => {
       chat_jid: WORKSPACE,
       kind: 'conversation',
     });
+    expect(
+      db.getSessionModelSelectionDetail(FOLDER, first.routerAgentId!),
+    ).toEqual({
+      modelConfigId: 'conn-bound',
+      model: 'model-bound',
+      effort: 'high',
+      updatedBy: OWNER,
+    });
+    db.setSessionModelSelection(FOLDER, BOUND_SESSION, null);
     const second = await enable();
     expect(second.settings.version).toBe(2);
     expect(second.routerAgentId).toBe(first.routerAgentId);
@@ -365,6 +380,33 @@ describe('work_route', () => {
     expect(store.getWorkDecisionForTrigger(CHAT, 'om_req1')?.kind).toBe(
       'accept',
     );
+  });
+
+  test("a worker starts on the router's model choice; none when it has none", async () => {
+    const router = store.getTeamMount(CHAT)!.routerAgentId!;
+    db.setSessionModelSelection(FOLDER, router, 'conn-router', OWNER, {
+      model: 'model-router',
+      effort: null,
+    });
+    storeCandidate('om_model1');
+    const picked = store.getWorkItem(
+      (await accept('om_model1')).workItemId as string,
+    )!;
+    expect(db.getSessionModelSelectionDetail(FOLDER, picked.agentId)).toEqual({
+      modelConfigId: 'conn-router',
+      model: 'model-router',
+      effort: null,
+      updatedBy: OWNER,
+    });
+
+    db.setSessionModelSelection(FOLDER, router, null);
+    storeCandidate('om_model2');
+    const unpicked = store.getWorkItem(
+      (await accept('om_model2')).workItemId as string,
+    )!;
+    expect(
+      db.getSessionModelSelectionDetail(FOLDER, unpicked.agentId),
+    ).toBeNull();
   });
 
   test('accept is idempotent by trigger, also when retried concurrently', async () => {

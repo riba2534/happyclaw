@@ -9,7 +9,7 @@ import {
 } from '../lib/route-workspace';
 import { isNativeManagedSession } from '../lib/session-presentation';
 import type { AgentInfo, GroupInfo } from '../types';
-import { useSessionActions } from './useSessionActions';
+import { useSessionActions, type NewSessionOptions } from './useSessionActions';
 
 /**
  * Where a new conversation goes: a given workspace, Home, or the workspace
@@ -74,8 +74,8 @@ export function useNewConversation() {
     }: {
       target?: NewConversationTarget;
       replace?: boolean;
-      /** Always create one, with these options (a worktree session). */
-      create?: { name?: string; worktree?: boolean };
+      /** Always create one, with these options (the new-session dialog). */
+      create?: NewSessionOptions;
     } = {}): Promise<boolean> => {
       const state = useChatStore.getState();
       const targetJid = newConversationWorkspace(

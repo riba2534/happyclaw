@@ -70,6 +70,9 @@ export function initAutomationStore(db: SqliteDatabase | null): void {
       end_at TEXT,
       session_mode TEXT NOT NULL,
       target_session_jid TEXT,
+      model_config_id TEXT,
+      model TEXT,
+      reasoning_effort TEXT,
       delivery_route_jid TEXT,
       silent_when_idle INTEGER NOT NULL DEFAULT 0,
       pre_run_check_command TEXT,
@@ -128,6 +131,24 @@ export function initAutomationStore(db: SqliteDatabase | null): void {
       last_failed_at TEXT NOT NULL
     );
   `);
+  // v91 -> v92: the model an automation's run sessions use. Automations made
+  // before it have none.
+  ensureColumn(db, 'automations', 'model_config_id', 'TEXT');
+  ensureColumn(db, 'automations', 'model', 'TEXT');
+  ensureColumn(db, 'automations', 'reasoning_effort', 'TEXT');
+}
+
+function ensureColumn(
+  db: SqliteDatabase,
+  table: string,
+  column: string,
+  definition: string,
+): void {
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all() as {
+    name: string;
+  }[];
+  if (columns.some((entry) => entry.name === column)) return;
+  db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
 }
 
 export function inAutomationTransaction<T>(fn: () => T): T {
@@ -146,6 +167,7 @@ function num(value: unknown): number | null {
 
 function toAutomation(row: Record<string, unknown>): Automation {
   const preRunCommand = str(row.pre_run_check_command);
+  const modelConfigId = str(row.model_config_id);
   return {
     id: String(row.id),
     workspaceJid: String(row.workspace_jid),
@@ -164,6 +186,13 @@ function toAutomation(row: Record<string, unknown>): Automation {
     endAt: str(row.end_at),
     sessionMode: String(row.session_mode) as Automation['sessionMode'],
     targetSessionJid: str(row.target_session_jid),
+    model: modelConfigId
+      ? {
+          modelConfigId,
+          model: str(row.model),
+          effort: str(row.reasoning_effort),
+        }
+      : null,
     deliveryRouteJid: str(row.delivery_route_jid),
     silentWhenIdle: Number(row.silent_when_idle) === 1,
     preRunCheck: preRunCommand
@@ -202,6 +231,9 @@ function automationColumns(a: Automation): Record<string, unknown> {
     end_at: a.endAt,
     session_mode: a.sessionMode,
     target_session_jid: a.targetSessionJid,
+    model_config_id: a.model?.modelConfigId ?? null,
+    model: a.model?.model ?? null,
+    reasoning_effort: a.model?.effort ?? null,
     delivery_route_jid: a.deliveryRouteJid,
     silent_when_idle: a.silentWhenIdle ? 1 : 0,
     pre_run_check_command: a.preRunCheck?.command ?? null,
@@ -791,6 +823,7 @@ export function migrateLegacyScheduledTasks(options: {
       endAt: null,
       sessionMode,
       targetSessionJid: sessionMode === 'bound' ? workspace.jid : null,
+      model: null,
       deliveryRouteJid,
       silentWhenIdle: false,
       preRunCheck: null,

@@ -402,6 +402,7 @@ describe('guest guard: default deny', () => {
     `/api/groups/${GRANTED}/env`,
     `/api/groups/${GRANTED}/mcp`,
     `/api/groups/${GRANTED}/model-selection`,
+    `/api/groups/${GRANTED}/model-options`,
     `/api/groups/${GRANTED}/context-usage`,
     `/api/groups/${GRANTED}/git/status`,
     `/api/groups/${GRANTED}/git/diff?path=notes.txt`,

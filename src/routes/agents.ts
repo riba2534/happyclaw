@@ -45,6 +45,12 @@ import {
   unpinSession,
 } from '../db.js';
 import { sortSessionsForList } from '../session-order.js';
+import { SessionCreateModelChoiceSchema } from '../schemas.js';
+import {
+  checkSessionModelChoice,
+  saveSessionModelChoice,
+  type SessionModelChoice,
+} from '../session-model-service.js';
 import type {
   AudienceMode,
   AuthUser,
@@ -468,6 +474,76 @@ async function createRequestedWorktree(
   }
 }
 
+/**
+ * The model choice a new session asks for, checked exactly like a pick in
+ * the chat composer (the requester chooses) before anything is created, so a
+ * refused choice leaves no session or worktree behind. Null when it asks for
+ * none: the session follows the default.
+ */
+function checkRequestedModelChoice(
+  c: Context<{ Variables: Variables }>,
+  input: {
+    body: Record<string, unknown>;
+    group: RegisteredGroup;
+    user: AuthUser;
+  },
+): SessionModelChoice | null | Response {
+  const parsed = SessionCreateModelChoiceSchema.safeParse({
+    modelConfigId: input.body.modelConfigId,
+    model: input.body.model,
+    effort: input.body.effort,
+  });
+  if (!parsed.success) {
+    return c.json(
+      { error: 'Invalid model choice', code: 'INVALID_MODEL_CHOICE' },
+      400,
+    );
+  }
+  const { modelConfigId, model, effort } = parsed.data;
+  if (!modelConfigId && !model && !effort) return null;
+  if (
+    isHostExecutionGroup(input.group) &&
+    !hasHostExecutionPermission(input.user)
+  ) {
+    return c.json(
+      { error: 'Insufficient permissions for host execution mode' },
+      403,
+    );
+  }
+  const checked = checkSessionModelChoice(
+    input.group,
+    { modelConfigId, model, effort },
+    input.user,
+  );
+  if (!checked.ok) {
+    // Nothing is created either way: a connection that does not exist is a
+    // bad request here, not a missing resource.
+    const { error, code } = checked.rejection;
+    return c.json({ error, code }, 400);
+  }
+  return checked.choice;
+}
+
+/** Give a session that was just created the model choice it asked for. */
+function applyRequestedModelChoice(input: {
+  jid: string;
+  group: RegisteredGroup;
+  user: AuthUser;
+  sessionId: string;
+  choice: SessionModelChoice | null;
+}): void {
+  if (!input.choice) return;
+  saveSessionModelChoice({
+    group: input.group,
+    workspaceJid: input.jid,
+    agentId: input.sessionId,
+    choice: input.choice,
+    updatedBy: input.user.id,
+    // A session that was just created has never run.
+    runners: null,
+  });
+}
+
 /** The workspace's worktrees, rechecked on disk so the list shows broken and
  * recovered checkouts as they are now. */
 /** Each session's worktree; none for guests, who get no repository details. */
@@ -587,6 +663,9 @@ router.post('/:jid/agents', authMiddleware, async (c) => {
   const description =
     typeof body.description === 'string' ? body.description.trim() : '';
 
+  const modelChoice = checkRequestedModelChoice(c, { body, group, user });
+  if (modelChoice instanceof Response) return modelChoice;
+
   const agentId = crypto.randomUUID();
   const worktree = await createRequestedWorktree(c, {
     body,
@@ -604,6 +683,13 @@ router.post('/:jid/agents', authMiddleware, async (c) => {
     description,
     sessionId: agentId,
     worktree,
+  });
+  applyRequestedModelChoice({
+    jid,
+    group,
+    user,
+    sessionId: agent.id,
+    choice: modelChoice,
   });
 
   return c.json({
@@ -652,6 +738,8 @@ router.post('/:jid/sessions', authMiddleware, async (c) => {
   }
   const description =
     typeof body.description === 'string' ? body.description.trim() : '';
+  const modelChoice = checkRequestedModelChoice(c, { body, group, user });
+  if (modelChoice instanceof Response) return modelChoice;
 
   const sessionId = crypto.randomUUID();
   const worktree = await createRequestedWorktree(c, {
@@ -673,6 +761,13 @@ router.post('/:jid/sessions', authMiddleware, async (c) => {
     description,
     sessionId,
     worktree,
+  });
+  applyRequestedModelChoice({
+    jid,
+    group,
+    user,
+    sessionId: session.id,
+    choice: modelChoice,
   });
 
   const payload = {

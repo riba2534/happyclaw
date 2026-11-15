@@ -97,7 +97,9 @@ Agent 不含宿主机上下文与宿主机 Skills。渠道账号删除、登出�
 - 列表中的工作区投影
 - 读取消息与文件，以及回合的思考摘要与执行轨迹
   （`GET /api/groups/:jid/turn-traces/:turnId`，主动模式工作区另按下述过程可见性过滤）
-- 查看会话当前使用的模型配置与上下文占用（`GET /api/groups/:jid/context-usage`）
+- 查看会话当前使用的模型配置与上下文占用（`GET /api/groups/:jid/context-usage`），
+  以及还没有会话时可选的模型（`GET /api/groups/:jid/model-options`，Host 工作区另需
+  Host 权限）
 - 发送普通消息
 - 查看 Runtime Session、绑定和项目能力
 - 读取代码改动（`GET /api/groups/:jid/git/status|diff`）和 worktree 可用性
@@ -132,7 +134,8 @@ Host 工作区要求 admin。Office 预览（`files/office-preview/:path`）与�
 - stop、interrupt、reset-session、clear-history
 - 切换会话模型与推理档位（`PUT /api/groups/:jid/model-selection`）；其中高于 `max` 的
   推理档位（目前是 `ultra`）另需 `manage_system_config`
-- 创建、修改、删除 Runtime Session
+- 创建、修改、删除 Runtime Session；新会话带模型选择时按 `model-selection` 的规则校验
+  （Host 工作区另需 Host 权限）
 - 为新会话创建独立 worktree（另需 Host 权限）；删除会话、工作区或 clear-history 时
   移除 worktree、保留分支，有未提交改动须带 `force_worktree(s)=true` 确认
 - 写入工作区 Skills/MCP
@@ -376,6 +379,7 @@ Owner Claim：
 | `/recall`、`/rc`                               | 私聊只读；群聊仅 IM Owner；带节流；只读取本条消息路由到的 Session             |
 | `/allowlist`                                   | 只读                                                                          |
 | `/clear`、`/fresh`、`/bind`、`/unbind`、`/new` | IM Owner                                                                      |
+| `/model`（含不带参数的查看）                   | IM Owner；列出并按工作区主人的权限校验 owner 的连接与模型                     |
 | `/sw`、`/spawn`                                | IM Owner                                                                      |
 | `/release_owner`                               | IM Owner                                                                      |
 | `/owner_mention`                               | 未认领群的 bootstrap，不可被 Owner Gate 锁死                                  |
@@ -395,7 +399,7 @@ Owner Claim：
 未知时按群聊处理（fail closed）。私聊中的 owner-required 命令在 owner 未知时认领
 发送者；群聊永不自动认领。运行时控制在群聊路由失败时回复目标不存在，只有私聊才由
 绑定解析目标，绝不回退到工作区的其他会话；未绑定的聊天没有目标，`/clear`、`/fresh`、
-`/recall` 回复「本聊天未绑定会话。」且不做任何操作。`/recall` 在话题群中只读取当前话题的
+`/recall`、`/model` 回复「本聊天未绑定会话。」且不做任何操作。`/recall` 在话题群中只读取当前话题的
 Session，缺少话题元数据时拒绝，不回退到工作区的其他会话。
 
 不同 Provider 的原生 sender ID namespace 不得混用。例如 QQ C2C 与 Group 使用不同
@@ -417,6 +421,8 @@ Agent MCP 调用没有 Cookie，但必须携带由主进程创建的运行上下
 自动化：
 
 - 每次运行都是真实会话里的一轮：绑定已有会话（默认当前会话）、每次新建或持续会话。
+- 自动化的模型（每次新建、持续会话的 Agent 自动化）只能在 Web 设置，按创建者的权限校验，
+  与会话选择同一套规则；访客看不到它，Agent 工具不能设置或修改它。
 - 脚本和前置检查仅允许 admin 的 Host Workspace。
 - `adminHostOnlyMode` 仅允许 admin 配置；开启后 active admin 拥有的 Workspace
   强制使用 Host，所有 Container 写入入口都会拒绝。member 始终保留 Container 隔离。
@@ -488,7 +494,7 @@ Agent MCP 调用没有 Cookie，但必须携带由主进程创建的运行上下
   `GET /api/automations[/:id[/runs]]`。放行的处理器仍按 `canViewGroup` 判断，
   未授权返回 404。
 - 有意不放行的读取：`/api/groups/:jid/git/*`（diff 可能包含被隐藏的点文件）、
-  `model-selection`（owner 的模型连接）、
+  `model-selection` 与 `model-options`（owner 的模型连接）、
   `context-usage`（token 用量，只服务于输入框）、`env`、`mcp`、`im-groups`、
   `delete-impact`、工作区的渠道与运行会话挂载、`/api/automations/for-session`、
   `/api/status*`、用量与计费。

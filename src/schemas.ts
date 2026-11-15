@@ -87,6 +87,19 @@ const AutomationPreRunCheckSchema = z.object({
   timeoutMs: z.number().int().positive().nullable().optional(),
 });
 
+/** Checked against the connection like a pick in the chat (the service). */
+const AutomationModelChoiceSchema = z.object({
+  modelConfigId: z.string().trim().min(1).max(128),
+  model: z
+    .string()
+    .trim()
+    .min(1)
+    .max(MAX_PROVIDER_MODEL_ID_LENGTH)
+    .nullable()
+    .optional(),
+  effort: z.string().trim().min(1).max(32).nullable().optional(),
+});
+
 /**
  * Shape and a generous size cap only: the automation service applies the
  * shared validateAutomationDraft rules, cron syntax and the permission
@@ -110,6 +123,7 @@ const AutomationDraftFields = {
     .max(AUTOMATION_LIMITS.scriptCommandMax * 2)
     .nullable()
     .optional(),
+  model: AutomationModelChoiceSchema.nullable().optional(),
 };
 
 const AutomationSessionModeSchema = z.enum(['fresh', 'persistent', 'bound']);
@@ -312,6 +326,18 @@ export const SessionModelSelectionSchema = z.object({
     .nullable()
     .optional(),
   effort: z.string().trim().min(1).max(32).nullable().optional(),
+});
+
+/**
+ * The model a new session starts on (POST sessions): the same choice as the
+ * composer's, made before the session exists. Leaving the configuration out
+ * follows the default.
+ */
+export const SessionCreateModelChoiceSchema = SessionModelSelectionSchema.pick({
+  model: true,
+  effort: true,
+}).extend({
+  modelConfigId: SessionModelSelectionSchema.shape.modelConfigId.optional(),
 });
 
 /**

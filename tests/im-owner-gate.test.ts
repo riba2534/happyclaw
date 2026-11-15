@@ -18,6 +18,7 @@ describe('OWNER_REQUIRED_IM_COMMANDS set', () => {
       'bind',
       'clear',
       'fresh',
+      'model',
       'new',
       'release_owner',
       'spawn',

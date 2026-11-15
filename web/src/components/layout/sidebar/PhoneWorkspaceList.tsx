@@ -13,6 +13,7 @@ import { useNavigate } from 'react-router-dom';
 import { AnimatePresence, m } from 'motion/react';
 import { ChevronRight, Folder, Link2, Pin, Timer } from 'lucide-react';
 import { useNewConversation } from '../../../hooks/useNewConversation';
+import type { NewSessionOptions } from '../../../hooks/useSessionActions';
 import { Spinner } from '@/components/ui/spinner';
 import { cn } from '@/lib/utils';
 import { TeamSessionTag } from '../../team/TeamSessionTag';
@@ -191,7 +192,7 @@ export function PhoneWorkspaceList({
     setWorkspaceExpanded(jid, expanded),
   );
   const createWorkspaceSession = useStableCallback(
-    (group: GroupEntry, options?: { name?: string; worktree?: boolean }) =>
+    (group: GroupEntry, options?: NewSessionOptions) =>
       startNewConversation({ target: { jid: group.jid }, create: options }),
   );
   const menuActions = useMemo<WorkspaceMenuActions>(
