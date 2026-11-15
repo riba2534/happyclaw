@@ -2,6 +2,7 @@ import {
   PROVIDER_ERROR_COPY,
   getModelPreset,
   splitOneMillionSuffix,
+  type CatalogSyncResult,
   type DiscoveredModel,
   type ModelPreset,
   type ProviderErrorCode,
@@ -239,19 +240,6 @@ export function discoverModels(
     45_000,
   );
 }
-
-export type CatalogSyncResult =
-  | {
-      ok: true;
-      gateway: ProviderGateway | null;
-      /** Models auto-add put on the list. */
-      added: string[];
-      newModels: string[];
-      missing: string[];
-      /** The server did not read the list again: it did so a moment ago. */
-      skipped?: 'recent' | 'checked';
-    }
-  | { ok: false; code: ProviderErrorCode; message: string };
 
 /**
  * Reads a third-party connection's model list again: it tells a magpie

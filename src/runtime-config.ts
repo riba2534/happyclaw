@@ -42,9 +42,10 @@ import {
   MODEL_EFFORTS,
   normalizeConnectionModelRoles,
   normalizeContextWindow,
-  normalizeProviderBaseUrl,
+  normalizeIsoTime,
   normalizeProviderModels,
   ONE_MILLION_CONTEXT,
+  presetAppliesAt,
   PROVIDER_ERROR_CODES,
   resolveModelCapabilities,
   splitOneMillionSuffix,
@@ -52,6 +53,8 @@ import {
   windowOf,
   type ConnectionModelRoles,
   type ModelEffort,
+  type ProviderCatalogError,
+  type ProviderCatalogPublic,
   type ProviderErrorCode,
   type ProviderGateway,
   type ProviderModelEntry,
@@ -185,7 +188,9 @@ const THIRD_PARTY_CONFIGURABLE_ENV_KEYS: ReadonlySet<string> = new Set([
  * Model environment the launch derives that a connection's own env may
  * still set: the value the admin wrote replaces the derived one.
  */
-const USER_TUNABLE_MODEL_ENV = { CLAUDE_CODE_MAX_OUTPUT_TOKENS: true } as const;
+const USER_TUNABLE_MODEL_ENV: ReadonlySet<string> = new Set([
+  'CLAUDE_CODE_MAX_OUTPUT_TOKENS',
+]);
 
 /**
  * Haiku tier behind the ChatGPT subscription gateway: Claude Code's own
@@ -819,19 +824,6 @@ export interface ProviderCatalogState {
   newModels?: ProviderModelEntry[];
   /** Every id the last sync saw upstream, to tell a new model from a known one. */
   knownIds?: string[];
-}
-
-export interface ProviderCatalogError {
-  code: ProviderErrorCode;
-  message: string;
-  at: string;
-}
-
-export interface ProviderCatalogPublic {
-  autoAdd: boolean;
-  syncedAt: string | null;
-  error: ProviderCatalogError | null;
-  newModels: ProviderModelEntry[];
 }
 
 /** A connection write refused for a reason the client can name. */
@@ -1658,17 +1650,13 @@ function connectionListFields(provider: {
         }),
       );
   // A preset describes one vendor endpoint; moved elsewhere, it no longer
-  // applies (its model list address, its models). A gateway preset's address
-  // is wherever the user runs the gateway, so it stays.
+  // applies (its model list address, its models).
   const preset =
     !chatGpt && typeof provider.presetId === 'string'
       ? getModelPreset(provider.presetId)
       : null;
   const presetId =
-    preset &&
-    (preset.editableBaseUrl ||
-      normalizeProviderBaseUrl(provider.anthropicBaseUrl) ===
-        normalizeProviderBaseUrl(preset.baseUrl))
+    preset && presetAppliesAt(preset, provider.anthropicBaseUrl)
       ? preset.id
       : null;
   // Absent fields stay undefined, which JSON leaves out of the file.
@@ -1714,10 +1702,11 @@ function gatewayFields(provider: {
   };
 }
 
-function isoTime(value: unknown): string | undefined {
-  return typeof value === 'string' && !Number.isNaN(Date.parse(value))
-    ? value
-    : undefined;
+/** A stored error code; one from a newer release reads as UNKNOWN. */
+function storedErrorCode(value: unknown): ProviderErrorCode {
+  return (PROVIDER_ERROR_CODES as readonly unknown[]).includes(value)
+    ? (value as ProviderErrorCode)
+    : 'UNKNOWN';
 }
 
 function normalizeCatalogState(raw: unknown): ProviderCatalogState | undefined {
@@ -1725,20 +1714,18 @@ function normalizeCatalogState(raw: unknown): ProviderCatalogState | undefined {
   const record = raw as Record<string, unknown>;
   const state: ProviderCatalogState = {};
   if (record.autoAdd === true) state.autoAdd = true;
-  const checkedAt = isoTime(record.checkedAt);
+  const checkedAt = normalizeIsoTime(record.checkedAt);
   if (checkedAt) state.checkedAt = checkedAt;
-  const syncedAt = isoTime(record.syncedAt);
+  const syncedAt = normalizeIsoTime(record.syncedAt);
   if (syncedAt) state.syncedAt = syncedAt;
   const error =
     record.error && typeof record.error === 'object'
       ? (record.error as Record<string, unknown>)
       : null;
-  const errorAt = isoTime(error?.at);
+  const errorAt = normalizeIsoTime(error?.at);
   if (error && errorAt && typeof error.message === 'string') {
     state.error = {
-      code: (PROVIDER_ERROR_CODES as readonly unknown[]).includes(error.code)
-        ? (error.code as ProviderErrorCode)
-        : 'UNKNOWN',
+      code: storedErrorCode(error.code),
       message: error.message.slice(0, 300),
       at: errorAt,
     };
@@ -1750,7 +1737,7 @@ function normalizeCatalogState(raw: unknown): ProviderCatalogState | undefined {
   ) {
     state.failures = record.failures;
   }
-  const retryAt = isoTime(record.retryAt);
+  const retryAt = normalizeIsoTime(record.retryAt);
   if (retryAt) state.retryAt = retryAt;
   const newModels = Array.isArray(record.newModels)
     ? (normalizeProviderModels(
@@ -1796,11 +1783,7 @@ export function normalizeProviderTestRecord(
     return null;
   }
   // A code from a newer release reads as UNKNOWN rather than dropping the test.
-  const code: ProviderErrorCode | null = record.ok
-    ? null
-    : (PROVIDER_ERROR_CODES as readonly unknown[]).includes(record.code)
-      ? (record.code as ProviderErrorCode)
-      : 'UNKNOWN';
+  const code = record.ok ? null : storedErrorCode(record.code);
   return {
     ok: record.ok,
     code,
@@ -2745,20 +2728,14 @@ export function recordProviderCatalog(
   if (update.models) {
     Object.assign(
       next,
-      connectionListFields({
-        ...next,
-        models: update.models,
-        roles: current.roles,
-        presetId: current.presetId,
-      }),
+      connectionListFields({ ...next, models: update.models }),
     );
   }
   Object.assign(
     next,
     gatewayFields({
       ...next,
-      gateway: update.gateway ?? current.gateway,
-      toolSearch: current.toolSearch,
+      gateway: update.gateway ?? next.gateway,
       catalog: update.catalog,
     }),
   );
@@ -2962,23 +2939,18 @@ export function updateProvider(
   // What was detected about the endpoint describes the old address; the
   // next check looks again. The admin's own choices stay.
   const moved = updated.anthropicBaseUrl !== current.anthropicBaseUrl;
-  const catalog: ProviderCatalogState | undefined = moved
-    ? current.catalog?.autoAdd
-      ? { autoAdd: true }
-      : undefined
-    : current.catalog
-      ? { ...current.catalog }
-      : undefined;
-  let nextCatalog = catalog;
-  if (patch.catalogAutoAdd !== undefined) {
-    nextCatalog = { ...(catalog ?? {}) };
-    if (patch.catalogAutoAdd) nextCatalog.autoAdd = true;
-    else delete nextCatalog.autoAdd;
+  // An empty state is stored as none (normalizeCatalogState).
+  const nextCatalog: ProviderCatalogState = moved ? {} : { ...current.catalog };
+  if (patch.catalogAutoAdd ?? current.catalog?.autoAdd) {
+    nextCatalog.autoAdd = true;
+  } else {
+    delete nextCatalog.autoAdd;
   }
   // A new model the admin added is no longer new.
-  if (nextCatalog?.newModels) {
+  if (nextCatalog.newModels) {
+    const listed = effectiveProviderModels(updated);
     const kept = nextCatalog.newModels.filter(
-      (entry) => !findModelEntry(effectiveProviderModels(updated), entry.id),
+      (entry) => !findModelEntry(listed, entry.id),
     );
     if (kept.length > 0) nextCatalog.newModels = kept;
     else delete nextCatalog.newModels;
@@ -4002,7 +3974,7 @@ export function buildClaudeEnvLines(
     });
     for (const [key, value] of Object.entries(modelEnv)) {
       // The admin's own reply limit for the connection wins.
-      if (key in USER_TUNABLE_MODEL_ENV && customEnv[key]?.trim()) continue;
+      if (USER_TUNABLE_MODEL_ENV.has(key) && customEnv[key]?.trim()) continue;
       lines.push(`${key}=${sanitizeEnvValue(value)}`);
     }
   } else if (config.anthropicModel) {

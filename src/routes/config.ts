@@ -245,9 +245,10 @@ import {
   findPresetsByBaseUrl,
   getModelPreset,
   modelsUrlFor,
-  normalizeProviderBaseUrl,
+  presetAppliesAt,
   presetModelEntry,
   splitOneMillionSuffix,
+  type MagpieQuotasUsage,
   type ModelPreset,
   type ProviderErrorCode,
   type ProviderModelEntry,
@@ -259,7 +260,6 @@ import {
   storedConnectionAccess,
   syncProviderCatalog,
 } from '../model-catalog-sync.js';
-import type { MagpieQuotasUsage } from '../model-providers.js';
 import {
   buildSessionMountUpdate,
   buildDetachedWorkspaceUpdate,
@@ -2107,15 +2107,7 @@ function resolveCheckedConnection(
       stored?.anthropicBaseUrl ||
       named?.baseUrl ||
       '';
-    // A preset only speaks for its own endpoint, a gateway's for wherever
-    // the user runs it.
-    const preset =
-      named &&
-      (named.editableBaseUrl ||
-        normalizeProviderBaseUrl(baseUrl) ===
-          normalizeProviderBaseUrl(named.baseUrl))
-        ? named
-        : null;
+    const preset = named && presetAppliesAt(named, baseUrl) ? named : null;
     const draftToken = draft.anthropicAuthToken?.trim();
     const token =
       draftToken || stored?.anthropicAuthToken || stored?.anthropicApiKey || '';
@@ -2599,16 +2591,10 @@ configRoutes.get(
   systemConfigMiddleware,
   async (c) => {
     const { id } = c.req.param();
-    if (
-      getProviders().some(
-        (provider) =>
-          provider.id === id &&
-          provider.anthropicBaseUrl === CODEX_GATEWAY_BASE_URL_PLACEHOLDER,
-      )
-    ) {
+    const stored = getProviderById(id);
+    if (stored?.anthropicBaseUrl === CODEX_GATEWAY_BASE_URL_PLACEHOLDER) {
       return c.json(getCodexProviderRateLimits(id));
     }
-    const stored = getProviderById(id);
     if (stored?.gateway === 'magpie') {
       return c.json(await readMagpieQuotas(stored));
     }
@@ -2667,28 +2653,15 @@ async function readMagpieQuotas(
 ): Promise<MagpieQuotasUsage> {
   const access = storedConnectionAccess(provider);
   const fetchedAt = Date.now();
-  if (!access) {
-    return {
-      kind: 'magpie_quotas',
-      accounts: [],
-      fetchedAt,
-      error: '连接缺少地址或密钥',
-    };
-  }
-  const result = await fetchMagpieQuotas(access);
-  return result.ok
-    ? {
-        kind: 'magpie_quotas',
-        accounts: result.accounts,
-        fetchedAt,
-        error: null,
-      }
-    : {
-        kind: 'magpie_quotas',
-        accounts: [],
-        fetchedAt,
-        error: result.message,
-      };
+  const result = access
+    ? await fetchMagpieQuotas(access)
+    : ({ ok: false, message: '连接缺少地址或密钥' } as const);
+  return {
+    kind: 'magpie_quotas',
+    accounts: result.ok ? result.accounts : [],
+    fetchedAt,
+    error: result.ok ? null : result.message,
+  };
 }
 
 // ─── POST /claude/apply — 应用配置到所有容器 ─────

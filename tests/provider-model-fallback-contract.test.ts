@@ -100,14 +100,19 @@ describe('provider fallback source contracts', () => {
   });
 
   test('host decides retry vs terminal before projection', () => {
+    // Every launch path settles a provider failure through one helper, which
+    // asks magpie for a renewal before applyProviderFailureDisposition.
+    expect(hostRunner).toMatch(
+      /async function settleProviderFailure\([\s\S]*?await attachMagpieUsageLimitReset\([\s\S]*?return applyProviderFailureDisposition\(/,
+    );
     expect(
-      hostRunner.match(/applyProviderFailureDisposition\(/g)?.length,
+      hostRunner.match(/settleProviderFailure\(/g)?.length,
     ).toBeGreaterThanOrEqual(5);
     expect(hostRunner).toMatch(
-      /providerId: selectedProfileId,\s*result: output\.result,[\s\S]*?applyProviderFailureDisposition\([\s\S]*?await onOutput\(output\)/,
+      /providerId: selectedProfileId,\s*result: output\.result,[\s\S]*?settleProviderFailure\([\s\S]*?await onOutput\(output\)/,
     );
     expect(hostRunner).toMatch(
-      /providerId: hostSelectedProfileId,\s*result: output\.result,[\s\S]*?applyProviderFailureDisposition\([\s\S]*?await onOutput\(output\)/,
+      /providerId: hostSelectedProfileId,\s*result: output\.result,[\s\S]*?settleProviderFailure\([\s\S]*?await onOutput\(output\)/,
     );
     // A connection is authoritative: there is no pool to fail over to.
     expect(hostRunner).not.toContain('providerPool');

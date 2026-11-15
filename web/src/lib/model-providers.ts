@@ -137,15 +137,22 @@ export function isValidModelId(id: string): boolean {
   );
 }
 
-/** A context window from untrusted input, or undefined when it is not one. */
-export function normalizeContextWindow(value: unknown): number | undefined {
+/** A token count within [min, max] from untrusted input, or undefined. */
+function normalizeTokenCount(
+  value: unknown,
+  min: number,
+  max: number,
+): number | undefined {
   const number =
     typeof value === 'string' && value.trim() ? Number(value) : value;
   if (typeof number !== 'number' || !Number.isFinite(number)) return undefined;
   const floored = Math.floor(number);
-  return floored >= MIN_CONTEXT_WINDOW && floored <= MAX_CONTEXT_WINDOW
-    ? floored
-    : undefined;
+  return floored >= min && floored <= max ? floored : undefined;
+}
+
+/** A context window from untrusted input, or undefined when it is not one. */
+export function normalizeContextWindow(value: unknown): number | undefined {
+  return normalizeTokenCount(value, MIN_CONTEXT_WINDOW, MAX_CONTEXT_WINDOW);
 }
 
 /**
@@ -163,14 +170,8 @@ export function normalizeEfforts(value: unknown): ModelEffort[] | undefined {
 }
 
 /** A positive token count from untrusted input, or undefined. */
-export function normalizeMaxOutputTokens(value: unknown): number | undefined {
-  const number =
-    typeof value === 'string' && value.trim() ? Number(value) : value;
-  if (typeof number !== 'number' || !Number.isFinite(number)) return undefined;
-  const floored = Math.floor(number);
-  return floored >= 1 && floored <= MAX_OUTPUT_TOKENS_LIMIT
-    ? floored
-    : undefined;
+function normalizeMaxOutputTokens(value: unknown): number | undefined {
+  return normalizeTokenCount(value, 1, MAX_OUTPUT_TOKENS_LIMIT);
 }
 
 /** A short label from untrusted input: trimmed, single line, capped. */
@@ -181,7 +182,7 @@ function normalizeLabel(value: unknown, max: number): string | undefined {
 }
 
 /** ISO time from untrusted input, or undefined. */
-function normalizeIsoTime(value: unknown): string | undefined {
+export function normalizeIsoTime(value: unknown): string | undefined {
   return typeof value === 'string' && !Number.isNaN(Date.parse(value))
     ? value
     : undefined;
@@ -301,8 +302,9 @@ export function carrySyncedModelFields(
   submitted: readonly ProviderModelEntry[],
   current: readonly ProviderModelEntry[],
 ): ProviderModelEntry[] {
+  const byId = new Map(current.map((item) => [item.id, item]));
   return submitted.map((entry) => {
-    const previous = current.find((item) => item.id === entry.id);
+    const previous = byId.get(entry.id);
     if (!previous) return entry;
     const next: ProviderModelEntry = { ...entry };
     for (const field of SYNC_OWNED_FIELDS) {
@@ -550,9 +552,9 @@ export function buildConnectionModelEnv(
 }
 
 /** What Claude Code allows itself for a model it does not know. */
-export const CLAUDE_CODE_DEFAULT_MAX_OUTPUT = 32_000;
+const CLAUDE_CODE_DEFAULT_MAX_OUTPUT = 32_000;
 /** The most CLAUDE_CODE_MAX_OUTPUT_TOKENS raises a reply to. */
-export const CLAUDE_CODE_MAX_OUTPUT_CEILING = 128_000;
+const CLAUDE_CODE_MAX_OUTPUT_CEILING = 128_000;
 
 /**
  * CLAUDE_CODE_MAX_OUTPUT_TOKENS for a launch on `model` with `roles`, or
@@ -662,6 +664,38 @@ export function toolSearchEnabled(
   if (setting === 'off') return false;
   return gateway === 'magpie';
 }
+
+/** The last failed catalog check or sync of a connection. */
+export interface ProviderCatalogError {
+  code: ProviderErrorCode;
+  message: string;
+  at: string;
+}
+
+/** A magpie connection's catalog as the API shows it. */
+export interface ProviderCatalogPublic {
+  /** New upstream models join the list by themselves. */
+  autoAdd: boolean;
+  syncedAt: string | null;
+  /** The last failed sync; cleared by a successful one. */
+  error: ProviderCatalogError | null;
+  /** Upstream models the list does not have yet. */
+  newModels: ProviderModelEntry[];
+}
+
+/** What one catalog sync of a connection found. */
+export type CatalogSyncResult =
+  | {
+      ok: true;
+      gateway: ProviderGateway | null;
+      /** Models auto-add put on the list. */
+      added: string[];
+      newModels: string[];
+      missing: string[];
+      /** Nothing was read: synced moments ago, or a checked non-gateway. */
+      skipped?: 'recent' | 'checked';
+    }
+  | { ok: false; code: ProviderErrorCode; message: string };
 
 // ─── Presets ───────────────────────────────────────────────────
 
@@ -1250,6 +1284,18 @@ export function findPresetsByBaseUrl(raw: string): ModelPreset[] {
   if (!normalized) return [];
   return MODEL_PRESETS.filter(
     (preset) => normalizeProviderBaseUrl(preset.baseUrl) === normalized,
+  );
+}
+
+/**
+ * Whether `preset` still speaks for a connection at `baseUrl`: a vendor's
+ * only at its own endpoint, a gateway's wherever the user runs it.
+ */
+export function presetAppliesAt(preset: ModelPreset, baseUrl: string): boolean {
+  return (
+    !!preset.editableBaseUrl ||
+    normalizeProviderBaseUrl(baseUrl) ===
+      normalizeProviderBaseUrl(preset.baseUrl)
   );
 }
 

@@ -1,6 +1,6 @@
 import type {
   ConnectionModelRoles,
-  ProviderErrorCode,
+  ProviderCatalogPublic,
   ProviderGateway,
   ProviderModelEntry,
   ProviderTestRecord,
@@ -11,17 +11,6 @@ import type { DeploymentMode } from '../../stores/auth';
 // ─── 统一供应商类型 (V4) ─────────────────────────────────────
 
 export type WebFetchPreflightPolicy = 'check' | 'skip';
-
-/** A magpie connection's catalog sync: when it ran and what it found. */
-export interface ProviderCatalogPublic {
-  /** New upstream models join the list by themselves. */
-  autoAdd: boolean;
-  syncedAt: string | null;
-  /** The last failed sync; cleared by a successful one. */
-  error: { code: ProviderErrorCode; message: string; at: string } | null;
-  /** Upstream models the list does not have yet. */
-  newModels: ProviderModelEntry[];
-}
 
 export interface UnifiedProviderPublic {
   id: string;

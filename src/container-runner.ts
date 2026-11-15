@@ -868,6 +868,25 @@ export function applyProviderFailureDisposition(
   return terminal;
 }
 
+/**
+ * applyProviderFailureDisposition for a launch on `model`, once magpie has
+ * said when a model it refused for its usage limit renews, so that the
+ * input can wait for it.
+ */
+async function settleProviderFailure(
+  output: ContainerOutput,
+  selectedProfileId: string | null,
+  model: string | null | undefined,
+  input: ContainerInput,
+): Promise<boolean> {
+  await attachMagpieUsageLimitReset(output, selectedProfileId, model);
+  return applyProviderFailureDisposition(
+    output,
+    selectedProfileId,
+    usageLimitWaitScopeFor(input),
+  );
+}
+
 /** The lane and durable input a provider failure belongs to. */
 export interface UsageLimitWaitScope {
   scopeKey: string;
@@ -3557,15 +3576,11 @@ export async function runContainerAgent(
           );
         }
         if (output.providerFailure) {
-          await attachMagpieUsageLimitReset(
+          const terminal = await settleProviderFailure(
             output,
             selectedProfileId,
             resolvedProvider?.config.anthropicModel,
-          );
-          const terminal = applyProviderFailureDisposition(
-            output,
-            selectedProfileId,
-            usageLimitWaitScopeFor(input),
+            input,
           );
           providerFailureTerminal = terminal;
           providerFailureDecision = output;
@@ -3685,15 +3700,11 @@ export async function runContainerAgent(
     }
     if (result.providerFailure) {
       if (providerFailureTerminal === undefined) {
-        await attachMagpieUsageLimitReset(
+        providerFailureTerminal = await settleProviderFailure(
           result,
           selectedProfileId,
           resolvedProvider?.config.anthropicModel,
-        );
-        providerFailureTerminal = applyProviderFailureDisposition(
-          result,
-          selectedProfileId,
-          usageLimitWaitScopeFor(input),
+          input,
         );
       } else {
         applyKnownProviderFailureDisposition(result, providerFailureTerminal);
@@ -4848,15 +4859,11 @@ export async function runHostAgent(
           );
         }
         if (output.providerFailure) {
-          await attachMagpieUsageLimitReset(
+          const terminal = await settleProviderFailure(
             output,
             hostSelectedProfileId,
             hostPoolResult?.resolved.config.anthropicModel,
-          );
-          const terminal = applyProviderFailureDisposition(
-            output,
-            hostSelectedProfileId,
-            usageLimitWaitScopeFor(input),
+            input,
           );
           hostProviderFailureTerminal = terminal;
           hostProviderFailureDecision = output;
@@ -4965,15 +4972,11 @@ export async function runHostAgent(
     }
     if (hostResult.providerFailure) {
       if (hostProviderFailureTerminal === undefined) {
-        await attachMagpieUsageLimitReset(
+        hostProviderFailureTerminal = await settleProviderFailure(
           hostResult,
           hostSelectedProfileId,
           hostPoolResult?.resolved.config.anthropicModel,
-        );
-        hostProviderFailureTerminal = applyProviderFailureDisposition(
-          hostResult,
-          hostSelectedProfileId,
-          usageLimitWaitScopeFor(input),
+          input,
         );
       } else {
         applyKnownProviderFailureDisposition(

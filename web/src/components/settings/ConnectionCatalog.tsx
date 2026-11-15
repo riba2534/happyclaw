@@ -6,11 +6,11 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { Switch } from '@/components/ui/switch';
 import {
   MAX_PROVIDER_MODELS,
+  type ProviderCatalogPublic,
   type ProviderModelEntry,
 } from '@/lib/model-providers';
 import { formatSessionTime } from '../../lib/session-presentation';
 import { errorCopy } from './model-connections';
-import type { ProviderCatalogPublic } from './types';
 
 interface ConnectionCatalogProps {
   catalog: ProviderCatalogPublic;
@@ -155,7 +155,7 @@ export function ConnectionCatalog({
         <Switch
           id="catalog-auto-add"
           checked={catalog.autoAdd}
-          onCheckedChange={(next) => onAutoAddChange(next)}
+          onCheckedChange={onAutoAddChange}
           disabled={busy}
           className="mt-0.5"
         />

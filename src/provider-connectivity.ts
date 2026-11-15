@@ -627,10 +627,14 @@ export type ModelDiscoveryResult =
       message: string;
     };
 
-function parseListAnswer(answer: UpstreamAnswer): DiscoveredModel[] | null {
+/** A successful answer's JSON body as `parse` reads it, else null. */
+function parseJsonAnswer<T>(
+  answer: UpstreamAnswer,
+  parse: (json: unknown) => T | null,
+): T | null {
   if (!answer.ok) return null;
   try {
-    return parseModelList(JSON.parse(answer.bodyText));
+    return parse(JSON.parse(answer.bodyText));
   } catch {
     return null;
   }
@@ -679,14 +683,15 @@ export async function discoverEndpointModels(
       accepted: (outcome) => outcome.ok,
     },
   );
-  let models = parseListAnswer(answer);
+  let models = parseJsonAnswer(answer, parseModelList);
   if (
     models &&
     isMagpieModelList(models) &&
     models.some((model) => isMagpieAliasModelId(model.id))
   ) {
-    const reread = parseListAnswer(
+    const reread = parseJsonAnswer(
       await read(authMode ?? input.authMode, happyClawUserAgent()),
+      parseModelList,
     );
     if (reread && isMagpieModelList(reread)) models = reread;
   }
@@ -747,7 +752,7 @@ export type MagpieQuotasResult =
     };
 
 /** Where a magpie at `baseUrl` reports its accounts' usage. */
-export function magpieQuotasUrl(baseUrl: string): string {
+function magpieQuotasUrl(baseUrl: string): string {
   return `${baseUrl.trim().replace(/\/+$/, '')}/v1/magpie/quotas`;
 }
 
@@ -778,14 +783,9 @@ export async function fetchMagpieQuotas(
     },
     { timeoutMs: 10_000, ...options },
   );
+  const accounts = parseJsonAnswer(answer, parseMagpieQuotas);
+  if (accounts) return { ok: true, accounts };
   if (answer.ok) {
-    let accounts: MagpieQuotaAccount[] | null = null;
-    try {
-      accounts = parseMagpieQuotas(JSON.parse(answer.bodyText));
-    } catch {
-      accounts = null;
-    }
-    if (accounts) return { ok: true, accounts };
     return {
       ok: false,
       code: 'UNKNOWN',

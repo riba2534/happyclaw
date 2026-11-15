@@ -3,11 +3,8 @@
  *
  * Every third-party connection is checked once for a gateway: its model list
  * says magpie when its rows carry `magpie_label`. A magpie connection's list
- * is then synced every few hours and whenever its detail opens: what the
- * gateway says about a listed model (name, reply limit, vendor) is always
- * taken, its window and efforts only while the admin has not changed them,
- * a model the gateway stopped listing is marked and kept, and new models
- * are only noted unless the connection adds them by itself.
+ * is then synced every few hours and whenever its detail opens
+ * (mergeCatalogModels says what a sync takes).
  *
  * A sync changes model metadata only. Like an edit of a model's window or
  * efforts, it stops no runner and clears no session: the next launch reads
@@ -23,9 +20,9 @@ import {
   MAX_PROVIDER_MODELS,
   MODEL_EFFORTS,
   modelsUrlFor,
+  type CatalogSyncResult,
   type DiscoveredModel,
   type ModelEffort,
-  type ProviderErrorCode,
   type ProviderGateway,
   type ProviderModelEntry,
 } from './model-providers.js';
@@ -41,7 +38,7 @@ import {
   type UnifiedProvider,
 } from './runtime-config.js';
 
-export const CATALOG_SYNC_INTERVAL_MS = 6 * 60 * 60 * 1000;
+const CATALOG_SYNC_INTERVAL_MS = 6 * 60 * 60 * 1000;
 /** The first scheduled pass waits for startup to settle. */
 const CATALOG_SYNC_STARTUP_DELAY_MS = 2 * 60 * 1000;
 /** How often the schedule looks for connections that are due. */
@@ -75,6 +72,18 @@ function sameEfforts(
   return a.length === b.length && a.every((effort, i) => effort === b[i]);
 }
 
+/**
+ * A discovered entry with what the sync writes for the fields an admin may
+ * override, to tell the admin's value from the sync's next time.
+ */
+function withSyncedRecord(entry: ProviderModelEntry): ProviderModelEntry {
+  const synced = {
+    ...(entry.contextWindow ? { contextWindow: entry.contextWindow } : {}),
+    ...(entry.efforts ? { efforts: entry.efforts } : {}),
+  };
+  return Object.keys(synced).length > 0 ? { ...entry, synced } : entry;
+}
+
 /** A field the sync owns outright: the gateway's value, or none. */
 function mirror<K extends keyof ProviderModelEntry>(
   entry: ProviderModelEntry,
@@ -105,7 +114,9 @@ export function mergeCatalogModels(input: {
   const upstream = new Map<string, ProviderModelEntry>();
   for (const item of input.discovered) {
     const entry = discoveredModelEntry(item);
-    if (entry && !upstream.has(entry.id)) upstream.set(entry.id, entry);
+    if (entry && !upstream.has(entry.id)) {
+      upstream.set(entry.id, withSyncedRecord(entry));
+    }
   }
   const missing: string[] = [];
   const models = input.models.map((current) => {
@@ -142,12 +153,7 @@ export function mergeCatalogModels(input: {
         delete next.defaultEffort;
       }
     }
-    const record: NonNullable<ProviderModelEntry['synced']> = {
-      ...(found.contextWindow ? { contextWindow: found.contextWindow } : {}),
-      ...(found.efforts ? { efforts: found.efforts } : {}),
-    };
-    if (Object.keys(record).length > 0) next.synced = record;
-    else delete next.synced;
+    mirror(next, 'synced', found.synced);
     return next;
   });
 
@@ -164,18 +170,11 @@ export function mergeCatalogModels(input: {
     if (listed.has(entry.id)) continue;
     const appeared = !firstSync && !known.has(entry.id);
     if (!appeared && !waiting.has(entry.id)) continue;
-    const synced = {
-      ...(entry.contextWindow ? { contextWindow: entry.contextWindow } : {}),
-      ...(entry.efforts ? { efforts: entry.efforts } : {}),
-    };
-    const withSync =
-      Object.keys(synced).length > 0 ? { ...entry, synced } : entry;
     if (input.autoAdd && appeared && models.length < MAX_PROVIDER_MODELS) {
-      models.push(withSync);
-      listed.add(entry.id);
+      models.push(entry);
       added.push(entry.id);
     } else {
-      newModels.push(withSync);
+      newModels.push(entry);
     }
   }
   return {
@@ -236,18 +235,6 @@ function storedModelsUrl(provider: UnifiedProvider): string {
 }
 
 // ─── Syncing one connection ───────────────────────────────────
-
-export type CatalogSyncResult =
-  | {
-      ok: true;
-      gateway: ProviderGateway | null;
-      added: string[];
-      newModels: string[];
-      missing: string[];
-      /** Nothing was read: synced moments ago, or a checked non-gateway. */
-      skipped?: 'recent' | 'checked';
-    }
-  | { ok: false; code: ProviderErrorCode; message: string };
 
 interface SyncOptions {
   now?: number;

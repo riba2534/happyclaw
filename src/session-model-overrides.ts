@@ -107,14 +107,14 @@ function modelTakesEffort(
   effort: string,
 ): boolean {
   if (!isModelEffort(effort)) return false;
-  if (
-    !provider.codexOAuthCredentials &&
-    model &&
-    connectionModelCapabilities(provider, model).effortsSource === 'none'
-  ) {
-    return true;
+  if (provider.codexOAuthCredentials || !model) {
+    return modelEffortsFor(provider, model).includes(effort);
   }
-  return modelEffortsFor(provider, model).includes(effort);
+  const { efforts, effortsSource } = connectionModelCapabilities(
+    provider,
+    model,
+  );
+  return effortsSource === 'none' || efforts.includes(effort);
 }
 
 /** The effort and thinking a launch on one model runs Claude Code with. */
@@ -153,15 +153,6 @@ export function resolveLaunchReasoning(
     }
   }
   return { effort: defaultEffort, thinkingDisabled };
-}
-
-/** The effort part of resolveLaunchReasoning. */
-export function resolveLaunchEffort(
-  provider: ModelConfiguration,
-  model: string,
-  picks: ReadonlyArray<string | null | undefined>,
-): ModelEffort | null {
-  return resolveLaunchReasoning(provider, model, picks).effort;
 }
 
 /**
