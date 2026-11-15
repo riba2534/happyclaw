@@ -3103,7 +3103,7 @@ async function runQueryAttempt(
       agentEffort
         ? `Run effort: ${agentEffort}`
         : containerInput.launchEffort === null
-          ? 'Run effort: none (the model takes no effort)'
+          ? 'Run effort: none passed (nothing picked for a model whose efforts are unknown, or the model takes none)'
           : 'Run effort: inherit Provider/SDK default',
     );
     const runThinking = resolveRunSdkThinking(containerInput);
