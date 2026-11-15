@@ -15,6 +15,9 @@ import {
   getModelPreset,
   isValidModelId,
   MAX_CONTEXT_WINDOW,
+  MAX_MODEL_DISPLAY_NAME_LENGTH,
+  MAX_MODEL_VENDOR_LENGTH,
+  MAX_OUTPUT_TOKENS_LIMIT,
   MAX_PROVIDER_MODEL_ID_LENGTH,
   MAX_PROVIDER_MODELS,
   MIN_CONTEXT_WINDOW,
@@ -1275,14 +1278,28 @@ const ProviderModelListSchema = z
         .min(MIN_CONTEXT_WINDOW)
         .max(MAX_CONTEXT_WINDOW)
         .optional(),
+      /** [] declares that the model takes no effort. */
       efforts: z
         .array(z.enum(MODEL_EFFORTS))
         .max(MODEL_EFFORTS.length)
         .optional(),
       defaultEffort: z.enum(MODEL_EFFORTS).optional(),
+      // What the vendor's list said; a write that leaves them out keeps the
+      // stored ones (carrySyncedModelFields).
+      displayName: z.string().max(MAX_MODEL_DISPLAY_NAME_LENGTH).optional(),
+      maxOutputTokens: z
+        .number()
+        .int()
+        .min(1)
+        .max(MAX_OUTPUT_TOKENS_LIMIT)
+        .optional(),
+      vendor: z.string().max(MAX_MODEL_VENDOR_LENGTH).optional(),
+      thinks: z.literal(true).optional(),
     }),
   )
   .max(MAX_PROVIDER_MODELS);
+
+const ToolSearchSettingSchema = z.enum(['on', 'off', 'default']);
 
 /** Each role names one of the connection's models; others are dropped. */
 const ConnectionModelRolesSchema = z.object({
@@ -1316,6 +1333,11 @@ export const UnifiedProviderCreateSchema = z
     claudeCredentialInput: ClaudeCredentialInputSchema.optional(),
     roles: ConnectionModelRolesSchema.optional(),
     customEnv: z.record(z.string().max(256), z.string().max(4096)).optional(),
+    /** What a model list read before saving found the endpoint to be. */
+    gateway: z.literal('magpie').optional(),
+    toolSearch: ToolSearchSettingSchema.optional(),
+    /** magpie: new upstream models join the list by themselves. */
+    catalogAutoAdd: z.boolean().optional(),
     /** Accepted from older clients and ignored. */
     weight: z.number().int().min(1).max(100).optional(),
     enabled: z.boolean().optional(),
@@ -1347,6 +1369,8 @@ export const UnifiedProviderPatchSchema = z
     presetId: ProviderPresetIdSchema.nullable().optional(),
     roles: ConnectionModelRolesSchema.optional(),
     customEnv: z.record(z.string().max(256), z.string().max(4096)).optional(),
+    toolSearch: ToolSearchSettingSchema.optional(),
+    catalogAutoAdd: z.boolean().optional(),
     /** Accepted from older clients and ignored. */
     weight: z.number().int().min(1).max(100).optional(),
     // Third-party edits save the token with the other fields in one request,
@@ -1365,6 +1389,8 @@ export const UnifiedProviderPatchSchema = z
       data.presetId !== undefined ||
       data.roles !== undefined ||
       data.customEnv !== undefined ||
+      data.toolSearch !== undefined ||
+      data.catalogAutoAdd !== undefined ||
       data.weight !== undefined ||
       data.anthropicAuthToken !== undefined ||
       data.clearAnthropicAuthToken === true,

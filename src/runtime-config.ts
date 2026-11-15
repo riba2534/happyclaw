@@ -817,6 +817,8 @@ export interface ProviderCatalogState {
   retryAt?: string;
   /** Upstream models the list does not have (auto-add off, or no room). */
   newModels?: ProviderModelEntry[];
+  /** Every id the last sync saw upstream, to tell a new model from a known one. */
+  knownIds?: string[];
 }
 
 export interface ProviderCatalogError {
@@ -1757,6 +1759,14 @@ function normalizeCatalogState(raw: unknown): ProviderCatalogState | undefined {
       ) ?? [])
     : [];
   if (newModels.length > 0) state.newModels = newModels;
+  if (Array.isArray(record.knownIds)) {
+    state.knownIds = record.knownIds
+      .filter(
+        (id): id is string =>
+          typeof id === 'string' && id.length <= MAX_PROVIDER_MODEL_ID_LENGTH,
+      )
+      .slice(0, MAX_CATALOG_NEW_MODELS);
+  }
   return Object.keys(state).length > 0 ? state : undefined;
 }
 
