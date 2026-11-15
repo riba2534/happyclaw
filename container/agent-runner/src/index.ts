@@ -131,6 +131,7 @@ import {
 import { pinBoundProviderSettings } from './provider-env-pin.js';
 import { webFetchPreflightSettings } from './web-fetch-preflight.js';
 import { pinToolSearch } from './tool-search.js';
+import { pinMaxOutputTokens } from './max-output-pin.js';
 import {
   assistantMessageText,
   providerErrorText,
@@ -2993,12 +2994,15 @@ async function runQueryAttempt(
   // admin's, the workspace's project and local ones), in host and container
   // mode alike.
   const flagSettings: Record<string, unknown> = {
-    ...pinToolSearch(
-      pinBoundProviderSettings({
-        ...process.env,
-        ...claudeRuntimeEnv,
-      }),
-      containerInput.toolSearch,
+    ...pinMaxOutputTokens(
+      pinToolSearch(
+        pinBoundProviderSettings({
+          ...process.env,
+          ...claudeRuntimeEnv,
+        }),
+        containerInput.toolSearch,
+      ),
+      containerInput.maxOutputTokens,
     ),
     ...webFetchPreflightSettings(containerInput.webFetchPreflightPolicy),
   };
@@ -3111,6 +3115,9 @@ async function runQueryAttempt(
       log('Run thinking: off (the model does not reason)');
     }
     if (containerInput.toolSearch) log('Run tool search: on');
+    if (containerInput.maxOutputTokens) {
+      log(`Run reply limit: ${containerInput.maxOutputTokens} (pinned)`);
+    }
     if (Object.keys(claudeRuntimeEnv).length > 0) {
       log(
         `Claude runtime env: ${Object.entries(claudeRuntimeEnv)

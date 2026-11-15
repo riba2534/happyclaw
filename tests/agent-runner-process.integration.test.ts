@@ -43,6 +43,7 @@ type ReplyBlock =
 type Frame = Record<string, any>;
 
 interface MainRequest {
+  max_tokens?: number;
   messages?: unknown[];
   thinking?: { type?: string };
   tools?: Array<{ name?: string; defer_loading?: boolean }>;
@@ -162,6 +163,7 @@ function runnerEnv(
           'ANTHROPIC_CUSTOM_HEADERS',
           'CLAUDE_CONFIG_DIR',
           'ENABLE_TOOL_SEARCH',
+          'CLAUDE_CODE_MAX_OUTPUT_TOKENS',
         ].includes(entry[0]),
     ),
   );
@@ -677,6 +679,34 @@ describe('Agent Runner process against a fake Anthropic endpoint', () => {
       expect(deferred(request)).toBe(true);
     }
     expect(runnerLines(control.stderr, 'Run thinking: off')).toEqual([]);
+  }, 120_000);
+
+  test("the host's reply limit outranks a workspace's settings; without one the settings stand", async () => {
+    const run = await runRunner({
+      name: 'reply-limit-pinned',
+      reply: () => [{ type: 'text', text: 'PLAIN_ANSWER' }],
+      settled: isFinalResult,
+      // Both values stay under the 64K Claude Code allows this model, so
+      // each is sent as set.
+      input: { maxOutputTokens: 20_000 },
+      projectSettings: { env: { CLAUDE_CODE_MAX_OUTPUT_TOKENS: '50000' } },
+    });
+    expect(run.exitCode).toBe(0);
+    expect(run.mainRequests.length).toBeGreaterThan(0);
+    for (const request of run.mainRequests) {
+      expect(request.max_tokens).toBe(20_000);
+    }
+    const control = await runRunner({
+      name: 'reply-limit-settings',
+      reply: () => [{ type: 'text', text: 'PLAIN_ANSWER' }],
+      settled: isFinalResult,
+      projectSettings: { env: { CLAUDE_CODE_MAX_OUTPUT_TOKENS: '50000' } },
+    });
+    expect(control.exitCode).toBe(0);
+    expect(control.mainRequests.length).toBeGreaterThan(0);
+    for (const request of control.mainRequests) {
+      expect(request.max_tokens).toBe(50_000);
+    }
   }, 120_000);
 
   test("an upstream rejection reaches the Host in the upstream's own words", async () => {

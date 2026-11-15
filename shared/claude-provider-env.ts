@@ -81,9 +81,11 @@ export const CLAUDE_PROVIDER_ROUTING_ENV_KEYS: readonly string[] = [
  * The session's effort, compaction and context, resolved per run.
  *
  * CLAUDE_CODE_MAX_OUTPUT_TOKENS is not listed: HappyClaw writes it only on a
- * third-party endpoint whose models all declare a reply limit, so on any
- * other launch (an official login, a model that declares none) the value an
- * admin set in the settings layer or the host environment still applies.
+ * third-party endpoint whose models all declare a reply limit, and then pins
+ * it through ContainerInput.maxOutputTokens rather than this list (which
+ * would pin an inherited value too). On any other launch (an official login,
+ * a model that declares none) the value an admin set in the settings layer
+ * or the host environment still applies.
  */
 export const CLAUDE_SESSION_TUNING_ENV_KEYS: readonly string[] = [
   'CLAUDE_CODE_EFFORT_LEVEL',

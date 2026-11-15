@@ -10,6 +10,7 @@ import {
   providerErrorText,
 } from '../container/agent-runner/src/provider-error-text.js';
 import { pinToolSearch } from '../container/agent-runner/src/tool-search.js';
+import { pinMaxOutputTokens } from '../container/agent-runner/src/max-output-pin.js';
 
 const runner = fs.readFileSync(
   path.join(process.cwd(), 'container', 'agent-runner', 'src', 'index.ts'),
@@ -35,6 +36,26 @@ describe('run thinking', () => {
       'const runThinking = resolveRunSdkThinking(containerInput);',
     );
     expect(runner).toContain('      thinking: runThinking,\n');
+  });
+});
+
+describe('reply limit', () => {
+  const pinned = pinBoundProviderSettings({
+    ANTHROPIC_BASE_URL: 'http://bound',
+  });
+
+  test('a limit the host derived is pinned', () => {
+    expect(pinMaxOutputTokens(pinned, 64_000).env).toEqual({
+      ...pinned.env,
+      CLAUDE_CODE_MAX_OUTPUT_TOKENS: '64000',
+    });
+  });
+
+  test('without one nothing is written, and an inherited value is not pinned', () => {
+    expect(pinMaxOutputTokens(pinned, undefined)).toEqual(pinned);
+    expect(
+      pinBoundProviderSettings({ CLAUDE_CODE_MAX_OUTPUT_TOKENS: '128000' }).env,
+    ).not.toHaveProperty('CLAUDE_CODE_MAX_OUTPUT_TOKENS');
   });
 });
 

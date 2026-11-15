@@ -390,8 +390,10 @@ preset 的身份和默认风格，只低于平台的安全、权限、工具和�
   模型相关的键（`CONNECTION_MODEL_ENV_KEYS`）不接受自由填写。模型条目还存上游给的显示名、
   最大输出和供应商：第三方端点上，本轮模型、各角色模型和本次注入的同轮备用模型都声明了
   最大输出时，取其中最小值、再与 128000 取小，大于 32000 才写 `CLAUDE_CODE_MAX_OUTPUT_TOKENS`；
-  连接环境变量里自己写的同名键优先。这个键不属于 HappyClaw 拥有的环境：不写时（官方连接、
-  有模型未声明）管理员 settings 或宿主环境里的值照常生效。这些都存在 V5 配置文件的可选字段里，不升文件版本。测试连接和获取模型列表只有在上游确实接受了凭据时才记录
+  连接环境变量（及工作区环境变量覆盖）里自己写的同名键优先。派生出值时宿主经
+  `ContainerInput.maxOutputTokens` 交给 Runner，Runner 把它钉进 flag settings 的 env，压过
+  管理员、项目和 local 的 settings；没派生时这个键不属于 HappyClaw 拥有的环境，既不剥也不钉，
+  管理员 settings 或宿主环境里的值照常生效。这些都存在 V5 配置文件的可选字段里，不升文件版本。测试连接和获取模型列表只有在上游确实接受了凭据时才记录
   认证头方式；两者都带打包 Claude Code 版本的 User-Agent（从 SDK 的 package.json 读）。
 - magpie 网关（连接的 `gateway: 'magpie'`）：模型列表带 `magpie_label` 即识别，任何
   一次成功的模型发现或目录同步都会标记，从 magpie 预设（默认 `http://127.0.0.1:3425`，地址

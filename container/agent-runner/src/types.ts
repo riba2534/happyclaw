@@ -241,6 +241,12 @@ export interface ContainerInput {
    */
   toolSearch?: true;
   /**
+   * The reply limit the host derived from the launch's models: the flag
+   * settings pin it as CLAUDE_CODE_MAX_OUTPUT_TOKENS. Absent leaves the key
+   * to the settings files and the environment.
+   */
+  maxOutputTokens?: number;
+  /**
    * Team mode (团队模式): this session is a group's router or a work item's
    * worker. It picks the work tools, the team prompt section and the
    * disallowed tools; absent leaves the session exactly as it is.

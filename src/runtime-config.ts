@@ -37,6 +37,7 @@ import {
   isModelEffort,
   isValidModelId,
   launchModelName,
+  maxOutputTokensFor,
   MAX_PROVIDER_MODEL_ID_LENGTH,
   MAX_PROVIDER_MODELS,
   MODEL_EFFORTS,
@@ -4014,6 +4015,41 @@ export function buildClaudeEnvLines(
   }
 
   return lines;
+}
+
+/**
+ * The CLAUDE_CODE_MAX_OUTPUT_TOKENS a launch on `config` derives from its
+ * models (as buildClaudeEnvLines writes it), or null when it derives none:
+ * not a third-party endpoint, a model of the launch that declares no reply
+ * limit, or an env that names the key itself (the connection's own, the
+ * Workspace's override). The Runner pins a derived value above every
+ * settings file, since a launch whose models cap their replies must not be
+ * raised by an admin's or a workspace's settings; a value HappyClaw did not
+ * derive stays theirs to set.
+ */
+export function derivedMaxOutputTokens(
+  config: ClaudeProviderConfig,
+  connectionEnv: Record<string, string> | undefined,
+  workspaceEnv?: Record<string, string>,
+): number | null {
+  if (
+    !config.anthropicBaseUrl ||
+    isCodexGatewayEndpoint(config.anthropicBaseUrl)
+  ) {
+    return null;
+  }
+  for (const env of [connectionEnv, workspaceEnv]) {
+    if (env?.CLAUDE_CODE_MAX_OUTPUT_TOKENS?.trim()) return null;
+  }
+  return maxOutputTokensFor(
+    effectiveProviderModels({
+      anthropicModel: config.anthropicModel,
+      models: config.models,
+    }),
+    config.anthropicModel,
+    config.roles,
+    config.fallbackModel,
+  );
 }
 
 export function getActiveProfileCustomEnv(): Record<string, string> {
