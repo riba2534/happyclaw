@@ -34,6 +34,15 @@ export function magpieRefusedModel(text: string | undefined): string | null {
 }
 
 /**
+ * How long a failed turn waits for magpie's quotas before it is settled
+ * without them. The read runs before the failure is decided (and the input
+ * parked or ended), so it is kept short: magpie answers on the same machine
+ * or network in well under a second, and a slow answer only costs the wait,
+ * never the input.
+ */
+export const MAGPIE_LIMIT_QUOTAS_TIMEOUT_MS = 3_000;
+
+/**
  * Give a provider failure the reset time magpie's quotas name, when the
  * failure is magpie's usage limit on a magpie connection and nothing else
  * named a reset. `model` is the model the launch ran; the refusal's own
@@ -64,7 +73,9 @@ export async function attachMagpieUsageLimitReset(
   if (!access || !refused) return;
   let quotas: MagpieQuotasResult;
   try {
-    quotas = await readQuotas(access);
+    quotas = await readQuotas(access, {
+      timeoutMs: MAGPIE_LIMIT_QUOTAS_TIMEOUT_MS,
+    });
   } catch (err) {
     logger.warn({ err, providerId }, 'magpie quotas read threw');
     return;

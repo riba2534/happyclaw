@@ -163,6 +163,12 @@ describe('magpie usage limits', () => {
     expect(read).not.toHaveBeenCalled();
   });
 
+  test('the quotas read for a failed turn is kept short', async () => {
+    const read = vi.fn(quotas);
+    await attachMagpieUsageLimitReset(refusal(LIMIT), magpieId, null, read);
+    expect(read).toHaveBeenCalledWith(expect.anything(), { timeoutMs: 3_000 });
+  });
+
   test('the refused model is read from magpie’s words', () => {
     expect(magpieRefusedModel(LIMIT)).toBe('codex/gpt-5.6-sol');
     expect(magpieRefusedModel('usage limit reached')).toBeNull();
