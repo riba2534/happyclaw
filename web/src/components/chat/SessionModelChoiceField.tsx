@@ -115,7 +115,7 @@ export function SessionModelChoiceField({
 
   const levels = picked
     ? choiceEfforts(picked, value?.model ?? null)
-    : { efforts: [], defaultEffort: null };
+    : { efforts: [], defaultEffort: null, unverified: false };
   const unlistedEffort =
     value?.effort && !levels.efforts.includes(value.effort)
       ? value.effort
@@ -245,7 +245,9 @@ export function SessionModelChoiceField({
               </NativeSelectOption>
               {levels.efforts.map((effort) => (
                 <NativeSelectOption key={effort} value={effort}>
-                  {effortLabel(effort)}
+                  {levels.unverified
+                    ? `${effortLabel(effort)}（未验证）`
+                    : effortLabel(effort)}
                 </NativeSelectOption>
               ))}
               {unlistedEffort && (

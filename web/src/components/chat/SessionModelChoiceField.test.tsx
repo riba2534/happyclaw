@@ -44,11 +44,12 @@ const MODEL_OPTIONS = {
           displayName: 'GLM 5.3',
         },
         {
+          // Declared to take no effort.
           id: 'glm-4.6',
           efforts: [],
           defaultEffort: null,
           contextWindow: null,
-          effortsSource: 'none',
+          effortsSource: 'declared',
         },
       ],
     },
@@ -223,6 +224,37 @@ describe('SessionModelChoiceField', () => {
     await pick('模型连接', '');
     expect(onChange).toHaveBeenLastCalledWith(null);
     expect(select('连接中的模型')).toBeNull();
+  });
+
+  test('a model nothing is known about offers every effort, unverified', async () => {
+    get.mockResolvedValue({
+      ...MODEL_OPTIONS,
+      options: [
+        {
+          ...MODEL_OPTIONS.options[0],
+          models: [
+            {
+              id: 'mystery-1',
+              efforts: [],
+              defaultEffort: null,
+              contextWindow: null,
+              effortsSource: 'none',
+            },
+          ],
+        },
+      ],
+    });
+    await render({ modelConfigId: 'glm', model: 'mystery-1', effort: null });
+    const [first, ...efforts] = optionTexts('推理等级');
+    expect(first).toBe('默认');
+    expect(efforts).toHaveLength(5);
+    for (const text of efforts) expect(text).toMatch(/（未验证）$/);
+    await pick('推理等级', 'xhigh');
+    expect(onChange).toHaveBeenLastCalledWith({
+      modelConfigId: 'glm',
+      model: 'mystery-1',
+      effort: 'xhigh',
+    });
   });
 
   test('a ChatGPT connection lists the models of its account', async () => {

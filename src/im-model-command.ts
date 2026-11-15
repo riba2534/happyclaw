@@ -54,6 +54,11 @@ interface ModelEntry {
   /** A name the connection declares for it, when it differs from the id. */
   displayName: string | null;
   efforts: readonly string[];
+  /**
+   * Nothing is known about its efforts (none listed, source `none`): any
+   * effort may be given, and it goes as picked, unverified.
+   */
+  effortsUnverified: boolean;
 }
 
 /**
@@ -71,6 +76,7 @@ function modelsOf(option: ConnectionOption): ModelEntry[] {
       id: entry.value,
       displayName: entry.label !== entry.value ? entry.label : null,
       efforts: entry.efforts,
+      effortsUnverified: false,
     }));
   }
   if (!('models' in option) || !option.models) return [];
@@ -80,6 +86,8 @@ function modelsOf(option: ConnectionOption): ModelEntry[] {
       id: entry.id,
       displayName: displayName && displayName !== entry.id ? displayName : null,
       efforts: entry.efforts,
+      effortsUnverified:
+        entry.efforts.length === 0 && entry.effortsSource === 'none',
     };
   });
 }
@@ -194,7 +202,9 @@ function listModels(
     .forEach((entry, offset) => {
       const efforts = entry.efforts.length
         ? ` · 档位 ${entry.efforts.join('/')}`
-        : '';
+        : entry.effortsUnverified
+          ? ' · 档位未验证'
+          : '';
       const mark = entry.id === current ? '（当前）' : '';
       lines.push(
         `${start + offset + 1}. ${modelLabel(entry)}${efforts}${mark}`,
