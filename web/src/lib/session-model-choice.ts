@@ -37,8 +37,8 @@ export interface ConnectionModelEntry {
   efforts?: string[];
   defaultEffort?: string | null;
   effortsSource?: string;
+  /** The vendor's name for the model, when its list gave one. */
   displayName?: string | null;
-  display_name?: string | null;
 }
 
 /** One model a ChatGPT login may run. */
@@ -158,7 +158,7 @@ export function connectionModels(option: ModelConnectionOption): ChoiceModel[] {
     const unknown = !entry.efforts?.length && entry.effortsSource === 'none';
     return {
       id: entry.id,
-      label: entry.displayName || entry.display_name || entry.id,
+      label: entry.displayName || entry.id,
       efforts: unknown ? UNVERIFIED_EFFORTS : (entry.efforts ?? []),
       defaultEffort: entry.defaultEffort ?? null,
       effortsUnverified: unknown,

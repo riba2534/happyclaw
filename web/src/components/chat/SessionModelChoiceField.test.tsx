@@ -40,7 +40,7 @@ const MODEL_OPTIONS = {
           defaultEffort: 'high',
           contextWindow: 200000,
           effortsSource: 'declared',
-          // A field another version adds: read when present.
+          // The vendor's name: shown instead of the id.
           displayName: 'GLM 5.3',
         },
         {
