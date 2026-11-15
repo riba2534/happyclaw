@@ -212,8 +212,9 @@ export function storedConnectionAccess(
   const credential = provider.anthropicAuthToken || provider.anthropicApiKey;
   if (!provider.anthropicBaseUrl || !credential) return null;
   const apiKeyOnly = !provider.anthropicAuthToken && !!provider.anthropicApiKey;
-  const explicit =
-    provider.anthropicAuthMode ?? (apiKeyOnly ? 'x-api-key' : undefined);
+  // A key stored as an API key reaches Claude Code as ANTHROPIC_API_KEY,
+  // which has no other header, whatever style was saved for a token.
+  const explicit = apiKeyOnly ? 'x-api-key' : provider.anthropicAuthMode;
   return {
     baseUrl: provider.anthropicBaseUrl,
     credential,
