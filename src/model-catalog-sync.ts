@@ -24,6 +24,7 @@ import {
   findPresetsByBaseUrl,
   getModelPreset,
   MAX_PROVIDER_MODELS,
+  MODEL_EFFORTS,
   modelsUrlFor,
   type DiscoveredModel,
   type ModelEffort,
@@ -132,7 +133,12 @@ export function mergeCatalogModels(input: {
     }
     if (
       current.efforts === undefined ||
-      sameEfforts(current.efforts, synced.efforts)
+      sameEfforts(current.efforts, synced.efforts) ||
+      // Never synced: every effort is what the add wizard fills in, unverified,
+      // for a model it knows nothing about (an earlier release read magpie's
+      // empty levels as unknown), not an admin's choice.
+      (current.synced === undefined &&
+        sameEfforts(current.efforts, MODEL_EFFORTS))
     ) {
       mirror(next, 'efforts', found.efforts);
       if (next.defaultEffort && !next.efforts?.includes(next.defaultEffort)) {
