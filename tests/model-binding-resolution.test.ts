@@ -315,8 +315,15 @@ describe('launch effort', () => {
     expect(run('max')).toBe('high');
   });
 
-  test('a model nothing is known about gets no effort, even the Agent’s', () => {
+  test('a model nothing is known about runs the Agent’s effort as set, else none', () => {
     const run = launch('mystery-model', []);
+    expect(run()).toBeUndefined();
+    expect(run('high')).toBe('high');
+    expect(run('max')).toBe('max');
+  });
+
+  test('a model declared to take none gets no effort, even the Agent’s', () => {
+    const run = launch('mystery-model', [{ id: 'mystery-model', efforts: [] }]);
     expect(run()).toBeUndefined();
     expect(run('high')).toBeUndefined();
   });
