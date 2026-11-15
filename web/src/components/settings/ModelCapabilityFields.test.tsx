@@ -1,0 +1,97 @@
+// @vitest-environment happy-dom
+
+import { act } from 'react';
+import { createRoot, type Root } from 'react-dom/client';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+
+import {
+  resolveModelCapabilities,
+  type ProviderModelEntry,
+} from '@/lib/model-providers';
+import {
+  ModelCapabilityFields,
+  withAddDefaults,
+} from './ModelCapabilityFields';
+import { click } from './test-helpers';
+
+(
+  globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }
+).IS_REACT_ACT_ENVIRONMENT = true;
+
+const FULL = ['low', 'medium', 'high', 'xhigh', 'max'];
+
+describe('withAddDefaults', () => {
+  test('an empty effort list is a declaration and stays empty', () => {
+    // The shared resolver reads [] as declared, not as unknown.
+    expect(
+      resolveModelCapabilities({ id: 'acme/vx-mini', efforts: [] })
+        .effortsSource,
+    ).toBe('declared');
+    expect(withAddDefaults({ id: 'acme/vx-mini', efforts: [] }, true)).toEqual({
+      entry: { id: 'acme/vx-mini', efforts: [] },
+      effortsUnverified: false,
+      windowSuggested: false,
+    });
+  });
+
+  test('a model nothing is known about gets every effort, unverified', () => {
+    expect(withAddDefaults({ id: 'acme/vx-lab' }, true)).toEqual({
+      entry: { id: 'acme/vx-lab', efforts: FULL },
+      effortsUnverified: true,
+      windowSuggested: false,
+    });
+  });
+
+  test('declared efforts are left as they are', () => {
+    expect(
+      withAddDefaults({ id: 'acme/vx-pro', efforts: ['high'] }, true).entry,
+    ).toEqual({ id: 'acme/vx-pro', efforts: ['high'] });
+  });
+});
+
+describe('ModelCapabilityFields', () => {
+  let root: Root;
+  let container: HTMLDivElement;
+  const onChange = vi.fn();
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    container = document.createElement('div');
+    document.body.append(container);
+    root = createRoot(container);
+  });
+
+  afterEach(async () => {
+    await act(async () => root.unmount());
+    container.remove();
+  });
+
+  async function render(entry: ProviderModelEntry) {
+    await act(async () => {
+      root.render(<ModelCapabilityFields entry={entry} onChange={onChange} />);
+    });
+  }
+
+  const group = () =>
+    container.querySelector('[role="group"][aria-label$="的推理等级"]')!;
+  const chips = () => [...group().querySelectorAll('button')];
+
+  test('a model declared to take none says so and offers no level', async () => {
+    await render({ id: 'acme/vx-mini', efforts: [] });
+    expect(group().textContent).toBe('不支持推理等级');
+    expect(chips()).toHaveLength(0);
+  });
+
+  test('a model nothing is known about offers the levels to declare, marked 未知', async () => {
+    await render({ id: 'acme/vx-lab' });
+    expect(group().textContent).toContain('未知');
+    expect(chips().map((chip) => chip.getAttribute('aria-pressed'))).toEqual(
+      FULL.map(() => 'false'),
+    );
+    await click(chips().find((chip) => chip.textContent === '高'));
+    expect(onChange).toHaveBeenCalledWith(
+      { id: 'acme/vx-lab', efforts: ['high'] },
+      true,
+    );
+  });
+});

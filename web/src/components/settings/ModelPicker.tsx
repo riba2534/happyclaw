@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
 import {
+  discoveredModelEntry,
   isValidModelId,
   modelCapabilities,
   normalizeProviderModels,
@@ -19,6 +20,7 @@ import { errorCopy } from './model-connections';
 import {
   ModelCapabilityFields,
   ModelRolesFields,
+  formatContextWindow,
   withAddDefaults,
 } from './ModelCapabilityFields';
 
@@ -33,27 +35,43 @@ export interface ModelCandidate extends ProviderModelEntry {
   windowSuggested?: boolean;
 }
 
-/** What the connection stores for a candidate. */
+/**
+ * What the connection stores for a candidate: every entry field, an empty
+ * effort list included (the vendor declared the model takes none).
+ */
 export function candidateEntry(candidate: ModelCandidate): ProviderModelEntry {
   const entry: ProviderModelEntry = { id: candidate.id };
+  if (candidate.displayName) entry.displayName = candidate.displayName;
   if (candidate.contextWindow) entry.contextWindow = candidate.contextWindow;
-  if (candidate.efforts?.length) entry.efforts = candidate.efforts;
+  if (candidate.efforts) entry.efforts = candidate.efforts;
   if (candidate.defaultEffort) entry.defaultEffort = candidate.defaultEffort;
+  if (candidate.thinks) entry.thinks = true;
+  if (candidate.maxOutputTokens) {
+    entry.maxOutputTokens = candidate.maxOutputTokens;
+  }
+  if (candidate.vendor) entry.vendor = candidate.vendor;
   return entry;
 }
 
 /**
  * A model as a candidate: its window from the vendor or the preset (`[1m]`
- * spelled the old way counts as 1M), its vendor efforts, and what an added
- * model starts with (see withAddDefaults).
+ * spelled the old way counts as 1M), what the vendor says about it, and what
+ * an added model starts with (see withAddDefaults). Null for a discovered id
+ * a connection cannot keep, such as a magpie discovery alias.
  */
 function toCandidate(
   model: DiscoveredModel | ModelPresetModel,
   origin: ModelCandidate['origin'],
   picked: boolean,
   declareSuggestedWindow: boolean,
-): ModelCandidate {
-  const [normalized] = normalizeProviderModels([model]) ?? [];
+): ModelCandidate | null {
+  // A vendor's list carries the name, reply limit, vendor and declared
+  // efforts; a preset or a typed name only what the user may edit.
+  const normalized =
+    origin === 'discovered'
+      ? discoveredModelEntry(model)
+      : (normalizeProviderModels([model]) ?? [])[0];
+  if (!normalized) return null;
   const { entry, effortsUnverified, windowSuggested } = withAddDefaults(
     normalized,
     declareSuggestedWindow,
@@ -107,15 +125,15 @@ export function addCandidates(
   for (const model of models) {
     const id = splitOneMillionSuffix(model.id).model;
     if (!id || known.has(id) || !isValidModelId(id)) continue;
-    known.add(id);
-    next.push(
-      toCandidate(
-        model,
-        origin,
-        picked === 'known' ? modelCapabilities(id) !== null : picked,
-        declareSuggestedWindow,
-      ),
+    const candidate = toCandidate(
+      model,
+      origin,
+      picked === 'known' ? modelCapabilities(id) !== null : picked,
+      declareSuggestedWindow,
     );
+    if (!candidate) continue;
+    known.add(id);
+    next.push(candidate);
   }
   return next;
 }
@@ -240,6 +258,16 @@ export function ModelPicker({
       >
         {shown.map((candidate) => {
           const checkboxId = `wizard-model-${candidate.id}`;
+          const about = [
+            candidate.name ??
+              (candidate.origin === 'manual' ? '手动添加' : undefined),
+            candidate.vendor,
+            candidate.maxOutputTokens
+              ? `最长回复 ${formatContextWindow(candidate.maxOutputTokens)}`
+              : undefined,
+          ]
+            .filter(Boolean)
+            .join(' · ');
           return (
             <div key={candidate.id} className="min-w-0 space-y-2 px-3 py-2">
               <div className="flex min-h-7 min-w-0 items-center gap-3">
@@ -261,9 +289,9 @@ export function ModelPicker({
                   <span className="block truncate font-mono text-caption text-foreground">
                     {candidate.id}
                   </span>
-                  {(candidate.name || candidate.origin === 'manual') && (
+                  {about && (
                     <span className="block truncate text-micro text-muted-foreground">
-                      {candidate.name ?? '手动添加'}
+                      {about}
                     </span>
                   )}
                 </label>

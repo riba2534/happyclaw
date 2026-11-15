@@ -1,13 +1,27 @@
 import type {
   ConnectionModelRoles,
+  ProviderErrorCode,
+  ProviderGateway,
   ProviderModelEntry,
   ProviderTestRecord,
+  ToolSearchSetting,
 } from '@/lib/model-providers';
 import type { DeploymentMode } from '../../stores/auth';
 
 // ─── 统一供应商类型 (V4) ─────────────────────────────────────
 
 export type WebFetchPreflightPolicy = 'check' | 'skip';
+
+/** A magpie connection's catalog sync: when it ran and what it found. */
+export interface ProviderCatalogPublic {
+  /** New upstream models join the list by themselves. */
+  autoAdd: boolean;
+  syncedAt: string | null;
+  /** The last failed sync; cleared by a successful one. */
+  error: { code: ProviderErrorCode; message: string; at: string } | null;
+  /** Upstream models the list does not have yet. */
+  newModels: ProviderModelEntry[];
+}
 
 export interface UnifiedProviderPublic {
   id: string;
@@ -63,6 +77,15 @@ export interface UnifiedProviderPublic {
   presetId: string | null;
   /** The outcome of the last connection test. */
   lastTest: ProviderTestRecord | null;
+  // The rest are absent on servers older than gateway detection.
+  /** The gateway the connection is, from its preset or its model list. */
+  gateway?: ProviderGateway | null;
+  /** The admin's tool search choice; `default` follows the gateway. */
+  toolSearch?: ToolSearchSetting;
+  /** Whether launches turn Claude Code's tool search on. */
+  toolSearchEnabled?: boolean;
+  /** magpie connections only. */
+  catalog?: ProviderCatalogPublic | null;
   updatedAt: string;
 }
 

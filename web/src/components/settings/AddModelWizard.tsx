@@ -18,14 +18,20 @@ import {
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import {
+  NativeSelect,
+  NativeSelectOption,
+} from '@/components/ui/native-select';
+import {
   PROVIDER_ERROR_COPY,
   describeBaseUrlProblem,
   findPresetsByBaseUrl,
   getModelPreset,
+  isMagpieAliasModelId,
   normalizeConnectionModelRoles,
   normalizeProviderBaseUrl,
   type ConnectionModelRoles,
   type ModelPreset,
+  type ProviderGateway,
 } from '@/lib/model-providers';
 import { cn } from '@/lib/utils';
 import { api } from '../../api/client';
@@ -42,6 +48,7 @@ import {
   AUTO_AUTH_MODE_HINT,
   CONNECTION_KIND_LABELS,
   PROVIDERS_API,
+  connectionWriteErrorMessage,
   discoverModels,
   discoveredModelsFor,
   isThirdPartyKind,
@@ -67,6 +74,7 @@ import {
   getErrorMessage,
   type EnvRow,
   type UnifiedProviderPublic,
+  type WebFetchPreflightPolicy,
 } from './types';
 import {
   ExternalAnchor,
@@ -89,6 +97,12 @@ const STEPS: ReadonlyArray<{ key: Step; label: string }> = [
  * connection offers these when its model list cannot be read.
  */
 const CLAUDE_MODEL_ALIASES = ['opus', 'sonnet', 'haiku', 'fable'];
+
+/**
+ * magpie takes any key on its own machine and credits the calls to the app
+ * a `magpie-<app>` key names, so a new magpie connection starts with one.
+ */
+const MAGPIE_APP_KEY = 'magpie-happyclaw';
 
 function sourceKey(source: WizardSource | null): string {
   if (!source) return '';
@@ -144,6 +158,9 @@ export function AddModelWizard({
   });
   const [discoveredAuthMode, setDiscoveredAuthMode] =
     useState<ProviderAuthMode | null>(null);
+  /** What the model list says the endpoint is (magpie labels its rows). */
+  const [discoveredGateway, setDiscoveredGateway] =
+    useState<ProviderGateway | null>(null);
   const discoveredFor = useRef<string | null>(null);
   const discoverySeq = useRef(0);
   /** The draft whose model list is being read, while it is. */
@@ -161,6 +178,9 @@ export function AddModelWizard({
 
   // ─── Test and save ───
   const [name, setName] = useState('');
+  // Only offered for magpie, whose reason to skip is known up front.
+  const [webFetchPolicy, setWebFetchPolicy] =
+    useState<WebFetchPreflightPolicy>('skip');
   const [test, setTest] = useState<{
     signature: string;
     outcome: TestOutcome | null;
@@ -175,9 +195,13 @@ export function AddModelWizard({
     source?.kind === 'preset' ? getModelPreset(source.presetId) : null;
   const kind = source?.kind ?? null;
   const thirdParty = isThirdPartyKind(kind);
-  const effectiveBaseUrl = preset ? preset.baseUrl : baseUrl.trim();
-  const baseUrlProblem =
-    kind === 'custom' ? describeBaseUrlProblem(baseUrl) : null;
+  // A gateway's preset (magpie) names where it usually runs, not a vendor's
+  // fixed endpoint: its address is the draft's own.
+  const ownBaseUrl = kind === 'custom' || !!preset?.editableBaseUrl;
+  const magpiePreset = preset?.gateway === 'magpie';
+  const effectiveBaseUrl =
+    preset && !preset.editableBaseUrl ? preset.baseUrl : baseUrl.trim();
+  const baseUrlProblem = ownBaseUrl ? describeBaseUrlProblem(baseUrl) : null;
   const picked = candidates.filter((candidate) => candidate.picked);
   const codexModel =
     codexPick?.model ?? (created?.anthropicModel || codexCatalog.defaultModel);
@@ -242,6 +266,20 @@ export function AddModelWizard({
       );
       setDiscovery({ status: 'idle' });
       discoveredFor.current = null;
+      // An address typed for a custom connection is kept (it is how the
+      // gateway was recognised); otherwise the gateway's usual one.
+      if (
+        nextPreset?.editableBaseUrl &&
+        !(kind === 'custom' && baseUrl.trim())
+      ) {
+        setBaseUrl(nextPreset.baseUrl);
+      }
+      // The magpie app key means nothing to another vendor.
+      if (nextPreset?.gateway === 'magpie') {
+        if (!apiKey.trim()) setApiKey(MAGPIE_APP_KEY);
+      } else if (apiKey === MAGPIE_APP_KEY) {
+        setApiKey('');
+      }
     }
     setSource(next);
     setDetected(null);
@@ -272,7 +310,7 @@ export function AddModelWizard({
         return {
           type: 'third_party',
           presetId: preset!.id,
-          anthropicBaseUrl: preset!.baseUrl,
+          anthropicBaseUrl: effectiveBaseUrl,
           anthropicAuthToken: apiKey.trim(),
           ...(Object.keys(customEnv).length > 0 ? { customEnv } : {}),
         };
@@ -316,7 +354,10 @@ export function AddModelWizard({
       if (result.ok) {
         next = {
           status: 'done',
-          count: result.models.length,
+          // magpie's discovery aliases name rows, not models: never offered.
+          count: result.models.filter(
+            (model) => !isMagpieAliasModelId(model.id),
+          ).length,
           builtin: result.source === 'builtin',
         };
         extra = () => {
@@ -333,6 +374,7 @@ export function AddModelWizard({
             ),
           );
           setDiscoveredAuthMode(result.authMode ?? null);
+          setDiscoveredGateway(result.gateway ?? null);
         };
       } else {
         next = {
@@ -340,8 +382,10 @@ export function AddModelWizard({
           code: result.code,
           message: result.message || null,
         };
-        if (official && result.code !== 'AUTH_INVALID') {
-          extra = () =>
+        extra = () => {
+          // A list that could not be read says nothing about the endpoint.
+          setDiscoveredGateway(null);
+          if (official && result.code !== 'AUTH_INVALID') {
             setCandidates((current) =>
               addCandidates(
                 current,
@@ -351,7 +395,8 @@ export function AddModelWizard({
                 false,
               ),
             );
-        }
+          }
+        };
       }
     } catch (err) {
       next = {
@@ -359,6 +404,7 @@ export function AddModelWizard({
         code: 'UNKNOWN',
         message: getErrorMessage(err, '获取模型列表失败'),
       };
+      extra = () => setDiscoveredGateway(null);
     }
     // A slower answer for an earlier draft must not land on this one.
     if (
@@ -490,6 +536,10 @@ export function AddModelWizard({
           // A role on a model left unchecked follows the turn's model.
           body.roles = normalizeConnectionModelRoles(roles, models);
           if (authMode) body.anthropicAuthMode = authMode;
+          // A custom address the list showed to be magpie is saved as one,
+          // so its catalog is kept in step from the start.
+          if (discoveredGateway === 'magpie') body.gateway = 'magpie';
+          if (magpiePreset) body.webFetchPreflightPolicy = webFetchPolicy;
         }
         provider = await api.post<UnifiedProviderPublic>(PROVIDERS_API, body);
         // The draft test was not stored; test the saved connection so its
@@ -498,7 +548,10 @@ export function AddModelWizard({
       }
       onDone(provider, verified);
     } catch (err) {
-      setSaveError(getErrorMessage(err, '保存模型连接失败'));
+      setSaveError(
+        connectionWriteErrorMessage(err) ??
+          getErrorMessage(err, '保存模型连接失败'),
+      );
     } finally {
       setSaving(false);
     }
@@ -519,7 +572,11 @@ export function AddModelWizard({
           !envResult.error
         );
       case 'preset':
-        return !!apiKey.trim() && !envResult.error;
+        return (
+          (!preset?.editableBaseUrl || !!normalizeProviderBaseUrl(baseUrl)) &&
+          !!apiKey.trim() &&
+          !envResult.error
+        );
       case 'anthropic_api':
         return !!apiKey.trim();
       default:
@@ -671,31 +728,58 @@ export function AddModelWizard({
 
       {step === 'connect' && kind === 'preset' && preset && (
         <div className="space-y-4">
-          <SettingsField
-            label="服务地址"
-            htmlFor="wizard-preset-url"
-            description={
-              <button
-                type="button"
-                className="cursor-pointer text-primary-text underline-offset-2 hover:underline"
-                onClick={() => {
-                  setBaseUrl(preset.baseUrl);
-                  setDismissedUrl(normalizeProviderBaseUrl(preset.baseUrl));
-                  chooseSource({ kind: 'custom' });
-                }}
-              >
-                地址不一样？改用自定义地址
-              </button>
-            }
-          >
-            <Input
-              variant="code"
-              id="wizard-preset-url"
-              value={preset.baseUrl}
-              readOnly
-              className="font-mono text-muted-foreground"
-            />
-          </SettingsField>
+          {preset.editableBaseUrl ? (
+            <SettingsField
+              label="服务地址"
+              htmlFor="wizard-preset-url"
+              description={
+                baseUrlProblem ? (
+                  <BaseUrlProblem problem={baseUrlProblem} />
+                ) : (
+                  `${preset.name} 运行的地址；它在另一台机器上时改成那台机器的地址。`
+                )
+              }
+            >
+              <Input
+                variant="code"
+                id="wizard-preset-url"
+                type="url"
+                inputMode="url"
+                value={baseUrl}
+                onChange={(event) => setBaseUrl(event.target.value)}
+                placeholder={preset.baseUrl}
+                autoComplete="off"
+                aria-invalid={baseUrlProblem ? true : undefined}
+                className="font-mono"
+              />
+            </SettingsField>
+          ) : (
+            <SettingsField
+              label="服务地址"
+              htmlFor="wizard-preset-url"
+              description={
+                <button
+                  type="button"
+                  className="cursor-pointer text-primary-text underline-offset-2 hover:underline"
+                  onClick={() => {
+                    setBaseUrl(preset.baseUrl);
+                    setDismissedUrl(normalizeProviderBaseUrl(preset.baseUrl));
+                    chooseSource({ kind: 'custom' });
+                  }}
+                >
+                  地址不一样？改用自定义地址
+                </button>
+              }
+            >
+              <Input
+                variant="code"
+                id="wizard-preset-url"
+                value={preset.baseUrl}
+                readOnly
+                className="font-mono text-muted-foreground"
+              />
+            </SettingsField>
+          )}
           <KeyField
             error={keyError}
             value={apiKey}
@@ -704,6 +788,13 @@ export function AddModelWizard({
             placeholder="粘贴 API Key"
             description={
               <span className="flex flex-wrap gap-x-3">
+                {magpiePreset && (
+                  <span className="basis-full">
+                    本机的 magpie 接受任意密钥，已填 {MAGPIE_APP_KEY}
+                    ，便于在 magpie 的用量里认出 HappyClaw；从别的机器连接时填
+                    magpie 的网关密钥。
+                  </span>
+                )}
                 {preset.keyUrl && (
                   <ExternalAnchor href={preset.keyUrl}>
                     获取 API Key
@@ -717,6 +808,29 @@ export function AddModelWizard({
               </span>
             }
           />
+          {magpiePreset && (
+            <SettingsField
+              label="网页抓取域名检查"
+              htmlFor="wizard-web-fetch-preflight"
+              description="Claude Code 抓取网页前会先把域名发到 api.anthropic.com 检查；只连得上 magpie 时这一步会失败，所以默认跳过。"
+            >
+              <NativeSelect
+                id="wizard-web-fetch-preflight"
+                value={webFetchPolicy}
+                onChange={(event) =>
+                  setWebFetchPolicy(
+                    event.target.value as WebFetchPreflightPolicy,
+                  )
+                }
+                className="w-full sm:w-72"
+              >
+                <NativeSelectOption value="skip">跳过检查</NativeSelectOption>
+                <NativeSelectOption value="check">
+                  跟随 Claude Code 设置（默认检查）
+                </NativeSelectOption>
+              </NativeSelect>
+            </SettingsField>
+          )}
         </div>
       )}
 
@@ -727,13 +841,7 @@ export function AddModelWizard({
             htmlFor="wizard-base-url"
             description={
               baseUrlProblem ? (
-                <span className="flex gap-1.5 text-warning">
-                  <TriangleAlert
-                    className="mt-0.5 size-3.5 shrink-0"
-                    aria-hidden="true"
-                  />
-                  {baseUrlProblem}
-                </span>
+                <BaseUrlProblem problem={baseUrlProblem} />
               ) : (
                 'Anthropic Messages 兼容接口的地址，Claude Code 会在后面追加 /v1/messages。'
               )
@@ -758,7 +866,10 @@ export function AddModelWizard({
               className="flex flex-col gap-2 rounded-lg bg-primary/10 px-3 py-2.5 sm:flex-row sm:items-center"
             >
               <span className="min-w-0 flex-1 text-caption text-foreground">
-                看起来是「{detected.name}」。按预设配置会带上它的推荐模型。
+                看起来是「{detected.name}」。
+                {detected.models.length > 0
+                  ? '按预设配置会带上它的推荐模型。'
+                  : ''}
               </span>
               <span className="flex shrink-0 gap-2">
                 <Button
@@ -983,6 +1094,15 @@ function KeyField({
       />
       <KeyError message={error} />
     </SettingsField>
+  );
+}
+
+function BaseUrlProblem({ problem }: { problem: string }) {
+  return (
+    <span className="flex gap-1.5 text-warning">
+      <TriangleAlert className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
+      {problem}
+    </span>
   );
 }
 
