@@ -111,17 +111,8 @@ export interface CodexSelectionView {
   models: CodexModelChoice[];
 }
 
-/**
- * One model of a non-ChatGPT connection, with what its vendor says about it
- * (absent on older servers). `effortsSource: 'none'` is a model nothing is
- * known about, which may run at any effort.
- */
-export type ConnectionModelChoice = ConnectionModel & {
-  displayName?: string | null;
-  maxOutputTokens?: number | null;
-  vendor?: string | null;
-  upstreamMissingSince?: string | null;
-};
+/** One model of a non-ChatGPT connection. */
+export type ConnectionModelChoice = ConnectionModel;
 
 export interface SessionModelOption {
   id: string;

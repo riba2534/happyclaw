@@ -10,18 +10,12 @@ import type { ConnectionModel, ModelConfigOption } from '../../types';
 
 const DEFAULT_MODEL_VALUE = '__default__';
 
-/** A model as the server lists it, with the vendor's name when it has one. */
-type NamedModel = ConnectionModel & { displayName?: string | null };
-
 /** How a connection's model is named: the vendor's name, else its id. */
 export function modelLabel(
   config: Pick<ModelConfigOption, 'models'> | undefined,
   id: string,
 ): string {
-  const model = config?.models.find((item) => item.id === id) as
-    | NamedModel
-    | undefined;
-  return model?.displayName || id;
+  return config?.models.find((item) => item.id === id)?.displayName || id;
 }
 
 /**
@@ -116,7 +110,7 @@ export function AgentModelSelect({
         )}
         {listed.map((model) => (
           <SelectItem key={model.id} value={model.id}>
-            {modelLabel(config, model.id)}
+            {model.displayName || model.id}
           </SelectItem>
         ))}
       </SelectContent>

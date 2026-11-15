@@ -290,13 +290,6 @@ function CodexUsage({
   );
 }
 
-/** Remaining share of a window: little left reads as a warning. */
-function remainingColor(remaining: number): string {
-  if (remaining <= 20) return 'bg-error';
-  if (remaining <= 50) return 'bg-warning';
-  return 'bg-success';
-}
-
 /** One magpie usage window: what is left of it and when it renews. */
 function QuotaWindowColumn({ quota }: { quota: MagpieQuotaWindow }) {
   const remaining = quota.unlimited
@@ -324,7 +317,7 @@ function QuotaWindowColumn({ quota }: { quota: MagpieQuotaWindow }) {
       <div className="mt-1.5 h-1 overflow-hidden rounded-full bg-foreground/10">
         {remaining !== null && (
           <div
-            className={`h-full rounded-full transition-all ${remainingColor(remaining)}`}
+            className={`h-full rounded-full transition-all ${barColor(100 - remaining)}`}
             style={{ width: `${remaining}%` }}
           />
         )}
