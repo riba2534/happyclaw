@@ -85,7 +85,7 @@ describe('provider fallback source contracts', () => {
     // label: borrowing 'server_error' is exactly how the liveness watchdog
     // inherited the account-verdict disposition it had no business having.
     expect(agentRunner).toMatch(
-      /publishProviderFailure\(\{\s*error: assistantError,\s*failureClass: assistantErrorClass,\s*\}\)/,
+      /publishProviderFailure\(\{\s*error: assistantError,\s*failureClass: assistantErrorClass,\s*errorText: assistantMessageText\(message\),\s*\}\)/,
     );
     expect(agentRunner).toContain(
       'const ipcReceipts = ipcDeliveryTracker.completeNextTurn()',
