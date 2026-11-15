@@ -2029,3 +2029,163 @@ describe('context windows', () => {
     expect(detail('gpt-6-astra')).toBe('ChatGPT 订阅');
   });
 });
+
+describe('what a vendor says about its models', () => {
+  /** A magpie connection next to the official one. */
+  function magpieSelection(
+    overrides: Partial<SessionModelSelection> = {},
+  ): SessionModelSelection {
+    const base = connectionSelection(overrides);
+    return {
+      ...base,
+      options: [
+        base.options[0],
+        {
+          id: 'mp',
+          name: 'Magpie',
+          kind: 'third_party',
+          model: 'acme/vx-pro',
+          usable: true,
+          models: [
+            entry('acme/vx-pro', {
+              displayName: 'VX Pro',
+              vendor: 'Relay A',
+              efforts: ['low', 'high'],
+              effortsSource: 'declared',
+            }),
+            // Declared to take none.
+            entry('acme/vx-mini', {
+              displayName: 'VX Mini',
+              efforts: [],
+              effortsSource: 'declared',
+            }),
+            // Nothing known.
+            entry('acme/vx-lab', { efforts: [], effortsSource: 'none' }),
+          ],
+        },
+      ],
+    };
+  }
+
+  test('rows, the trigger and search use the vendor’s name; the id stays in view', async () => {
+    mocks.get.mockResolvedValue(
+      magpieSelection({ selectedModelConfigId: 'mp' }),
+    );
+    await render('s0');
+    // After the monogram of a relay the registry does not know.
+    expect(trigger().textContent).toBe('MVX Pro');
+    expect(trigger().getAttribute('aria-label')).toBe('模型：Magpie · VX Pro');
+    await open();
+    expect(titles()).toEqual([
+      '未选择模型',
+      'opus',
+      'sonnet',
+      'haiku',
+      'VX Pro',
+      'VX Mini',
+      // Without a name the id stands.
+      'acme/vx-lab',
+    ]);
+    expect(row('VX Pro')?.textContent).toContain(
+      'VX ProMagpie · acme/vx-pro · 上下文未知',
+    );
+    await search('vx mini');
+    expect(titles()).toEqual(['VX Mini']);
+    await search('acme/vx-pro');
+    expect(titles()).toEqual(['VX Pro']);
+  });
+
+  test('picking a named model names it in the confirmation', async () => {
+    mocks.get.mockResolvedValue(magpieSelection());
+    mocks.put.mockResolvedValue(
+      magpieSelection({
+        selectedModelConfigId: 'mp',
+        selectedModel: 'acme/vx-mini',
+      }),
+    );
+    await render('s0');
+    await open();
+    await click(row('VX Mini'));
+    expect(mocks.put).toHaveBeenCalledWith(
+      '/api/groups/web%3Aws/model-selection',
+      { agentId: 's0', modelConfigId: 'mp', model: 'acme/vx-mini' },
+    );
+    expect(mocks.toastSuccess).toHaveBeenCalledWith(
+      '已切换到「Magpie · VX Mini」，从下一条消息开始生效',
+    );
+  });
+
+  test('a model nothing is known about offers every level, marked 未验证', async () => {
+    mocks.get.mockResolvedValue(
+      magpieSelection({
+        selectedModelConfigId: 'mp',
+        selectedModel: 'acme/vx-lab',
+      }),
+    );
+    mocks.put.mockResolvedValue(
+      magpieSelection({
+        selectedModelConfigId: 'mp',
+        selectedModel: 'acme/vx-lab',
+        selectedEffort: 'xhigh',
+      }),
+    );
+    await render('s0');
+    await openEffort();
+    expect(effortItems().map((item) => item.textContent)).toEqual([
+      '默认',
+      '低',
+      '中',
+      '高',
+      '超高',
+      '最高',
+    ]);
+    expect(document.querySelector('[role="menu"]')?.textContent).toContain(
+      '未验证',
+    );
+    await click(effortItem('超高'));
+    expect(mocks.put).toHaveBeenCalledWith(
+      '/api/groups/web%3Aws/model-selection',
+      {
+        agentId: 's0',
+        modelConfigId: 'mp',
+        model: 'acme/vx-lab',
+        effort: 'xhigh',
+      },
+    );
+  });
+
+  test('a model declared to take no effort offers no effort choice', async () => {
+    mocks.get.mockResolvedValue(
+      magpieSelection({
+        selectedModelConfigId: 'mp',
+        selectedModel: 'acme/vx-mini',
+      }),
+    );
+    await render('s0');
+    // After the monogram of a relay the registry does not know.
+    expect(trigger().textContent).toBe('MVX Mini');
+    expect(effortTrigger()).toBeNull();
+  });
+
+  test('switching to an unknown model keeps the picked level', async () => {
+    mocks.get.mockResolvedValue(
+      magpieSelection({
+        selectedModelConfigId: 'mp',
+        selectedEffort: 'high',
+      }),
+    );
+    mocks.put.mockResolvedValue(magpieSelection());
+    await render('s0');
+    await open();
+    await click(row('acme/vx-lab'));
+    expect(mocks.put).toHaveBeenCalledWith(
+      '/api/groups/web%3Aws/model-selection',
+      {
+        agentId: 's0',
+        modelConfigId: 'mp',
+        model: 'acme/vx-lab',
+        effort: 'high',
+      },
+    );
+  });
+});
