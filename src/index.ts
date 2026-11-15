@@ -5405,9 +5405,11 @@ function handleModelCommand(
   if (!workspace || !owner || owner.status !== 'active') {
     return '⚠️ 无法确定工作区主人，不能切换模型';
   }
+  // The same check every other Host path makes, so a privilege being revoked
+  // already counts as gone.
   if (
     (workspace.executionMode || 'container') === 'host' &&
-    owner.role !== 'admin'
+    !canExecuteOnHost(owner)
   ) {
     return '⚠️ 宿主机工作区需要管理员权限';
   }

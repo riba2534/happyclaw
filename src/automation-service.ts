@@ -14,6 +14,7 @@ import crypto from 'node:crypto';
 
 import {
   AUTOMATION_TERMINAL_RUN_STATUSES,
+  automationTakesModel,
   validateAutomationDraft,
   type Automation,
   type AutomationDraft,
@@ -330,28 +331,20 @@ export function createAutomationCore(
     return sessionJid;
   }
 
-  /**
-   * Only the sessions an automation creates take its model: a bound session
-   * keeps its own choice, and a script runs no model.
-   */
+  /** A model only on runs that take one (automationTakesModel). */
   function assertModelFits(
     model: AutomationDraft['model'],
     sessionMode: Automation['sessionMode'],
     execution: Automation['execution'],
   ): void {
-    if (!model) return;
-    if (sessionMode === 'bound')
-      throw new AutomationError(
-        400,
-        MODEL_BOUND_SESSION_ERROR,
-        'automation_model_bound_session',
-      );
-    if (execution === 'script')
-      throw new AutomationError(
-        400,
-        MODEL_SCRIPT_ERROR,
-        'automation_model_script',
-      );
+    if (!model || automationTakesModel({ sessionMode, execution })) return;
+    throw sessionMode === 'bound'
+      ? new AutomationError(
+          400,
+          MODEL_BOUND_SESSION_ERROR,
+          'automation_model_bound_session',
+        )
+      : new AutomationError(400, MODEL_SCRIPT_ERROR, 'automation_model_script');
   }
 
   /**
@@ -376,8 +369,6 @@ export function createAutomationCore(
       permissions: [],
     };
     const checked = checkSessionModelChoice(workspace, requested, chooser);
-    // A connection that does not exist is a bad field of the draft here,
-    // not a missing resource.
     if (!checked.ok)
       throw new AutomationError(
         400,
@@ -576,13 +567,10 @@ export function createAutomationCore(
     return next;
   }
 
-  /**
-   * What `actor` may see of an automation: viewers miss host commands and,
-   * as everywhere else, the model choice.
-   */
+  /** What `actor` may see of an automation: viewers miss host commands. */
   function present(actor: AutomationActor, automation: Automation): Automation {
     return actor.kind === 'viewer'
-      ? { ...redactAutomationForGuest(automation), model: null }
+      ? redactAutomationForGuest(automation)
       : automation;
   }
 

@@ -2611,8 +2611,10 @@ groupRoutes.put('/:jid/model-selection', authMiddleware, async (c) => {
   const authUser = c.get('user') as AuthUser;
   const checked = checkSessionModelChoice(group, parsed.data, authUser);
   if (!checked.ok) {
-    const { status, ...rejection } = checked.rejection;
-    return c.json(rejection, status);
+    return c.json(
+      checked.rejection,
+      checked.rejection.code === 'MODEL_CONFIG_NOT_FOUND' ? 404 : 400,
+    );
   }
   const { modelConfigId, model, effort } = checked.choice;
 

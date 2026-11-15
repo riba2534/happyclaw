@@ -22,9 +22,9 @@ import {
   getSessionModelSelectionDetail,
   peekAgentProfileForWorkspace,
   setSessionModelSelection,
+  storedModelName,
   type SessionModelSelectionDetail,
 } from './db.js';
-import { splitOneMillionSuffix } from './model-providers.js';
 import { hasPermission } from './permissions.js';
 import {
   getProviders,
@@ -64,8 +64,6 @@ export type SessionModelChoiceRejectionCode =
   | 'MODEL_CONFIG_REQUIRED';
 
 export interface SessionModelChoiceRejection {
-  /** 404 only for a connection that does not exist. */
-  status: 400 | 404;
   error: string;
   code: SessionModelChoiceRejectionCode;
 }
@@ -266,7 +264,6 @@ export function checkSessionModelChoice(
       return {
         ok: false,
         rejection: {
-          status: 400,
           error: '选择模型或推理档位时需要同时指定模型配置',
           code: 'MODEL_CONFIG_REQUIRED',
         },
@@ -284,7 +281,6 @@ export function checkSessionModelChoice(
     return {
       ok: false,
       rejection: {
-        status: 404,
         error: '模型配置不存在',
         code: 'MODEL_CONFIG_NOT_FOUND',
       },
@@ -294,7 +290,6 @@ export function checkSessionModelChoice(
     return {
       ok: false,
       rejection: {
-        status: 400,
         error: '该模型配置缺少凭据，请先在模型配置中补全密钥或完成授权',
         code: 'MODEL_CONFIG_NO_CREDENTIALS',
       },
@@ -309,9 +304,7 @@ export function checkSessionModelChoice(
     chooser,
     agentModelOn(target, workspaceProfile(group), group.folder),
   );
-  if (!checked.ok) {
-    return { ok: false, rejection: { status: 400, ...checked.rejection } };
-  }
+  if (!checked.ok) return { ok: false, rejection: checked.rejection };
   return {
     ok: true,
     choice: { modelConfigId, model: checked.model, effort: checked.effort },
@@ -400,8 +393,7 @@ export interface SessionModelChoiceSaved {
 
 /**
  * Store a checked choice for one conversation and retire the runners it
- * affects. `runners` defaults to the running service's queue; a session that
- * has never run has none to retire.
+ * affects. `runners` defaults to the running service's queue.
  */
 export function saveSessionModelChoice(input: {
   group: RegisteredGroup;
@@ -409,7 +401,7 @@ export function saveSessionModelChoice(input: {
   agentId: string;
   choice: SessionModelChoice;
   updatedBy: string | null;
-  runners?: SessionRunnerControl | null;
+  runners?: SessionRunnerControl;
 }): SessionModelChoiceSaved {
   const { group, agentId, choice } = input;
   const previous = getSessionModelSelectionDetail(group.folder, agentId);
@@ -420,10 +412,8 @@ export function saveSessionModelChoice(input: {
     input.updatedBy,
     { model: choice.model, effort: choice.effort },
   );
-  const runners =
-    input.runners === undefined ? (getWebDeps()?.queue ?? null) : input.runners;
   const { drained, liveUpdated } = applySessionChoiceChange(
-    runners,
+    input.runners ?? getWebDeps()?.queue ?? null,
     group,
     agentId,
     input.workspaceJid,
@@ -441,13 +431,29 @@ export function sessionHasModelChoice(
 ): boolean {
   const stored = getSessionModelSelectionDetail(groupFolder, agentId);
   if (!stored) return !choice.modelConfigId;
-  // The record keeps model names without `[1m]`, as a choice is stored.
-  const model =
-    (choice.model && splitOneMillionSuffix(choice.model).model) || null;
   return (
     stored.modelConfigId === choice.modelConfigId &&
-    stored.model === model &&
+    stored.model === storedModelName(choice.model) &&
     stored.effort === (choice.effort || null)
+  );
+}
+
+/**
+ * Give a conversation that was just created a choice. It has never run, so
+ * there is no runner to retire.
+ */
+export function setNewSessionModelChoice(
+  groupFolder: string,
+  agentId: string,
+  choice: SessionModelChoice,
+  updatedBy: string | null,
+): void {
+  setSessionModelSelection(
+    groupFolder,
+    agentId,
+    choice.modelConfigId,
+    updatedBy,
+    { model: choice.model, effort: choice.effort },
   );
 }
 
@@ -461,16 +467,10 @@ export function copySessionModelSelection(
   groupFolder: string,
   fromAgentId: string | null | undefined,
   toAgentId: string,
-): boolean {
-  if (!fromAgentId) return false;
+): void {
+  if (!fromAgentId) return;
   const stored = getSessionModelSelectionDetail(groupFolder, fromAgentId);
-  if (!stored) return false;
-  setSessionModelSelection(
-    groupFolder,
-    toAgentId,
-    stored.modelConfigId,
-    stored.updatedBy,
-    { model: stored.model, effort: stored.effort },
-  );
-  return true;
+  if (stored) {
+    setNewSessionModelChoice(groupFolder, toAgentId, stored, stored.updatedBy);
+  }
 }

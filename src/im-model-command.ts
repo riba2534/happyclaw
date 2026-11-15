@@ -264,18 +264,18 @@ export interface ModelCommandInput {
   agentId: string;
   /** The workspace owner, who chooses. */
   chooser: SessionModelChooser & { id: string };
-  runners: SessionRunnerControl | null;
+  runners: SessionRunnerControl;
 }
 
 export function runModelCommand(input: ModelCommandInput): string {
-  const view = buildSessionModelSelectionView(
-    input.workspace,
-    input.agentId,
-    input.chooser,
-  );
-  const args = input.args.trim();
-  if (!args) return overview(view);
-
+  // A view lists every connection's models, so a reply reads it once:
+  // `/model default` after the change, every other form before it.
+  const readView = () =>
+    buildSessionModelSelectionView(
+      input.workspace,
+      input.agentId,
+      input.chooser,
+    );
   const choose = (
     option: ConnectionOption | null,
     model: string | null,
@@ -295,17 +295,15 @@ export function runModelCommand(input: ModelCommandInput): string {
       updatedBy: input.chooser.id,
       runners: input.runners,
     });
-    const after = buildSessionModelSelectionView(
-      input.workspace,
-      input.agentId,
-      input.chooser,
-    );
     return option
       ? `已切换到 ${describeChoice(option, checked.choice.model, checked.choice.effort)}，下一条消息起生效。`
-      : `已恢复默认：${describeCurrent(after)}，下一条消息起生效。`;
+      : `已恢复默认：${describeCurrent(readView())}，下一条消息起生效。`;
   };
 
+  const args = input.args.trim();
   if (args.toLowerCase() === 'default') return choose(null, null, null);
+  const view = readView();
+  if (!args) return overview(view);
 
   const listing = args.match(/^(\d+)(?:\s+(\d+))?$/);
   if (listing) {

@@ -129,9 +129,17 @@ export function canViewHostGroup(
   return user.role === 'admin' || guestHasActiveGrant(user, group);
 }
 
-/** Pre-run checks and scripts run on the host; guests see neither. */
+/**
+ * Pre-run checks and scripts run on the host; guests see neither, nor (as
+ * in the chat) the model choice.
+ */
 export function redactAutomationForGuest(automation: Automation): Automation {
-  return { ...automation, preRunCheck: null, scriptCommand: null };
+  return {
+    ...automation,
+    preRunCheck: null,
+    scriptCommand: null,
+    model: null,
+  };
 }
 
 /** A run as a guest sees it: the pre-run check's output left out. */
