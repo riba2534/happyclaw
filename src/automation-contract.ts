@@ -58,6 +58,8 @@ export class AutomationError extends Error {
     readonly status: 400 | 403 | 404 | 409,
     /** Chinese, safe to show the user or the agent; never a raw JID. */
     message: string,
+    /** Machine-readable reason REST answers as `code`, when there is one. */
+    readonly code?: string,
   ) {
     super(message);
     this.name = 'AutomationError';
@@ -209,6 +211,7 @@ export interface AutomationCreateInput extends AutomationDraft {
   targetSessionJid?: string | null;
 }
 
+/** Omitted fields keep their value; a null `model` clears the choice. */
 export type AutomationPatch = Partial<
   Omit<AutomationDraft, 'sessionMode' | 'execution'>
 > & {
