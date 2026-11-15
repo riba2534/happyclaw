@@ -352,6 +352,7 @@ export function createAutomationCore(
       schedule: normalizeSchedule(input.schedule),
       sessionMode: input.sessionMode,
       targetSessionJid,
+      model: null,
       deliveryRouteJid,
       execution,
       status: 'active',

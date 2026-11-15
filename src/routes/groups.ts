@@ -98,10 +98,7 @@ import {
   getWorkspaceWorkMode,
   setWorkspaceWorkMode,
   getUserById,
-  getSessionModelSelectionDetail,
-  setSessionModelSelection,
   listActiveGuestGrantJids,
-  type SessionModelSelectionDetail,
 } from '../db.js';
 import { releaseOwner, persistGroupUpdate } from '../group-owner.js';
 import { logger } from '../logger.js';
@@ -114,29 +111,15 @@ import {
 import { isAdminHostOnlyEffective } from '../deployment-mode.js';
 import {
   getContainerEnvConfig,
-  getProviders,
-  providerHasCredentials,
   saveContainerEnvConfig,
   toPublicContainerEnvConfig,
 } from '../runtime-config.js';
-import { resolveAgentSdkEffort } from '../agent-effort.js';
-import { updateLiveSessionEffort } from '../codex-gateway/runner-tokens.js';
-import { maybeRefreshCodexProviderCatalog } from '../codex-gateway/model-catalog-sync.js';
-import { hasPermission } from '../permissions.js';
 import {
-  buildCodexSelectionView,
-  chatGptDefaultModel,
-  listConnectionModels,
-  readStoredChoice,
-  readStoredConnectionChoice,
-  resolveAgentLaunchModel,
-  validateSessionChoice,
-  type CodexSelectionView,
-} from '../session-model-overrides.js';
-import {
-  resolveModelBinding,
-  summarizeModelBinding,
-} from '../container-runner.js';
+  buildSessionModelOptions,
+  buildSessionModelSelectionView,
+  checkSessionModelChoice,
+  saveSessionModelChoice,
+} from '../session-model-service.js';
 import { clearTargetAgentBindingsForDeletedAgents } from '../im-context-isolation.js';
 import { notifyConversationContextCleared } from '../context-usage-events.js';
 import { readSessionContextUsage } from '../session-context-usage.js';
@@ -2508,15 +2491,19 @@ groupRoutes.post('/:jid/reset-session', authMiddleware, async (c) => {
 // Agent's model configuration (and model), else the global default, else the
 // automatic pool of enabled configurations.
 
+type ModelChoiceWorkspaceScope =
+  | { error: Response }
+  | { group: RegisteredGroup };
+
 type SessionModelSelectionScope =
   | { error: Response }
   | { group: RegisteredGroup; agentId: string };
 
-function resolveSessionModelSelectionScope(
+/** The workspace a model choice is read or made in, and the caller's right to. */
+function resolveModelChoiceWorkspace(
   c: Context<{ Variables: Variables }>,
-  agentIdInput: string | null | undefined,
   requireModify: boolean,
-): SessionModelSelectionScope {
+): ModelChoiceWorkspaceScope {
   const jid = c.req.param('jid');
   const group = jid ? getRegisteredGroup(jid) : undefined;
   if (!jid || !group) {
@@ -2543,6 +2530,16 @@ function resolveSessionModelSelectionScope(
       ),
     };
   }
+  return { group };
+}
+
+function resolveSessionModelSelectionScope(
+  c: Context<{ Variables: Variables }>,
+  agentIdInput: string | null | undefined,
+  requireModify: boolean,
+): SessionModelSelectionScope {
+  const workspace = resolveModelChoiceWorkspace(c, requireModify);
+  if ('error' in workspace) return workspace;
   // A model pick belongs to a session; a workspace has none.
   if (!agentIdInput) {
     return {
@@ -2553,212 +2550,20 @@ function resolveSessionModelSelectionScope(
     };
   }
   const agent = getAgent(agentIdInput);
-  if (!agent || agent.chat_jid !== jid) {
+  if (!agent || agent.chat_jid !== c.req.param('jid')) {
     return { error: c.json({ error: 'Agent not found' }, 404) };
   }
-  return { group, agentId: agentIdInput };
+  return { group: workspace.group, agentId: agentIdInput };
 }
 
-/**
- * The model a pick without a model runs on `provider`: the Agent's, when the
- * pick is on the Agent's own connection and it still offers that model.
- */
-function agentModelOn(
-  provider: ReturnType<typeof getProviders>[number],
-  profile: { model_config_id: string | null; model: string | null } | undefined,
-  groupFolder: string,
-): string | undefined {
-  if (profile?.model_config_id !== provider.id) return undefined;
-  return resolveAgentLaunchModel(provider, profile.model, {
-    groupFolder,
-    warn: false,
-  });
-}
-
-function buildSessionModelSelectionPayload(
-  group: RegisteredGroup,
-  agentId: string,
-  chooser: AuthUser,
-) {
-  const providers = getProviders();
-  const exists = (id: string | null | undefined): id is string =>
-    !!id && providers.some((provider) => provider.id === id);
-  const stored = getSessionModelSelectionDetail(group.folder, agentId);
-  const profile = peekAgentProfileForWorkspace(group.folder, group.created_by);
-  const canExceedCeiling = hasPermission(chooser, 'manage_system_config');
-  const agentEffort = resolveAgentSdkEffort(profile?.runtime_policy);
-
-  // What a conversation that picked nothing runs on, resolved exactly as a
-  // launch resolves it.
-  const binding = resolveModelBinding(
-    { modelConfigId: profile?.model_config_id, model: profile?.model },
-    { groupFolder: group.folder, agentId },
-    { includeSession: false },
+// GET /api/groups/:jid/model-options - 会话可选的模型（还没有会话时，例如新建会话）
+groupRoutes.get('/:jid/model-options', authMiddleware, (c) => {
+  const workspace = resolveModelChoiceWorkspace(c, false);
+  if ('error' in workspace) return workspace.error;
+  return c.json(
+    buildSessionModelOptions(workspace.group, c.get('user') as AuthUser),
   );
-  const summary = summarizeModelBinding(
-    binding,
-    group.folder,
-    agentId,
-    agentEffort,
-  );
-
-  const codexViews = new Map<string, CodexSelectionView>();
-  const options = providers.map((provider) => {
-    const option = {
-      id: provider.id,
-      name: provider.name,
-      kind: provider.codexOAuthCredentials ? ('codex' as const) : provider.type,
-      model: provider.anthropicModel,
-      // A configuration without a credential (e.g. an old copy that lost its
-      // key) would fail every turn; the picker shows it but cannot pick it.
-      usable: providerHasCredentials(provider),
-    };
-    if (!provider.codexOAuthCredentials) {
-      return { ...option, models: listConnectionModels(provider) };
-    }
-    // The list is the account's own once its catalog has been fetched; ask for
-    // a fresher one without making the picker wait for it.
-    maybeRefreshCodexProviderCatalog(provider.id, {
-      accountId: provider.codexOAuthCredentials.accountId,
-    });
-    const codex = buildCodexSelectionView(provider, {
-      canExceedCeiling,
-      agentEffort,
-    });
-    codexViews.set(provider.id, codex);
-    return { ...option, codex };
-  });
-
-  const selectedModelConfigId = exists(stored?.modelConfigId)
-    ? stored.modelConfigId
-    : null;
-  const view = selectedModelConfigId
-    ? codexViews.get(selectedModelConfigId)
-    : undefined;
-  const selectedProvider = providers.find(
-    (provider) => provider.id === selectedModelConfigId,
-  );
-  // A stored model or effort the list, the catalog or the chooser's permission
-  // no longer backs reads as unset, exactly as a runner launch would treat it.
-  const selected =
-    stored && view
-      ? readStoredChoice(view, stored, canExceedCeiling)
-      : stored && selectedProvider
-        ? readStoredConnectionChoice(
-            selectedProvider,
-            stored,
-            agentModelOn(selectedProvider, profile, group.folder),
-          )
-        : { model: null, effort: null };
-
-  // A ChatGPT default runs at the effort its gateway resolves: the Agent's,
-  // else the one inherited with the connection.
-  const defaultCodexView = summary.provider?.codexOAuthCredentials
-    ? !agentEffort && binding.inheritedEffort
-      ? buildCodexSelectionView(summary.provider, {
-          canExceedCeiling,
-          agentEffort: binding.inheritedEffort,
-        })
-      : codexViews.get(summary.provider.id)
-    : undefined;
-
-  return {
-    selectedModelConfigId,
-    selectedModel: selected.model,
-    selectedEffort: selected.effort,
-    default: {
-      source: summary.source,
-      modelConfigId: summary.modelConfigId,
-      // A set binding whose connection is gone: runs fail until it is fixed.
-      connectionMissing: summary.connectionMissing,
-      model: summary.model,
-      effort: defaultCodexView
-        ? (defaultCodexView.models.find(
-            (entry) => entry.value === summary.model,
-          )?.defaultEffort ?? defaultCodexView.defaultEffort)
-        : summary.effort,
-    },
-    options,
-  };
-}
-
-/**
- * What the runners of a conversation must do about a change of its choice.
- *
- * A different configuration or model starts a new SDK session on the next
- * message, so the warm runner is retired (one already on the chosen
- * configuration is spared only when no model is involved: neither choice
- * names one, and a conversation that had picked nothing did not run the
- * Agent's). A different effort on a ChatGPT subscription needs no restart at
- * all: the gateway reads it per request, so the live runners of the chosen
- * configuration are pointed at it and keep running. Elsewhere Claude Code
- * takes its effort at start, so the runner is retired but the SDK session
- * kept. Choosing nothing new does nothing.
- */
-function applySessionChoiceChange(
-  deps: NonNullable<ReturnType<typeof getWebDeps>>,
-  group: RegisteredGroup,
-  agentId: string,
-  jid: string,
-  previous: SessionModelSelectionDetail | null,
-  next: {
-    modelConfigId: string | null;
-    model: string | null;
-    effort: string | null;
-  },
-): { drained: number; liveUpdated: number } {
-  const providers = getProviders();
-  const profile = peekAgentProfileForWorkspace(group.folder, group.created_by);
-  // The model a configuration actually runs: its pick, else the Agent's on
-  // the Agent's own connection, else the connection's own.
-  const launchKey = (
-    choice: { modelConfigId: string | null; model: string | null } | null,
-  ): string => {
-    if (!choice?.modelConfigId) return '';
-    const provider = providers.find((item) => item.id === choice.modelConfigId);
-    const agentModel = provider
-      ? agentModelOn(provider, profile, group.folder)
-      : undefined;
-    const model = !provider
-      ? ''
-      : provider.codexOAuthCredentials
-        ? (choice.model ?? agentModel ?? chatGptDefaultModel(provider))
-        : (choice.model ?? agentModel ?? provider.anthropicModel);
-    return `${choice.modelConfigId}\u0000${model}`;
-  };
-  const jids = [`${jid}#agent:${agentId}`];
-  const effortChanged = (previous?.effort ?? null) !== next.effort;
-  let drained = 0;
-  if (launchKey(previous) !== launchKey(next)) {
-    const ranAgentModel =
-      !previous && !!profile?.model_config_id && !!profile.model;
-    const target =
-      previous?.model || next.model || ranAgentModel
-        ? null
-        : next.modelConfigId;
-    drained = deps.queue.drainRunnersForModelSelection(jids, target);
-  } else if (
-    effortChanged &&
-    !providers.find((item) => item.id === next.modelConfigId)
-      ?.codexOAuthCredentials
-  ) {
-    // Claude Code reads its effort when the runner starts: a new one takes
-    // a new runner, on the same SDK session (the model did not change).
-    drained = deps.queue.drainRunnersForModelSelection(jids, null);
-  }
-  let liveUpdated = 0;
-  if (effortChanged) {
-    liveUpdated = updateLiveSessionEffort(
-      {
-        groupFolder: group.folder,
-        sessionAgentId: agentId,
-        providerId: next.modelConfigId ?? undefined,
-      },
-      next.effort ?? undefined,
-    );
-  }
-  return { drained, liveUpdated };
-}
+});
 
 // GET /api/groups/:jid/model-selection?agentId= - 读取会话模型选择
 groupRoutes.get('/:jid/model-selection', authMiddleware, (c) => {
@@ -2769,7 +2574,7 @@ groupRoutes.get('/:jid/model-selection', authMiddleware, (c) => {
   );
   if ('error' in scope) return scope.error;
   return c.json(
-    buildSessionModelSelectionPayload(
+    buildSessionModelSelectionView(
       scope.group,
       scope.agentId,
       c.get('user') as AuthUser,
@@ -2804,63 +2609,24 @@ groupRoutes.put('/:jid/model-selection', authMiddleware, async (c) => {
   if ('error' in scope) return scope.error;
   const { group, agentId } = scope;
   const authUser = c.get('user') as AuthUser;
-  const modelConfigId = parsed.data.modelConfigId;
-  const requestedModel = parsed.data.model || null;
-  const requestedEffort = parsed.data.effort || null;
-  let model: string | null = null;
-  let effort: string | null = null;
-  if (modelConfigId) {
-    const target = getProviders().find(
-      (provider) => provider.id === modelConfigId,
-    );
-    if (!target) return c.json({ error: '模型配置不存在' }, 404);
-    if (!providerHasCredentials(target)) {
-      return c.json(
-        { error: '该模型配置缺少凭据，请先在模型配置中补全密钥或完成授权' },
-        400,
-      );
-    }
-    if (requestedModel || requestedEffort) {
-      const checked = validateSessionChoice(
-        target,
-        { model: requestedModel, effort: requestedEffort },
-        authUser,
-        agentModelOn(
-          target,
-          peekAgentProfileForWorkspace(group.folder, group.created_by),
-          group.folder,
-        ),
-      );
-      if (!checked.ok) return c.json(checked.rejection, 400);
-      ({ model, effort } = checked);
-    }
-  } else if (requestedModel || requestedEffort) {
-    return c.json(
-      {
-        error: '选择模型或推理档位时需要同时指定模型配置',
-        code: 'MODEL_CONFIG_REQUIRED',
-      },
-      400,
-    );
+  const checked = checkSessionModelChoice(group, parsed.data, authUser);
+  if (!checked.ok) {
+    const { status, ...rejection } = checked.rejection;
+    return c.json(rejection, status);
   }
+  const { modelConfigId, model, effort } = checked.choice;
 
   const jid = c.req.param('jid');
-  const previous = getSessionModelSelectionDetail(group.folder, agentId);
-  setSessionModelSelection(group.folder, agentId, modelConfigId, authUser.id, {
-    model,
-    effort,
-  });
-
   // A warm runner keeps the provider environment it was spawned with; retire
   // it so the next message of this conversation starts on the new selection.
-  const { drained, liveUpdated } = applySessionChoiceChange(
-    deps,
+  const { previous, drained, liveUpdated } = saveSessionModelChoice({
     group,
+    workspaceJid: jid,
     agentId,
-    jid,
-    previous,
-    { modelConfigId, model, effort },
-  );
+    choice: checked.choice,
+    updatedBy: authUser.id,
+    runners: deps.queue,
+  });
   logger.info(
     {
       jid,
@@ -2876,7 +2642,7 @@ groupRoutes.put('/:jid/model-selection', authMiddleware, async (c) => {
     'Session model selection updated',
   );
   return c.json({
-    ...buildSessionModelSelectionPayload(group, agentId, authUser),
+    ...buildSessionModelSelectionView(group, agentId, authUser),
     drained,
     liveUpdated,
   });

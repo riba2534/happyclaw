@@ -164,6 +164,7 @@ function toAutomation(row: Record<string, unknown>): Automation {
     endAt: str(row.end_at),
     sessionMode: String(row.session_mode) as Automation['sessionMode'],
     targetSessionJid: str(row.target_session_jid),
+    model: null,
     deliveryRouteJid: str(row.delivery_route_jid),
     silentWhenIdle: Number(row.silent_when_idle) === 1,
     preRunCheck: preRunCommand
@@ -791,6 +792,7 @@ export function migrateLegacyScheduledTasks(options: {
       endAt: null,
       sessionMode,
       targetSessionJid: sessionMode === 'bound' ? workspace.jid : null,
+      model: null,
       deliveryRouteJid,
       silentWhenIdle: false,
       preRunCheck: null,
