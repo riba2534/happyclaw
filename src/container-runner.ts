@@ -61,8 +61,10 @@ import {
   clearInheritedClaudeProviderEnv,
   getClaudeProviderConfig,
   getContainerEnvConfig,
+  getProviderById,
   getProviders,
   providerHasCredentials,
+  providerToolSearchEnabled,
   getSystemSettings,
   getEffectiveExternalDir,
   hasExplicitWorkspaceClaudeAuth,
@@ -115,7 +117,7 @@ import {
   chatGptDefaultModel,
   chatGptLaunchModel,
   resolveAgentLaunchModel,
-  resolveLaunchEffort,
+  resolveLaunchReasoning,
   resolveSessionLaunchOverrides,
   sessionModelHasChanged,
   type SessionLaunchOverrides,
@@ -133,6 +135,7 @@ import type {
   UnifiedProvider,
 } from './runtime-config.js';
 import { resolveProviderWebFetchPreflightPolicy } from './provider-web-fetch-policy.js';
+import { attachMagpieUsageLimitReset } from './magpie-usage-limit.js';
 import {
   loadManagedMcpLayers,
   resolveManagedMcpPolicy,
@@ -692,6 +695,16 @@ export interface ContainerInput {
   interactionMode?: InteractionMode;
   /** Set when the selected connection skips WebFetch's domain check; read at launch. */
   webFetchPreflightPolicy?: 'skip';
+  /**
+   * Set when the launch's model is declared to take no effort and not to
+   * reason: the Runner turns Claude Code's thinking off for the run.
+   */
+  thinking?: 'disabled';
+  /**
+   * Set when the selected connection turns Claude Code's tool search on: the
+   * Runner pins ENABLE_TOOL_SEARCH=true in the flag settings. Read at launch.
+   */
+  toolSearch?: true;
   /** Source JID of the latest message that triggered this run (e.g. `discord:123…`).
    * Used by per-channel MCP tools (discord_*, etc.) to identify the current
    * incoming chat. Undefined when chatJid already encodes the IM source. */
@@ -1493,6 +1506,8 @@ export interface ModelLaunch {
    * on a ChatGPT subscription, whose gateway applies the effort).
    */
   effort: ModelEffort | null;
+  /** The model is declared to take no effort and not to reason. */
+  thinkingDisabled?: true;
   /** ChatGPT only: the conversation's own effort pick. */
   sessionEffort?: string;
   /** ChatGPT only: the Agent's effort, else the inherited main Agent's. */
@@ -1505,8 +1520,10 @@ export interface ModelLaunch {
  * names none), else the model the supplying profile names, else the
  * connection's own. Effort: the conversation's pick, the Agent's explicit
  * effort, the inherited main Agent's, each only if the model takes it, else
- * the model's default; nothing for a model without efforts. With no model
- * at all (a pass-through relay) the Agent's explicit effort.
+ * the model's default (resolveLaunchReasoning): any of them as picked for a
+ * model whose efforts are unknown, nothing and thinking off for one declared
+ * to take none. With no model at all (a pass-through relay) the Agent's
+ * explicit effort.
  */
 export function resolveModelLaunch(
   binding: ModelBinding & { provider: UnifiedProvider },
@@ -1543,17 +1560,19 @@ export function resolveModelLaunch(
     };
   }
   const runs = model ?? provider.anthropicModel;
+  // A pass-through relay names no model: nothing is known to rule the
+  // Agent's explicit effort out, so it goes as set.
+  if (!runs)
+    return { ...(model ? { model } : {}), effort: agentEffort ?? null };
+  const reasoning = resolveLaunchReasoning(provider, runs, [
+    overrides.effort,
+    agentEffort,
+    binding.inheritedEffort,
+  ]);
   return {
     ...(model ? { model } : {}),
-    // A pass-through relay names no model: nothing is known to rule the
-    // Agent's explicit effort out, so it goes as set.
-    effort: runs
-      ? resolveLaunchEffort(provider, runs, [
-          overrides.effort,
-          agentEffort,
-          binding.inheritedEffort,
-        ])
-      : (agentEffort ?? null),
+    effort: reasoning.effort,
+    ...(reasoning.thinkingDisabled ? { thinkingDisabled: true as const } : {}),
   };
 }
 
@@ -1816,6 +1835,7 @@ export function trySelectPoolProvider(
       ...(provider.codexOAuthCredentials
         ? {}
         : { launchEffort: launch.effort }),
+      ...(launch.thinkingDisabled ? { thinkingDisabled: true as const } : {}),
     },
     groupFolder,
     agentId,
@@ -1844,6 +1864,8 @@ export interface PoolProviderSelection {
   gatewayAgentEffort?: string;
   /** ContainerInput.launchEffort for this launch; absent on ChatGPT. */
   launchEffort?: string | null;
+  /** ContainerInput.thinking for this launch. */
+  thinkingDisabled?: true;
 }
 
 /**
@@ -1866,7 +1888,11 @@ export function leaveSessionConnection(
   return { profileId: '', previousProviderId: boundId, resetSession: true };
 }
 
-/** The input a launch starts with: a connection switch, its effort. */
+/**
+ * The input a launch starts with: a connection switch, its effort and
+ * whether its model thinks. A thinking flag the caller's input still carries
+ * from an earlier launch is replaced, never inherited.
+ */
 export function prepareLaunchInput(
   input: ContainerInput,
   selection: PoolProviderSelection | null,
@@ -1875,9 +1901,14 @@ export function prepareLaunchInput(
     input,
     selection ?? leaveSessionConnection(input.groupFolder, input.agentId),
   );
-  return selection?.launchEffort !== undefined
-    ? { ...switched, launchEffort: selection.launchEffort }
-    : switched;
+  const { thinking: _thinking, ...rest } = switched;
+  return {
+    ...rest,
+    ...(selection?.launchEffort !== undefined
+      ? { launchEffort: selection.launchEffort }
+      : {}),
+    ...(selection?.thinkingDisabled ? { thinking: 'disabled' as const } : {}),
+  };
 }
 
 /**
@@ -1955,6 +1986,7 @@ export function prepareHostPlugins(
  * turn's model, with `[1m]` when the connection gives it a window above
  * Claude Code's default. On an official connection only a declared window
  * counts (`[1m]` there is the billed 1M opt-in); ChatGPT maps names itself.
+ * None on a magpie connection that does not list it.
  */
 export function fallbackLaunchModel(
   fallbackModel: string | null | undefined,
@@ -1964,12 +1996,30 @@ export function fallbackLaunchModel(
   if (!model) return undefined;
   if (!provider || provider.codexOAuthCredentials) return model;
   const models = effectiveProviderModels(provider);
+  // magpie hands a model it does not list to whatever its own Claude Code
+  // configuration names, so the global fallback goes there only by a name
+  // the connection lists.
+  if (provider.gateway === 'magpie' && !findModelEntry(models, model)) {
+    return undefined;
+  }
   return launchModelName(
     model,
     provider.anthropicBaseUrl
       ? windowOf(models, model)
       : findModelEntry(models, model)?.contextWindow,
   );
+}
+
+/**
+ * ContainerInput.toolSearch for a launch on `providerId`: set when the
+ * connection turns Claude Code's tool search on. A launch on the
+ * Workspace's own environment follows Claude Code's settings.
+ */
+export function resolveProviderToolSearch(
+  providerId: string | null,
+): true | undefined {
+  const provider = providerId ? getProviderById(providerId) : null;
+  return provider && providerToolSearchEnabled(provider) ? true : undefined;
 }
 
 /** Inject the globally configured same-turn fallback into the agent runner. */
@@ -2406,9 +2456,13 @@ function prepareVolumeMounts(
   if (mcpPolicyMode !== 'inherit') {
     envLines.push(`HAPPYCLAW_AGENT_MCP_POLICY=${mcpPolicyMode}`);
   }
+  // With a connection, its launch decided the fallback (none at all on a
+  // magpie connection that does not list it).
   applyFallbackModelToEnvLines(
     envLines,
-    resolvedProvider?.fallbackModel ?? getSystemSettings().fallbackModel,
+    resolvedProvider
+      ? (resolvedProvider.fallbackModel ?? '')
+      : getSystemSettings().fallbackModel,
   );
   applyFeishuCliBindingToEnvLines(envLines, feishuCliBinding);
   applyContainerProxyEnvLines(envLines, containerProxy.envLines);
@@ -3324,6 +3378,7 @@ export async function runContainerAgent(
         ...input,
         webFetchPreflightPolicy:
           resolveProviderWebFetchPreflightPolicy(selectedProfileId),
+        toolSearch: resolveProviderToolSearch(selectedProfileId),
         workspaceMemoryMutationSigningSecret,
         workspaceMemoryRunnerInstanceId,
         plugins: dockerPlugins,
@@ -3502,6 +3557,11 @@ export async function runContainerAgent(
           );
         }
         if (output.providerFailure) {
+          await attachMagpieUsageLimitReset(
+            output,
+            selectedProfileId,
+            resolvedProvider?.config.anthropicModel,
+          );
           const terminal = applyProviderFailureDisposition(
             output,
             selectedProfileId,
@@ -3625,6 +3685,11 @@ export async function runContainerAgent(
     }
     if (result.providerFailure) {
       if (providerFailureTerminal === undefined) {
+        await attachMagpieUsageLimitReset(
+          result,
+          selectedProfileId,
+          resolvedProvider?.config.anthropicModel,
+        );
         providerFailureTerminal = applyProviderFailureDisposition(
           result,
           selectedProfileId,
@@ -4314,9 +4379,9 @@ export async function runHostAgent(
         hostEnv[line.slice(0, eqIdx)] = line.slice(eqIdx + 1);
       }
     }
-    const hostFallbackModel =
-      hostPoolResult?.resolved.fallbackModel ??
-      getSystemSettings().fallbackModel?.trim();
+    const hostFallbackModel = hostPoolResult
+      ? hostPoolResult.resolved.fallbackModel
+      : getSystemSettings().fallbackModel?.trim();
     if (hostFallbackModel) {
       hostEnv['HAPPYCLAW_FALLBACK_MODEL'] = hostFallbackModel;
     } else {
@@ -4622,6 +4687,7 @@ export async function runHostAgent(
         webFetchPreflightPolicy: resolveProviderWebFetchPreflightPolicy(
           hostSelectedProfileId,
         ),
+        toolSearch: resolveProviderToolSearch(hostSelectedProfileId),
         workspaceMemoryMutationSigningSecret,
         workspaceMemoryRunnerInstanceId,
         plugins: preparedHostPlugins,
@@ -4782,6 +4848,11 @@ export async function runHostAgent(
           );
         }
         if (output.providerFailure) {
+          await attachMagpieUsageLimitReset(
+            output,
+            hostSelectedProfileId,
+            hostPoolResult?.resolved.config.anthropicModel,
+          );
           const terminal = applyProviderFailureDisposition(
             output,
             hostSelectedProfileId,
@@ -4894,6 +4965,11 @@ export async function runHostAgent(
     }
     if (hostResult.providerFailure) {
       if (hostProviderFailureTerminal === undefined) {
+        await attachMagpieUsageLimitReset(
+          hostResult,
+          hostSelectedProfileId,
+          hostPoolResult?.resolved.config.anthropicModel,
+        );
         hostProviderFailureTerminal = applyProviderFailureDisposition(
           hostResult,
           hostSelectedProfileId,

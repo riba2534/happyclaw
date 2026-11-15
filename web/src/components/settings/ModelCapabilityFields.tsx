@@ -26,12 +26,18 @@ import { effortLabel } from './model-connections';
 
 const CONTEXT_PRESETS = [128_000, 200_000, 256_000, 1_000_000] as const;
 
+const EFFORTS_UNVERIFIED_TITLE =
+  '没有这个模型的资料，先按全部档位列出；不支持的档位请取消';
+const EFFORTS_UNKNOWN_TITLE =
+  '没有这个模型的资料，对话里可以选任意档位；点选档位后只提供所选的';
+
 /**
  * What a model added to a connection starts with. A third-party connection
  * declares the window the registry suggests (launches use only declared
  * windows); an official one does not, since above 200K that is the billed 1M
  * opt-in. A model nothing is known about gets every effort, unverified, for
- * the user to trim.
+ * the user to trim; one the vendor declared to take none keeps its empty
+ * list, which is a declaration and not a gap.
  */
 export function withAddDefaults(
   entry: ProviderModelEntry,
@@ -60,7 +66,7 @@ export function withAddDefaults(
 }
 
 /** 200000 → 200K, 1000000 → 1M, 1050000 → 1.05M. */
-function formatContextWindow(tokens: number): string {
+export function formatContextWindow(tokens: number): string {
   const trim = (value: number) => String(Number(value.toFixed(2)));
   if (tokens >= 1_000_000) return `${trim(tokens / 1_000_000)}M`;
   if (tokens >= 1_000) return `${trim(tokens / 1_000)}K`;
@@ -127,11 +133,17 @@ export function ModelCapabilityFields({
   };
 
   const automaticDefault = defaultEffortFor(efforts, known.defaultEffort);
+  // An empty list is either the vendor's word that the model takes none, or
+  // nothing known at all (a model a catalog sync added): only the second
+  // offers the levels to declare, since a launch may try any of them.
+  const unknown = resolved.effortsSource === 'none';
   const effortBadge = effortsUnverified
-    ? '未验证'
-    : resolved.effortsSource === 'family'
-      ? '推断'
-      : null;
+    ? { label: '未验证', title: EFFORTS_UNVERIFIED_TITLE }
+    : unknown
+      ? { label: '未知', title: EFFORTS_UNKNOWN_TITLE }
+      : resolved.effortsSource === 'family'
+        ? { label: '推断', title: '按同系列模型推断' }
+        : null;
 
   return (
     <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2">
@@ -147,7 +159,7 @@ export function ModelCapabilityFields({
         aria-label={`${entry.id} 的推理等级`}
         className="flex min-w-0 flex-wrap items-center gap-1"
       >
-        {efforts.length === 0 ? (
+        {efforts.length === 0 && !unknown ? (
           <span className="text-caption text-muted-foreground">
             不支持推理等级
           </span>
@@ -174,14 +186,10 @@ export function ModelCapabilityFields({
         )}
         {effortBadge && (
           <Badge
-            variant={effortsUnverified ? 'warning' : 'neutral'}
-            title={
-              effortsUnverified
-                ? '没有这个模型的资料，先按全部档位列出；不支持的档位请取消'
-                : '按同系列模型推断'
-            }
+            variant={effortsUnverified || unknown ? 'warning' : 'neutral'}
+            title={effortBadge.title}
           >
-            {effortBadge}
+            {effortBadge.label}
           </Badge>
         )}
       </div>
@@ -354,6 +362,8 @@ export function ModelRolesFields({
     role: keyof ConnectionModelRoles,
     label: string,
     hint: string,
+    /** Shown while the role follows the turn's model. */
+    unsetHint?: string,
   ) => {
     const value =
       roles[role] && models.includes(roles[role]) ? roles[role] : '';
@@ -379,6 +389,9 @@ export function ModelRolesFields({
             ))}
           </NativeSelect>
           <p className="mt-0.5 text-caption text-muted-foreground">{hint}</p>
+          {unsetHint && !value && models.length > 1 && (
+            <p className="mt-0.5 text-caption text-primary-text">{unsetHint}</p>
+          )}
         </div>
       </div>
     );
@@ -402,10 +415,13 @@ export function ModelRolesFields({
         </p>
       </div>
       {field('subagent', '子代理模型', '子代理（Task）使用的模型。')}
+      {/* Unset, every background call runs on the turn's model, which on a
+          third-party connection is usually its priciest one. */}
       {field(
         'smallFast',
         '轻量后台模型',
         '生成标题、摘要、读取网页等后台调用使用的模型。',
+        '建议选一个便宜的模型：这些后台调用很频繁，未设置时也用对话的模型。',
       )}
       <details className="group/roles" open={advancedSet || undefined}>
         <summary className="flex min-h-9 cursor-pointer list-none items-center gap-1.5 text-caption text-muted-foreground select-none hover:text-foreground pointer-coarse:min-h-11 [&::-webkit-details-marker]:hidden">

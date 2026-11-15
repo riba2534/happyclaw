@@ -5,6 +5,7 @@ import {
   type DiscoveredModel,
   type ModelPreset,
   type ProviderErrorCode,
+  type ProviderGateway,
   type ProviderTestRecord,
 } from '@/lib/model-providers';
 import { api } from '../../api/client';
@@ -181,6 +182,8 @@ type DiscoverModelsResponse =
       models: DiscoveredModel[];
       source: 'endpoint' | 'builtin' | 'catalog';
       authMode?: ProviderAuthMode;
+      /** What the list says the endpoint is; absent on older servers. */
+      gateway?: ProviderGateway | null;
     }
   | {
       ok: false;
@@ -233,6 +236,35 @@ export function discoverModels(
     `${PROVIDERS_API}/discover-models`,
     body,
     // The server may try the other auth header after a refusal.
+    45_000,
+  );
+}
+
+export type CatalogSyncResult =
+  | {
+      ok: true;
+      gateway: ProviderGateway | null;
+      /** Models auto-add put on the list. */
+      added: string[];
+      newModels: string[];
+      missing: string[];
+      /** The server did not read the list again: it did so a moment ago. */
+      skipped?: 'recent' | 'checked';
+    }
+  | { ok: false; code: ProviderErrorCode; message: string };
+
+/**
+ * Reads a third-party connection's model list again: it tells a magpie
+ * gateway from any other endpoint and, for magpie, refreshes what the
+ * vendor says about each model and finds the new and the vanished ones.
+ */
+export function syncConnectionCatalog(id: string): Promise<{
+  provider: UnifiedProviderPublic;
+  result: CatalogSyncResult;
+}> {
+  return api.post(
+    `${PROVIDERS_API}/${encodeURIComponent(id)}/catalog/sync`,
+    undefined,
     45_000,
   );
 }
@@ -317,6 +349,13 @@ export function modelInUseAgents(err: unknown): string[] | null {
         : null,
     )
     .filter((name): name is string => typeof name === 'string');
+}
+
+/** Copy for a connection write the server refused for a known reason. */
+export function connectionWriteErrorMessage(err: unknown): string | null {
+  return errorBody(err)?.code === 'MAGPIE_MODELS_REQUIRED'
+    ? 'magpie 连接至少要有一个模型：magpie 没有默认模型。'
+    : null;
 }
 
 /** Copy for a model or effort pick the server refused, else null. */

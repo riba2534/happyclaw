@@ -997,7 +997,11 @@ describe('official kinds', () => {
       type: 'official',
       anthropicApiKey: 'sk-ant-1',
       anthropicModel: 'claude-opus-5-5',
-      models: [{ id: 'claude-opus-5-5' }, { id: 'claude-sonnet-5-5' }],
+      // The vendor's name comes along with the model.
+      models: [
+        { id: 'claude-opus-5-5', displayName: 'Claude Opus 5.5' },
+        { id: 'claude-sonnet-5-5' },
+      ],
     });
   });
 
@@ -1176,5 +1180,293 @@ describe('official kinds', () => {
       { anthropicModel: 'gpt-6-astra' },
       120_000,
     );
+  });
+});
+
+describe('magpie', () => {
+  const FULL = ['low', 'medium', 'high', 'xhigh', 'max'];
+  const MAGPIE_MODELS = [
+    // Claude Code's discovery alias for a row of one list, not a model.
+    {
+      id: 'anthropic/magpie-1',
+      name: 'Claude Opus 4.7',
+      magpieLabel: 'Claude Opus 4.7',
+    },
+    {
+      id: 'acme/vx-pro',
+      name: 'VX Pro',
+      maxOutputTokens: 128_000,
+      vendor: 'Relay A',
+      efforts: ['low', 'medium', 'high'],
+      magpieLabel: 'VX Pro · Relay A',
+    },
+    // Declared to take no effort although it reasons.
+    {
+      id: 'acme/vx-mini',
+      name: 'VX Mini',
+      vendor: 'Relay A',
+      efforts: [],
+      thinks: true,
+      magpieLabel: 'VX Mini · Relay A',
+    },
+    // Nothing said about efforts.
+    { id: 'acme/vx-lab', magpieLabel: 'vx-lab' },
+  ];
+
+  const efforts = (id: string) =>
+    document.querySelector(`[role="group"][aria-label="${id} 的推理等级"]`);
+
+  async function pick(id: string) {
+    if (checkbox(id)?.getAttribute('aria-checked') !== 'true') {
+      await click(checkbox(id));
+    }
+  }
+
+  async function chooseMagpie() {
+    await render();
+    await click(buttonContaining('Magpie'));
+  }
+
+  test('starts from the gateway’s usual address and an app key, both editable', async () => {
+    await chooseMagpie();
+    const url = field('#wizard-preset-url');
+    expect(url?.value).toBe('http://127.0.0.1:3425');
+    expect(url?.readOnly).toBe(false);
+    expect(field('#wizard-api-key')?.value).toBe('magpie-happyclaw');
+    expect(text()).toContain('本机的 magpie 接受任意密钥');
+    // No other address to switch to: the address is the draft's own.
+    expect(text()).not.toContain('改用自定义地址');
+    expect(button('下一步').disabled).toBe(false);
+    await type('#wizard-preset-url', 'ftp://host');
+    expect(text()).toContain('只支持 http(s) 地址');
+    await type('#wizard-preset-url', '');
+    expect(button('下一步').disabled).toBe(true);
+  });
+
+  test('skips the WebFetch check by default and says why', async () => {
+    await chooseMagpie();
+    const select = field(
+      '#wizard-web-fetch-preflight',
+    ) as unknown as HTMLSelectElement;
+    expect(select.value).toBe('skip');
+    expect(text()).toContain('先把域名发到 api.anthropic.com 检查');
+    // Only magpie offers it here.
+    await click(button('上一步'));
+    await click(buttonContaining('api.deepseek.com'));
+    expect(field('#wizard-web-fetch-preflight')).toBeNull();
+  });
+
+  test('saves the address, the gateway and what magpie says about each model', async () => {
+    answer({
+      [DISCOVER]: {
+        ok: true,
+        source: 'endpoint',
+        gateway: 'magpie',
+        authMode: 'bearer',
+        models: MAGPIE_MODELS,
+      },
+      [TEST]: OK_TEST,
+      [PROVIDERS]: makeProvider({ id: 'mp', name: 'Magpie' }),
+    });
+    await chooseMagpie();
+    await type('#wizard-preset-url', 'http://10.0.0.5:3425');
+    await next();
+    expect(mocks.post).toHaveBeenCalledWith(
+      DISCOVER,
+      {
+        type: 'third_party',
+        presetId: 'magpie',
+        anthropicBaseUrl: 'http://10.0.0.5:3425',
+        anthropicAuthToken: 'magpie-happyclaw',
+        customEnv: PREFILL,
+      },
+      45_000,
+    );
+    // The alias is never offered, nor counted.
+    expect(checkbox('anthropic/magpie-1')).toBeNull();
+    expect(text()).toContain('获取到 3 个模型');
+    await pick('acme/vx-pro');
+    await pick('acme/vx-mini');
+    await pick('acme/vx-lab');
+    expect(text()).toContain('VX Pro · Relay A · 最长回复 128K');
+
+    // Declared to take none: shown as such, never filled in.
+    expect(efforts('acme/vx-mini')?.textContent).toContain('不支持推理等级');
+    expect(efforts('acme/vx-mini')?.textContent).not.toContain('未验证');
+    // Nothing known: every level, unverified.
+    expect(efforts('acme/vx-lab')?.textContent).toContain('未验证');
+
+    await next();
+    await click(button('保存'));
+    await flush();
+    expect(mocks.post).toHaveBeenCalledWith(
+      PROVIDERS,
+      expect.objectContaining({
+        type: 'third_party',
+        presetId: 'magpie',
+        anthropicBaseUrl: 'http://10.0.0.5:3425',
+        anthropicAuthToken: 'magpie-happyclaw',
+        gateway: 'magpie',
+        webFetchPreflightPolicy: 'skip',
+        anthropicModel: 'acme/vx-pro',
+        models: [
+          {
+            id: 'acme/vx-pro',
+            displayName: 'VX Pro',
+            maxOutputTokens: 128_000,
+            vendor: 'Relay A',
+            efforts: ['low', 'medium', 'high'],
+          },
+          {
+            id: 'acme/vx-mini',
+            displayName: 'VX Mini',
+            vendor: 'Relay A',
+            efforts: [],
+            thinks: true,
+          },
+          { id: 'acme/vx-lab', efforts: FULL },
+        ],
+      }),
+    );
+  });
+
+  test('the WebFetch check may be kept', async () => {
+    answer({
+      [DISCOVER]: {
+        ok: true,
+        source: 'endpoint',
+        gateway: 'magpie',
+        models: [MAGPIE_MODELS[1]],
+      },
+      [TEST]: OK_TEST,
+      [PROVIDERS]: makeProvider({ id: 'mp' }),
+    });
+    await chooseMagpie();
+    await act(async () => {
+      const select = field(
+        '#wizard-web-fetch-preflight',
+      ) as unknown as HTMLSelectElement;
+      select.value = 'check';
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    await next();
+    await pick('acme/vx-pro');
+    await next();
+    await click(button('保存'));
+    await flush();
+    expect(mocks.post).toHaveBeenCalledWith(
+      PROVIDERS,
+      expect.objectContaining({ webFetchPreflightPolicy: 'check' }),
+    );
+  });
+
+  test('a connection without a model is refused, and the reason is shown', async () => {
+    answer({
+      [DISCOVER]: {
+        ok: true,
+        source: 'endpoint',
+        gateway: 'magpie',
+        models: [MAGPIE_MODELS[1]],
+      },
+      [TEST]: OK_TEST,
+      [PROVIDERS]: async () => {
+        throw {
+          status: 400,
+          message: 'magpie connection needs a model',
+          body: { code: 'MAGPIE_MODELS_REQUIRED' },
+        };
+      },
+    });
+    await chooseMagpie();
+    await next();
+    // Nothing checked: the step cannot go on.
+    expect(button('下一步').disabled).toBe(true);
+    await pick('acme/vx-pro');
+    await next();
+    await click(button('保存'));
+    await flush();
+    expect(text()).toContain('magpie 连接至少要有一个模型');
+    expect(onDone).not.toHaveBeenCalled();
+  });
+
+  test('leaving magpie for a vendor drops the app key', async () => {
+    await chooseMagpie();
+    await click(button('上一步'));
+    await click(buttonContaining('api.deepseek.com'));
+    expect(field('#wizard-api-key')?.value).toBe('');
+    // A key the user typed is theirs and stays.
+    await type('#wizard-api-key', 'sk-own');
+    await click(button('上一步'));
+    await click(buttonContaining('Magpie'));
+    expect(field('#wizard-api-key')?.value).toBe('sk-own');
+  });
+
+  test('a custom address the list shows to be magpie is saved as magpie', async () => {
+    answer({
+      [DISCOVER]: {
+        ok: true,
+        source: 'endpoint',
+        gateway: 'magpie',
+        models: [MAGPIE_MODELS[1]],
+      },
+      [TEST]: OK_TEST,
+      [PROVIDERS]: makeProvider({ id: 'mp' }),
+    });
+    await render();
+    await click(buttonContaining('自定义兼容地址'));
+    await type('#wizard-base-url', 'https://magpie.example.test');
+    await type('#wizard-api-key', 'sk');
+    await next();
+    await pick('acme/vx-pro');
+    await next();
+    await click(button('保存'));
+    await flush();
+    const body = mocks.post.mock.calls.find(([path]) => path === PROVIDERS)![1];
+    expect(body).toMatchObject({
+      anthropicBaseUrl: 'https://magpie.example.test',
+      gateway: 'magpie',
+    });
+    // Only the preset decides the WebFetch check up front.
+    expect(body).not.toHaveProperty('webFetchPreflightPolicy');
+    expect(body).not.toHaveProperty('presetId');
+  });
+});
+
+describe('background model hint', () => {
+  test('suggests a cheap model while 轻量后台模型 follows the turn’s model', async () => {
+    answer({
+      [DISCOVER]: {
+        ok: true,
+        source: 'endpoint',
+        models: [{ id: 'glm-5.3' }, { id: 'glm-5.2' }],
+      },
+    });
+    await render();
+    await click(buttonContaining('自定义兼容地址'));
+    await type('#wizard-base-url', 'https://relay.example.test');
+    await type('#wizard-api-key', 'sk');
+    await next();
+    expect(text()).toContain('建议选一个便宜的模型');
+    await act(async () => {
+      const select = field(
+        '#connection-role-smallFast',
+      ) as unknown as HTMLSelectElement;
+      select.value = 'glm-5.2';
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    expect(text()).not.toContain('建议选一个便宜的模型');
+  });
+
+  test('a single model has nothing cheaper to suggest', async () => {
+    answer({
+      [DISCOVER]: { ok: true, source: 'endpoint', models: [{ id: 'glm-5.3' }] },
+    });
+    await render();
+    await click(buttonContaining('自定义兼容地址'));
+    await type('#wizard-base-url', 'https://relay.example.test');
+    await type('#wizard-api-key', 'sk');
+    await next();
+    expect(text()).toContain('轻量后台模型');
+    expect(text()).not.toContain('建议选一个便宜的模型');
   });
 });

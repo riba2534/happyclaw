@@ -183,10 +183,14 @@ describe('/api/agent-profiles routes', () => {
           models: [
             {
               id: 'claude-default-test',
+              displayName: null,
               efforts: [],
               defaultEffort: null,
               contextWindow: null,
               effortsSource: 'none',
+              maxOutputTokens: null,
+              vendor: null,
+              upstreamMissingSince: null,
             },
           ],
         },
@@ -1589,10 +1593,14 @@ describe('/api/agent-profiles model within a configuration', () => {
     const body = await (await routes.request('/', { method: 'GET' })).json();
     const unknown = (id: string) => ({
       id,
+      displayName: null,
       efforts: [],
       defaultEffort: null,
       contextWindow: null,
       effortsSource: 'none',
+      maxOutputTokens: null,
+      vendor: null,
+      upstreamMissingSince: null,
     });
     expect(
       body.model_configs

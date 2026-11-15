@@ -895,3 +895,353 @@ describe('connection WebFetch policy', () => {
     );
   });
 });
+
+const SYNC = (id: string) => `${PROVIDERS}/${id}/catalog/sync`;
+
+/** POST answers by path; a function answer may throw. */
+function answerPosts(routes: Record<string, unknown>) {
+  mocks.post.mockImplementation(async (path: string) => {
+    const route = routes[path];
+    if (route === undefined) throw new Error(`unexpected POST ${path}`);
+    return typeof route === 'function' ? route() : route;
+  });
+}
+
+/** The sync on open is refused (rate-limited): the shown record stays. */
+function refuseSync() {
+  mocks.post.mockRejectedValue({ status: 429, message: 'Too Many Requests' });
+}
+
+const magpieProvider = makeProvider({
+  id: 'mp',
+  name: 'Magpie',
+  presetId: 'magpie',
+  anthropicBaseUrl: 'http://127.0.0.1:3425',
+  anthropicModel: 'acme/vx-pro',
+  anthropicAuthTokenMasked: 'magp***',
+  webFetchPreflightPolicy: 'skip',
+  gateway: 'magpie',
+  toolSearch: 'default',
+  toolSearchEnabled: true,
+  models: [
+    {
+      id: 'acme/vx-pro',
+      displayName: 'VX Pro',
+      vendor: 'Relay A',
+      maxOutputTokens: 128_000,
+      efforts: ['low', 'high'],
+    },
+    {
+      id: 'acme/vx-old',
+      efforts: ['high'],
+      upstreamMissingSince: '2026-11-10T00:00:00.000Z',
+    },
+  ],
+  catalog: {
+    autoAdd: false,
+    syncedAt: new Date(Date.now() - 5 * 60_000).toISOString(),
+    error: null,
+    newModels: [
+      { id: 'acme/vx-new', displayName: 'VX New', vendor: 'Relay B' },
+      { id: 'acme/vx-next', efforts: [] },
+    ],
+  },
+});
+
+const row = (id: string) =>
+  [...document.querySelectorAll('li')].find((item) =>
+    item.textContent?.includes(id),
+  );
+
+describe('catalog sync on open', () => {
+  test('a third-party connection reads its list again and shows the answer', async () => {
+    const synced = { ...legacyProvider, gateway: 'magpie' as const };
+    answerPosts({
+      [SYNC('glm')]: {
+        provider: synced,
+        result: {
+          ok: true,
+          gateway: 'magpie',
+          added: [],
+          newModels: [],
+          missing: [],
+        },
+      },
+    });
+    await render(legacyProvider);
+    expect(mocks.post).toHaveBeenCalledWith(SYNC('glm'), undefined, 45_000);
+    expect(onChanged).toHaveBeenCalledExactlyOnceWith(synced);
+    expect(setNotice).not.toHaveBeenCalled();
+    // Once per opening: a reload of the same connection does not sync again.
+    await render({ ...legacyProvider, updatedAt: 'reloaded' });
+    expect(
+      mocks.post.mock.calls.filter(([path]) => path === SYNC('glm')),
+    ).toHaveLength(1);
+  });
+
+  test('models auto-add put on the list are announced', async () => {
+    answerPosts({
+      [SYNC('mp')]: {
+        provider: magpieProvider,
+        result: {
+          ok: true,
+          gateway: 'magpie',
+          added: ['acme/a', 'acme/b'],
+          newModels: [],
+          missing: [],
+        },
+      },
+    });
+    await render(magpieProvider);
+    expect(setNotice).toHaveBeenCalledWith('已自动添加 2 个上游新模型');
+  });
+
+  test('a refused sync changes nothing and says nothing', async () => {
+    refuseSync();
+    await render(legacyProvider);
+    expect(mocks.post).toHaveBeenCalledWith(SYNC('glm'), undefined, 45_000);
+    expect(onChanged).not.toHaveBeenCalled();
+    expect(setError).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ['Claude subscription', officialProvider],
+    ['ChatGPT subscription', codexProvider],
+  ])('a %s is not synced', async (_kind, provider) => {
+    refuseSync();
+    await render(provider);
+    expect(mocks.post).not.toHaveBeenCalledWith(
+      SYNC(provider.id),
+      undefined,
+      45_000,
+    );
+  });
+});
+
+describe('magpie catalog', () => {
+  test('says when it last synced, or why it failed', async () => {
+    refuseSync();
+    await render(magpieProvider);
+    expect(text()).toContain('已与 magpie 同步 · 5 分钟前');
+    await render({
+      ...magpieProvider,
+      catalog: {
+        ...magpieProvider.catalog!,
+        error: {
+          code: 'ENDPOINT_NOT_FOUND',
+          message: 'connect ECONNREFUSED 127.0.0.1:3425',
+          at: new Date().toISOString(),
+        },
+      },
+    });
+    expect(text()).toContain('同步失败：地址不对，上次成功 5 分钟前');
+    expect(text()).toContain('connect ECONNREFUSED 127.0.0.1:3425');
+  });
+
+  test('adds some, then all, of the new upstream models', async () => {
+    refuseSync();
+    await render(magpieProvider);
+    expect(text()).toContain('上游有 2 个新模型');
+    await click(button('选择'));
+    await click(
+      document.querySelector(
+        '[role="checkbox"][aria-label="添加 acme/vx-next"]',
+      ),
+    );
+    await click(button('添加所选（1）'));
+    await flush();
+    expect(mocks.confirm).not.toHaveBeenCalled();
+    expect(mocks.patch).toHaveBeenLastCalledWith(
+      `${PROVIDERS}/mp`,
+      {
+        // Copied as magpie describes it; the empty list declares none.
+        models: [...magpieProvider.models, { id: 'acme/vx-next', efforts: [] }],
+      },
+      120_000,
+    );
+    expect(setNotice).toHaveBeenCalledWith('已添加 1 个模型');
+    // What was added is no longer new.
+    expect(text()).toContain('上游有 1 个新模型');
+
+    await click(button('全部添加'));
+    await flush();
+    expect(mocks.patch).toHaveBeenLastCalledWith(
+      `${PROVIDERS}/mp`,
+      {
+        models: [
+          ...magpieProvider.models,
+          { id: 'acme/vx-next', efforts: [] },
+          { id: 'acme/vx-new', displayName: 'VX New', vendor: 'Relay B' },
+        ],
+      },
+      120_000,
+    );
+    expect(text()).not.toContain('上游有');
+  });
+
+  test('auto-add is switched with one PATCH', async () => {
+    refuseSync();
+    await render(magpieProvider);
+    await click(document.querySelector('#catalog-auto-add'));
+    await flush();
+    expect(mocks.patch).toHaveBeenCalledExactlyOnceWith(
+      `${PROVIDERS}/mp`,
+      { catalogAutoAdd: true },
+      120_000,
+    );
+    expect(mocks.confirm).not.toHaveBeenCalled();
+    expect(onChanged).toHaveBeenCalledWith(
+      expect.objectContaining({ catalogAutoAdd: true }),
+    );
+    expect(setNotice).toHaveBeenCalledWith('已开启自动添加上游新模型');
+  });
+
+  test('a model gone upstream is marked and left for the admin to remove', async () => {
+    refuseSync();
+    await render(magpieProvider);
+    expect(row('acme/vx-old')?.textContent).toContain('上游已不提供');
+    expect(row('acme/vx-pro')?.textContent).not.toContain('上游已不提供');
+    expect(mocks.patch).not.toHaveBeenCalled();
+  });
+
+  test('a row leads with the vendor’s name and keeps the id, vendor and reply limit in view', async () => {
+    refuseSync();
+    await render(magpieProvider);
+    const pro = row('acme/vx-pro')!.textContent ?? '';
+    expect(pro.startsWith('VX Pro')).toBe(true);
+    expect(pro).toContain('Relay A');
+    expect(pro).toContain('acme/vx-pro · 最长回复 128K');
+    // Without a name the id leads, as before.
+    expect(row('acme/vx-old')?.textContent?.startsWith('acme/vx-old')).toBe(
+      true,
+    );
+  });
+
+  test('a connection that is not magpie has no catalog', async () => {
+    refuseSync();
+    await render(legacyProvider);
+    expect(document.querySelector('[aria-label="magpie 模型目录"]')).toBeNull();
+    expect(text()).not.toContain('自动添加上游新模型');
+  });
+
+  test('a refusal to leave a magpie connection without models is named', async () => {
+    refuseSync();
+    mocks.patch.mockRejectedValue({
+      status: 400,
+      message: 'magpie connection needs a model',
+      body: { code: 'MAGPIE_MODELS_REQUIRED' },
+    });
+    await render(magpieProvider);
+    await click(
+      document.querySelector('button[aria-label="从连接中删除 acme/vx-old"]'),
+    );
+    await flush();
+    expect(setError).toHaveBeenCalledWith(
+      'magpie 连接至少要有一个模型：magpie 没有默认模型。',
+    );
+  });
+});
+
+describe('tool search', () => {
+  const field = '#connection-tool-search';
+
+  test('默认 says what it means here: on for magpie, off elsewhere', async () => {
+    refuseSync();
+    await render(magpieProvider);
+    expect(select(field).value).toBe('default');
+    expect(select(field).options[0].text).toBe('默认（开）');
+    await render(legacyProvider);
+    expect(select(field).options[0].text).toBe('默认（关）');
+    expect([...select(field).options].map((option) => option.text)).toEqual([
+      '默认（关）',
+      '开',
+      '关',
+    ]);
+  });
+
+  test('a choice is saved without stopping runners', async () => {
+    refuseSync();
+    await render(legacyProvider);
+    expect(button('保存连接设置').disabled).toBe(true);
+    await choose(field, 'on');
+    await click(button('保存连接设置'));
+    await flush();
+    expect(mocks.patch).toHaveBeenCalledExactlyOnceWith(
+      `${PROVIDERS}/glm`,
+      { toolSearch: 'on' },
+      120_000,
+    );
+    expect(mocks.confirm).not.toHaveBeenCalled();
+    expect(mocks.get).not.toHaveBeenCalledWith(`${PROVIDERS}/glm/impact`);
+    expect(setNotice).toHaveBeenCalledWith(
+      '工具搜索设置已保存，当前回复结束后生效',
+    );
+  });
+
+  test('a choice can be handed back to the default', async () => {
+    refuseSync();
+    await render({ ...legacyProvider, toolSearch: 'off' });
+    expect(select(field).value).toBe('off');
+    await choose(field, 'default');
+    await click(button('保存连接设置'));
+    await flush();
+    expect(mocks.patch).toHaveBeenCalledWith(
+      `${PROVIDERS}/glm`,
+      { toolSearch: 'default' },
+      120_000,
+    );
+  });
+
+  test.each([
+    ['Claude subscription', officialProvider],
+    ['ChatGPT subscription', codexProvider],
+  ])('is not offered on a %s', async (_kind, provider) => {
+    refuseSync();
+    await render(provider);
+    expect(document.querySelector(field)).toBeNull();
+  });
+});
+
+describe('magpie address and WebFetch', () => {
+  test('a magpie preset connection may move to another address', async () => {
+    refuseSync();
+    await render(magpieProvider);
+    const url = document.querySelector(
+      '#connection-base-url',
+    ) as HTMLInputElement;
+    expect(url.readOnly).toBe(false);
+    expect(text()).not.toContain('预设的地址，不能修改');
+    await type('#connection-base-url', 'http://10.0.0.5:3425');
+    await click(button('保存连接设置'));
+    await flush();
+    expect(mocks.confirm).toHaveBeenCalledTimes(1);
+    expect(mocks.patch).toHaveBeenCalledWith(
+      `${PROVIDERS}/mp`,
+      { anthropicBaseUrl: 'http://10.0.0.5:3425' },
+      120_000,
+    );
+  });
+
+  test('magpie found at a custom address hints at skipping the check, without changing it', async () => {
+    refuseSync();
+    const detected = {
+      ...legacyProvider,
+      gateway: 'magpie' as const,
+      webFetchPreflightPolicy: 'check' as const,
+    };
+    await render(detected);
+    expect(text()).toContain('这个地址是 magpie');
+    expect(select('#connection-web-fetch-preflight').value).toBe('check');
+    expect(button('保存连接设置').disabled).toBe(true);
+    expect(mocks.patch).not.toHaveBeenCalled();
+    // Skipping already, or not magpie: nothing to say.
+    await render({ ...detected, webFetchPreflightPolicy: 'skip' });
+    expect(text()).not.toContain('这个地址是 magpie');
+  });
+
+  test('the magpie preset itself gets no hint', async () => {
+    refuseSync();
+    await render({ ...magpieProvider, webFetchPreflightPolicy: 'check' });
+    expect(text()).not.toContain('这个地址是 magpie');
+  });
+});
