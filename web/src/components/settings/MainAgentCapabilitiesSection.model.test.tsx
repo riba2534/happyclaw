@@ -95,7 +95,8 @@ const CONFIGS: ModelConfigOption[] = [
         efforts: [],
         defaultEffort: null,
         contextWindow: 200_000,
-        effortsSource: 'none',
+        // Declared to take none, unlike a model nothing is known about.
+        effortsSource: 'declared',
       },
     ],
   },
@@ -480,5 +481,94 @@ describe('主 HappyClaw model within its connection', () => {
 
     await save();
     expect(mocks.patch).toHaveBeenCalledOnce();
+  });
+});
+
+describe('what a vendor says about its models', () => {
+  /** The models of a magpie connection whose list names them. */
+  const named: Array<
+    ModelConfigOption['models'][number] & { displayName: string }
+  > = [
+    {
+      id: 'acme/vx-pro',
+      displayName: 'VX Pro',
+      efforts: ['low', 'high'],
+      defaultEffort: 'high',
+      contextWindow: 200_000,
+      effortsSource: 'declared',
+    },
+    {
+      id: 'acme/vx-mini',
+      displayName: 'VX Mini',
+      efforts: [],
+      defaultEffort: null,
+      contextWindow: null,
+      effortsSource: 'declared',
+    },
+  ];
+  const MAGPIE: ModelConfigOption = {
+    id: 'mp',
+    name: 'Magpie',
+    type: 'third_party',
+    model: 'acme/vx-pro',
+    usable: true,
+    models: named,
+  };
+
+  test('the connection and model selects name models by the vendor’s name', async () => {
+    setStore(mainProfile({ model_config_id: 'mp' }), [...CONFIGS, MAGPIE]);
+    await render();
+    expect(configSelect().textContent).toBe('Magpie · VX Pro');
+    expect(await optionsOf(modelSelect())).toEqual([
+      '连接默认（VX Pro）',
+      'VX Mini',
+    ]);
+  });
+
+  test('a model nothing is known about offers every level, unverified', async () => {
+    // glm-5.3 is listed with nothing known about its efforts.
+    setStore(mainProfile({ model_config_id: 'glm', model: 'glm-5.3' }));
+    await render();
+    expect(await optionsOf(effortSelect())).toEqual([
+      '模型默认',
+      '低',
+      '中',
+      '高',
+      '超高',
+      '最高',
+    ]);
+    expect(container.textContent).toContain('未验证：没有这个模型的资料');
+    await choose(effortSelect(), '超高');
+    await save();
+    expect(mocks.patch.mock.calls[0][1]).toMatchObject({
+      runtime_policy: { reasoning: { effort: 'xhigh' } },
+    });
+  });
+
+  test('a model declared to take none offers no level and says so', async () => {
+    setStore(mainProfile({ model_config_id: 'mp', model: 'acme/vx-mini' }), [
+      ...CONFIGS,
+      MAGPIE,
+    ]);
+    await render();
+    expect(await optionsOf(effortSelect())).toEqual(['模型默认']);
+    expect(container.textContent).toContain('这个模型不支持推理等级');
+    expect(container.textContent).not.toContain('未验证');
+  });
+
+  test('moving to an unknown model keeps the picked level', async () => {
+    setStore(
+      mainProfile({
+        model_config_id: 'glm',
+        model: 'glm-4.6',
+        runtime_policy: {
+          ...mainProfile().runtime_policy,
+          reasoning: { effort: 'low' },
+        },
+      }),
+    );
+    await render();
+    await choose(modelSelect(), '连接默认（glm-5.3）');
+    expect(effortSelect().textContent).toBe('低');
   });
 });

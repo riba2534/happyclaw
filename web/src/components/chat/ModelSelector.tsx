@@ -23,7 +23,10 @@ import { toast } from 'sonner';
 
 import { cn } from '@/lib/utils';
 import { keepFocusThatMovedOn } from '@/lib/focus';
-import type { ModelCapabilitySource } from '@/lib/model-providers';
+import {
+  MODEL_EFFORTS,
+  type ModelCapabilitySource,
+} from '@/lib/model-providers';
 import type { ConnectionModel } from '@/types';
 import {
   DropdownMenu,
@@ -108,8 +111,17 @@ export interface CodexSelectionView {
   models: CodexModelChoice[];
 }
 
-/** One model of a non-ChatGPT connection. */
-export type ConnectionModelChoice = ConnectionModel;
+/**
+ * One model of a non-ChatGPT connection, with what its vendor says about it
+ * (absent on older servers). `effortsSource: 'none'` is a model nothing is
+ * known about, which may run at any effort.
+ */
+export type ConnectionModelChoice = ConnectionModel & {
+  displayName?: string | null;
+  maxOutputTokens?: number | null;
+  vendor?: string | null;
+  upstreamMissingSince?: string | null;
+};
 
 export interface SessionModelOption {
   id: string;
@@ -254,7 +266,12 @@ interface ModelLevels {
   source: ModelCapabilitySource;
 }
 
-/** The efforts a connection's model takes, and its own default level. */
+/**
+ * The efforts a connection's model takes, and its own default level. A model
+ * nothing is known about offers every level, unverified (the server takes
+ * any of them); one declared to take none, or listed without a source by an
+ * older server, offers none.
+ */
 function modelEfforts(
   option: SessionModelOption,
   model: string,
@@ -270,6 +287,9 @@ function modelEfforts(
       : null;
   }
   const entry = option.models?.find((item) => item.id === model);
+  if (entry?.effortsSource === 'none') {
+    return { efforts: [...MODEL_EFFORTS], defaultEffort: null, source: 'none' };
+  }
   return entry?.efforts?.length
     ? {
         efforts: entry.efforts,
@@ -285,7 +305,17 @@ export function effortsSourceBadge(
 ): string | null {
   if (source === 'family') return '推断';
   if (source === 'declared') return '自定义';
+  if (source === 'none') return '未验证';
   return null;
+}
+
+/** The vendor's name for a connection's model, when its list gives one. */
+function modelDisplayName(
+  option: SessionModelOption,
+  model: string,
+): string | null {
+  if (option.codex || !model) return null;
+  return option.models?.find((item) => item.id === model)?.displayName || null;
 }
 
 const DEFAULT_ROW_KEY = '__default__';
@@ -299,6 +329,8 @@ interface ModelRow {
   pick: string | null;
   /** The model shown; '' when a relay decides. */
   id: string;
+  /** The vendor's name for it, shown in place of the id. */
+  displayName?: string | null;
   note?: string;
   /** Its context window in tokens; null when unknown. */
   contextWindow: number | null;
@@ -306,6 +338,11 @@ interface ModelRow {
 
 function rowKey(optionId: string, id: string): string {
   return `${optionId}:${id}`;
+}
+
+/** How a row names its model: the vendor's name, else the id. */
+function rowName(row: ModelRow): string {
+  return row.displayName || row.id || '由中转站决定';
 }
 
 /**
@@ -326,12 +363,13 @@ function optionRows(
     : (option.models ?? []);
   const row = (
     id: string,
-    { note, contextWindow = null }: Partial<ModelRow> = {},
+    { note, contextWindow = null, displayName = null }: Partial<ModelRow> = {},
   ): ModelRow => ({
     key: rowKey(option.id, id),
     option,
     pick: id === defaultModel ? null : id,
     id,
+    displayName,
     note,
     contextWindow,
   });
@@ -369,13 +407,14 @@ function rowPin(row: ModelRow): ModelPin | null {
 
 /** How a row is named where it is pinned. */
 function pinName(row: ModelRow): string {
-  return `${row.option.name} · ${row.id || '由中转站决定'}`;
+  return `${row.option.name} · ${rowName(row)}`;
 }
 
-/** The second line of a model row. */
+/** The second line of a model row: the id stays in view under a name. */
 function rowDetail(row: ModelRow): string {
   return [
     row.option.name,
+    row.displayName ? row.id : null,
     row.contextWindow
       ? `${formatTokenCount(row.contextWindow)} 上下文`
       : row.option.models && row.id
@@ -749,18 +788,21 @@ export function ModelSelector({
   const effortContext = resolveEffortContext(selection);
   // The trigger names the model in use, without where the default came from.
   const unusable = !picked && defaultUnusable(selection);
+  const inUseName =
+    (inUse.option && modelDisplayName(inUse.option, inUse.model)) ||
+    inUse.model;
   const triggerName = unusable
     ? selection.default.connectionMissing
       ? '连接不可用'
       : '未选择模型'
-    : inUse.model ||
+    : inUseName ||
       inUse.option?.name ||
       (selection.default.source === 'workspace_env'
         ? defaultSourceLabel(selection)
         : '未选择模型');
   const fullLabel =
     inUse.model && !unusable
-      ? [inUse.option?.name, inUse.model].filter(Boolean).join(' · ')
+      ? [inUse.option?.name, inUseName].filter(Boolean).join(' · ')
       : triggerName;
   const tooltip = picked
     ? fullLabel
@@ -794,7 +836,8 @@ export function ModelSelector({
         : null;
     const effort =
       keptEffort && levels?.efforts.includes(keptEffort) ? keptEffort : null;
-    const name = modelToRun ? `${option.name} · ${modelToRun}` : option.name;
+    const modelName = modelDisplayName(option, modelToRun) || modelToRun;
+    const name = modelName ? `${option.name} · ${modelName}` : option.name;
     const dropped =
       keptEffort && !effort
         ? `；该模型不支持${effortLabel(keptEffort)}，推理等级已恢复为默认${
@@ -850,7 +893,11 @@ export function ModelSelector({
       open={pinSheetOpen}
       onOpenChange={setPinSheetOpen}
       title={pinTarget ? pinName(pinTarget) : '置顶模型'}
-      name={pinTarget ? pinTarget.id || pinTarget.option.name : ''}
+      name={
+        pinTarget
+          ? pinTarget.displayName || pinTarget.id || pinTarget.option.name
+          : ''
+      }
       pinned={!!pinTarget && isModelPinned(pins, rowModel(pinTarget))}
       onToggle={() => {
         if (pinTarget) togglePin(pinTarget);
@@ -1297,6 +1344,7 @@ function ModelPanel({
             (row) =>
               !needle ||
               row.id.toLowerCase().includes(needle) ||
+              !!row.displayName?.toLowerCase().includes(needle) ||
               option.name.toLowerCase().includes(needle),
           ),
         );
@@ -1354,7 +1402,7 @@ function ModelPanel({
             name={row.option.name}
           />
         }
-        title={row.id || '由中转站决定'}
+        title={rowName(row)}
         detail={rowDetail(row)}
         pin={pinControl(row)}
         pinLabel={pinName(row)}
@@ -1526,17 +1574,22 @@ function ModelPanel({
   );
 }
 
-/** 推断 or 自定义 next to a list of efforts the registry did not supply. */
+const EFFORTS_SOURCE_TITLES: Partial<Record<ModelCapabilitySource, string>> = {
+  family: '按同系列模型推断，未经上游确认',
+  declared: '在模型连接里手动声明',
+  none: '没有这个模型的资料，各档位都可以试，但未经验证',
+};
+
+/**
+ * 推断, 自定义 or 未验证 next to a list of efforts the registry did not
+ * supply.
+ */
 function EffortsSourceBadge({ source }: { source: ModelCapabilitySource }) {
   const badge = effortsSourceBadge(source);
   return badge ? (
     <Badge
-      variant="neutral"
-      title={
-        source === 'family'
-          ? '按同系列模型推断，未经上游确认'
-          : '在模型连接里手动声明'
-      }
+      variant={source === 'none' ? 'warning' : 'neutral'}
+      title={EFFORTS_SOURCE_TITLES[source]}
     >
       {badge}
     </Badge>

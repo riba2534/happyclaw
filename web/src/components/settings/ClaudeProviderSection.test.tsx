@@ -20,6 +20,7 @@ const mocks = vi.hoisted(() => ({
   setNotice: vi.fn(),
   setError: vi.fn(),
   detail: vi.fn(),
+  usage: vi.fn(),
 }));
 
 vi.mock('../../api/client', () => ({
@@ -41,7 +42,12 @@ vi.mock('./ConnectionDetailDialog', () => ({
   },
 }));
 // Subscription usage reads its own endpoint.
-vi.mock('./UsageBars', () => ({ UsageBars: () => null }));
+vi.mock('./UsageBars', () => ({
+  UsageBars: (props: { providerId: string }) => {
+    mocks.usage(props.providerId);
+    return null;
+  },
+}));
 
 const { ClaudeProviderSection } = await import('./ClaudeProviderSection');
 
@@ -174,6 +180,23 @@ describe('模型连接 list', () => {
     );
     expect(mocks.confirm).not.toHaveBeenCalled();
     expect(mocks.del).not.toHaveBeenCalled();
+  });
+
+  test('a magpie connection shows its accounts’ usage; another relay does not', async () => {
+    const magpie = makeProvider({
+      id: 'mp',
+      name: 'Magpie',
+      presetId: 'magpie',
+      anthropicBaseUrl: 'http://127.0.0.1:3425',
+      gateway: 'magpie',
+    });
+    mocks.get.mockImplementation(async (path: string) => {
+      if (path === PROVIDERS) return { providers: [relay, magpie] };
+      throw new Error(`unexpected GET ${path}`);
+    });
+    await render();
+    expect(mocks.usage).toHaveBeenCalledWith('mp');
+    expect(mocks.usage).not.toHaveBeenCalledWith('relay');
   });
 
   test('declining the confirmation deletes nothing', async () => {

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   Check,
   Loader2,
@@ -23,7 +23,13 @@ import {
   NativeSelectOption,
 } from '@/components/ui/native-select';
 import { IconButton } from '@/components/common/IconButton';
-import { describeBaseUrlProblem, getModelPreset } from '@/lib/model-providers';
+import {
+  describeBaseUrlProblem,
+  getModelPreset,
+  toolSearchEnabled,
+  type ModelPreset,
+  type ToolSearchSetting,
+} from '@/lib/model-providers';
 import {
   codexDefaultsPatch,
   storedCodexEffort,
@@ -39,8 +45,10 @@ import {
   connectionKind,
   connectionKindLabel,
   connectionStatus,
+  connectionWriteErrorMessage,
   isThirdPartyKind,
   saveConnectionSecrets,
+  syncConnectionCatalog,
   testConnection,
   testOutcome,
   updateConnection,
@@ -130,6 +138,36 @@ function ConnectionDetail({
   const thirdParty = isThirdPartyKind(kind);
   const preset = getModelPreset(provider.presetId);
   const status = connectionStatus(provider);
+
+  // ─── Catalog ───
+  // Opening a third-party connection reads its model list again: that is
+  // how an address turns out to be magpie, and how a magpie connection
+  // learns of new and vanished models. A failure here is the sync's own
+  // business (a magpie connection shows it); a refusal, such as 429 for a
+  // sync a moment ago, changes nothing.
+  const syncProps = useRef({ onChanged, setNotice });
+  syncProps.current = { onChanged, setNotice };
+  useEffect(() => {
+    if (!thirdParty) return;
+    let cancelled = false;
+    syncConnectionCatalog(provider.id)
+      .then((answer) => {
+        if (cancelled || !answer?.provider) return;
+        syncProps.current.onChanged(answer.provider);
+        const added = answer.result?.ok ? answer.result.added : [];
+        if (added?.length) {
+          syncProps.current.setNotice(
+            `已自动添加 ${added.length} 个上游新模型`,
+          );
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+    // Once per opening: the dialog keys this view by the connection's id.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // ─── Name ───
   const [renaming, setRenaming] = useState(false);
@@ -280,7 +318,7 @@ function ConnectionDetail({
       <ConnectionSettings
         provider={provider}
         kind={kind}
-        presetName={preset?.name ?? null}
+        preset={preset}
         onChanged={onChanged}
         setNotice={setNotice}
         setError={setError}
@@ -364,23 +402,29 @@ function CodexDefaults({
   );
 }
 
-/** Credentials, address and environment: edits here restart runners. */
+/**
+ * Credentials, address and environment: edits here restart runners. The
+ * WebFetch check and tool search are read at launch, so runners on the old
+ * value retire after their turn and nothing is stopped.
+ */
 function ConnectionSettings({
   provider,
   kind,
-  presetName,
+  preset,
   onChanged,
   setNotice,
   setError,
 }: {
   provider: UnifiedProviderPublic;
   kind: ConnectionKind;
-  presetName: string | null;
+  preset: ModelPreset | null;
   onChanged: (update?: ConnectionUpdate) => void;
   setNotice: (message: string | null) => void;
   setError: (message: string | null) => void;
 }) {
   const thirdParty = isThirdPartyKind(kind);
+  // A gateway's preset (magpie) keeps its id at another address.
+  const ownBaseUrl = kind === 'custom' || !!preset?.editableBaseUrl;
   const [baseUrl, setBaseUrl] = useState(provider.anthropicBaseUrl);
   const [secret, setSecret] = useState('');
   const [env, setEnv] = useState<EnvRow[]>(() =>
@@ -398,9 +442,12 @@ function ConnectionSettings({
   const [webFetchPolicyDraft, setWebFetchPolicyDraft] =
     useState<WebFetchPreflightPolicy | null>(null);
   const webFetchPolicy = webFetchPolicyDraft ?? savedWebFetchPolicy;
+  const savedToolSearch: ToolSearchSetting = provider.toolSearch ?? 'default';
+  const [toolSearchDraft, setToolSearchDraft] =
+    useState<ToolSearchSetting | null>(null);
+  const toolSearch = toolSearchDraft ?? savedToolSearch;
   const [saving, setSaving] = useState(false);
-  const baseUrlProblem =
-    kind === 'custom' ? describeBaseUrlProblem(baseUrl) : null;
+  const baseUrlProblem = ownBaseUrl ? describeBaseUrlProblem(baseUrl) : null;
 
   // A ChatGPT connection shows only the WebFetch switch here: CodexDefaults
   // saves its env, which leaves the env draft above a stale snapshot.
@@ -408,13 +455,17 @@ function ConnectionSettings({
   const built = buildProviderCustomEnv(env);
   const envChanged =
     editsProtocol && !sameEnv(built.customEnv, provider.customEnv ?? {});
-  const urlChanged =
-    kind === 'custom' && baseUrl.trim() !== provider.anthropicBaseUrl;
+  const urlChanged = ownBaseUrl && baseUrl.trim() !== provider.anthropicBaseUrl;
   const authModeChanged = editsProtocol && authMode !== savedAuthMode;
   const protocolChanged =
     urlChanged || !!secret.trim() || envChanged || authModeChanged;
   const webFetchPolicyChanged = webFetchPolicy !== savedWebFetchPolicy;
-  const dirty = protocolChanged || webFetchPolicyChanged;
+  const toolSearchChanged = thirdParty && toolSearch !== savedToolSearch;
+  const dirty = protocolChanged || webFetchPolicyChanged || toolSearchChanged;
+  // magpie found at an address of its own: its preset would have skipped
+  // the check, which cannot pass where only magpie is reachable.
+  const detectedMagpie =
+    provider.gateway === 'magpie' && preset?.gateway !== 'magpie';
 
   const save = async () => {
     if (built.error) {
@@ -431,6 +482,7 @@ function ConnectionSettings({
       const patch: Record<string, unknown> = {};
       const secrets: Record<string, unknown> = {};
       if (webFetchPolicyChanged) patch.webFetchPreflightPolicy = webFetchPolicy;
+      if (toolSearchChanged) patch.toolSearch = toolSearch;
       if (urlChanged) patch.anthropicBaseUrl = baseUrl.trim();
       // Null clears the stored header, so the server falls back again.
       if (authModeChanged) {
@@ -459,17 +511,25 @@ function ConnectionSettings({
       setSecret('');
       setAuthModeDraft(null);
       setWebFetchPolicyDraft(null);
+      setToolSearchDraft(null);
       setNotice(
         protocolChanged
           ? '连接设置已保存；建议测试一次连接'
-          : '网页抓取设置已保存，当前回复结束后生效',
+          : toolSearchChanged && webFetchPolicyChanged
+            ? '设置已保存，当前回复结束后生效'
+            : toolSearchChanged
+              ? '工具搜索设置已保存，当前回复结束后生效'
+              : '网页抓取设置已保存，当前回复结束后生效',
       );
       // The PATCH answer is the saved state; a new credential also changes
       // masked fields it lacks, so reload after applying it.
       onChanged(saved);
       if (saved && Object.keys(secrets).length > 0) onChanged();
     } catch (err) {
-      setError(getErrorMessage(err, '保存连接设置失败'));
+      setError(
+        connectionWriteErrorMessage(err) ??
+          getErrorMessage(err, '保存连接设置失败'),
+      );
     } finally {
       setSaving(false);
     }
@@ -586,8 +646,8 @@ function ConnectionSettings({
               label="服务地址"
               htmlFor="connection-base-url"
               description={
-                kind === 'preset' ? (
-                  `「${presetName}」预设的地址，不能修改；需要其他地址请添加自定义连接。`
+                !ownBaseUrl ? (
+                  `「${preset?.name}」预设的地址，不能修改；需要其他地址请添加自定义连接。`
                 ) : baseUrlProblem ? (
                   <span className="flex gap-1.5 text-warning">
                     <TriangleAlert
@@ -606,7 +666,7 @@ function ConnectionSettings({
                 inputMode="url"
                 value={baseUrl}
                 onChange={(event) => setBaseUrl(event.target.value)}
-                readOnly={kind === 'preset'}
+                readOnly={!ownBaseUrl}
                 disabled={saving}
                 autoComplete="off"
                 className="font-mono"
@@ -676,7 +736,18 @@ function ConnectionSettings({
       <SettingsField
         label="网页抓取域名检查"
         htmlFor="connection-web-fetch-preflight"
-        description="抓取网页前先向 Anthropic 查询域名；连不上 Anthropic 时选择跳过。对使用此连接的所有会话生效。"
+        description={
+          <>
+            抓取网页前先向 Anthropic 查询域名；连不上 Anthropic
+            时选择跳过。对使用此连接的所有会话生效。
+            {detectedMagpie && savedWebFetchPolicy === 'check' && (
+              <span className="mt-1 block text-warning">
+                这个地址是 magpie：只连得上 magpie
+                时通常需要选择「跳过检查」，否则网页抓取会失败。
+              </span>
+            )}
+          </>
+        }
       >
         <NativeSelect
           id="connection-web-fetch-preflight"
@@ -695,6 +766,31 @@ function ConnectionSettings({
           <NativeSelectOption value="skip">跳过检查</NativeSelectOption>
         </NativeSelect>
       </SettingsField>
+      {/* Only a third-party launch is told: Claude Code decides it on
+          Anthropic's own API, and the ChatGPT gateway answers it itself. */}
+      {thirdParty && (
+        <SettingsField
+          label="工具搜索"
+          htmlFor="connection-tool-search"
+          description="开启后 Claude Code 先只发工具名，用到时再加载完整定义，省上下文；服务不支持时请求会失败。默认：magpie 开启，其他服务关闭。"
+        >
+          <NativeSelect
+            id="connection-tool-search"
+            value={toolSearch}
+            onChange={(event) =>
+              setToolSearchDraft(event.target.value as ToolSearchSetting)
+            }
+            disabled={saving}
+            className="w-full sm:w-72"
+          >
+            <NativeSelectOption value="default">
+              {`默认（${toolSearchEnabled('default', provider.gateway) ? '开' : '关'}）`}
+            </NativeSelectOption>
+            <NativeSelectOption value="on">开</NativeSelectOption>
+            <NativeSelectOption value="off">关</NativeSelectOption>
+          </NativeSelect>
+        </SettingsField>
+      )}
       <Button onClick={() => void save()} disabled={!dirty || saving}>
         {saving && <Loader2 className="animate-spin" />}
         保存连接设置
