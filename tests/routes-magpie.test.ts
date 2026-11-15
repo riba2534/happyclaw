@@ -312,6 +312,18 @@ describe('magpie connections', () => {
     expect(patched.body.code).toBe('MAGPIE_MODELS_REQUIRED');
   });
 
+  test('a test without a model is refused instead of probing a bare Claude name', async () => {
+    const { status, body } = await request('POST', '/providers/test', {
+      type: 'third_party',
+      presetId: 'magpie',
+      anthropicBaseUrl: magpieUrl,
+      anthropicAuthToken: GATEWAY_KEY,
+    });
+    expect(status).toBe(400);
+    expect(body.code).toBe('MAGPIE_MODELS_REQUIRED');
+    expect(seen).toHaveLength(0);
+  });
+
   test('changing tool search retires their runners after the turn', async () => {
     const created = createMagpie();
     const { status, body } = await request(

@@ -1056,7 +1056,8 @@ Provider（模型连接：一份凭据和一个端点，提供一组模型）：
   正是已保存的连接（草稿未改端点、凭据、认证方式或环境变量）时，`record` 存为该
   连接的 `lastTest`（审计 `test_provider`，不停 Runner、不清会话）；没有认证方式
   的旧连接同时记下端点接受的方式，与原先推断的不同时只排空该连接的 Runner。
-  与 `discover-models` 共用每用户每分钟 10 次的限额，超出返回 429
+  与 `discover-models` 共用每用户每分钟 10 次的限额，超出返回 429；magpie 连接（预设或已标记）
+  没有模型可测时返回 400 `{ error, code: 'MAGPIE_MODELS_REQUIRED' }`，不向 magpie 发裸 Claude 模型名
 - `POST /api/config/claude/providers/discover-models`，获取连接的模型列表，
   请求体同上（不含 `anthropicModel`；`customEnv` 只用于草稿，其
   `ANTHROPIC_CUSTOM_HEADERS` 随请求发送，已保存的连接用自己的环境变量）。第三方端点读

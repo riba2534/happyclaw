@@ -2504,6 +2504,21 @@ configRoutes.post(
       return c.json({ error: resolved.error }, resolved.status);
     }
     const { connection, stored } = resolved;
+    // Without a model the probe would ask for a bare Claude name, which magpie
+    // routes by its own machine's Claude Code settings: test a listed model.
+    if (
+      connection.kind === 'third_party' &&
+      !connection.model.trim() &&
+      (connection.preset?.gateway === 'magpie' || stored?.gateway === 'magpie')
+    ) {
+      return c.json(
+        {
+          error: 'Magpie 连接要先选一个模型再测试',
+          code: 'MAGPIE_MODELS_REQUIRED',
+        },
+        400,
+      );
+    }
     const result = await testConnection(connection);
 
     if (stored && !draftChangesConnection(draft, stored)) {
