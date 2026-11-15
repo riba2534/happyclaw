@@ -13,6 +13,9 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { api } from '../../api/client';
+import type { NewSessionOptions } from '../../hooks/useSessionActions';
+import type { ModelChoice } from '../../lib/session-model-choice';
+import { SessionModelChoiceField } from './SessionModelChoiceField';
 
 type WorktreeSupport =
   | { state: 'checking' }
@@ -22,34 +25,52 @@ type WorktreeSupport =
 interface NewSessionDialogProps {
   open: boolean;
   groupJid: string;
+  /**
+   * Offer the session its own git worktree (checked when the workspace can
+   * have one). Off: a name and a model only, for those who cannot run on
+   * the host or want no worktree.
+   */
+  offerWorktree?: boolean;
   onClose: () => void;
-  /** Create the session; resolves false when it was not created. */
-  onCreate: (options: { name: string; worktree: boolean }) => Promise<boolean>;
+  /**
+   * Create the session; resolves false when it was not created. A refusal
+   * the server explains comes back through `onError`, shown in the dialog.
+   */
+  onCreate: (
+    options: NewSessionOptions & { name: string; worktree: boolean },
+  ) => Promise<boolean>;
 }
 
 /**
- * New session with options. Its own git worktree is offered for Host
- * workspaces whose directory is a git repository; otherwise the option is
+ * New session with options: a name, the model it runs (the default unless
+ * one is picked) and, for Host workspaces whose directory is a git
+ * repository, its own git worktree; otherwise the worktree option is
  * disabled with the server's reason.
  */
 export function NewSessionDialog({
   open,
   groupJid,
+  offerWorktree = true,
   onClose,
   onCreate,
 }: NewSessionDialogProps) {
   const [name, setName] = useState('');
+  const [model, setModel] = useState<ModelChoice | null>(null);
   const [worktree, setWorktree] = useState(true);
   const [support, setSupport] = useState<WorktreeSupport>({
     state: 'checking',
   });
   const [creating, setCreating] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!open) return;
     setName('');
+    setModel(null);
+    setError(null);
     setWorktree(true);
     setSupport({ state: 'checking' });
+    if (!offerWorktree) return;
     let active = true;
     api
       .get<{ available: boolean; message?: string }>(
@@ -77,16 +98,25 @@ export function NewSessionDialog({
     return () => {
       active = false;
     };
-  }, [open, groupJid]);
+  }, [open, groupJid, offerWorktree]);
 
-  const useWorktree = worktree && support.state === 'available';
+  const useWorktree =
+    offerWorktree && worktree && support.state === 'available';
+  // Creating waits for the worktree check only where one is offered.
+  const checking = offerWorktree && support.state === 'checking';
   const handleCreate = async () => {
-    if (creating || support.state === 'checking') return;
+    if (creating || checking) return;
     setCreating(true);
+    setError(null);
     try {
-      if (await onCreate({ name: name.trim(), worktree: useWorktree })) {
-        onClose();
-      }
+      const created = await onCreate({
+        name: name.trim(),
+        worktree: useWorktree,
+        // Nothing is sent for the default: a session without a choice runs it.
+        ...(model ? { model } : {}),
+        onError: setError,
+      });
+      if (created) onClose();
     } finally {
       setCreating(false);
     }
@@ -98,8 +128,9 @@ export function NewSessionDialog({
         <DialogHeader>
           <DialogTitle>新建会话</DialogTitle>
           <DialogDescription>
-            会话有独立的对话上下文；勾选独立 worktree
-            后，文件改动也和其他会话分开。
+            {offerWorktree
+              ? '会话有独立的对话上下文；勾选独立 worktree 后，文件改动也和其他会话分开。'
+              : '会话有独立的对话上下文，和工作区的其他会话共用文件目录。'}
           </DialogDescription>
         </DialogHeader>
 
@@ -123,34 +154,56 @@ export function NewSessionDialog({
               placeholder="留空则根据第一条消息自动命名"
             />
           </div>
-          <div className="flex items-start gap-3 rounded-lg border border-surface-border p-3">
-            <Checkbox
-              id="new-session-worktree"
-              className="mt-0.5"
-              checked={useWorktree}
-              disabled={support.state !== 'available'}
-              onCheckedChange={(value) => setWorktree(value === true)}
+          <div>
+            <Label htmlFor="new-session-model" className="mb-2">
+              模型
+            </Label>
+            <SessionModelChoiceField
+              id="new-session-model"
+              workspaceJid={groupJid}
+              value={model}
+              onChange={(next) => {
+                setModel(next);
+                setError(null);
+              }}
+              disabled={creating}
             />
-            <div className="min-w-0 space-y-1">
-              <Label htmlFor="new-session-worktree" className="text-label">
-                独立 worktree
-              </Label>
-              {support.state === 'checking' ? (
-                <p className="flex items-center gap-1.5 text-caption text-muted-foreground">
-                  <Loader2 className="size-3 animate-spin" />
-                  正在检查工作目录…
-                </p>
-              ) : support.state === 'unavailable' ? (
-                <p className="text-caption text-warning">{support.message}</p>
-              ) : (
-                <p className="text-caption text-muted-foreground">
-                  在新分支 happyclaw/… 的独立 git worktree
-                  中工作，和其他会话的改动互不覆盖。删除会话时移除 worktree
-                  目录，分支保留。
-                </p>
-              )}
-            </div>
           </div>
+          {offerWorktree && (
+            <div className="flex items-start gap-3 rounded-lg border border-surface-border p-3">
+              <Checkbox
+                id="new-session-worktree"
+                className="mt-0.5"
+                checked={useWorktree}
+                disabled={support.state !== 'available'}
+                onCheckedChange={(value) => setWorktree(value === true)}
+              />
+              <div className="min-w-0 space-y-1">
+                <Label htmlFor="new-session-worktree" className="text-label">
+                  独立 worktree
+                </Label>
+                {support.state === 'checking' ? (
+                  <p className="flex items-center gap-1.5 text-caption text-muted-foreground">
+                    <Loader2 className="size-3 animate-spin" />
+                    正在检查工作目录…
+                  </p>
+                ) : support.state === 'unavailable' ? (
+                  <p className="text-caption text-warning">{support.message}</p>
+                ) : (
+                  <p className="text-caption text-muted-foreground">
+                    在新分支 happyclaw/… 的独立 git worktree
+                    中工作，和其他会话的改动互不覆盖。删除会话时移除 worktree
+                    目录，分支保留。
+                  </p>
+                )}
+              </div>
+            </div>
+          )}
+          {error && (
+            <p role="alert" className="text-caption text-error">
+              {error}
+            </p>
+          )}
         </div>
 
         <DialogFooter>
@@ -159,7 +212,7 @@ export function NewSessionDialog({
           </Button>
           <Button
             onClick={() => void handleCreate()}
-            disabled={creating || support.state === 'checking'}
+            disabled={creating || checking}
           >
             {creating && <Loader2 className="size-4 animate-spin" />}
             创建

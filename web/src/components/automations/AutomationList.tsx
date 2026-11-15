@@ -17,6 +17,7 @@ import {
 import { useAutomationsStore } from '../../stores/automations';
 import { useChatStore } from '../../stores/chat';
 import { runAutomationNow } from './automation-actions';
+import { useAutomationModelLabel } from './automation-model';
 import { UnreadDot } from './AutomationSessionBits';
 import {
   revealOnRowHover,
@@ -36,6 +37,7 @@ function AutomationListCell({
 }) {
   const busy = useAutomationsStore((s) => !!s.runBusy[automation.id]);
   const badge = automationCellBadge(automation);
+  const modelLabel = useAutomationModelLabel(automation);
   const dimmed = automation.status !== 'active';
   return (
     <li className="group/sidebar-row relative list-none">
@@ -64,6 +66,14 @@ function AutomationListCell({
         >
           {automationSubtitle(automation)}
         </span>
+        {modelLabel && (
+          <span
+            data-testid="automation-model"
+            className="truncate text-caption text-faint-foreground"
+          >
+            {modelLabel}
+          </span>
+        )}
       </SideListRow>
       {/* A phone runs it from the detail's top bar instead: a 24px button
           on every row starts a billed run on a stray tap. */}

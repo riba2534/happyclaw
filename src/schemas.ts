@@ -91,6 +91,33 @@ const AutomationPreRunCheckSchema = z.object({
 });
 
 /**
+ * A model and an effort as a choice names them. The connection's model list
+ * (a ChatGPT catalog) decides which values are valid, so they are plain
+ * strings here.
+ */
+const ChoiceModelSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(MAX_PROVIDER_MODEL_ID_LENGTH)
+  .nullable()
+  .optional();
+const ChoiceEffortSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(32)
+  .nullable()
+  .optional();
+
+/** Checked against the connection like a pick in the chat (the service). */
+const AutomationModelChoiceSchema = z.object({
+  modelConfigId: z.string().trim().min(1).max(128),
+  model: ChoiceModelSchema,
+  effort: ChoiceEffortSchema,
+});
+
+/**
  * Shape and a generous size cap only: the automation service applies the
  * shared validateAutomationDraft rules, cron syntax and the permission
  * checks, so REST and the agent tools reject the same drafts with the same
@@ -113,6 +140,7 @@ const AutomationDraftFields = {
     .max(AUTOMATION_LIMITS.scriptCommandMax * 2)
     .nullable()
     .optional(),
+  model: AutomationModelChoiceSchema.nullable().optional(),
 };
 
 const AutomationSessionModeSchema = z.enum(['fresh', 'persistent', 'bound']);
@@ -301,20 +329,25 @@ export const GroupAgentProfilePatchSchema = z.object({
  * Chat composer model picker: null returns the conversation to the default.
  * `model` picks inside any configuration, `effort` only inside a ChatGPT one;
  * the request replaces the whole choice, so leaving them out follows the
- * configuration's defaults. The configuration's model list (a ChatGPT
- * catalog) decides which values are valid, so they are plain strings here.
+ * configuration's defaults.
  */
 export const SessionModelSelectionSchema = z.object({
   agentId: z.string().trim().min(1).max(128).nullable().optional(),
   modelConfigId: z.string().trim().min(1).max(128).nullable(),
-  model: z
-    .string()
-    .trim()
-    .min(1)
-    .max(MAX_PROVIDER_MODEL_ID_LENGTH)
-    .nullable()
-    .optional(),
-  effort: z.string().trim().min(1).max(32).nullable().optional(),
+  model: ChoiceModelSchema,
+  effort: ChoiceEffortSchema,
+});
+
+/**
+ * The model a new session starts on (POST sessions): the same choice as the
+ * composer's, made before the session exists. Leaving the configuration out
+ * follows the default.
+ */
+export const SessionCreateModelChoiceSchema = SessionModelSelectionSchema.pick({
+  model: true,
+  effort: true,
+}).extend({
+  modelConfigId: SessionModelSelectionSchema.shape.modelConfigId.optional(),
 });
 
 /**

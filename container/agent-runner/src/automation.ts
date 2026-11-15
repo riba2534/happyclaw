@@ -85,6 +85,8 @@ export interface Automation {
   sessionMode: AutomationSessionMode;
   /** bound: the target session; persistent: the session reused so far. */
   targetSessionJid: string | null;
+  /** fresh/persistent: the model the run sessions use; null: their default. */
+  model: AutomationModelChoice | null;
   /**
    * Route the runs answer on. bound: the creating turn's source route
    * (full JID incl. Feishu thread/root) or null for Web. fresh/persistent:
@@ -150,6 +152,40 @@ export interface AutomationDraft {
   preRunCheck?: AutomationPreRunCheck | null;
   execution?: AutomationExecution;
   scriptCommand?: string | null;
+  /**
+   * fresh/persistent agent runs only; null: the session default. Omitted
+   * means the default on create and no change on update. A model or effort
+   * left out is null.
+   */
+  model?:
+    | (Pick<AutomationModelChoice, 'modelConfigId'> &
+        Partial<Pick<AutomationModelChoice, 'model' | 'effort'>>)
+    | null;
+}
+
+/**
+ * A model choice an automation gives the sessions its runs go to, checked
+ * like a conversation's own pick when it is saved.
+ */
+export interface AutomationModelChoice {
+  /** The model connection (saved model configuration). */
+  modelConfigId: string;
+  /** A model of the connection; null runs the connection's own. */
+  model: string | null;
+  /** A reasoning effort the model takes; null follows the default. */
+  effort: string | null;
+}
+
+/**
+ * Whether the runs take a model of their own: the sessions an automation
+ * creates (fresh, persistent) do; a bound session keeps its own choice, and
+ * a script runs no model.
+ */
+export function automationTakesModel(automation: {
+  execution: AutomationExecution;
+  sessionMode: AutomationSessionMode;
+}): boolean {
+  return automation.execution === 'agent' && automation.sessionMode !== 'bound';
 }
 
 export const AUTOMATION_LIMITS = {

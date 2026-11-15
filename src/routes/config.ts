@@ -53,6 +53,7 @@ import {
   listAgentProfilesUsingModels,
   listSessionNamespacesForProviderId,
 } from '../db.js';
+import { countAutomationsByModelConfigId } from '../automation-store.js';
 import { parseChannelAddress } from '../channel-address.js';
 import { conversationBindingPolicyError } from '../channel-conversation-kind.js';
 import {
@@ -1949,6 +1950,14 @@ configRoutes.delete(
         if (referencedAgentCount > 0) {
           throw new Error(
             `该模型配置仍被 ${referencedAgentCount} 个智能体使用，请先重新分配`,
+          );
+        }
+        // An automation's choice would otherwise be written back into its
+        // run session on every run, naming a connection that is gone.
+        const referencedAutomationCount = countAutomationsByModelConfigId(id);
+        if (referencedAutomationCount > 0) {
+          throw new Error(
+            `该模型配置仍被 ${referencedAutomationCount} 个自动化使用，请先修改`,
           );
         }
         const sessionInvalidation = pendingInvalidation ?? {

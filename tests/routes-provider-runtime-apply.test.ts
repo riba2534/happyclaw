@@ -53,6 +53,7 @@ vi.mock('../src/middleware/auth.ts', async (importOriginal) => {
 const web = await import('../src/web.js');
 const db = await import('../src/db.js');
 const runtimeConfig = await import('../src/runtime-config.js');
+const automationStore = await import('../src/automation-store.js');
 const { GroupQueue } = await import('../src/group-queue.js');
 
 const app = web.createAppForTest({
@@ -435,6 +436,64 @@ describe('provider runtime apply is a lossless configuration mutation', () => {
     expect(db.archiveAgentProfile(profile.id, 'provider-runtime-admin')).toBe(
       'ok',
     );
+  });
+
+  test("blocks deleting an automation's connection until it is changed", async () => {
+    bindDeps(
+      {},
+      {
+        listDescendantJids: () => [],
+        pauseGroupsForMutation: () => ({ id: 12 }),
+        resumeGroupsAfterMutation: vi.fn(),
+        stopGroup: vi.fn(async () => {}),
+      },
+    );
+    const target = runtimeConfig.createProvider({
+      name: unique('automation-model-target'),
+      type: 'official',
+      anthropicApiKey: 'target-key',
+    });
+    const at = new Date().toISOString();
+    const automation = {
+      id: unique('automation'),
+      workspaceJid: 'web:automation-model-ws',
+      workspaceFolder: 'automation-model-ws',
+      createdBy: 'provider-runtime-admin',
+      name: '日报',
+      prompt: '汇总',
+      stopWhen: null,
+      schedule: { kind: 'manual' as const },
+      endAt: null,
+      sessionMode: 'fresh' as const,
+      targetSessionJid: null,
+      model: { modelConfigId: target.id, model: null, effort: null },
+      deliveryRouteJid: null,
+      silentWhenIdle: false,
+      preRunCheck: null,
+      execution: 'agent' as const,
+      scriptCommand: null,
+      // A paused one can run again: it counts too.
+      status: 'paused' as const,
+      statusReason: null,
+      nextFireAt: null,
+      lastFiredAt: null,
+      lastFinishedAt: null,
+      revision: 1,
+      createdAt: at,
+      updatedAt: at,
+    };
+    automationStore.insertAutomation(automation);
+
+    const refused = await deleteProvider(target.id);
+    expect(refused.status).toBe(400);
+    expect(await refused.json()).toEqual({
+      error: '该模型配置仍被 1 个自动化使用，请先修改',
+    });
+    expect(runtimeConfig.getProviderById(target.id)).toBeTruthy();
+
+    automationStore.deleteAutomations([automation.id]);
+    expect((await deleteProvider(target.id)).status).toBe(200);
+    expect(runtimeConfig.getProviderById(target.id)).toBeFalsy();
   });
 
   test('keeps a capacity-queued descendant task instead of dropping it', async () => {

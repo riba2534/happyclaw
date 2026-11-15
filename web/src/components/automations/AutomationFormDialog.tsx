@@ -26,6 +26,7 @@ import type { ApiError } from '../../api/client';
 import {
   AUTOMATION_LIMITS,
   AUTOMATION_SESSION_MODE_LABELS,
+  automationTakesModel,
   describeAutomationSchedule,
   validateAutomationDraft,
   type Automation,
@@ -41,6 +42,7 @@ import {
   draftFromForm,
   emptyAutomationForm,
   fieldOfError,
+  modelPatchFromForm,
   type AutomationFormField,
   type AutomationFormValues,
   type ScheduleForm,
@@ -59,6 +61,7 @@ import {
   listedSessions,
   sessionDisplayName,
 } from '../../lib/session-presentation';
+import { SessionModelChoiceField } from '../chat/SessionModelChoiceField';
 
 const PRESETS: SchedulePreset[] = [
   'minutes',
@@ -190,6 +193,7 @@ function AutomationForm({
   const allowHostCommands =
     user?.role === 'admin' && workspace?.execution_mode === 'host';
   const script = values.execution === 'script';
+  const takesModel = automationTakesModel(values);
 
   useEffect(() => {
     if (values.workspaceJid) void loadAgents(values.workspaceJid);
@@ -262,9 +266,13 @@ function AutomationForm({
       let saved: Automation;
       if (automation) {
         // The execution kind is fixed at creation; fresh and persistent
-        // sessions are the server's to pick.
-        const patch: AutomationPatchBody = { ...draft };
-        delete (patch as Partial<typeof draft>).execution;
+        // sessions are the server's to pick. A model goes only when it
+        // changed: an omitted one stays as it is.
+        const { execution: _execution, model: _model, ...kept } = draft;
+        const patch: AutomationPatchBody = {
+          ...kept,
+          ...modelPatchFromForm(values, automation),
+        };
         if (values.sessionMode === 'bound')
           patch.targetSessionJid = targetSessionJid;
         saved = await update(automation.id, revision, patch);
@@ -377,6 +385,8 @@ function AutomationForm({
                     ...current,
                     workspaceJid: event.target.value,
                     targetSessionJid: null,
+                    // It was picked among the other workspace's options.
+                    model: null,
                   }))
                 }
                 className="w-full"
@@ -620,6 +630,26 @@ function AutomationForm({
             </div>
           )}
         </Field>
+
+        {takesModel && values.workspaceJid && (
+          <Field
+            label="模型"
+            hint={
+              values.sessionMode === 'fresh'
+                ? '每次运行新建的会话使用这个模型。'
+                : '每次运行前把它建的会话换回这个模型；改回跟随智能体时，那个会话也回到默认。'
+            }
+          >
+            {(id) => (
+              <SessionModelChoiceField
+                id={id}
+                workspaceJid={values.workspaceJid}
+                value={values.model}
+                onChange={(model) => set('model', model)}
+              />
+            )}
+          </Field>
+        )}
 
         <div className="grid gap-5 sm:grid-cols-2">
           <Field

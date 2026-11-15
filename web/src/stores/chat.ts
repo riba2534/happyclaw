@@ -44,6 +44,7 @@ import {
   normalizeInteractionMode,
 } from '../lib/interaction-mode';
 import { normalizeWorkMode } from '../lib/multitask';
+import type { ModelChoice } from '../lib/session-model-choice';
 import type { WorkMode } from '../work-items';
 import {
   MEMORY_WRITE_TOOLS,
@@ -1407,7 +1408,8 @@ interface ChatState {
     jid: string,
     name?: string,
     description?: string,
-    options?: { worktree?: boolean },
+    /** `model`: the session's model choice; absent or null follows the default. */
+    options?: { worktree?: boolean; model?: ModelChoice | null },
   ) => Promise<AgentInfo | null>;
   renameConversation: (
     jid: string,
@@ -4781,7 +4783,20 @@ export const useChatStore = create<ChatState>((set, get) => ({
     try {
       const data = await api.post<{ session?: AgentInfo; agent?: AgentInfo }>(
         `/api/groups/${encodeURIComponent(jid)}/sessions`,
-        { name, description, ...(options?.worktree ? { worktree: true } : {}) },
+        {
+          name,
+          description,
+          ...(options?.worktree ? { worktree: true } : {}),
+          // Only a picked connection is sent: the default is what a session
+          // created without one runs, and older servers know no such fields.
+          ...(options?.model
+            ? {
+                modelConfigId: options.model.modelConfigId,
+                model: options.model.model,
+                effort: options.model.effort,
+              }
+            : {}),
+        },
       );
       const created = data.session ?? data.agent;
       if (!created) throw new Error('创建会话失败');

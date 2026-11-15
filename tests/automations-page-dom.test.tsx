@@ -58,6 +58,35 @@ const { useAutomationSubscription, useAutomationsStore } =
   await import('../web/src/stores/automations');
 const { useChatStore } = await import('../web/src/stores/chat');
 const { useAuthStore } = await import('../web/src/stores/auth');
+const { forgetWorkspaceModelOptions } =
+  await import('../web/src/lib/session-model-choice');
+
+const MODEL_OPTIONS = {
+  default: {
+    source: 'agent',
+    modelConfigId: 'glm',
+    connectionMissing: false,
+    model: 'glm-5.3',
+    effort: null,
+  },
+  options: [
+    {
+      id: 'glm',
+      name: 'GLM',
+      kind: 'third_party',
+      model: 'glm-5.3',
+      usable: true,
+      models: [
+        {
+          id: 'glm-5.3',
+          efforts: ['low', 'high'],
+          defaultEffort: 'high',
+          displayName: 'GLM 5.3',
+        },
+      ],
+    },
+  ],
+};
 
 (
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }
@@ -119,6 +148,8 @@ function run(overrides: Partial<AutomationRun> = {}): AutomationRun {
 
 let list: Automation[] = [];
 let runsById: Record<string, AutomationRun[]> = {};
+/** The workspace's model options; null answers 403. */
+let modelOptions: unknown = MODEL_OPTIONS;
 let root: Root | null = null;
 let container: HTMLDivElement;
 
@@ -199,11 +230,17 @@ const cell = (name: string) =>
 beforeEach(() => {
   list = [];
   runsById = {};
+  modelOptions = MODEL_OPTIONS;
+  forgetWorkspaceModelOptions();
   mocks.handlers.clear();
   for (const fn of [mocks.get, mocks.post, mocks.patch, mocks.delete])
     fn.mockReset();
   mocks.get.mockImplementation(async (path: string) => {
     if (path === '/api/automations') return { automations: list };
+    if (path.endsWith('/model-options')) {
+      if (!modelOptions) throw { status: 403, message: 'Forbidden' };
+      return modelOptions;
+    }
     const id = decodeURIComponent(path.split('/')[3] ?? '');
     const found = list.find((item) => item.id === id);
     if (!found) throw { status: 404, message: 'not found' };
@@ -483,5 +520,91 @@ describe('automations page', () => {
     await act(async () => resolveRun({ run: run({ status: 'queued' }) }));
     await flush();
     expect(cell('日报')!.textContent).toContain('排队中');
+  });
+
+  test('the list and the detail name the model the runs use', async () => {
+    list = [
+      automation({
+        id: 'a1',
+        name: '日报',
+        model: { modelConfigId: 'glm', model: 'glm-5.3', effort: 'high' },
+      }),
+      automation({
+        id: 'a2',
+        name: '巡检',
+        sessionMode: 'persistent',
+        model: { modelConfigId: 'glm', model: null, effort: null },
+        createdAt: '2026-10-01T00:00:00.000Z',
+      }),
+      automation({
+        id: 'a3',
+        name: '提醒',
+        model: null,
+        createdAt: '2026-09-01T00:00:00.000Z',
+      }),
+    ];
+    await render('/automations/a1');
+    await waitFor(() =>
+      expect(
+        cell('日报')!.querySelector('[data-testid="automation-model"]')
+          ?.textContent,
+      ).toBe('GLM · GLM 5.3 · 高'),
+    );
+    expect(
+      cell('巡检')!.querySelector('[data-testid="automation-model"]')
+        ?.textContent,
+    ).toBe('GLM · 连接默认模型');
+    // Following the default adds nothing.
+    expect(
+      cell('提醒')!.querySelector('[data-testid="automation-model"]'),
+    ).toBeNull();
+    const detail = [
+      ...container.querySelectorAll('dd[data-testid="automation-model"]'),
+    ];
+    expect(detail.map((item) => item.textContent)).toEqual([
+      'GLM · GLM 5.3 · 高',
+    ]);
+    // One request for the workspace, however many rows ask.
+    expect(
+      mocks.get.mock.calls.filter(([path]) =>
+        String(path).endsWith('/model-options'),
+      ),
+    ).toEqual([['/api/groups/web%3Ahome/model-options']]);
+  });
+
+  test('without the options the model is named by its ids', async () => {
+    modelOptions = null;
+    list = [
+      automation({
+        model: { modelConfigId: 'glm', model: 'glm-5.3', effort: 'high' },
+      }),
+    ];
+    await render('/automations/a1');
+    await waitFor(() =>
+      expect(
+        container.querySelector('dd[data-testid="automation-model"]')
+          ?.textContent,
+      ).toBe('glm · glm-5.3 · 高'),
+    );
+  });
+
+  test('a guest sees no model choice', async () => {
+    useAuthStore.setState({
+      user: { id: 'g1', username: 'guest', role: 'guest' },
+    } as never);
+    list = [
+      automation({
+        model: { modelConfigId: 'glm', model: 'glm-5.3', effort: 'high' },
+      }),
+    ];
+    await render('/automations/a1');
+    expect(
+      container.querySelector('[data-testid="automation-model"]'),
+    ).toBeNull();
+    expect(
+      mocks.get.mock.calls.some(([path]) =>
+        String(path).endsWith('/model-options'),
+      ),
+    ).toBe(false);
   });
 });

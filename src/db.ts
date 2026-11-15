@@ -2614,6 +2614,9 @@ export function initDatabase(
   createChannelReliabilitySchema(db);
   bindChannelReliabilityDatabase(db);
   initRuntimeStateStore(db);
+  // v91 -> v92: automations.model_config_id / model / reasoning_effort, the
+  // model an automation's run sessions use (automation-store.ts); every
+  // existing automation has none and keeps its sessions' default.
   initAutomationStore(db);
   // v86 -> v87: team mode (团队模式). work-item-store.ts owns its tables
   // (team_mounts, work_items, work_item_subscriptions, work_item_events,
@@ -6713,7 +6716,9 @@ export function commitAgentBuilderDraft(
 }
 
 /** A model name as stored: never with Claude Code's `[1m]` switch. */
-function storedModelName(model: string | null | undefined): string | null {
+export function storedModelName(
+  model: string | null | undefined,
+): string | null {
   return (model && splitOneMillionSuffix(model).model) || null;
 }
 

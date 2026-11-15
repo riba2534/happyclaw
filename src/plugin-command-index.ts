@@ -50,6 +50,7 @@ import { isValidNameSegment } from './plugin-manifest.js';
 const BUILTIN_COMMAND_NAMES: ReadonlySet<string> = new Set([
   'clear',
   'fresh',
+  'model',
   'list',
   'ls',
   'status',

@@ -105,6 +105,69 @@ describe('session worktrees in the chat store', () => {
     );
   });
 
+  it('sends a picked model with the session, and nothing for the default', async () => {
+    const created = {
+      session: {
+        id: 's2',
+        name: '新对话',
+        prompt: '',
+        status: 'idle',
+        kind: 'conversation',
+        created_at: '',
+      },
+    };
+    api.post.mockResolvedValue(created);
+    await useChatStore.getState().createConversation(JID, '', undefined, {
+      model: { modelConfigId: 'glm', model: 'glm-4.6', effort: 'high' },
+    });
+    expect(api.post).toHaveBeenLastCalledWith(
+      `/api/groups/${encodeURIComponent(JID)}/sessions`,
+      {
+        name: '',
+        description: undefined,
+        modelConfigId: 'glm',
+        model: 'glm-4.6',
+        effort: 'high',
+      },
+    );
+    // A connection without a model or an effort names both as null.
+    await useChatStore.getState().createConversation(JID, '', undefined, {
+      model: { modelConfigId: 'glm', model: null, effort: null },
+    });
+    expect(api.post.mock.lastCall?.[1]).toStrictEqual({
+      name: '',
+      description: undefined,
+      modelConfigId: 'glm',
+      model: null,
+      effort: null,
+    });
+    await useChatStore
+      .getState()
+      .createConversation(JID, '', undefined, { model: null });
+    expect(api.post.mock.lastCall?.[1]).toStrictEqual({
+      name: '',
+      description: undefined,
+    });
+  });
+
+  it('a refused model keeps the reason the server gives and creates nothing', async () => {
+    api.post.mockRejectedValue({
+      status: 400,
+      message: '所选模型已不在该模型配置的模型列表里',
+      body: { code: 'MODEL_NOT_IN_CONNECTION' },
+    });
+    const created = await useChatStore
+      .getState()
+      .createConversation(JID, '', undefined, {
+        model: { modelConfigId: 'glm', model: 'gone', effort: null },
+      });
+    expect(created).toBeNull();
+    expect(useChatStore.getState().error).toBe(
+      '所选模型已不在该模型配置的模型列表里',
+    );
+    expect(useChatStore.getState().agents[JID]).toBeUndefined();
+  });
+
   it('takes the worktree branch from agent_status and keeps it on later updates', () => {
     const worktree = {
       branch: 'happyclaw/s9',

@@ -38,6 +38,31 @@ const { TooltipProvider } = await import('../web/src/components/ui/tooltip');
 const { useAutomationsStore } = await import('../web/src/stores/automations');
 const { useChatStore } = await import('../web/src/stores/chat');
 const { useAuthStore } = await import('../web/src/stores/auth');
+const { forgetWorkspaceModelOptions } =
+  await import('../web/src/lib/session-model-choice');
+
+const MODEL_OPTIONS = {
+  default: {
+    source: 'agent',
+    modelConfigId: 'glm',
+    connectionMissing: false,
+    model: 'glm-5.3',
+    effort: null,
+  },
+  options: [
+    {
+      id: 'glm',
+      name: 'GLM',
+      kind: 'third_party',
+      model: 'glm-5.3',
+      usable: true,
+      models: [
+        { id: 'glm-5.3', efforts: ['low', 'high'], defaultEffort: 'high' },
+        { id: 'glm-4.6', efforts: [], defaultEffort: null },
+      ],
+    },
+  ],
+};
 
 (
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }
@@ -61,6 +86,7 @@ function automation(overrides: Partial<Automation> = {}): Automation {
     preRunCheck: null,
     execution: 'agent',
     scriptCommand: null,
+    model: null,
     status: 'active',
     statusReason: null,
     nextFireAt: null,
@@ -145,6 +171,13 @@ async function submit() {
   });
 }
 
+/** Let the model options load. */
+async function flushOptions() {
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+}
+
 async function fillBasics() {
   await type(byLabel<HTMLInputElement>('标题'), '周报');
   await type(byLabel<HTMLTextAreaElement>('提示词'), '总结本周进展');
@@ -152,6 +185,10 @@ async function fillBasics() {
 
 beforeEach(() => {
   for (const fn of [mocks.get, mocks.post, mocks.patch]) fn.mockReset();
+  forgetWorkspaceModelOptions();
+  mocks.get.mockImplementation(async (path: string) =>
+    path.endsWith('/model-options') ? MODEL_OPTIONS : undefined,
+  );
   onClose.mockReset();
   mocks.post.mockImplementation(async (_path: string, body: object) => ({
     automation: automation({ id: 'new', ...(body as Partial<Automation>) }),
@@ -380,10 +417,14 @@ describe('automation form', () => {
     const saved = automation();
     useAutomationsStore.setState({ automations: [saved] });
     mocks.patch.mockRejectedValueOnce({ status: 409, message: 'stale' });
-    mocks.get.mockResolvedValue({
-      automation: automation({ name: '日报（新）', revision: 4 }),
-      runs: [],
-    });
+    mocks.get.mockImplementation(async (path: string) =>
+      path.endsWith('/model-options')
+        ? MODEL_OPTIONS
+        : {
+            automation: automation({ name: '日报（新）', revision: 4 }),
+            runs: [],
+          },
+    );
     await render({ automation: saved });
     expect(byLabel<HTMLInputElement>('标题').value).toBe('日报');
     // Fixed after creation.
@@ -417,5 +458,137 @@ describe('automation form', () => {
       expect.objectContaining({ expectedRevision: 4 }),
     );
     expect(onClose).toHaveBeenCalled();
+  });
+
+  test('fresh and persistent runs take a model; it is sent only when picked', async () => {
+    await render({});
+    await fillBasics();
+    await flushOptions();
+    expect(byLabel('模型')).not.toBeNull();
+    expect(byLabel<HTMLSelectElement>('模型连接').value).toBe('');
+    expect(text()).toContain('GLM · glm-5.3');
+    await submit();
+    // The default: no model in the request.
+    expect(posted()).not.toHaveProperty('model');
+
+    mocks.post.mockClear();
+    await act(async () => segment('运行会话', '持续会话').click());
+    expect(byLabel('模型连接')).not.toBeNull();
+    await type(byLabel<HTMLSelectElement>('模型连接'), 'glm');
+    await type(byLabel<HTMLSelectElement>('连接中的模型'), 'glm-5.3');
+    await type(byLabel<HTMLSelectElement>('推理等级'), 'low');
+    await submit();
+    expect(posted()).toMatchObject({
+      sessionMode: 'persistent',
+      model: { modelConfigId: 'glm', model: 'glm-5.3', effort: 'low' },
+    });
+  });
+
+  test('a bound session or a script takes no model, and none is sent', async () => {
+    await render({});
+    await fillBasics();
+    await flushOptions();
+    await type(byLabel<HTMLSelectElement>('模型连接'), 'glm');
+    await act(async () => segment('运行会话', '绑定已有会话').click());
+    expect(byLabel('模型连接')).toBeNull();
+    await type(byLabel<HTMLSelectElement>('目标会话'), 'web:home#agent:s1');
+    await submit();
+    expect(posted()).toMatchObject({ sessionMode: 'bound' });
+    expect(posted()).not.toHaveProperty('model');
+    act(() => root?.unmount());
+    document.body.innerHTML = '';
+
+    useAuthStore.setState({
+      user: { id: 'u1', username: 'admin', role: 'admin' },
+    } as never);
+    mocks.post.mockClear();
+    await render({ prefill: { workspaceJid: 'web:ops' } });
+    await flushOptions();
+    await type(byLabel<HTMLSelectElement>('模型连接'), 'glm');
+    await act(async () => segment('执行方式', '仅运行脚本').click());
+    expect(byLabel('模型连接')).toBeNull();
+    await type(byLabel<HTMLInputElement>('标题'), '备份');
+    await type(byLabel<HTMLInputElement>('脚本命令'), './backup.sh');
+    await submit();
+    expect(posted()).toMatchObject({ execution: 'script' });
+    expect(posted()).not.toHaveProperty('model');
+  });
+
+  test('an edit sends the model only when it changes, null when it no longer applies', async () => {
+    const saved = automation({
+      sessionMode: 'persistent',
+      targetSessionJid: 'web:home#agent:s0',
+      model: { modelConfigId: 'glm', model: 'glm-5.3', effort: 'high' },
+    });
+    useAutomationsStore.setState({ automations: [saved] });
+    mocks.patch.mockImplementation(async () => ({ automation: saved }));
+    await render({ automation: saved });
+    await flushOptions();
+    // Prefilled from the automation.
+    expect(byLabel<HTMLSelectElement>('模型连接').value).toBe('glm');
+    expect(byLabel<HTMLSelectElement>('连接中的模型').value).toBe('glm-5.3');
+    expect(byLabel<HTMLSelectElement>('推理等级').value).toBe('high');
+
+    await type(byLabel<HTMLInputElement>('标题'), '日报 2');
+    await submit();
+    expect(mocks.patch.mock.lastCall?.[1]).toMatchObject({ name: '日报 2' });
+    expect(mocks.patch.mock.lastCall?.[1]).not.toHaveProperty('model');
+    act(() => root?.unmount());
+    document.body.innerHTML = '';
+
+    await render({ automation: saved });
+    await flushOptions();
+    await type(byLabel<HTMLSelectElement>('推理等级'), 'low');
+    await submit();
+    expect(mocks.patch.mock.lastCall?.[1]).toMatchObject({
+      model: { modelConfigId: 'glm', model: 'glm-5.3', effort: 'low' },
+    });
+    act(() => root?.unmount());
+    document.body.innerHTML = '';
+
+    // Moving the runs to a bound session clears the model.
+    await render({ automation: saved });
+    await flushOptions();
+    await act(async () => segment('运行会话', '绑定已有会话').click());
+    expect(byLabel('模型连接')).toBeNull();
+    await type(byLabel<HTMLSelectElement>('目标会话'), 'web:home#agent:s1');
+    await submit();
+    expect(mocks.patch.mock.lastCall?.[1]).toMatchObject({
+      sessionMode: 'bound',
+      targetSessionJid: 'web:home#agent:s1',
+      model: null,
+    });
+  });
+
+  test('a model the server refuses is said under the form', async () => {
+    mocks.post.mockRejectedValueOnce({
+      status: 400,
+      message: '这个模型不支持所选的推理等级',
+      body: { code: 'EFFORT_NOT_SUPPORTED' },
+    });
+    await render({});
+    await fillBasics();
+    await flushOptions();
+    await type(byLabel<HTMLSelectElement>('模型连接'), 'glm');
+    await type(byLabel<HTMLSelectElement>('推理等级'), 'high');
+    await submit();
+    expect(text()).toContain('这个模型不支持所选的推理等级');
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  test('another workspace starts again from the default', async () => {
+    await render({});
+    await fillBasics();
+    await flushOptions();
+    await type(byLabel<HTMLSelectElement>('模型连接'), 'glm');
+    await type(byLabel<HTMLSelectElement>('工作区'), 'web:ops');
+    await flushOptions();
+    expect(mocks.get).toHaveBeenCalledWith(
+      '/api/groups/web%3Aops/model-options',
+    );
+    expect(byLabel<HTMLSelectElement>('模型连接').value).toBe('');
+    await submit();
+    expect(posted()).toMatchObject({ workspaceJid: 'web:ops' });
+    expect(posted()).not.toHaveProperty('model');
   });
 });

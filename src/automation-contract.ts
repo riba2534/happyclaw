@@ -12,6 +12,7 @@ import type {
   AutomationDraft,
   AutomationIpcRequest,
   AutomationIpcResult,
+  AutomationModelChoice,
   AutomationRun,
 } from './automation.js';
 
@@ -58,6 +59,8 @@ export class AutomationError extends Error {
     readonly status: 400 | 403 | 404 | 409,
     /** Chinese, safe to show the user or the agent; never a raw JID. */
     message: string,
+    /** Machine-readable reason REST answers as `code`, when there is one. */
+    readonly code?: string,
   ) {
     super(message);
     this.name = 'AutomationError';
@@ -127,6 +130,16 @@ export interface AutomationRuntimeDeps {
     sessionJid: string;
     archived: boolean;
   }>;
+  /**
+   * The automation no longer gives its run session `previous`: the session,
+   * if it is the automation's own and still holds that choice, goes back to
+   * its default (and a warm runner on it retires).
+   */
+  releaseAutomationSessionModel(req: {
+    automation: Automation;
+    sessionJid: string;
+    previous: AutomationModelChoice;
+  }): void;
   /** Hide an old fresh-mode run session (status completed); keeps history. */
   archiveAutomationSession(sessionJid: string): Promise<void>;
   /** Delete a run session (delete dialog「删除会话」). */
@@ -209,6 +222,7 @@ export interface AutomationCreateInput extends AutomationDraft {
   targetSessionJid?: string | null;
 }
 
+/** Omitted fields keep their value; a null `model` clears the choice. */
 export type AutomationPatch = Partial<
   Omit<AutomationDraft, 'sessionMode' | 'execution'>
 > & {

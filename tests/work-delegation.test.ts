@@ -372,6 +372,29 @@ describe('work_delegate', () => {
     ]);
   });
 
+  test("the worker starts on its session's model choice as it is now; none when it has none", async () => {
+    db.setSessionModelSelection(FOLDER, MAIN, 'conn-main', OWNER, {
+      model: 'model-main',
+      effort: 'low',
+    });
+    const picked = await delegateOk(MAIN);
+    expect(db.getSessionModelSelectionDetail(FOLDER, picked.agentId)).toEqual({
+      modelConfigId: 'conn-main',
+      model: 'model-main',
+      effort: 'low',
+      updatedBy: OWNER,
+    });
+    // A later change of the session does not reach a worker already made.
+    db.setSessionModelSelection(FOLDER, MAIN, null);
+    expect(
+      db.getSessionModelSelectionDetail(FOLDER, picked.agentId)?.model,
+    ).toBe('model-main');
+    const unpicked = await delegateOk(MAIN);
+    expect(
+      db.getSessionModelSelectionDetail(FOLDER, unpicked.agentId),
+    ).toBeNull();
+  });
+
   test('the task alone when no background or files are given', async () => {
     const item = await delegateOk();
     expect(rows(laneOf(item.agentId))[0].content).toBe('整理三家竞品的定价');

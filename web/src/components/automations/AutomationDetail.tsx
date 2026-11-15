@@ -40,6 +40,7 @@ import {
   runAutomationNow,
   setAutomationEnabled,
 } from './automation-actions';
+import { useAutomationModelLabel } from './automation-model';
 import { AutomationRunGroup } from './AutomationRunCard';
 import { PhonePageHeader, PhoneBarButton } from '../layout/PhonePageHeader';
 import { useIsPhone } from '../layout/phone';
@@ -90,6 +91,7 @@ export function AutomationDetail({
   const cancelRun = useAutomationsStore((s) => s.cancelRun);
   const loadAgents = useChatStore((s) => s.loadAgents);
   const sessionLabel = useSessionLabel();
+  const modelLabel = useAutomationModelLabel(automation);
   // Read-only guests: no run, edit, pause, delete, cancel or read marks.
   const readOnly = useIsGuest();
 
@@ -262,6 +264,17 @@ export function AutomationDetail({
                   automation.nextFireAt,
                   automation.schedule.timezone,
                 )}
+              </dd>
+            </>
+          )}
+          {modelLabel && (
+            <>
+              <dt className="text-muted-foreground">模型</dt>
+              <dd
+                data-testid="automation-model"
+                className="break-words text-foreground"
+              >
+                {modelLabel}
               </dd>
             </>
           )}

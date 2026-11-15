@@ -337,8 +337,9 @@ test.describe('phone', () => {
     // On a phone the menus are bottom action sheets.
     const sheet = (name: string) => page.getByRole('dialog', { name });
     await beta.getByRole('button', { name: 'Beta 工作区的更多操作' }).click();
+    // Exact: 新建会话… (the dialog) sits next to it.
     await sheet('Beta 工作区的更多操作')
-      .getByRole('button', { name: '新建会话' })
+      .getByRole('button', { name: '新建会话', exact: true })
       .click();
     await expect(routeProbe(page)).toHaveText('/chat/beta?agent=beta-new');
     await page.getByRole('button', { name: '返回', exact: true }).click();

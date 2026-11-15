@@ -20,6 +20,22 @@ vi.mock('../src/config.js', async (importOriginal) => ({
 vi.mock('../src/logger.js', () => ({
   logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
+vi.mock('../src/runtime-config.js', async (importOriginal) => ({
+  ...((await importOriginal()) as Record<string, unknown>),
+  getProviders: () => [
+    {
+      id: 'glm',
+      name: 'GLM',
+      type: 'third_party',
+      enabled: true,
+      anthropicBaseUrl: 'https://glm.example.test',
+      anthropicModel: 'glm-5.3',
+      anthropicAuthToken: 'glm-token',
+      models: [{ id: 'glm-5.3', efforts: ['low', 'high'] }],
+      codexOAuthCredentials: null,
+    },
+  ],
+}));
 vi.mock('../src/middleware/auth.ts', async (importOriginal) => {
   const actual =
     await importOriginal<typeof import('../src/middleware/auth.js')>();
@@ -243,6 +259,73 @@ describe('/api/automations', () => {
         code: 'automation_target_not_session',
       },
     });
+  });
+
+  test('a model is checked on save and refusals carry their code', async () => {
+    as('alice');
+    const created = await call('POST', '/api/automations', {
+      workspaceJid: WS,
+      ...harness.draft({ sessionMode: 'persistent' }),
+      model: { modelConfigId: 'glm', model: 'glm-5.3', effort: 'high' },
+    });
+    expect(created.status).toBe(201);
+    const { automation } = created.body;
+    expect(automation.model).toEqual({
+      modelConfigId: 'glm',
+      model: 'glm-5.3',
+      effort: 'high',
+    });
+    expect(
+      (await call('GET', `/api/automations/${automation.id}`)).body.automation
+        .model,
+    ).toEqual(automation.model);
+
+    expect(
+      await call('PATCH', `/api/automations/${automation.id}`, {
+        expectedRevision: automation.revision,
+        sessionMode: 'bound',
+        targetSessionJid: SESSION,
+      }),
+    ).toEqual({
+      status: 400,
+      body: {
+        error: '绑定已有会话的自动化沿用该会话自己的模型，不能另选模型',
+        code: 'automation_model_bound_session',
+      },
+    });
+    expect(
+      await call('PATCH', `/api/automations/${automation.id}`, {
+        expectedRevision: automation.revision,
+        model: { modelConfigId: 'gone' },
+      }),
+    ).toEqual({
+      status: 400,
+      body: { error: '模型配置不存在', code: 'MODEL_CONFIG_NOT_FOUND' },
+    });
+    const notInConnection = await call(
+      'PATCH',
+      `/api/automations/${automation.id}`,
+      {
+        expectedRevision: automation.revision,
+        model: { modelConfigId: 'glm', model: 'glm-9' },
+      },
+    );
+    expect(notInConnection.status).toBe(400);
+    expect(notInConnection.body.code).toBe('MODEL_NOT_IN_CONNECTION');
+    // A model without a connection is no shape the API takes.
+    expect(
+      await call('PATCH', `/api/automations/${automation.id}`, {
+        expectedRevision: automation.revision,
+        model: { model: 'glm-5.3' },
+      }),
+    ).toEqual({ status: 400, body: { error: '请求格式不正确' } });
+
+    const cleared = await call('PATCH', `/api/automations/${automation.id}`, {
+      expectedRevision: automation.revision,
+      model: null,
+    });
+    expect(cleared.status).toBe(200);
+    expect(cleared.body.automation.model).toBeNull();
   });
 });
 
