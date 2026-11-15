@@ -126,6 +126,7 @@ active 的 admin 可以为自己创建只读访客（`role=guest`），并授权
 - `POST /api/groups/:jid/interrupt`
 - `POST /api/groups/:jid/reset-session`
 - `GET|PUT /api/groups/:jid/model-selection`，聊天输入框的会话级模型与推理档位选择
+- `GET /api/groups/:jid/model-options`，还没有会话时可选的模型（新建会话、自动化表单）
 - `GET /api/groups/:jid/context-usage`，会话当前的上下文占用（输入框旁的圆环）
 - `POST /api/groups/:jid/clear-history`，重建工作区内容：永久清除聊天、
   Runtime Session、工作区目录（工作区根目录下记录的目录，否则 `data/groups/{folder}`）、
@@ -194,7 +195,9 @@ PUT 可以携带 `model`、`effort`，请求整体替换该会话的选择：只
 （所选或配置默认的）模型的 `efforts` 内，否则 ChatGPT 以外返回 `EFFORT_NOT_SUPPORTED`；
 两者都要同时给出 `modelConfigId`。否则返回 400 与 `code`：
 `MODEL_NOT_IN_CONNECTION`、`EFFORT_NOT_SUPPORTED`、`MODEL_UNAVAILABLE`、
-`EFFORT_UNSUPPORTED`、`EFFORT_RESTRICTED`、`MODEL_CONFIG_REQUIRED`。推理等级按会话
+`EFFORT_UNSUPPORTED`、`EFFORT_RESTRICTED`、`MODEL_CONFIG_REQUIRED`、
+`MODEL_CONFIG_NO_CREDENTIALS`（配置缺少凭据）；配置不存在时 404
+`MODEL_CONFIG_NOT_FOUND`。推理等级按会话
 档位 → 智能体显式档位 → 模型默认档位解析，只取所运行模型支持的档位，不支持档位的
 模型不写 `CLAUDE_CODE_EFFORT_LEVEL`；没有默认 `max`。会话档位写入
 `CLAUDE_CODE_EFFORT_LEVEL`（Claude Code 让它优先于 Runner 为智能体传的 SDK `effort`），
@@ -204,6 +207,13 @@ PUT 可以携带 `model`、`effort`，请求整体替换该会话的选择：只
 `EFFORT_RESTRICTED`，Runner 启动时若选择者已失去该权限则回到默认档；放宽只需改
 `CODEX_SESSION_EFFORT_CEILING`。响应附带 `drained`（被退出的暖 Runner 数）与
 `liveUpdated`（被就地改档的存活网关授权数）。
+
+`model-options` 不需要会话，返回 `{ default, options }`，与 `model-selection` 响应里
+的同名字段相同；访问检查同 `model-selection` 的 GET。
+
+由一个会话派生出的会话从它的选择开始：多任务派发的 Worker 复制派出会话当时的选择，
+团队模式的路由会话复制群绑定会话的选择，执行会话复制路由会话的选择。复制的是记录本身
+（含选择者），之后各自独立；启动时照常校验，失效则回到默认。
 
 `context-usage` 以 `agentId` 查询参数区分 Runtime Session，访问检查同
 `model-selection` 的 GET，返回
@@ -716,6 +726,10 @@ hook）。HappyClaw 本身不访问网络，但 LFS 或 partial clone 仓库在 
 
 - `POST /api/groups/:jid/sessions`（及 `/agents`）只接受工作区 `web:*` JID；IM 聊天
   JID 返回 400，IM 聊天应绑定到 Session 而不是在其下创建 Session。
+- 请求体可带 `modelConfigId`、`model`、`effort`，新会话从这个模型选择开始，规则与
+  `PUT model-selection` 相同（请求者是选择者，Host 工作区要求 Host 权限）。不合法时
+  返回 400 与 `code`（同 `model-selection`，配置不存在也是 400 `MODEL_CONFIG_NOT_FOUND`；
+  字段类型不对为 `INVALID_MODEL_CHOICE`），不创建会话，也不建 worktree；不带时跟随默认。
 - 请求体可带 `worktree: true`：宿主机模式、工作目录是有提交的 git 仓库时，宿主在
   `data/worktrees/{folder}/{sessionId}` 以当前 HEAD 新建分支 `happyclaw/<短 ID>` 的
   worktree，该会话此后每次运行都以它为工作目录（工作区在仓库子目录时进入同一子目录）。

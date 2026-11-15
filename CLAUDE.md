@@ -65,12 +65,14 @@ Agent Profile（身份、四段 Prompt、能力策略）
   每个被接下的请求成为一个工作项（`work_items`），由它自己的执行会话
   （`source_kind='work_item'`；Host 工作区的 git 仓库用 worktree 会话）完成。只有路由会话在群里
   说话；执行会话只能发一次确认，结果经 `work_report` 回流给路由会话。工作项的阶段
-  （等你回答、等你批准、受阻、失败、工作中、等待新消息）由记录派生，不存储。
+  （等你回答、等你批准、受阻、失败、工作中、等待新消息）由记录派生，不存储。路由会话创建时
+  复制群绑定会话的模型选择，执行会话复制路由会话的。
 - 工作区有工作方式 `work_mode`（存于 `workspace_agent_profiles`）：`single`（单任务，默认）
   一条输入处理完再处理下一条，长任务在会话内完成，行为与没有这个设置时一致；`multi`（多任务）
   下，普通会话可以用 `work_delegate` 把较大的任务派给 Worker，这一轮随即结束，会话继续接下一条
   输入。派出的任务是派发型工作项（`work_items.origin='delegated'`），由它自己的执行会话
-  （`source_kind='work_item'`，不建 worktree，与派出它的会话共用工作目录）完成；Worker 只用
+  （`source_kind='work_item'`，不建 worktree，与派出它的会话共用工作目录，复制派出会话当时的
+  模型选择）完成；Worker 只用
   `work_report`（progress、ready、blocked、failed）。ready、blocked、failed，以及并非派出会话自己
   `work_stop` 造成的停止（`state="stopped"`），以 `work_item_input` 注入派出它的会话，排在当前轮次
   之后、不 steer，回复沿用派出那一轮所回答输入的来源路由；派出的会话转述给用户，用
@@ -518,7 +520,7 @@ Telegram 默认流式：回复期间约每 1.5 秒编辑一条进度消息，结
 当前命令由 `src/index.ts` 的 `handleCommand()` 分发：
 
 - 只读：`/list`、`/ls`、`/status`、`/where`、`/recall`、`/rc`、`/allowlist`
-- 变更：`/clear`、`/fresh`、`/bind`、`/unbind`、`/new`、`/sw`、`/spawn`
+- 变更：`/clear`、`/fresh`、`/bind`、`/unbind`、`/new`、`/sw`、`/spawn`、`/model`
 - Owner：`/owner_mention`、`/release_owner`、`/allow`、`/disallow`
 - 激活：`/require_mention`
 
@@ -543,8 +545,16 @@ Telegram 默认流式：回复期间约每 1.5 秒编辑一条进度消息，结
 - `/recall` 读取本条消息实际路由到的 Session：普通群/私聊为其绑定的 Session；
   话题群为当前话题的 Session，缺少话题元数据时拒绝，永远不回退到工作区的其他
   会话，也不会为此新建话题 Session。
-- 未绑定的聊天没有目标会话：`/clear`、`/fresh`、`/recall`、`/rc`、`/sw`、`/spawn`
-  回复「本聊天未绑定会话。」且不做任何操作，`/status`、`/where` 显示「未绑定」。
+- 未绑定的聊天没有目标会话：`/clear`、`/fresh`、`/recall`、`/rc`、`/sw`、`/spawn`、
+  `/model` 回复「本聊天未绑定会话。」且不做任何操作，`/status`、`/where` 显示「未绑定」。
+
+`/model`（`src/im-model-command.ts`）查看和切换本条消息路由到的会话（解析同 `/clear`）的
+模型：不带参数显示当前模型及其来源（本会话选择或跟随的默认）和编号的连接；`/model <n> [页]`
+列出连接 n 的模型（每页 20 个）；`/model <n>.<m> [档位]` 或 `/model <唯一的模型 id 或名称>
+[档位]` 切换，多个连接都有同名模型时列出编号让用户选；`/model default` 恢复默认。它与
+`/clear` 同一 owner 边界，不带参数也是（会列出 owner 的连接）：群聊仅 owner，未认领 owner
+的群拒绝，私聊首次使用时认领；选择者是工作区主人，校验与保存走 Web 选择器同一个服务
+（`src/session-model-service.ts`），换模型让该会话的暖 Runner 在本轮结束后退出。
 
 另有精确的 Session 运行时控制命令，由渠道连接器在通用斜杠命令之前解析。
 群聊必须由渠道结构证明真实 `@Bot`，命令大小写敏感；私聊可直接使用。
