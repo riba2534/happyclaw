@@ -250,6 +250,25 @@ describe('magpie quotas', () => {
     expect(magpieUsageLimitResetAt(accounts, 'gpt-5.6-sol')).toBeNull();
   });
 
+  test('a window with room left never sets the wait, even when it renews sooner', () => {
+    const at = (hours: number) =>
+      new Date(now + hours * 3_600_000).toISOString();
+    const accounts = parseMagpieQuotas({
+      data: [
+        {
+          provider: 'kimi',
+          windows: [
+            { name: '5h', remaining: 50, resetsAt: at(0.5) },
+            { name: 'weekly', remaining: -2, resetsAt: at(2) },
+          ],
+        },
+      ],
+    })!;
+    expect(magpieUsageLimitResetAt(accounts, 'kimi/k3')).toBe(
+      now + 2 * 3_600_000,
+    );
+  });
+
   test("magpie's usage-limit wording is recognized", () => {
     const body = magpieUsageLimitBody('codex/gpt-5.6-sol');
     expect(

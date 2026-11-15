@@ -241,6 +241,19 @@ describe('model discovery on magpie', () => {
     expect(agents[1]).toMatch(/^HappyClaw\//);
   });
 
+  test('aliases are dropped even when the second read shows them too', async () => {
+    models = () => magpieModelList({ forClaudeCode: true });
+    const { body } = await request('POST', '/providers/discover-models', {
+      type: 'third_party',
+      anthropicBaseUrl: magpieUrl,
+      anthropicAuthToken: GATEWAY_KEY,
+    });
+    expect(body.ok).toBe(true);
+    expect(body.models.map((model: { id: string }) => model.id)).toEqual([
+      'claude/claude-opus-5-5',
+    ]);
+  });
+
   test('a list without aliases is read once', async () => {
     models = () => magpieModelList({ forClaudeCode: false });
     const { body } = await request('POST', '/providers/discover-models', {
