@@ -172,6 +172,55 @@ describe('a magpie launch', () => {
     expect(envOf(select())('CLAUDE_CODE_MAX_OUTPUT_TOKENS')).toBeUndefined();
   });
 
+  test('a reply limit HappyClaw derived is handed to the Runner to pin', () => {
+    expect(runner.resolveLaunchMaxOutputTokens(select().resolved, FOLDER)).toBe(
+      128_000,
+    );
+    // A model that declares too little: nothing derived, nothing pinned.
+    expect(
+      runner.resolveLaunchMaxOutputTokens(
+        select('relaya/deepseek-chat').resolved,
+        FOLDER,
+      ),
+    ).toBeUndefined();
+    // The connection's own value: written to the env, left to settings.
+    const selection = select();
+    expect(
+      runner.resolveLaunchMaxOutputTokens(
+        {
+          ...selection.resolved,
+          customEnv: { CLAUDE_CODE_MAX_OUTPUT_TOKENS: '50000' },
+        },
+        FOLDER,
+      ),
+    ).toBeUndefined();
+    // The Workspace's own override.
+    runtimeConfig.saveContainerEnvConfig(FOLDER, {
+      customEnv: { CLAUDE_CODE_MAX_OUTPUT_TOKENS: '40000' },
+    });
+    expect(
+      runner.resolveLaunchMaxOutputTokens(select().resolved, FOLDER),
+    ).toBeUndefined();
+    runtimeConfig.saveContainerEnvConfig(FOLDER, { customEnv: {} });
+    expect(runner.resolveLaunchMaxOutputTokens(undefined, FOLDER)).toBe(
+      undefined,
+    );
+    // Both launch paths hand it over.
+    const source = fs.readFileSync(
+      path.join(process.cwd(), 'src', 'container-runner.ts'),
+      'utf8',
+    );
+    expect(
+      source.match(/maxOutputTokens: resolveLaunchMaxOutputTokens\(/g),
+    ).toHaveLength(2);
+    expect(source).toContain(
+      'maxOutputTokens: resolveLaunchMaxOutputTokens(\n          resolvedProvider,',
+    );
+    expect(source).toContain(
+      'maxOutputTokens: resolveLaunchMaxOutputTokens(\n          hostPoolResult?.resolved,',
+    );
+  });
+
   test('tool search is on by default and follows the setting', () => {
     expect(runner.resolveProviderToolSearch(magpie.id)).toBe(true);
     runtimeConfig.updateProvider(magpie.id, { toolSearch: 'off' });

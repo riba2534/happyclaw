@@ -553,7 +553,7 @@ describe('the bound connection and the session choices win', () => {
       'utf8',
     );
     expect(runner).toContain(
-      '...pinToolSearch(\n      pinBoundProviderSettings({\n        ...process.env,\n        ...claudeRuntimeEnv,\n      }),\n      containerInput.toolSearch,\n    ),',
+      '...pinMaxOutputTokens(\n      pinToolSearch(\n        pinBoundProviderSettings({\n          ...process.env,\n          ...claudeRuntimeEnv,\n        }),\n        containerInput.toolSearch,\n      ),\n      containerInput.maxOutputTokens,\n    ),',
     );
     expect(runner).toContain(
       '...webFetchPreflightSettings(containerInput.webFetchPreflightPolicy)',

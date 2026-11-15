@@ -61,6 +61,7 @@ import {
   clearInheritedClaudeProviderEnv,
   getClaudeProviderConfig,
   getContainerEnvConfig,
+  derivedMaxOutputTokens,
   getProviderById,
   getProviders,
   providerHasCredentials,
@@ -705,6 +706,13 @@ export interface ContainerInput {
    * Runner pins ENABLE_TOOL_SEARCH=true in the flag settings. Read at launch.
    */
   toolSearch?: true;
+  /**
+   * The reply limit HappyClaw derived for this launch from its models'
+   * declarations (derivedMaxOutputTokens): the Runner pins it as
+   * CLAUDE_CODE_MAX_OUTPUT_TOKENS above every settings file. Absent when
+   * HappyClaw derived none, which leaves the key to the settings.
+   */
+  maxOutputTokens?: number;
   /** Source JID of the latest message that triggered this run (e.g. `discord:123…`).
    * Used by per-channel MCP tools (discord_*, etc.) to identify the current
    * incoming chat. Undefined when chatJid already encodes the IM source. */
@@ -2046,6 +2054,27 @@ export function resolveProviderToolSearch(
 ): true | undefined {
   const provider = providerId ? getProviderById(providerId) : null;
   return provider && providerToolSearchEnabled(provider) ? true : undefined;
+}
+
+/**
+ * ContainerInput.maxOutputTokens for a launch on `resolved`: the reply limit
+ * HappyClaw derived (and wrote into the launch env), with the Workspace's
+ * own env override taken into account. None without a connection.
+ */
+export function resolveLaunchMaxOutputTokens(
+  resolved:
+    | Pick<PoolProviderSelection['resolved'], 'config' | 'customEnv'>
+    | undefined,
+  groupFolder: string,
+): number | undefined {
+  if (!resolved) return undefined;
+  return (
+    derivedMaxOutputTokens(
+      resolved.config,
+      resolved.customEnv,
+      getContainerEnvConfig(groupFolder).customEnv,
+    ) ?? undefined
+  );
 }
 
 /** Inject the globally configured same-turn fallback into the agent runner. */
@@ -3405,6 +3434,10 @@ export async function runContainerAgent(
         webFetchPreflightPolicy:
           resolveProviderWebFetchPreflightPolicy(selectedProfileId),
         toolSearch: resolveProviderToolSearch(selectedProfileId),
+        maxOutputTokens: resolveLaunchMaxOutputTokens(
+          resolvedProvider,
+          group.folder,
+        ),
         workspaceMemoryMutationSigningSecret,
         workspaceMemoryRunnerInstanceId,
         plugins: dockerPlugins,
@@ -4706,6 +4739,10 @@ export async function runHostAgent(
           hostSelectedProfileId,
         ),
         toolSearch: resolveProviderToolSearch(hostSelectedProfileId),
+        maxOutputTokens: resolveLaunchMaxOutputTokens(
+          hostPoolResult?.resolved,
+          group.folder,
+        ),
         workspaceMemoryMutationSigningSecret,
         workspaceMemoryRunnerInstanceId,
         plugins: preparedHostPlugins,
