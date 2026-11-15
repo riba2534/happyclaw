@@ -790,9 +790,7 @@ export function AddModelWizard({
               <span className="flex flex-wrap gap-x-3">
                 {magpiePreset && (
                   <span className="basis-full">
-                    本机的 magpie 接受任意密钥，已填 {MAGPIE_APP_KEY}
-                    ，便于在 magpie 的用量里认出 HappyClaw；从别的机器连接时填
-                    magpie 的网关密钥。
+                    {`本机的 magpie 接受任意密钥，默认的 ${MAGPIE_APP_KEY} 让 magpie 的用量记在 HappyClaw 名下；从别的机器连接时填 magpie 的网关密钥。`}
                   </span>
                 )}
                 {preset.keyUrl && (
