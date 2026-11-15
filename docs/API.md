@@ -170,10 +170,14 @@ PUT 的 `modelConfigId` 为 `null` 时恢复默认。会话选择的（配置, �
 绑定；切换后该会话的暖 Runner 在当前轮次结束后退出，下一条消息使用新选择。
 
 每个配置都可以在配置内选择具体模型。选项带 `usable`（有凭据才可选）；ChatGPT 订阅以外
-的选项带 `models[]`：`id`、`efforts`（可选档位，空数组表示不能选）、`defaultEffort`
+的选项带 `models[]`：`id`、`displayName`（上游列表给的名称，没有为 `null`）、
+`efforts`（已知支持的档位）、`defaultEffort`
 （不选档位时运行的档位：智能体显式档位且该模型支持时用它，否则模型默认档位，没有则
 `null`）、`contextWindow`（未知为 `null`）、`effortsSource`（`declared` 连接里声明、
-`registry` 能力表、`family` 同系列推断、`none`）。全部模型都会列出。直通中转没有默认
+`registry` 能力表、`family` 同系列推断、`none` 未知）、`maxOutputTokens`、`vendor`、
+`upstreamMissingSince`（没有为 `null`）。`efforts` 为空且 `effortsSource` 为 `declared`
+表示声明不支持档位，不能选；`effortsSource` 为 `none` 表示档位未知，五个档位都可以选，
+按所选原样下发（Web 标「未验证」）。全部模型都会列出。直通中转没有默认
 模型时 `model` 为空字符串。
 
 ChatGPT 订阅配置（`kind: "codex"`）不带 `models`，而是带 `codex`，并且还能选择推理
@@ -191,12 +195,14 @@ Agent 显式档位优先，其次是配置档位，按模型目录钳制）、`s
 PUT 可以携带 `model`、`effort`，请求整体替换该会话的选择：只写 `modelConfigId`
 会清掉之前的模型和档位，换配置也不会继承旧配置的模型。`model` 最长 200 个字符，
 必须在所选配置的模型列表内，ChatGPT 订阅则必须在该账号当前目录内；`effort` 必须在
-（所选或配置默认的）模型的 `efforts` 内，否则 ChatGPT 以外返回 `EFFORT_NOT_SUPPORTED`；
+（所选或配置默认的）模型的 `efforts` 内（档位未知的模型接受任何档位，声明不支持档位的
+模型不接受），否则 ChatGPT 以外返回 `EFFORT_NOT_SUPPORTED`；
 两者都要同时给出 `modelConfigId`。否则返回 400 与 `code`：
 `MODEL_NOT_IN_CONNECTION`、`EFFORT_NOT_SUPPORTED`、`MODEL_UNAVAILABLE`、
 `EFFORT_UNSUPPORTED`、`EFFORT_RESTRICTED`、`MODEL_CONFIG_REQUIRED`。推理等级按会话
-档位 → 智能体显式档位 → 模型默认档位解析，只取所运行模型支持的档位，不支持档位的
-模型不写 `CLAUDE_CODE_EFFORT_LEVEL`；没有默认 `max`。会话档位写入
+档位 → 智能体显式档位 → 模型默认档位解析，只取所运行模型支持的档位；档位未知的模型取
+第一个合法的档位原样下发，都没有就不传；声明不支持档位的模型不传档位，并且（除非它声明
+仍会推理）本轮关闭思考；不传时不写 `CLAUDE_CODE_EFFORT_LEVEL`；没有默认 `max`。会话档位写入
 `CLAUDE_CODE_EFFORT_LEVEL`（Claude Code 让它优先于 Runner 为智能体传的 SDK `effort`），
 不改动交给 Runner 的智能体配置。ChatGPT 以外只改档位时退出暖 Runner（下一条消息
 重启），但保留 SDK 会话。高于 `max` 的档位（目前是
@@ -966,19 +972,33 @@ Provider（模型连接：一份凭据和一个端点，提供一组模型）：
 - `GET /api/config/claude`
 - `GET|POST /api/config/claude/providers`；设置页只添加和维护连接，没有全局默认、
   启用开关和自动池，选哪个模型属于智能体和会话。公开 Provider 带 `models`
-  （`{ id, contextWindow?, efforts?, defaultEffort? }[]`：`id` 是上游原名，从不带
-  `[1m]`；连接自己的模型 `anthropicModel` 总在其中；ChatGPT 订阅为 `[]`，模型取自
-  其目录）、`roles`（`{ subagent?, smallFast?, opus?, sonnet? }`，各自是本连接的一个
-  模型，未设置时跟随本轮模型）、`presetId`（起步的厂商预设，只在地址仍是该预设的地址
-  时保留，否则为 `null`）和 `lastTest`（最近一次测试
+  （条目字段为 `id`、`displayName?`、`contextWindow?`、`efforts?`、`defaultEffort?`、
+  `thinks?`、`maxOutputTokens?`、`vendor?`、`upstreamMissingSince?`：`id` 是上游原名，从不带
+  `[1m]`，也从不是 magpie 的发现别名 `anthropic/magpie-<数字>`；`efforts` 缺省表示
+  档位未知，`[]` 表示声明不支持档位；`thinks: true` 表示不支持档位但仍会推理；
+  `displayName`、`maxOutputTokens`、`vendor` 取自上游模型列表；`upstreamMissingSince`
+  是目录同步发现上游已不提供该模型的时间；连接自己的模型 `anthropicModel` 总在其中；
+  ChatGPT 订阅为 `[]`，模型取自其目录）、`roles`
+  （`{ subagent?, smallFast?, opus?, sonnet? }`，各自是本连接的一个模型，未设置时跟随
+  本轮模型）、`presetId`（起步的厂商
+  预设，只在地址仍是该预设的地址时保留，否则为 `null`；地址可编辑的网关预设（magpie）
+  改地址后保留）、`lastTest`（最近一次测试
   `{ ok, code, status, model, latencyMs, at }`，未测过为 `null`；端点、认证方式、
-  凭据、`ANTHROPIC_CUSTOM_HEADERS` 或轻量后台模型变更后清空）。
-  创建请求可带 `models`、`roles`（指向不在列表里的模型时丢弃）、`presetId`（未知预设
-  400），`models` 不含 `anthropicModel` 时把它加在最前，超过 100 个模型返回 400；模型名
-  不能含空白，带 `[1m]` 的旧写法按 1M 上下文读入。`customEnv` 只注入非空值，新连接由
+  凭据、`ANTHROPIC_CUSTOM_HEADERS` 或轻量后台模型变更后清空）、`gateway`
+  （`'magpie' | null`，见下）、`toolSearch`（`'on' | 'off' | 'default'`）、
+  `toolSearchEnabled`（启动是否开启 Claude Code 的工具搜索：`default` 对 magpie 为开，
+  其余为关）和 `catalog`（只对 magpie 连接非空：
+  `{ autoAdd, syncedAt, error, newModels }`）。
+  创建请求可带 `models`（条目同上，`upstreamMissingSince` 除外）、`roles`（指向不在列表里的模型时丢弃）、`presetId`（未知预设
+  400）、`gateway: 'magpie'`（创建前的模型发现识别出 magpie 时由 Web 带上）、
+  `toolSearch` 和 `catalogAutoAdd`，`models` 不含 `anthropicModel` 时把它加在最前，超过 100 个模型返回 400；模型名
+  不能含空白，带 `[1m]` 的旧写法按 1M 上下文读入，magpie 发现别名丢弃。从 magpie 预设创建且未指定
+  `webFetchPreflightPolicy` 时为 `skip`。magpie 连接没有任何模型时创建和 PATCH 都返回
+  400 `{ error, code: 'MAGPIE_MODELS_REQUIRED' }`。`customEnv` 只注入非空值，新连接由
   Web 预填 `API_TIMEOUT_MS`、`CLAUDE_CODE_NO_FLICKER`、`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`；
   含 `CONNECTION_MODEL_ENV_KEYS` 里的键（模型、各档、子代理、压缩窗口、推理等级）返回
-  400 `{ error, code: 'RESERVED_ENV_KEY' }`。旧连接的这些键在读取时一次性迁移为
+  400 `{ error, code: 'RESERVED_ENV_KEY' }`；`CLAUDE_CODE_MAX_OUTPUT_TOKENS` 可以写，
+  必须是正整数，写了就取代按模型声明推导的值。旧连接的这些键在读取时一次性迁移为
   `roles`、上下文长度和默认档位。`enabled`、`weight` 被忽略。
   每种类型创建时都必须带凭据，否则 400 `{ error: '新建模型配置需要凭据' }`。
   可用 `claudeCredentialInput` 提交官方
@@ -994,10 +1014,15 @@ Provider（模型连接：一份凭据和一个端点，提供一组模型）：
 - `PATCH|DELETE /api/config/claude/providers/:id`，第三方 Provider 的 PATCH
   可同时携带 `anthropicAuthToken` / `clearAnthropicAuthToken`，与其他字段在同一
   请求内提交；删除 ChatGPT 订阅型 Provider 后在后台尽力吊销其 refresh token，
-  吊销结果不影响响应。PATCH 的 `models` 是完整的新列表（未列出的即移除），
+  吊销结果不影响响应。PATCH 的 `models` 是完整的新列表（未列出的即移除；条目省略的
+  `displayName`、`maxOutputTokens`、`vendor`、`thinks`、`upstreamMissingSince` 沿用
+  已保存的值；从 `catalog.newModels` 加入的模型随即移出 `newModels`），
   `presetId: null` 清除预设，`anthropicAuthMode: null` 清除认证方式、回到按令牌
-  推断（测试时也重新尝试两种方式）；改名称、预设、模型的上下文长度或档位、`roles`
-  或新增模型时不停 Runner、不清会话，在下次启动 Runner 时生效；端点、凭据、认证方式（含清除）、环境变量、默认模型变更或移除模型时停
+  推断（测试时也重新尝试两种方式），`toolSearch`（`default` 回到按网关的默认）、
+  `catalogAutoAdd` 改工具搜索与新模型自动加入；地址变更后清除检测到的网关标记，下次
+  检测重新识别；改名称、预设、模型的上下文长度或档位、`roles`
+  或新增模型时不停 Runner、不清会话，在下次启动 Runner 时生效；工具搜索的生效值变化时
+  与 `webFetchPreflightPolicy` 一样，使用该连接的 Runner 在本轮结束后退出；端点、凭据、认证方式（含清除）、环境变量、默认模型变更或移除模型时停
   Runner；改 `anthropicModel` 仍按协议字段处理，未带
   `models` 时旧默认模型保留在列表中（列表已满 100 个时返回 400）；只改默认模型时
   只清除跑在旧默认模型上或没有记录模型的会话，选了该连接其他模型的会话保留，只改
@@ -1037,13 +1062,35 @@ Provider（模型连接：一份凭据和一个端点，提供一组模型）：
   `ANTHROPIC_CUSTOM_HEADERS` 随请求发送，已保存的连接用自己的环境变量）。第三方端点读
   `modelsUrlFor(地址, 预设)`（自定义地址恰好匹配一个预设时用该预设的列表地址），
   认证方式回退同测试；官方 API Key 读 `https://api.anthropic.com/v1/models`；
-  Claude 订阅不发请求，返回内置别名；ChatGPT 订阅返回其模型目录。成功为
-  `{ ok: true, models, source, authMode? }`，`models` 为
-  `{ id, name?, contextWindow?, efforts?, defaultEffort? }[]`（档位取自上游声明的
-  `supported_reasoning_levels`、`supported_efforts` 等字段，`minimal`/`ultra` 丢弃），`source` 为 `endpoint`、`builtin` 或
+  Claude 订阅不发请求，返回内置别名；ChatGPT 订阅返回其模型目录。请求带
+  `anthropic-version` 和打包的 Claude Code 版本的 User-Agent
+  （`claude-cli/<版本> (external, sdk-ts)`，测试连接同样）；列表带 `magpie_label` 且出现
+  `anthropic/magpie-<数字>` 别名时，换用 HappyClaw 自己的 User-Agent
+  （`HappyClaw/<版本>`）重取一次，用重取的结果，任何情况下都不返回别名。成功为
+  `{ ok: true, models, source, authMode?, gateway }`，`models` 的条目字段为 `id`、
+  `name?`、`contextWindow?`、`efforts?`、`defaultEffort?`、`thinks?`、
+  `maxOutputTokens?`、`vendor?`、`magpieLabel?`（档位取自上游声明的 `supported_reasoning_levels`、
+  `reasoning_levels`、`supported_efforts` 等字段，`minimal`/`ultra` 丢弃，空数组表示
+  不支持档位；`thinks` 取自布尔值 `reasoning: true`；最大输出取自 `max_output_tokens`、
+  `max_completion_tokens`、`top_provider.max_completion_tokens` 等；`vendor` 取自
+  magpie 标签里模型名之后的部分，否则 `magpie_by` 或 `owned_by`），`gateway` 在列表带
+  `magpie_label` 时为 `'magpie'`，否则为 `null`；带 `providerId` 且草稿未改连接时，
+  成功的列表把该连接标记为 magpie（如是）并记为已检测。`source` 为 `endpoint`、`builtin` 或
   `catalog`；失败仍为 200
   `{ ok: false, code, status, message }`：列表地址 404 为 `ENDPOINT_NOT_FOUND`，
   返回内容不是模型列表为 `UNKNOWN`
+- `POST /api/config/claude/providers/:id/catalog/sync`，打开连接详情时调用。未检测过的
+  第三方连接读一次模型列表，带 `magpie_label` 就标记为 magpie；magpie 连接同步目录：
+  已有模型的显示名、最大输出、供应商总是更新，上下文长度和档位只在当前值为空或等于上次
+  同步写入的值时更新；上游不再提供的模型记下时间、不删除，重新出现时清除；第一次同步之后
+  上游新出现的模型在 `catalogAutoAdd` 开启时加入列表（受 100 个上限约束，放不下的留在
+  `newModels`），否则记入 `newModels` 等管理员挑选。只改模型元数据，不停 Runner、不清会话。
+  响应 `{ provider, result }`，`result` 为
+  `{ ok: true, gateway, added, newModels, missing, skipped? }`（`skipped: 'recent'` 表示 60 秒内刚同步过，`'checked'` 表示已
+  检测过且不是 magpie，均未请求上游）或 `{ ok: false, code, message }`；官方与 ChatGPT
+  订阅连接返回 400 `{ code: 'CATALOG_UNSUPPORTED' }`。需要请求上游时与测试共用每分钟限额。
+  宿主另有定时同步：启动 2 分钟后开始，每 15 分钟检查一次，magpie 连接每 6 小时同步，
+  其余第三方连接只检测一次；失败按 15 分钟起翻倍、最长 24 小时退避
 - `GET /api/config/claude/providers/:id/impact`，返回
   `{ activeRunners, stoppedRunners }`：正在使用该连接的 Runner 数，以及修改其
   协议字段（端点、密钥、认证方式、默认模型、环境变量）时实际会停掉的 Runner 数
@@ -1057,7 +1104,12 @@ Provider（模型连接：一份凭据和一个端点，提供一组模型）：
   `activeLimit`、`rateLimitReachedType` 与 `limits[]`；每个限额族含
   `limitId`、`limitName`、`primary`/`secondary` 窗口（`usedPercent` 0–100、
   `windowMinutes`、`resetsAt` epoch 秒）和 `credits`（`hasCredits`、
-  `unlimited`、`balance`），服务重启后为空
+  `unlimited`、`balance`），服务重启后为空；magpie 连接读
+  `GET <地址>/v1/magpie/quotas`（连接自己的密钥与认证方式），返回
+  `{ kind: 'magpie_quotas', accounts, fetchedAt, error }`：`accounts` 为
+  `{ provider, name, kind, plan, user, windows, readAt, error }[]`，每个窗口为
+  `{ name, used, remaining, resetsAt, unlimited }`（`remaining` 为剩余百分比），读取失败时 `accounts`
+  为空、`error` 为原因
 - `POST /api/config/claude/apply`
 - `POST /api/config/claude/oauth/start`，可选 `targetProviderId`（必须是已有的
   官方 Provider）与 `profile`（`full` 默认，或 `setup_token`）；流程绑定发起用户
