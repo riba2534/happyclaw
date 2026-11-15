@@ -331,10 +331,17 @@ describe('resolveSessionLaunchOverrides', () => {
       effort: 'high',
     });
     expect(glm()).toEqual({ model: 'glm-5.3', effort: 'high' });
-    // ...and is ignored, with a warning, on one that takes none.
+    // ...goes as picked with one whose efforts nothing knows...
     db.setSessionModelSelection('grp', null, 'glm', 'member-1', {
       model: 'glm-air',
       effort: 'high',
+    });
+    expect(glm()).toEqual({ model: 'glm-air', effort: 'high' });
+    expect(mocks.logger.warn).not.toHaveBeenCalled();
+    // ...and is ignored, with a warning, on one declared to take none.
+    setProviders(chatGpt('gpt'), {
+      ...thirdParty('glm'),
+      models: [{ id: 'glm-model' }, { id: 'glm-air', efforts: [] }],
     });
     expect(glm()).toEqual({ model: 'glm-air' });
     expect(mocks.logger.warn).toHaveBeenCalledWith(

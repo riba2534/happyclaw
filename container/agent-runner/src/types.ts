@@ -231,6 +231,16 @@ export interface ContainerInput {
   /** Set when the selected connection skips WebFetch's domain check. */
   webFetchPreflightPolicy?: 'skip';
   /**
+   * The launch's model is declared to take no effort and not to reason: the
+   * run's SDK `thinking` option is `{type: 'disabled'}`.
+   */
+  thinking?: 'disabled';
+  /**
+   * The connection turns Claude Code's tool search on: the flag settings pin
+   * ENABLE_TOOL_SEARCH=true.
+   */
+  toolSearch?: true;
+  /**
    * Team mode (团队模式): this session is a group's router or a work item's
    * worker. It picks the work tools, the team prompt section and the
    * disallowed tools; absent leaves the session exactly as it is.
@@ -368,6 +378,12 @@ export interface ContainerOutput {
    * every account is exhausted.
    */
   providerFailureNotice?: string;
+  /**
+   * The upstream's own words for the failure (Claude Code's `API Error: …`
+   * text of the assistant error or the error result), capped at 1000
+   * characters. The host reads a gateway's usage-limit wording from it.
+   */
+  providerErrorText?: string;
   /**
    * Whether the rejection walled the whole account or just one model tier.
    * Model-scope walls quarantine the (account, model) pair only: the account's

@@ -41,21 +41,59 @@ export function isModelEffort(value: unknown): value is ModelEffort {
  */
 export interface ProviderModelEntry {
   id: string;
+  /** The vendor's name for the model, when its list gives one. */
+  displayName?: string;
   /** Context window in tokens, when the user, the vendor or a preset says. */
   contextWindow?: number;
   /**
-   * Efforts the user declared for a model the registry does not know (or
-   * overrode). Absent: the registry decides.
+   * Efforts the user or the vendor declared. Absent: unknown, and the
+   * registry decides. Empty: the model is declared to take no effort, so
+   * HappyClaw passes none (and turns thinking off unless `thinks`).
    */
   efforts?: ModelEffort[];
   /** The effort this model runs at when neither the Agent nor the chat picks. */
   defaultEffort?: ModelEffort;
+  /**
+   * The vendor says the model reasons although it names no efforts (magpie's
+   * `reasoning: true` with no levels): HappyClaw passes no effort but keeps
+   * thinking on.
+   */
+  thinks?: true;
+  /** The longest reply the vendor declares for the model, in tokens. */
+  maxOutputTokens?: number;
+  /** Who serves the model behind a gateway (magpie's provider, `owned_by`). */
+  vendor?: string;
+  /**
+   * When a catalog sync first found the model gone from the upstream list.
+   * The model stays until an admin removes it; it is cleared when it returns.
+   */
+  upstreamMissingSince?: string;
+  /**
+   * What the last catalog sync wrote for the fields an admin may override, so
+   * the next sync can tell an admin's value (kept) from its own (updated).
+   */
+  synced?: { contextWindow?: number; efforts?: ModelEffort[] };
 }
 
 export const MAX_PROVIDER_MODELS = 100;
 export const MAX_PROVIDER_MODEL_ID_LENGTH = 200;
 export const MIN_CONTEXT_WINDOW = 1_000;
 export const MAX_CONTEXT_WINDOW = 10_000_000;
+export const MAX_MODEL_DISPLAY_NAME_LENGTH = 200;
+export const MAX_MODEL_VENDOR_LENGTH = 100;
+export const MAX_OUTPUT_TOKENS_LIMIT = 10_000_000;
+
+/**
+ * The alias magpie lists a model under for Claude Code's own model discovery
+ * (a request with `anthropic-version` and a `claude-cli/` or `claude-code/`
+ * agent). It names a row of that one list, not a model: another request may
+ * number the models differently, so a connection never keeps one.
+ */
+const MAGPIE_ALIAS_RE = /^anthropic\/magpie-\d+$/i;
+
+export function isMagpieAliasModelId(id: string): boolean {
+  return MAGPIE_ALIAS_RE.test(splitOneMillionSuffix(id).model);
+}
 
 const ONE_MILLION_SUFFIX = '[1m]';
 const ONE_MILLION_SUFFIX_RE = /(?:\[1m\])+$/i;
@@ -110,12 +148,85 @@ export function normalizeContextWindow(value: unknown): number | undefined {
     : undefined;
 }
 
-/** Efforts from untrusted input, deduplicated in the low → max order. */
+/**
+ * Efforts from untrusted input, deduplicated in the low → max order. An
+ * empty list is a declaration (the model takes none) and stays empty; a list
+ * naming only efforts Claude Code has no level for says nothing and reads as
+ * unknown, like a missing one.
+ */
 export function normalizeEfforts(value: unknown): ModelEffort[] | undefined {
   if (!Array.isArray(value)) return undefined;
+  if (value.length === 0) return [];
   const set = new Set(value.filter(isModelEffort));
   const efforts = MODEL_EFFORTS.filter((effort) => set.has(effort));
   return efforts.length ? efforts : undefined;
+}
+
+/** A positive token count from untrusted input, or undefined. */
+export function normalizeMaxOutputTokens(value: unknown): number | undefined {
+  const number =
+    typeof value === 'string' && value.trim() ? Number(value) : value;
+  if (typeof number !== 'number' || !Number.isFinite(number)) return undefined;
+  const floored = Math.floor(number);
+  return floored >= 1 && floored <= MAX_OUTPUT_TOKENS_LIMIT
+    ? floored
+    : undefined;
+}
+
+/** A short label from untrusted input: trimmed, single line, capped. */
+function normalizeLabel(value: unknown, max: number): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const label = value.replace(/[\u0000-\u001f\u007f]+/g, ' ').trim();
+  return label ? label.slice(0, max) : undefined;
+}
+
+/** ISO time from untrusted input, or undefined. */
+function normalizeIsoTime(value: unknown): string | undefined {
+  return typeof value === 'string' && !Number.isNaN(Date.parse(value))
+    ? value
+    : undefined;
+}
+
+/**
+ * The metadata fields of one model entry from untrusted input: everything
+ * but the id, the window and the efforts the caller reads itself.
+ */
+function normalizeEntryMetadata(
+  record: Record<string, unknown>,
+): Pick<
+  ProviderModelEntry,
+  | 'displayName'
+  | 'thinks'
+  | 'maxOutputTokens'
+  | 'vendor'
+  | 'upstreamMissingSince'
+  | 'synced'
+> {
+  const out: ReturnType<typeof normalizeEntryMetadata> = {};
+  const displayName = normalizeLabel(
+    record.displayName,
+    MAX_MODEL_DISPLAY_NAME_LENGTH,
+  );
+  if (displayName) out.displayName = displayName;
+  if (record.thinks === true) out.thinks = true;
+  const maxOutputTokens = normalizeMaxOutputTokens(record.maxOutputTokens);
+  if (maxOutputTokens) out.maxOutputTokens = maxOutputTokens;
+  const vendor = normalizeLabel(record.vendor, MAX_MODEL_VENDOR_LENGTH);
+  if (vendor) out.vendor = vendor;
+  const missing = normalizeIsoTime(record.upstreamMissingSince);
+  if (missing) out.upstreamMissingSince = missing;
+  if (record.synced && typeof record.synced === 'object') {
+    const synced = record.synced as Record<string, unknown>;
+    const contextWindow = normalizeContextWindow(synced.contextWindow);
+    const efforts = normalizeEfforts(synced.efforts);
+    if (contextWindow || efforts) {
+      out.synced = {
+        ...(contextWindow ? { contextWindow } : {}),
+        ...(efforts ? { efforts } : {}),
+      };
+    }
+  }
+  return out;
 }
 
 /**
@@ -130,12 +241,14 @@ export function normalizeEfforts(value: unknown): ModelEffort[] | undefined {
  */
 export function normalizeProviderModels(
   input: unknown,
+  options: { max?: number } = {},
 ): ProviderModelEntry[] | null {
   if (!Array.isArray(input)) return null;
+  const max = options.max ?? MAX_PROVIDER_MODELS;
   const out: ProviderModelEntry[] = [];
   const seen = new Set<string>();
   for (const raw of input) {
-    if (out.length >= MAX_PROVIDER_MODELS) break;
+    if (out.length >= max) break;
     const record =
       typeof raw === 'string'
         ? { id: raw }
@@ -158,10 +271,47 @@ export function normalizeProviderModels(
       : isModelEffort(record.effort)
         ? record.effort
         : undefined;
-    if (defaultEffort) entry.defaultEffort = defaultEffort;
+    // A model declared to take no effort has no default one either.
+    if (defaultEffort && efforts?.length !== 0) {
+      entry.defaultEffort = defaultEffort;
+    }
+    Object.assign(entry, normalizeEntryMetadata(record));
     out.push(entry);
   }
   return out;
+}
+
+/** The fields a catalog sync owns, which the admin's edits never carry. */
+const SYNC_OWNED_FIELDS = [
+  'displayName',
+  'maxOutputTokens',
+  'vendor',
+  'thinks',
+  'upstreamMissingSince',
+  'synced',
+] as const satisfies readonly (keyof ProviderModelEntry)[];
+
+/**
+ * A list an admin submitted, with what the vendor and the catalog sync said
+ * about each model carried over from the current list when the submitted
+ * entry leaves it out: the Web edits windows and efforts, and a client that
+ * does not know a field must not erase it.
+ */
+export function carrySyncedModelFields(
+  submitted: readonly ProviderModelEntry[],
+  current: readonly ProviderModelEntry[],
+): ProviderModelEntry[] {
+  return submitted.map((entry) => {
+    const previous = current.find((item) => item.id === entry.id);
+    if (!previous) return entry;
+    const next: ProviderModelEntry = { ...entry };
+    for (const field of SYNC_OWNED_FIELDS) {
+      if (next[field] === undefined && previous[field] !== undefined) {
+        (next as unknown as Record<string, unknown>)[field] = previous[field];
+      }
+    }
+    return next;
+  });
 }
 
 /**
@@ -197,9 +347,43 @@ export function findModelEntry(
 }
 
 /**
+ * The entry a discovered model is added as: its window, efforts (an empty
+ * list included), name, longest reply and vendor come along. Null for an id
+ * a connection cannot keep (invalid, or a magpie discovery alias).
+ */
+export function discoveredModelEntry(
+  raw: DiscoveredModel | string,
+): ProviderModelEntry | null {
+  const item: DiscoveredModel = typeof raw === 'string' ? { id: raw } : raw;
+  const { model: id, oneMillion } = splitOneMillionSuffix(item.id);
+  if (!isValidModelId(id) || isMagpieAliasModelId(id)) return null;
+  const entry: ProviderModelEntry = { id };
+  const displayName = normalizeLabel(item.name, MAX_MODEL_DISPLAY_NAME_LENGTH);
+  if (displayName && displayName !== id) entry.displayName = displayName;
+  const contextWindow =
+    normalizeContextWindow(item.contextWindow) ??
+    (oneMillion ? ONE_MILLION_CONTEXT : undefined);
+  if (contextWindow) entry.contextWindow = contextWindow;
+  const efforts = normalizeEfforts(item.efforts);
+  if (efforts) entry.efforts = efforts;
+  if (
+    isModelEffort(item.defaultEffort) &&
+    efforts?.includes(item.defaultEffort)
+  ) {
+    entry.defaultEffort = item.defaultEffort;
+  }
+  if (item.thinks === true && efforts?.length === 0) entry.thinks = true;
+  const maxOutputTokens = normalizeMaxOutputTokens(item.maxOutputTokens);
+  if (maxOutputTokens) entry.maxOutputTokens = maxOutputTokens;
+  const vendor = normalizeLabel(item.vendor, MAX_MODEL_VENDOR_LENGTH);
+  if (vendor) entry.vendor = vendor;
+  return entry;
+}
+
+/**
  * Adds the newly discovered models to a list without touching what is there.
- * A discovered context window or effort list comes along; existing entries
- * keep what the user set.
+ * What the vendor says about a model comes along; existing entries keep what
+ * the user set.
  */
 export function mergeDiscoveredModels(
   existing: readonly ProviderModelEntry[],
@@ -208,23 +392,9 @@ export function mergeDiscoveredModels(
   const known = new Set(existing.map((entry) => entry.id));
   const additions: ProviderModelEntry[] = [];
   for (const raw of discovered) {
-    const item = typeof raw === 'string' ? { id: raw } : raw;
-    const { model: id, oneMillion } = splitOneMillionSuffix(item.id);
-    if (!isValidModelId(id) || known.has(id)) continue;
-    known.add(id);
-    const entry: ProviderModelEntry = { id };
-    const contextWindow =
-      normalizeContextWindow(item.contextWindow) ??
-      (oneMillion ? ONE_MILLION_CONTEXT : undefined);
-    if (contextWindow) entry.contextWindow = contextWindow;
-    const efforts = normalizeEfforts(item.efforts);
-    if (efforts) entry.efforts = efforts;
-    if (
-      isModelEffort(item.defaultEffort) &&
-      efforts?.includes(item.defaultEffort)
-    ) {
-      entry.defaultEffort = item.defaultEffort;
-    }
+    const entry = discoveredModelEntry(raw);
+    if (!entry || known.has(entry.id)) continue;
+    known.add(entry.id);
     additions.push(entry);
   }
   const room = Math.max(0, MAX_PROVIDER_MODELS - existing.length);
@@ -347,9 +517,11 @@ export interface ConnectionModelEnvInput {
 /**
  * The model environment of one launch on a third-party endpoint: the turn's
  * model with `[1m]` when its window needs it, each tier and the sub-agent
- * model from the roles or else the turn's model, and the compact window of
- * the turn's model. A pass-through connection (no model) only gets the roles
- * it names.
+ * model from the roles or else the turn's model, the compact window of the
+ * turn's model, and the longest reply they all declare (maxOutputTokensFor).
+ * A pass-through connection (no model) only gets the roles it names.
+ * CLAUDE_CODE_MAX_OUTPUT_TOKENS is not one of CONNECTION_MODEL_ENV_KEYS: a
+ * value in the connection's own env replaces it.
  */
 export function buildConnectionModelEnv(
   input: ConnectionModelEnvInput,
@@ -372,7 +544,45 @@ export function buildConnectionModelEnv(
     const window = autoCompactWindowFor(windowOf(input.models, input.model));
     if (window) env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = String(window);
   }
+  const maxOutput = maxOutputTokensFor(input.models, input.model, roles);
+  if (maxOutput) env.CLAUDE_CODE_MAX_OUTPUT_TOKENS = String(maxOutput);
   return env;
+}
+
+/** What Claude Code allows itself for a model it does not know. */
+export const CLAUDE_CODE_DEFAULT_MAX_OUTPUT = 32_000;
+/** The most CLAUDE_CODE_MAX_OUTPUT_TOKENS raises a reply to. */
+export const CLAUDE_CODE_MAX_OUTPUT_CEILING = 128_000;
+
+/**
+ * CLAUDE_CODE_MAX_OUTPUT_TOKENS for a launch on `model` with `roles`, or
+ * null to leave Claude Code's own limit. The launch may answer with the
+ * turn's model or any role's (each tier and the sub-agent fall back to the
+ * turn's model), so the value is the smallest reply every one of them
+ * declares, capped at 128K. Nothing is written unless all of them declare
+ * one and it lifts the reply above Claude Code's 32K default: a model that
+ * declares nothing might refuse a longer request.
+ */
+export function maxOutputTokensFor(
+  models: readonly ProviderModelEntry[],
+  model: string,
+  roles: ConnectionModelRoles | null | undefined,
+): number | null {
+  const current = splitOneMillionSuffix(model).model;
+  if (!current) return null;
+  const used = new Set<string>([current]);
+  for (const role of CONNECTION_MODEL_ROLES) {
+    const id = roles?.[role];
+    if (id) used.add(splitOneMillionSuffix(id).model);
+  }
+  let smallest = Infinity;
+  for (const id of used) {
+    const declared = findModelEntry(models, id)?.maxOutputTokens;
+    if (!declared) return null;
+    smallest = Math.min(smallest, declared);
+  }
+  const value = Math.min(smallest, CLAUDE_CODE_MAX_OUTPUT_CEILING);
+  return value > CLAUDE_CODE_DEFAULT_MAX_OUTPUT ? value : null;
 }
 
 /**
@@ -414,9 +624,43 @@ export interface DiscoveredModel {
   id: string;
   name?: string;
   contextWindow?: number;
-  /** Efforts the vendor declares; absent when it says nothing. */
+  /** Efforts the vendor declares; absent when it says nothing, [] for none. */
   efforts?: ModelEffort[];
   defaultEffort?: ModelEffort;
+  /** The vendor says `reasoning: true` (see ProviderModelEntry.thinks). */
+  thinks?: true;
+  maxOutputTokens?: number;
+  /** Who serves the model: magpie's provider name, else `owned_by`. */
+  vendor?: string;
+  /** magpie's `magpie_label`: only magpie lists carry one. */
+  magpieLabel?: string;
+}
+
+/** Gateways HappyClaw knows by more than their address. */
+export type ProviderGateway = 'magpie';
+
+/** Whether a model list came from magpie: only magpie labels its rows. */
+export function isMagpieModelList(
+  models: readonly Pick<DiscoveredModel, 'magpieLabel'>[],
+): boolean {
+  return models.some((model) => model.magpieLabel !== undefined);
+}
+
+/** A connection's tool search setting; `default` follows the gateway. */
+export type ToolSearchSetting = 'on' | 'off' | 'default';
+
+/**
+ * Whether Claude Code defers tool definitions behind its tool search
+ * (ENABLE_TOOL_SEARCH). On by default for magpie, which serves it for every
+ * model; off by default elsewhere, where a gateway may not.
+ */
+export function toolSearchEnabled(
+  setting: ToolSearchSetting | null | undefined,
+  gateway: ProviderGateway | null | undefined,
+): boolean {
+  if (setting === 'on') return true;
+  if (setting === 'off') return false;
+  return gateway === 'magpie';
 }
 
 // ─── Presets ───────────────────────────────────────────────────
@@ -444,11 +688,32 @@ export interface ModelPreset {
   /** Where the vendor hands out keys. */
   keyUrl?: string;
   docsUrl?: string;
-  /** Models known to work; all of them are offered by a new connection. */
+  /**
+   * Models known to work; all of them are offered by a new connection. Empty
+   * for a gateway whose models come from its own list.
+   */
   models: readonly ModelPresetModel[];
+  /**
+   * The address is where the user runs the gateway, not the vendor's: the
+   * preset stays with a connection whose address was changed.
+   */
+  editableBaseUrl?: boolean;
+  /** The gateway a connection made from this preset is. */
+  gateway?: ProviderGateway;
 }
 
 export const MODEL_PRESETS: readonly ModelPreset[] = [
+  {
+    id: 'magpie',
+    name: 'Magpie',
+    nameEn: 'Magpie',
+    region: 'any',
+    baseUrl: 'http://127.0.0.1:3425',
+    docsUrl: 'https://usemagpie.ai/docs/integrate',
+    models: [],
+    editableBaseUrl: true,
+    gateway: 'magpie',
+  },
   {
     id: 'openrouter',
     name: 'OpenRouter',
@@ -1098,10 +1363,52 @@ export function parseModelList(json: unknown): DiscoveredModel[] | null {
       const declared = declaredEfforts(record);
       if (declared.efforts) model.efforts = declared.efforts;
       if (declared.defaultEffort) model.defaultEffort = declared.defaultEffort;
+      // Only an explicit boolean counts; a reasoning object is efforts.
+      if (record.reasoning === true) model.thinks = true;
+      const topProvider =
+        record.top_provider && typeof record.top_provider === 'object'
+          ? (record.top_provider as Record<string, unknown>)
+          : undefined;
+      const maxOutputTokens = [
+        record.max_output_tokens,
+        record.max_completion_tokens,
+        record.output_token_limit,
+        record.outputTokenLimit,
+        topProvider?.max_completion_tokens,
+      ]
+        .map(positiveInteger)
+        .find((value) => value !== undefined);
+      if (maxOutputTokens) model.maxOutputTokens = maxOutputTokens;
+      const magpieLabel =
+        typeof record.magpie_label === 'string'
+          ? record.magpie_label.trim()
+          : undefined;
+      if (magpieLabel !== undefined) model.magpieLabel = magpieLabel;
+      const vendor = listedVendor(record, model.name ?? id, magpieLabel);
+      if (vendor) model.vendor = vendor;
     }
     out.push(model);
   }
   return out;
+}
+
+/**
+ * Who serves a listed model. magpie names it after the model in its label
+ * (`GLM-5 · Relay A`, unless the user turned the suffix off) and, for another
+ * magpie, in `magpie_by`; any list may say `owned_by` (a provider id).
+ */
+function listedVendor(
+  record: Record<string, unknown>,
+  name: string,
+  magpieLabel: string | undefined,
+): string | undefined {
+  const text = (value: unknown) =>
+    typeof value === 'string' && value.trim() ? value.trim() : undefined;
+  const prefix = `${name} · `;
+  if (magpieLabel?.startsWith(prefix) && magpieLabel.length > prefix.length) {
+    return magpieLabel.slice(prefix.length).trim();
+  }
+  return text(record.magpie_by) ?? text(record.owned_by);
 }
 
 /** `minimal` and `none` have no Claude Code level; `ultra` is Codex-only. */
@@ -1123,9 +1430,11 @@ function vendorEffort(value: unknown): ModelEffort | undefined {
 /**
  * The efforts a list entry declares, in the spellings vendors use
  * (adapted from cindy's modelDiscovery.ts): `reasoning.supported_efforts`,
- * `supported_efforts`, Codex `supported_reasoning_levels`, Vercel
- * `reasoning_options`, with `default_effort` / `default_reasoning_level`.
- * Nothing is inferred from a list that does not mention efforts.
+ * `supported_efforts`, Codex and magpie `supported_reasoning_levels`,
+ * magpie's flat `reasoning_levels`, Vercel `reasoning_options`, with
+ * `default_effort` / `default_reasoning_level`. An empty list declares that
+ * the model takes none; nothing is inferred from a list that does not
+ * mention efforts.
  */
 function declaredEfforts(record: Record<string, unknown>): {
   efforts?: ModelEffort[];
@@ -1139,10 +1448,12 @@ function declaredEfforts(record: Record<string, unknown>): {
     reasoning?.supported_efforts,
     record.supported_efforts,
     record.supported_reasoning_levels,
+    record.reasoning_levels,
     record.reasoning_options,
   ].find(Array.isArray) as unknown[] | undefined;
   const efforts = normalizeEfforts(list?.map(vendorEffort));
   if (!efforts) return {};
+  if (efforts.length === 0) return { efforts };
   const preferred = vendorEffort(
     reasoning?.default_effort ??
       record.default_effort ??
@@ -2031,9 +2342,10 @@ export function defaultEffortFor(
 }
 
 /**
- * Where a model's efforts come from: the user declared them, the registry
- * knows the model, they are borrowed from its family, or nothing is known.
- * Only `registry` counts as verified in the UI.
+ * Where a model's efforts come from: the user or the vendor declared them
+ * (an empty declaration included), the registry knows the model, they are
+ * borrowed from its family, or nothing is known (`none`: unknown, not
+ * "takes none"). Only `registry` counts as verified in the UI.
  */
 export type ModelCapabilitySource = 'declared' | 'registry' | 'family' | 'none';
 
@@ -2042,18 +2354,28 @@ export interface ResolvedModelCapabilities {
   contextWindow: number | null;
   /** What the registry knows, offered as the add flow's starting value. */
   suggestedContextWindow: number | null;
+  /**
+   * The efforts known to work. Empty either because the model is declared
+   * to take none (`effortsSource: 'declared'`) or because nothing is known
+   * (`effortsSource: 'none'`), in which case any effort may be tried.
+   */
   efforts: ModelEffort[];
   defaultEffort: ModelEffort | null;
   effortsSource: ModelCapabilitySource;
   contextSource: ModelCapabilitySource;
+  /**
+   * The model is declared to take no effort and not to reason (no `thinks`):
+   * a launch turns Claude Code's thinking off.
+   */
+  thinkingDisabled: boolean;
 }
 
 /**
  * Everything the picker and the launch need to know about one model of a
- * connection. Efforts: the entry's own, else the registry's, else the
- * family's. The window is the entry's own only (see windowOf). A model
- * nothing is known about takes no effort and has no window, and the launch
- * injects neither.
+ * connection. Efforts: the entry's own (an empty list too), else the
+ * registry's, else the family's. The window is the entry's own only (see
+ * windowOf). A model nothing is known about has no default effort and no
+ * window, and the launch injects neither.
  */
 export function resolveModelCapabilities(
   entry: ProviderModelEntry,
@@ -2062,7 +2384,8 @@ export function resolveModelCapabilities(
   const family = registry?.efforts
     ? null
     : inferredFamilyCapabilities(entry.id);
-  const effortsSource: ModelCapabilitySource = entry.efforts?.length
+  const declared = Array.isArray(entry.efforts);
+  const effortsSource: ModelCapabilitySource = declared
     ? 'declared'
     : registry?.efforts?.length
       ? 'registry'
@@ -2070,8 +2393,8 @@ export function resolveModelCapabilities(
         ? 'family'
         : 'none';
   const efforts = [
-    ...(entry.efforts?.length
-      ? entry.efforts
+    ...(declared
+      ? entry.efforts!
       : (registry?.efforts ?? family?.efforts ?? [])),
   ];
   const contextSource: ModelCapabilitySource = entry.contextWindow
@@ -2088,7 +2411,150 @@ export function resolveModelCapabilities(
     ),
     effortsSource,
     contextSource,
+    thinkingDisabled: declared && efforts.length === 0 && !entry.thinks,
   };
+}
+
+// ─── magpie quotas ─────────────────────────────────────────────
+
+/** One usage window of a magpie account (`GET /v1/magpie/quotas`). */
+export interface MagpieQuotaWindow {
+  name: string;
+  /** Percent used, when magpie says. */
+  used: number | null;
+  /** Percent left; 0 or less is used up. */
+  remaining: number | null;
+  /** ISO time the window renews, when known. */
+  resetsAt: string | null;
+  unlimited: boolean;
+}
+
+/** One account magpie routes to, with its windows. */
+export interface MagpieQuotaAccount {
+  /** magpie's provider id: the `<provider>/` of the models it serves. */
+  provider: string;
+  name: string;
+  kind: 'subscription' | 'plan' | 'balance' | 'other';
+  plan: string | null;
+  user: string | null;
+  windows: MagpieQuotaWindow[];
+  readAt: string | null;
+  /** Why magpie could not read this account's usage. */
+  error: string | null;
+}
+
+/** What the usage route answers for a magpie connection. */
+export interface MagpieQuotasUsage {
+  kind: 'magpie_quotas';
+  accounts: MagpieQuotaAccount[];
+  /** Epoch ms of the read. */
+  fetchedAt: number;
+  /** Why the read failed; the accounts are then empty. */
+  error: string | null;
+}
+
+const MAX_MAGPIE_QUOTA_ACCOUNTS = 200;
+const MAX_MAGPIE_QUOTA_WINDOWS = 20;
+
+function finitePercent(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function quotaText(value: unknown, max = 200): string | null {
+  return normalizeLabel(value, max) ?? null;
+}
+
+/**
+ * Reads magpie's `/v1/magpie/quotas` answer
+ * (`{object: "list", data: [{provider, name, kind, plan, user, windows,
+ * readAt, error?}]}`), keeping only well-formed fields. Null when the body
+ * is not that list.
+ */
+export function parseMagpieQuotas(json: unknown): MagpieQuotaAccount[] | null {
+  const data =
+    json && typeof json === 'object'
+      ? (json as { data?: unknown }).data
+      : undefined;
+  if (!Array.isArray(data)) return null;
+  const accounts: MagpieQuotaAccount[] = [];
+  for (const raw of data.slice(0, MAX_MAGPIE_QUOTA_ACCOUNTS)) {
+    if (!raw || typeof raw !== 'object') continue;
+    const record = raw as Record<string, unknown>;
+    const provider = quotaText(record.provider, MAX_MODEL_VENDOR_LENGTH);
+    if (!provider) continue;
+    const windows: MagpieQuotaWindow[] = [];
+    if (Array.isArray(record.windows)) {
+      for (const item of record.windows.slice(0, MAX_MAGPIE_QUOTA_WINDOWS)) {
+        if (!item || typeof item !== 'object') continue;
+        const window = item as Record<string, unknown>;
+        const resetsAt = normalizeIsoTime(window.resetsAt) ?? null;
+        windows.push({
+          name: quotaText(window.name, 100) ?? '',
+          used: finitePercent(window.used),
+          remaining: finitePercent(window.remaining),
+          resetsAt,
+          unlimited: window.unlimited === true,
+        });
+      }
+    }
+    const kind =
+      record.kind === 'subscription' ||
+      record.kind === 'plan' ||
+      record.kind === 'balance'
+        ? record.kind
+        : 'other';
+    accounts.push({
+      provider,
+      name: quotaText(record.name) ?? provider,
+      kind,
+      plan: quotaText(record.plan),
+      user: quotaText(record.user),
+      windows,
+      readAt: normalizeIsoTime(record.readAt) ?? null,
+      error: quotaText(record.error, 300),
+    });
+  }
+  return accounts;
+}
+
+/**
+ * When a model magpie refused for its usage limit may run again: the
+ * earliest renewal among the used-up windows (remaining ≤ 0) of the provider
+ * the model id names (`<provider>/<model>`). Null when that cannot be told
+ * without guessing: a routing group (`group/…`) or `auto/…` model, an id
+ * without a provider, or no used-up window with a renewal time.
+ */
+export function magpieUsageLimitResetAt(
+  accounts: readonly MagpieQuotaAccount[],
+  model: string,
+): number | null {
+  const id = splitOneMillionSuffix(model).model;
+  const slash = id.indexOf('/');
+  if (slash <= 0) return null;
+  const provider = id.slice(0, slash).toLowerCase();
+  if (provider === 'group' || provider === 'auto') return null;
+  let earliest: number | null = null;
+  for (const account of accounts) {
+    if (account.provider.toLowerCase() !== provider || account.error) continue;
+    for (const window of account.windows) {
+      if (window.unlimited || window.remaining === null) continue;
+      if (window.remaining > 0 || !window.resetsAt) continue;
+      const at = Date.parse(window.resetsAt);
+      if (Number.isFinite(at) && (earliest === null || at < earliest)) {
+        earliest = at;
+      }
+    }
+  }
+  return earliest;
+}
+
+/** magpie's wording for a refusal over a usage limit (fallback.go). */
+const MAGPIE_USAGE_LIMIT_RE = /\busage limit reached\b/i;
+
+export function isMagpieUsageLimitMessage(
+  text: string | null | undefined,
+): boolean {
+  return !!text && MAGPIE_USAGE_LIMIT_RE.test(text);
 }
 
 // ─── Upstream errors ───────────────────────────────────────────

@@ -77,12 +77,17 @@ export const CLAUDE_PROVIDER_ROUTING_ENV_KEYS: readonly string[] = [
   'CLAUDE_CODE_SUBAGENT_MODEL',
 ];
 
-/** The session's effort, compaction and context, resolved per run. */
+/**
+ * The session's effort, compaction, context and reply limit, resolved per
+ * run (the reply limit from the models' declarations or the connection's
+ * own env).
+ */
 export const CLAUDE_SESSION_TUNING_ENV_KEYS: readonly string[] = [
   'CLAUDE_CODE_EFFORT_LEVEL',
   'CLAUDE_CODE_AUTO_COMPACT_WINDOW',
   'CLAUDE_AUTOCOMPACT_PCT_OVERRIDE',
   'CLAUDE_CODE_MAX_CONTEXT_TOKENS',
+  'CLAUDE_CODE_MAX_OUTPUT_TOKENS',
 ];
 
 /** Every environment key above. */
