@@ -53,7 +53,9 @@ Agent Profile（身份、四段 Prompt、能力策略）
   工作区文件隔离与对话上下文隔离是两件事。
 - 自动化（Automation）属于 Workspace，每次运行都是某个真实会话里的一轮：绑定已有会话
   （Agent 在聊天里创建时默认绑定当前会话）、每次新建或持续会话。运行会话是普通
-  `agents` 行（`source_kind='automation'`、`automation_id`），不是 `kind='task'`。
+  `agents` 行（`source_kind='automation'`、`automation_id`），不是 `kind='task'`。每次新建
+  和持续会话的 Agent 自动化可以带模型选择（`automations.model_config_id` 等，只能在 Web 设置），
+  它的运行会话以此为会话选择；绑定已有会话的沿用那个会话自己的选择。
 - 例外是独立 worktree 的 Runtime Session：Host 工作区的工作目录是 git 仓库时，新建会话
   可选它，宿主在 `data/worktrees/{folder}/{sessionId}` 建分支 `happyclaw/<短 id>`，该会话
   每轮以它为 cwd，文件面板、项目 Skills 和 Review 面板也以它为根。worktree 缺失或损坏时
@@ -272,6 +274,8 @@ Web UI 约定：
   回复按这条输入的 `source_jid`（创建时冻结的来源路由，例如飞书话题）投递。Agent 看到的
   运行上下文（自动化 id、计划、停止条件、无人值守、安静模式）作为附件里的隐藏条目存在
   这条输入上，追加在用户消息之后，不进 system prompt；Web 只显示提示词本身。
+  自动化带模型时，写入输入之前若会话的选择与它不同就改成它（经 `session-model-service`，
+  暖 Runner 在本轮结束后退出）；每次新建的会话创建时就写好。没带模型时不改动会话的选择。
 - 同一自动化同时最多一个运行；到期时上一次还在排队或运行，本次记为 `skipped`。服务停机
   期间到期的周期运行不补跑，记一条 `missed` 并从现在起算下次；一次性的仍会补跑。
   `endAt` 到达或 Agent 调用 `automation_complete` 后状态为 `completed`。

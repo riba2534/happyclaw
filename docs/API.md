@@ -1190,6 +1190,16 @@ Legacy 渠道 facade 位于 `/api/config/user-im/*`，涵盖飞书、Telegram、
 由 `src/automation-service.ts` 统一处理，REST 与 Agent 工具返回同样的中文错误。
 状态变化通过 WS `automation_changed` / `automation_run_updated` 只推给所有者。
 
+自动化带 `model`：`{ modelConfigId, model, effort }` 或 `null`（运行会话用自己的默认），
+访客看到的总是 `null`。创建、PATCH 可以设置它（PATCH 不带时不变，`null` 清除），只对
+「每次新建」和「持续会话」的 Agent 自动化有效：绑定已有会话时 400
+`automation_model_bound_session`（改成绑定已有会话也要同时清除它），脚本 400
+`automation_model_script`。选择按 `model-selection` 的规则校验，选择者是自动化的创建者，
+不合法时 400 与同样的 `code`（配置不存在也是 400 `MODEL_CONFIG_NOT_FOUND`）。每次新建的
+运行会话创建时就是这个选择；持续会话每次运行前，会话的选择与它不同时改成它（暖 Runner 在
+本轮结束后退出）。没有设置时不改动任何会话的选择。Agent 的 `automation_*` 工具不能设置或
+修改它。
+
 旧的 `/api/tasks*` 全部返回 410，提示改用 `/api/automations`。
 
 ## 团队模式与多任务模式
