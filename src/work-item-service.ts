@@ -35,6 +35,7 @@ import {
   createConversationSession,
   deleteConversationSession,
 } from './session-factory.js';
+import { copySessionModelSelection } from './session-model-service.js';
 import {
   createSessionWorktree,
   WorktreeUnavailableError,
@@ -561,6 +562,9 @@ export async function saveTeamMountSettings(
       sourceKind: 'team_router',
     });
     routerAgentId = session.id;
+    // The group was talking to the session it is bound to; its router
+    // starts on that session's model, as a session it derives.
+    copySessionModelSelection(workspace.folder, mount.session_id, session.id);
   }
   const saved = storeTeamMountSettings({
     channelJid,
@@ -1426,6 +1430,12 @@ async function createWorkerSession(
     sourceKind: 'work_item',
     worktree,
   });
+  // An item's worker runs on the model of the router that accepted it.
+  copySessionModelSelection(
+    workspace.folder,
+    context.routerAgentId,
+    session.id,
+  );
   return session.id;
 }
 
@@ -2545,6 +2555,8 @@ async function delegate(
       sessionId: agentId,
       sourceKind: 'work_item',
     });
+    // The Worker runs on the model its delegating session has chosen now.
+    copySessionModelSelection(lane.workspace.folder, lane.agentId, agentId);
   } catch (error) {
     abandon(error);
   }
