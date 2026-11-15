@@ -1029,7 +1029,9 @@ Provider（模型连接：一份凭据和一个端点，提供一组模型）：
   按新值处理，SDK 会话保留；与端点等字段一起修改时按下述规则停 Runner。
 - `PATCH|DELETE /api/config/claude/providers/:id`，第三方 Provider 的 PATCH
   可同时携带 `anthropicAuthToken` / `clearAnthropicAuthToken`，与其他字段在同一
-  请求内提交；删除 ChatGPT 订阅型 Provider 后在后台尽力吊销其 refresh token，
+  请求内提交；连接仍被智能体绑定或被自动化选为模型时 DELETE 返回 400（「仍被 N 个
+  智能体使用，请先重新分配」「仍被 N 个自动化使用，请先修改」，暂停和已完成的自动化也算）；
+  删除 ChatGPT 订阅型 Provider 后在后台尽力吊销其 refresh token，
   吊销结果不影响响应。PATCH 的 `models` 是完整的新列表（未列出的即移除；条目省略的
   `displayName`、`maxOutputTokens`、`vendor`、`thinks`、`upstreamMissingSince` 沿用
   已保存的值；从 `catalog.newModels` 加入的模型随即移出 `newModels`），
@@ -1255,7 +1257,8 @@ Legacy 渠道 facade 位于 `/api/config/user-im/*`，涵盖飞书、Telegram、
 不合法时 400 与同样的 `code`（配置不存在也是 400 `MODEL_CONFIG_NOT_FOUND`）。模型只给
 自动化自己建的会话：持续会话接上的是已有会话（`targetSessionJid` 指向别的会话，或从绑定已有
 会话改过来）时同样 400 `automation_model_bound_session`。每次新建的运行会话创建时就是这个
-选择；持续会话每次运行前，会话的选择与它不同时改成它（暖 Runner 在本轮结束后退出）。PATCH
+选择；持续会话每次运行前，会话的选择与它不同时改成它（暖 Runner 在本轮结束后退出）；所选连接已不存在或没有凭据时
+不写入，这次运行按会话的默认运行并记一条 warn。PATCH
 把模型清除时，自动化自己的持续会话若仍是它给的选择，回到默认。没有设置时不改动任何会话的
 选择。选择者已停用或不存在时按没有任何权限校验。Agent 的 `automation_*` 工具不能设置或
 修改它。

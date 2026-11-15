@@ -61,15 +61,6 @@ interface ModelEntry {
   effortsUnverified: boolean;
 }
 
-/**
- * A declared display name, when the entry carries one. The model list may
- * name a model for people; matching and listing use it besides the id.
- */
-function declaredDisplayName(entry: object): string | null {
-  const value = (entry as { displayName?: unknown }).displayName;
-  return typeof value === 'string' && value.trim() ? value.trim() : null;
-}
-
 function modelsOf(option: ConnectionOption): ModelEntry[] {
   if ('codex' in option && option.codex) {
     return option.codex.models.map((entry) => ({
@@ -80,8 +71,10 @@ function modelsOf(option: ConnectionOption): ModelEntry[] {
     }));
   }
   if (!('models' in option) || !option.models) return [];
+  // The vendor's name, when its list gives one: listed and matched besides
+  // the id.
   return option.models.map((entry) => {
-    const displayName = declaredDisplayName(entry);
+    const displayName = entry.displayName?.trim() || null;
     return {
       id: entry.id,
       displayName: displayName && displayName !== entry.id ? displayName : null,

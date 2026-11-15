@@ -66,6 +66,17 @@ vi.mock('../src/runtime-config.js', async (importOriginal) => ({
       codexOAuthCredentials: null,
     },
     {
+      id: 'nokey',
+      name: '缺密钥',
+      type: 'third_party',
+      enabled: true,
+      anthropicBaseUrl: 'https://nokey.example.test',
+      anthropicModel: 'x-1',
+      anthropicAuthToken: '',
+      models: [{ id: 'x-1' }],
+      codexOAuthCredentials: null,
+    },
+    {
       id: 'chatgpt',
       name: 'ChatGPT 订阅',
       type: 'official',
@@ -88,6 +99,7 @@ const { AutomationError } = await import('../src/automation-contract.js');
 const runtime = await import('../src/automation-runtime.js');
 const webContext = await import('../src/web-context.js');
 const harness = await import('./automation-harness.js');
+const { logger } = await import('../src/logger.js');
 
 import type { AutomationActor } from '../src/automation-contract.js';
 import type {
@@ -695,6 +707,28 @@ describe('the run sessions of an automation', () => {
       BOUND,
     );
     expect(selectionOf(BOUND)).toEqual({ ...own, updatedBy: 'bob' });
+    expect(mocks.drainCalls).toEqual([]);
+  });
+
+  test('a connection gone or without a credential is not written; the run follows the default', async () => {
+    const deps = runtime.createAutomationRuntimeDeps(hooks());
+    vi.mocked(logger.warn).mockClear();
+    for (const modelConfigId of ['gone', 'nokey']) {
+      const stale = automation({
+        model: { modelConfigId, model: null, effort: null },
+      });
+      const { sessionJid } = await deps.createAutomationSession({
+        automation: stale,
+        title: '日报',
+      });
+      expect(selectionOf(sessionJid)).toBeNull();
+      await inject(deps, stale, sessionJid);
+      expect(selectionOf(sessionJid)).toBeNull();
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({ modelConfigId }),
+        expect.stringContaining('session default'),
+      );
+    }
     expect(mocks.drainCalls).toEqual([]);
   });
 

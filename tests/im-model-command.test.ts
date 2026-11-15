@@ -73,7 +73,12 @@ vi.mock('../src/runtime-config.js', async (importOriginal) => {
         anthropicBaseUrl: 'https://relay.example.test',
         anthropicModel: 'glm-5.3',
         anthropicAuthToken: 'relay-token',
-        models: [{ id: 'glm-5.3' }, { id: 'kimi-k3' }],
+        models: [
+          { id: 'glm-5.3' },
+          // Names the vendor gives; the last word of one reads like an effort.
+          { id: 'kimi-k3', displayName: 'Kimi K3' },
+          { id: 'kimi-k3-max', displayName: 'Kimi K3 max' },
+        ],
         codexOAuthCredentials: null,
       },
       {
@@ -257,6 +262,23 @@ describe('/model picks', () => {
       modelConfigId: 'official',
       effort: 'high',
     });
+  });
+
+  test("by the vendor's name, whose last word may read like an effort", () => {
+    expect(run('3').split('\n').slice(1, 4)).toEqual([
+      '1. glm-5.3 · 档位 low/high/max',
+      '2. Kimi K3（kimi-k3） · 档位 low/high/max',
+      '3. Kimi K3 max（kimi-k3-max） · 档位未验证',
+    ]);
+    expect(run('kimi k3 max')).toBe(
+      '已切换到 中转 · kimi-k3-max，下一条消息起生效。',
+    );
+    expect(stored()).toMatchObject({ model: 'kimi-k3-max', effort: null });
+    // Otherwise a trailing word after a name is its effort.
+    expect(run('Kimi K3 high')).toBe(
+      '已切换到 中转 · kimi-k3 · 档位 high，下一条消息起生效。',
+    );
+    expect(stored()).toMatchObject({ model: 'kimi-k3', effort: 'high' });
   });
 
   test('a name several connections offer asks for the number', () => {

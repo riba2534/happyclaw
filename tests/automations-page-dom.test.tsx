@@ -81,7 +81,7 @@ const MODEL_OPTIONS = {
           id: 'glm-5.3',
           efforts: ['low', 'high'],
           defaultEffort: 'high',
-          display_name: 'GLM 5.3',
+          displayName: 'GLM 5.3',
         },
       ],
     },

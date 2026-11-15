@@ -316,6 +316,17 @@ export function listAutomations(filter: {
 }
 
 /** Automations whose runs go into this session (bound target or persistent). */
+/**
+ * How many automations give their run sessions a model of this connection,
+ * paused and completed ones included (either can run again).
+ */
+export function countAutomationsByModelConfigId(modelConfigId: string): number {
+  const row = stmt(
+    'SELECT COUNT(*) AS count FROM automations WHERE model_config_id = ?',
+  ).get(modelConfigId) as { count: number };
+  return Number(row.count) || 0;
+}
+
 export function listAutomationsTargeting(sessionJid: string): Automation[] {
   return (
     stmt(
