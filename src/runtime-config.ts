@@ -454,6 +454,11 @@ export interface ClaudeProviderConfig {
    */
   models?: ProviderModelEntry[];
   roles?: ConnectionModelRoles;
+  /**
+   * The same-turn fallback model a launch is handed, whose declared reply
+   * limit counts toward CLAUDE_CODE_MAX_OUTPUT_TOKENS like the roles'.
+   */
+  fallbackModel?: string;
   updatedAt: string | null;
 }
 
@@ -2700,21 +2705,27 @@ function assertGatewayModels(provider: UnifiedProvider): void {
   }
 }
 
+export interface ProviderCatalogUpdate {
+  gateway?: ProviderGateway;
+  models?: ProviderModelEntry[];
+  catalog: ProviderCatalogState;
+}
+
 /**
  * Keep what a catalog sync or a gateway check learned about a connection:
- * the gateway, the synced model list, the catalog state. Nothing is written
- * when the endpoint or the credential changed meanwhile, since the list
- * describes the old ones. Runtime state like a test record: `updatedAt`
- * stays. Returns the stored connection, or null when nothing was written.
+ * the gateway, the synced model list, the catalog state. `build` derives
+ * them from the connection as it is stored at the moment of writing, in the
+ * same synchronous read and write, so an edit an admin saved while the list
+ * was being read (a model removed, auto-add switched) is merged into rather
+ * than overwritten. Nothing is written when the endpoint or the credential
+ * changed meanwhile, since the list describes the old ones, or when `build`
+ * returns null. Runtime state like a test record: `updatedAt` stays.
+ * Returns the stored connection, or null when nothing was written.
  */
 export function recordProviderCatalog(
   id: string,
   checked: UnifiedProvider,
-  update: {
-    gateway?: ProviderGateway;
-    models?: ProviderModelEntry[];
-    catalog: ProviderCatalogState;
-  },
+  build: (current: UnifiedProvider) => ProviderCatalogUpdate | null,
 ): UnifiedProvider | null {
   const state = readStoredStateV4();
   if (!state) return null;
@@ -2724,6 +2735,8 @@ export function recordProviderCatalog(
   if (testedConnectionIdentity(current) !== testedConnectionIdentity(checked)) {
     return null;
   }
+  const update = build(current);
+  if (!update) return null;
   const next: UnifiedProvider = { ...current };
   if (update.models) {
     Object.assign(
@@ -2969,7 +2982,11 @@ export function updateProvider(
       catalog: nextCatalog,
     }),
   );
-  assertGatewayModels(updated);
+  // Only an edit of the models can leave a magpie connection without one; a
+  // pass-through relay detected as magpie later keeps taking other edits.
+  if (patch.models !== undefined || patch.anthropicModel !== undefined) {
+    assertGatewayModels(updated);
+  }
   // A test describes the endpoint, header, env and probe it ran against.
   updated.lastTest =
     updated.anthropicBaseUrl === current.anthropicBaseUrl &&
@@ -3971,6 +3988,7 @@ export function buildClaudeEnvLines(
       model: config.anthropicModel,
       models,
       roles: config.roles,
+      fallbackModel: config.fallbackModel,
     });
     for (const [key, value] of Object.entries(modelEnv)) {
       // The admin's own reply limit for the connection wins.
@@ -4241,6 +4259,9 @@ export function mergeClaudeEnvConfig(
       : {}),
     ...(!override.anthropicBaseUrl && global.roles
       ? { roles: global.roles }
+      : {}),
+    ...(!override.anthropicBaseUrl && global.fallbackModel
+      ? { fallbackModel: global.fallbackModel }
       : {}),
     updatedAt: global.updatedAt,
   };

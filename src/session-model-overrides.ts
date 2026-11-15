@@ -128,8 +128,9 @@ export interface LaunchReasoning {
 /**
  * How a launch on `model` reasons. A model with known efforts runs at the
  * first of `picks` (most specific first) it takes, else its default. A model
- * declared to take none gets no effort, and thinking off unless it reasons
- * anyway (`thinks`). A model nothing is known about runs at the first pick
+ * declared to take none gets no effort, and thinking off only when it is
+ * also declared not to reason (`thinks: false`). A model nothing is known
+ * about runs at the first pick
  * that is an effort at all, as picked, and gets none without one.
  */
 export function resolveLaunchReasoning(

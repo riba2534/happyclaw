@@ -201,8 +201,8 @@ PUT 可以携带 `model`、`effort`，请求整体替换该会话的选择：只
 `MODEL_NOT_IN_CONNECTION`、`EFFORT_NOT_SUPPORTED`、`MODEL_UNAVAILABLE`、
 `EFFORT_UNSUPPORTED`、`EFFORT_RESTRICTED`、`MODEL_CONFIG_REQUIRED`。推理等级按会话
 档位 → 智能体显式档位 → 模型默认档位解析，只取所运行模型支持的档位；档位未知的模型取
-第一个合法的档位原样下发，都没有就不传；声明不支持档位的模型不传档位，并且（除非它声明
-仍会推理）本轮关闭思考；不传时不写 `CLAUDE_CODE_EFFORT_LEVEL`；没有默认 `max`。会话档位写入
+第一个合法的档位原样下发，都没有就不传；声明不支持档位的模型不传档位，同时声明不推理
+（`thinks: false`）时本轮关闭思考；不传时不写 `CLAUDE_CODE_EFFORT_LEVEL`；没有默认 `max`。会话档位写入
 `CLAUDE_CODE_EFFORT_LEVEL`（Claude Code 让它优先于 Runner 为智能体传的 SDK `effort`），
 不改动交给 Runner 的智能体配置。ChatGPT 以外只改档位时退出暖 Runner（下一条消息
 重启），但保留 SDK 会话。高于 `max` 的档位（目前是
@@ -975,7 +975,8 @@ Provider（模型连接：一份凭据和一个端点，提供一组模型）：
   （条目字段为 `id`、`displayName?`、`contextWindow?`、`efforts?`、`defaultEffort?`、
   `thinks?`、`maxOutputTokens?`、`vendor?`、`upstreamMissingSince?`：`id` 是上游原名，从不带
   `[1m]`，也从不是 magpie 的发现别名 `anthropic/magpie-<数字>`；`efforts` 缺省表示
-  档位未知，`[]` 表示声明不支持档位；`thinks: true` 表示不支持档位但仍会推理；
+  档位未知，`[]` 表示不传档位；`thinks` 是上游声明的是否推理（`true`、`false` 或缺省），
+  只有 `efforts: []` 且 `thinks: false` 时启动关闭思考；
   `displayName`、`maxOutputTokens`、`vendor` 取自上游模型列表；`upstreamMissingSince`
   是目录同步发现上游已不提供该模型的时间；连接自己的模型 `anthropicModel` 总在其中；
   ChatGPT 订阅为 `[]`，模型取自其目录）、`roles`
@@ -993,8 +994,9 @@ Provider（模型连接：一份凭据和一个端点，提供一组模型）：
   400）、`gateway: 'magpie'`（创建前的模型发现识别出 magpie 时由 Web 带上）、
   `toolSearch` 和 `catalogAutoAdd`，`models` 不含 `anthropicModel` 时把它加在最前，超过 100 个模型返回 400；模型名
   不能含空白，带 `[1m]` 的旧写法按 1M 上下文读入，magpie 发现别名丢弃。从 magpie 预设创建且未指定
-  `webFetchPreflightPolicy` 时为 `skip`。magpie 连接没有任何模型时创建和 PATCH 都返回
-  400 `{ error, code: 'MAGPIE_MODELS_REQUIRED' }`。`customEnv` 只注入非空值，新连接由
+  `webFetchPreflightPolicy` 时为 `skip`。magpie 连接没有任何模型时，创建和改动模型列表或
+  默认模型的 PATCH 返回 400 `{ error, code: 'MAGPIE_MODELS_REQUIRED' }`（其他字段的 PATCH
+  照常，检测出 magpie 的无模型直通中转仍能改名等）。`customEnv` 只注入非空值，新连接由
   Web 预填 `API_TIMEOUT_MS`、`CLAUDE_CODE_NO_FLICKER`、`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`；
   含 `CONNECTION_MODEL_ENV_KEYS` 里的键（模型、各档、子代理、压缩窗口、推理等级）返回
   400 `{ error, code: 'RESERVED_ENV_KEY' }`；`CLAUDE_CODE_MAX_OUTPUT_TOKENS` 可以写，
@@ -1067,12 +1069,13 @@ Provider（模型连接：一份凭据和一个端点，提供一组模型）：
   `anthropic-version` 和打包的 Claude Code 版本的 User-Agent
   （`claude-cli/<版本> (external, sdk-ts)`，测试连接同样）；列表带 `magpie_label` 且出现
   `anthropic/magpie-<数字>` 别名时，换用 HappyClaw 自己的 User-Agent
-  （`HappyClaw/<版本>`）重取一次，用重取的结果，任何情况下都不返回别名。成功为
+  （`HappyClaw/<版本>`）重取一次，用重取的结果；重取失败或仍带别名时整次失败（第二次请求的
+  错误分类，或 `UNKNOWN`），不返回残缺列表，任何情况下都不返回别名。成功为
   `{ ok: true, models, source, authMode?, gateway }`，`models` 的条目字段为 `id`、
   `name?`、`contextWindow?`、`efforts?`、`defaultEffort?`、`thinks?`、
   `maxOutputTokens?`、`vendor?`、`magpieLabel?`（档位取自上游声明的 `supported_reasoning_levels`、
   `reasoning_levels`、`supported_efforts` 等字段，`minimal`/`ultra` 丢弃，空数组表示
-  不支持档位；`thinks` 取自布尔值 `reasoning: true`；最大输出取自 `max_output_tokens`、
+  不支持档位；`thinks` 取自布尔值 `reasoning`；最大输出取自 `max_output_tokens`、
   `max_completion_tokens`、`top_provider.max_completion_tokens` 等；`vendor` 取自
   magpie 标签里模型名之后的部分，否则 `magpie_by` 或 `owned_by`），`gateway` 在列表带
   `magpie_label` 时为 `'magpie'`，否则为 `null`；带 `providerId` 且草稿未改连接时，

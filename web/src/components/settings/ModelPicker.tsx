@@ -45,7 +45,7 @@ export function candidateEntry(candidate: ModelCandidate): ProviderModelEntry {
   if (candidate.contextWindow) entry.contextWindow = candidate.contextWindow;
   if (candidate.efforts) entry.efforts = candidate.efforts;
   if (candidate.defaultEffort) entry.defaultEffort = candidate.defaultEffort;
-  if (candidate.thinks) entry.thinks = true;
+  if (typeof candidate.thinks === 'boolean') entry.thinks = candidate.thinks;
   if (candidate.maxOutputTokens) {
     entry.maxOutputTokens = candidate.maxOutputTokens;
   }

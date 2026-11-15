@@ -260,10 +260,13 @@ function backoffMs(failures: number): number {
 /** Keep the outcome and tell runners when the gateway's default flipped. */
 function commit(
   provider: UnifiedProvider,
-  update: Parameters<typeof recordProviderCatalog>[2],
+  build: Parameters<typeof recordProviderCatalog>[2],
 ): UnifiedProvider | null {
-  const before = providerToolSearchEnabled(provider);
-  const stored = recordProviderCatalog(provider.id, provider, update);
+  let before = providerToolSearchEnabled(provider);
+  const stored = recordProviderCatalog(provider.id, provider, (current) => {
+    before = providerToolSearchEnabled(current);
+    return build(current);
+  });
   if (stored && providerToolSearchEnabled(stored) !== before) {
     toolSearchChangeListener?.(provider.id);
   }
@@ -281,15 +284,35 @@ export function noteConnectionModelList(
   now = Date.now(),
 ): void {
   if (!storedConnectionAccess(provider)) return;
-  const newlyMarked = gateway === 'magpie' && provider.gateway !== 'magpie';
-  if (!newlyMarked && provider.catalog?.checkedAt) return;
-  commit(provider, {
-    ...(newlyMarked ? { gateway } : {}),
-    catalog: {
-      ...(provider.catalog ?? {}),
-      checkedAt: new Date(now).toISOString(),
-    },
+  commit(provider, (current) => {
+    const newlyMarked = gateway === 'magpie' && current.gateway !== 'magpie';
+    if (!newlyMarked && current.catalog?.checkedAt) return null;
+    return {
+      ...(newlyMarked ? { gateway } : {}),
+      catalog: {
+        ...(current.catalog ?? {}),
+        checkedAt: new Date(now).toISOString(),
+      },
+    };
   });
+}
+
+/**
+ * Why a sync of this connection would read nothing upstream: it was checked
+ * and is not magpie (`checked`), or it is magpie and was synced moments ago
+ * (`recent`). Null when it reads the list.
+ */
+export function catalogSyncSkip(
+  provider: UnifiedProvider,
+  now = Date.now(),
+): 'checked' | 'recent' | null {
+  const catalog = provider.catalog ?? {};
+  if (provider.gateway !== 'magpie')
+    return catalog.checkedAt ? 'checked' : null;
+  return catalog.syncedAt &&
+    now - Date.parse(catalog.syncedAt) < CATALOG_SYNC_RECENT_MS
+    ? 'recent'
+    : null;
 }
 
 /**
@@ -314,21 +337,18 @@ export async function syncProviderCatalog(
   const now = options.now ?? Date.now();
   const at = new Date(now).toISOString();
   const catalog = provider.catalog ?? {};
-  if (provider.gateway !== 'magpie' && catalog.checkedAt) {
+  const skipped = catalogSyncSkip(provider, now);
+  if (skipped === 'checked') {
     return {
       ok: true,
       gateway: null,
       added: [],
       newModels: [],
       missing: [],
-      skipped: 'checked',
+      skipped,
     };
   }
-  if (
-    provider.gateway === 'magpie' &&
-    catalog.syncedAt &&
-    now - Date.parse(catalog.syncedAt) < CATALOG_SYNC_RECENT_MS
-  ) {
+  if (skipped === 'recent') {
     return {
       ok: true,
       gateway: 'magpie',
@@ -357,14 +377,18 @@ export async function syncProviderCatalog(
       } as const);
 
   if (!result.ok) {
-    const failures = (catalog.failures ?? 0) + 1;
-    commit(provider, {
-      catalog: {
-        ...catalog,
-        failures,
-        retryAt: new Date(now + backoffMs(failures)).toISOString(),
-        error: { code: result.code, message: result.message, at },
-      },
+    let failures = 1;
+    commit(provider, (current) => {
+      const state = current.catalog ?? {};
+      failures = (state.failures ?? 0) + 1;
+      return {
+        catalog: {
+          ...state,
+          failures,
+          retryAt: new Date(now + backoffMs(failures)).toISOString(),
+          error: { code: result.code, message: result.message, at },
+        },
+      };
     });
     logger.warn(
       { providerId, code: result.code, status: result.status, failures },
@@ -373,51 +397,69 @@ export async function syncProviderCatalog(
     return { ok: false, code: result.code, message: result.message };
   }
 
+  /** A successful read, on the connection's catalog state as stored now. */
+  const settle = (current: UnifiedProvider): ProviderCatalogState => {
+    const settled: ProviderCatalogState = {
+      ...(current.catalog ?? {}),
+      checkedAt: at,
+    };
+    delete settled.failures;
+    delete settled.retryAt;
+    delete settled.error;
+    return settled;
+  };
   const gateway = result.gateway ?? provider.gateway ?? null;
-  const settled: ProviderCatalogState = { ...catalog, checkedAt: at };
-  delete settled.failures;
-  delete settled.retryAt;
-  delete settled.error;
   if (gateway !== 'magpie') {
-    commit(provider, { catalog: settled });
+    commit(provider, (current) => ({ catalog: settle(current) }));
     return { ok: true, gateway: null, added: [], newModels: [], missing: [] };
   }
 
-  const merge = mergeCatalogModels({
-    // A connection saved before lists existed offers its own model.
-    models: effectiveProviderModels(provider),
-    discovered: result.models,
-    previous: catalog,
-    autoAdd: catalog.autoAdd === true,
-    now: at,
+  // Merged into the list as stored when the result is written: a model the
+  // admin removed while the list was read stays removed, and auto-add is
+  // what the admin set last.
+  let merge: CatalogMerge | null = null;
+  const stored = commit(provider, (current) => {
+    const state = current.catalog ?? {};
+    merge = mergeCatalogModels({
+      // A connection saved before lists existed offers its own model.
+      models: effectiveProviderModels(current),
+      discovered: result.models,
+      previous: state,
+      autoAdd: state.autoAdd === true,
+      now: at,
+    });
+    const nextCatalog: ProviderCatalogState = {
+      ...settle(current),
+      syncedAt: at,
+      knownIds: merge.knownIds,
+    };
+    if (merge.newModels.length > 0) nextCatalog.newModels = merge.newModels;
+    else delete nextCatalog.newModels;
+    return { gateway: 'magpie', models: merge.models, catalog: nextCatalog };
   });
-  const nextCatalog: ProviderCatalogState = {
-    ...settled,
-    syncedAt: at,
-    knownIds: merge.knownIds,
-  };
-  if (merge.newModels.length > 0) nextCatalog.newModels = merge.newModels;
-  else delete nextCatalog.newModels;
-  commit(provider, {
-    gateway: 'magpie',
-    models: merge.models,
-    catalog: nextCatalog,
-  });
+  if (!stored || !merge) {
+    return {
+      ok: false,
+      code: 'UNKNOWN',
+      message: '连接在同步期间改了地址或密钥，本次结果没有保存',
+    };
+  }
+  const merged: CatalogMerge = merge;
   logger.info(
     {
       providerId,
-      added: merge.added.length,
-      newModels: merge.newModels.length,
-      missing: merge.missing.length,
+      added: merged.added.length,
+      newModels: merged.newModels.length,
+      missing: merged.missing.length,
     },
     'Model catalog synced',
   );
   return {
     ok: true,
     gateway: 'magpie',
-    added: merge.added,
-    newModels: merge.newModels.map((entry) => entry.id),
-    missing: merge.missing,
+    added: merged.added,
+    newModels: merged.newModels.map((entry) => entry.id),
+    missing: merged.missing,
   };
 }
 

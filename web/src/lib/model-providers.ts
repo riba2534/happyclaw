@@ -47,18 +47,19 @@ export interface ProviderModelEntry {
   contextWindow?: number;
   /**
    * Efforts the user or the vendor declared. Absent: unknown, and the
-   * registry decides. Empty: the model is declared to take no effort, so
-   * HappyClaw passes none (and turns thinking off unless `thinks`).
+   * registry decides. Empty: the model takes no effort, so HappyClaw passes
+   * none; thinking stays as `thinks` says.
    */
   efforts?: ModelEffort[];
   /** The effort this model runs at when neither the Agent nor the chat picks. */
   defaultEffort?: ModelEffort;
   /**
-   * The vendor says the model reasons although it names no efforts (magpie's
-   * `reasoning: true` with no levels): HappyClaw passes no effort but keeps
-   * thinking on.
+   * Whether the vendor says the model reasons (magpie's `reasoning`). Only an
+   * explicit `false` on a model that takes no effort turns thinking off at
+   * launch; absent (unknown) and `true` keep it on. An admin who unticks
+   * every effort only stops HappyClaw passing one.
    */
-  thinks?: true;
+  thinks?: boolean;
   /** The longest reply the vendor declares for the model, in tokens. */
   maxOutputTokens?: number;
   /** Who serves the model behind a gateway (magpie's provider, `owned_by`). */
@@ -209,7 +210,7 @@ function normalizeEntryMetadata(
     MAX_MODEL_DISPLAY_NAME_LENGTH,
   );
   if (displayName) out.displayName = displayName;
-  if (record.thinks === true) out.thinks = true;
+  if (typeof record.thinks === 'boolean') out.thinks = record.thinks;
   const maxOutputTokens = normalizeMaxOutputTokens(record.maxOutputTokens);
   if (maxOutputTokens) out.maxOutputTokens = maxOutputTokens;
   const vendor = normalizeLabel(record.vendor, MAX_MODEL_VENDOR_LENGTH);
@@ -374,7 +375,10 @@ export function discoveredModelEntry(
   ) {
     entry.defaultEffort = item.defaultEffort;
   }
-  if (item.thinks === true && efforts?.length === 0) entry.thinks = true;
+  // Whether it reasons matters only to a model that takes no effort.
+  if (typeof item.thinks === 'boolean' && efforts?.length === 0) {
+    entry.thinks = item.thinks;
+  }
   const maxOutputTokens = normalizeMaxOutputTokens(item.maxOutputTokens);
   if (maxOutputTokens) entry.maxOutputTokens = maxOutputTokens;
   const vendor = normalizeLabel(item.vendor, MAX_MODEL_VENDOR_LENGTH);
@@ -514,6 +518,8 @@ export interface ConnectionModelEnvInput {
   model: string;
   models: readonly ProviderModelEntry[];
   roles?: ConnectionModelRoles | null;
+  /** The same-turn fallback model the launch is handed, if any. */
+  fallbackModel?: string | null;
 }
 
 /**
@@ -546,7 +552,12 @@ export function buildConnectionModelEnv(
     const window = autoCompactWindowFor(windowOf(input.models, input.model));
     if (window) env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = String(window);
   }
-  const maxOutput = maxOutputTokensFor(input.models, input.model, roles);
+  const maxOutput = maxOutputTokensFor(
+    input.models,
+    input.model,
+    roles,
+    input.fallbackModel,
+  );
   if (maxOutput) env.CLAUDE_CODE_MAX_OUTPUT_TOKENS = String(maxOutput);
   return env;
 }
@@ -557,18 +568,20 @@ const CLAUDE_CODE_DEFAULT_MAX_OUTPUT = 32_000;
 const CLAUDE_CODE_MAX_OUTPUT_CEILING = 128_000;
 
 /**
- * CLAUDE_CODE_MAX_OUTPUT_TOKENS for a launch on `model` with `roles`, or
- * null to leave Claude Code's own limit. The launch may answer with the
- * turn's model or any role's (each tier and the sub-agent fall back to the
- * turn's model), so the value is the smallest reply every one of them
- * declares, capped at 128K. Nothing is written unless all of them declare
- * one and it lifts the reply above Claude Code's 32K default: a model that
- * declares nothing might refuse a longer request.
+ * CLAUDE_CODE_MAX_OUTPUT_TOKENS for a launch on `model` with `roles` and the
+ * same-turn `fallbackModel`, or null to leave Claude Code's own limit. The
+ * launch may answer with the turn's model, any role's (each tier and the
+ * sub-agent fall back to the turn's model) or the fallback, so the value is
+ * the smallest reply every one of them declares, capped at 128K. Nothing is
+ * written unless all of them declare one and it lifts the reply above
+ * Claude Code's 32K default: a model that declares nothing (a fallback the
+ * list does not have included) might refuse a longer request.
  */
 export function maxOutputTokensFor(
   models: readonly ProviderModelEntry[],
   model: string,
   roles: ConnectionModelRoles | null | undefined,
+  fallbackModel?: string | null,
 ): number | null {
   const current = splitOneMillionSuffix(model).model;
   if (!current) return null;
@@ -577,6 +590,8 @@ export function maxOutputTokensFor(
     const id = roles?.[role];
     if (id) used.add(splitOneMillionSuffix(id).model);
   }
+  const fallback = fallbackModel && splitOneMillionSuffix(fallbackModel).model;
+  if (fallback) used.add(fallback);
   let smallest = Infinity;
   for (const id of used) {
     const declared = findModelEntry(models, id)?.maxOutputTokens;
@@ -629,8 +644,8 @@ export interface DiscoveredModel {
   /** Efforts the vendor declares; absent when it says nothing, [] for none. */
   efforts?: ModelEffort[];
   defaultEffort?: ModelEffort;
-  /** The vendor says `reasoning: true` (see ProviderModelEntry.thinks). */
-  thinks?: true;
+  /** The vendor's boolean `reasoning` (see ProviderModelEntry.thinks). */
+  thinks?: boolean;
   maxOutputTokens?: number;
   /** Who serves the model: magpie's provider name, else `owned_by`. */
   vendor?: string;
@@ -1410,7 +1425,8 @@ export function parseModelList(json: unknown): DiscoveredModel[] | null {
       if (declared.efforts) model.efforts = declared.efforts;
       if (declared.defaultEffort) model.defaultEffort = declared.defaultEffort;
       // Only an explicit boolean counts; a reasoning object is efforts.
-      if (record.reasoning === true) model.thinks = true;
+      if (typeof record.reasoning === 'boolean')
+        model.thinks = record.reasoning;
       const topProvider =
         record.top_provider && typeof record.top_provider === 'object'
           ? (record.top_provider as Record<string, unknown>)
@@ -2410,8 +2426,8 @@ export interface ResolvedModelCapabilities {
   effortsSource: ModelCapabilitySource;
   contextSource: ModelCapabilitySource;
   /**
-   * The model is declared to take no effort and not to reason (no `thinks`):
-   * a launch turns Claude Code's thinking off.
+   * The model takes no effort and is declared not to reason
+   * (`thinks: false`): a launch turns Claude Code's thinking off.
    */
   thinkingDisabled: boolean;
 }
@@ -2457,7 +2473,8 @@ export function resolveModelCapabilities(
     ),
     effortsSource,
     contextSource,
-    thinkingDisabled: declared && efforts.length === 0 && !entry.thinks,
+    thinkingDisabled:
+      declared && efforts.length === 0 && entry.thinks === false,
   };
 }
 
@@ -2564,11 +2581,13 @@ export function parseMagpieQuotas(json: unknown): MagpieQuotaAccount[] | null {
 }
 
 /**
- * When a model magpie refused for its usage limit may run again: the
- * earliest renewal among the used-up windows (remaining ≤ 0) of the provider
- * the model id names (`<provider>/<model>`). Null when that cannot be told
- * without guessing: a routing group (`group/…`) or `auto/…` model, an id
- * without a provider, or no used-up window with a renewal time.
+ * When a model magpie refused for its usage limit may run again. An account
+ * of the provider the model id names (`<provider>/<model>`) serves again once
+ * every used-up window (remaining ≤ 0) of it has renewed, so it counts by its
+ * latest renewal; the model runs again on the account that comes back first.
+ * Null when that cannot be told without guessing: a routing group
+ * (`group/…`) or `auto/…` model, an id without a provider, or no account
+ * whose used-up windows all name a renewal time.
  */
 export function magpieUsageLimitResetAt(
   accounts: readonly MagpieQuotaAccount[],
@@ -2582,14 +2601,21 @@ export function magpieUsageLimitResetAt(
   let earliest: number | null = null;
   for (const account of accounts) {
     if (account.provider.toLowerCase() !== provider || account.error) continue;
+    let latest: number | null = null;
+    let untold = false;
     for (const window of account.windows) {
       if (window.unlimited || window.remaining === null) continue;
-      if (window.remaining > 0 || !window.resetsAt) continue;
-      const at = Date.parse(window.resetsAt);
-      if (Number.isFinite(at) && (earliest === null || at < earliest)) {
-        earliest = at;
+      if (window.remaining > 0) continue;
+      const at = window.resetsAt ? Date.parse(window.resetsAt) : NaN;
+      if (!Number.isFinite(at)) {
+        // A spent window with no renewal: when this account returns is unknown.
+        untold = true;
+        break;
       }
+      if (latest === null || at > latest) latest = at;
     }
+    if (untold || latest === null) continue;
+    if (earliest === null || latest < earliest) earliest = latest;
   }
   return earliest;
 }

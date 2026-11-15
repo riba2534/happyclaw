@@ -1294,7 +1294,7 @@ const ProviderModelListSchema = z
         .max(MAX_OUTPUT_TOKENS_LIMIT)
         .optional(),
       vendor: z.string().max(MAX_MODEL_VENDOR_LENGTH).optional(),
-      thinks: z.literal(true).optional(),
+      thinks: z.boolean().optional(),
     }),
   )
   .max(MAX_PROVIDER_MODELS);
