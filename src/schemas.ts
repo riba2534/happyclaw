@@ -87,17 +87,31 @@ const AutomationPreRunCheckSchema = z.object({
   timeoutMs: z.number().int().positive().nullable().optional(),
 });
 
+/**
+ * A model and an effort as a choice names them. The connection's model list
+ * (a ChatGPT catalog) decides which values are valid, so they are plain
+ * strings here.
+ */
+const ChoiceModelSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(MAX_PROVIDER_MODEL_ID_LENGTH)
+  .nullable()
+  .optional();
+const ChoiceEffortSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(32)
+  .nullable()
+  .optional();
+
 /** Checked against the connection like a pick in the chat (the service). */
 const AutomationModelChoiceSchema = z.object({
   modelConfigId: z.string().trim().min(1).max(128),
-  model: z
-    .string()
-    .trim()
-    .min(1)
-    .max(MAX_PROVIDER_MODEL_ID_LENGTH)
-    .nullable()
-    .optional(),
-  effort: z.string().trim().min(1).max(32).nullable().optional(),
+  model: ChoiceModelSchema,
+  effort: ChoiceEffortSchema,
 });
 
 /**
@@ -312,20 +326,13 @@ export const GroupAgentProfilePatchSchema = z.object({
  * Chat composer model picker: null returns the conversation to the default.
  * `model` picks inside any configuration, `effort` only inside a ChatGPT one;
  * the request replaces the whole choice, so leaving them out follows the
- * configuration's defaults. The configuration's model list (a ChatGPT
- * catalog) decides which values are valid, so they are plain strings here.
+ * configuration's defaults.
  */
 export const SessionModelSelectionSchema = z.object({
   agentId: z.string().trim().min(1).max(128).nullable().optional(),
   modelConfigId: z.string().trim().min(1).max(128).nullable(),
-  model: z
-    .string()
-    .trim()
-    .min(1)
-    .max(MAX_PROVIDER_MODEL_ID_LENGTH)
-    .nullable()
-    .optional(),
-  effort: z.string().trim().min(1).max(32).nullable().optional(),
+  model: ChoiceModelSchema,
+  effort: ChoiceEffortSchema,
 });
 
 /**

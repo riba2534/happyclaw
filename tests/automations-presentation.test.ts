@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'vitest';
 import {
+  automationTakesModel,
   validateAutomationDraft,
   type Automation,
   type AutomationRun,
@@ -8,7 +9,6 @@ import {
   automationCellBadge,
   automationFormFrom,
   automationSubtitle,
-  automationTakesModel,
   automationUnreadTone,
   automationsBySession,
   defaultScheduleForm,

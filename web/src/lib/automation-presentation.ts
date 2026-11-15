@@ -1,5 +1,6 @@
 import {
   AUTOMATION_LIMITS,
+  automationTakesModel,
   formatAutomationTime,
   type Automation,
   type AutomationDraft,
@@ -495,17 +496,6 @@ export function automationFormFrom(
     scriptCommand: automation.scriptCommand ?? '',
     model: automation.model ?? null,
   };
-}
-
-/**
- * Whether the runs take a model of their own: the sessions they create
- * (每次新建, 持续会话) do; a bound session keeps its own choice, and a
- * script runs no model.
- */
-export function automationTakesModel(
-  values: Pick<AutomationFormValues, 'execution' | 'sessionMode'>,
-): boolean {
-  return values.execution === 'agent' && values.sessionMode !== 'bound';
 }
 
 function sameModelChoice(

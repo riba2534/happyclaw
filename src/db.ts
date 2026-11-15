@@ -6716,7 +6716,9 @@ export function commitAgentBuilderDraft(
 }
 
 /** A model name as stored: never with Claude Code's `[1m]` switch. */
-function storedModelName(model: string | null | undefined): string | null {
+export function storedModelName(
+  model: string | null | undefined,
+): string | null {
   return (model && splitOneMillionSuffix(model).model) || null;
 }
 

@@ -165,8 +165,7 @@ export interface AutomationDraft {
 
 /**
  * A model choice an automation gives the sessions its runs go to, checked
- * like a conversation's own pick when it is saved. A bound session keeps its
- * own choice, and a script runs no model, so neither takes one.
+ * like a conversation's own pick when it is saved.
  */
 export interface AutomationModelChoice {
   /** The model connection (saved model configuration). */
@@ -175,6 +174,18 @@ export interface AutomationModelChoice {
   model: string | null;
   /** A reasoning effort the model takes; null follows the default. */
   effort: string | null;
+}
+
+/**
+ * Whether the runs take a model of their own: the sessions an automation
+ * creates (fresh, persistent) do; a bound session keeps its own choice, and
+ * a script runs no model.
+ */
+export function automationTakesModel(automation: {
+  execution: AutomationExecution;
+  sessionMode: AutomationSessionMode;
+}): boolean {
+  return automation.execution === 'agent' && automation.sessionMode !== 'bound';
 }
 
 export const AUTOMATION_LIMITS = {

@@ -26,6 +26,7 @@ import type { ApiError } from '../../api/client';
 import {
   AUTOMATION_LIMITS,
   AUTOMATION_SESSION_MODE_LABELS,
+  automationTakesModel,
   describeAutomationSchedule,
   validateAutomationDraft,
   type Automation,
@@ -38,7 +39,6 @@ import {
   SCHEDULE_PRESET_LABELS,
   WEEKDAY_LABELS,
   automationFormFrom,
-  automationTakesModel,
   draftFromForm,
   emptyAutomationForm,
   fieldOfError,
@@ -266,12 +266,13 @@ function AutomationForm({
       let saved: Automation;
       if (automation) {
         // The execution kind is fixed at creation; fresh and persistent
-        // sessions are the server's to pick.
-        const patch: AutomationPatchBody = { ...draft };
-        delete (patch as Partial<typeof draft>).execution;
-        // A model goes only when it changed: an omitted one stays as it is.
-        delete patch.model;
-        Object.assign(patch, modelPatchFromForm(values, automation));
+        // sessions are the server's to pick. A model goes only when it
+        // changed: an omitted one stays as it is.
+        const { execution: _execution, model: _model, ...kept } = draft;
+        const patch: AutomationPatchBody = {
+          ...kept,
+          ...modelPatchFromForm(values, automation),
+        };
         if (values.sessionMode === 'bound')
           patch.targetSessionJid = targetSessionJid;
         saved = await update(automation.id, revision, patch);
