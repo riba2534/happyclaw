@@ -152,8 +152,15 @@ export interface AutomationDraft {
   preRunCheck?: AutomationPreRunCheck | null;
   execution?: AutomationExecution;
   scriptCommand?: string | null;
-  /** fresh/persistent agent runs only; null or omitted: the session default. */
-  model?: AutomationModelChoice | null;
+  /**
+   * fresh/persistent agent runs only; null: the session default. Omitted
+   * means the default on create and no change on update. A model or effort
+   * left out is null.
+   */
+  model?:
+    | (Pick<AutomationModelChoice, 'modelConfigId'> &
+        Partial<Pick<AutomationModelChoice, 'model' | 'effort'>>)
+    | null;
 }
 
 /**

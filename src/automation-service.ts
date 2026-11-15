@@ -19,6 +19,7 @@ import {
   type AutomationDraft,
   type AutomationIpcRequest,
   type AutomationIpcResult,
+  type AutomationModelChoice,
   type AutomationRun,
 } from './automation.js';
 import {
@@ -58,13 +59,17 @@ import {
   saveAutomation,
   saveAutomationRun,
 } from './automation-store.js';
-import { getRegisteredGroup } from './db.js';
+import { getRegisteredGroup, getUserById } from './db.js';
 import { canModifyGroup } from './group-acl.js';
 import {
   redactAutomationForGuest,
   redactAutomationRunForGuest,
 } from './guest-access.js';
 import { logger } from './logger.js';
+import {
+  checkSessionModelChoice,
+  type SessionModelChooser,
+} from './session-model-service.js';
 
 export interface AutomationCore {
   service: AutomationService;
@@ -86,6 +91,9 @@ const TARGET_NOT_SESSION_ERROR = '自动化只能绑定到一个具体的会话'
 const SESSION_DELETED_REASON = '绑定的会话已删除';
 const SUSPENDED_REASON = '工作区重建中';
 const MANUAL_CANCEL_ERROR = '已手动终止';
+const MODEL_BOUND_SESSION_ERROR =
+  '绑定已有会话的自动化沿用该会话自己的模型，不能另选模型';
+const MODEL_SCRIPT_ERROR = '脚本不调用模型，不能选择模型';
 /** interval upper bound: beyond a year `Date` arithmetic gets close to its range. */
 const INTERVAL_MAX_MS = 365 * 24 * 60 * 60 * 1000;
 const RUNS_DEFAULT_LIMIT = 50;
@@ -117,9 +125,8 @@ function belongsToWorkspace(sessionJid: string, workspaceJid: string): boolean {
 
 /** A target that is no session address at all (a workspace JID). */
 export class AutomationTargetNotSessionError extends AutomationError {
-  readonly code = 'automation_target_not_session';
   constructor() {
-    super(400, TARGET_NOT_SESSION_ERROR);
+    super(400, TARGET_NOT_SESSION_ERROR, 'automation_target_not_session');
   }
 }
 
@@ -323,6 +330,64 @@ export function createAutomationCore(
     return sessionJid;
   }
 
+  /**
+   * Only the sessions an automation creates take its model: a bound session
+   * keeps its own choice, and a script runs no model.
+   */
+  function assertModelFits(
+    model: AutomationDraft['model'],
+    sessionMode: Automation['sessionMode'],
+    execution: Automation['execution'],
+  ): void {
+    if (!model) return;
+    if (sessionMode === 'bound')
+      throw new AutomationError(
+        400,
+        MODEL_BOUND_SESSION_ERROR,
+        'automation_model_bound_session',
+      );
+    if (execution === 'script')
+      throw new AutomationError(
+        400,
+        MODEL_SCRIPT_ERROR,
+        'automation_model_script',
+      );
+  }
+
+  /**
+   * A model choice as the automation stores it: checked like a pick in the
+   * chat, as its creator would make it, whoever edits it, since the runs
+   * act for the creator.
+   */
+  function checkModel(
+    requested: AutomationDraft['model'],
+    sessionMode: Automation['sessionMode'],
+    execution: Automation['execution'],
+    workspaceJid: string,
+    createdBy: string,
+  ): AutomationModelChoice | null {
+    if (!requested) return null;
+    assertModelFits(requested, sessionMode, execution);
+    const workspace = getRegisteredGroup(workspaceJid);
+    if (!workspace) throw new AutomationError(404, WORKSPACE_NOT_FOUND_ERROR);
+    // A creator no longer on file chooses with no permissions at all.
+    const chooser: SessionModelChooser = getUserById(createdBy) ?? {
+      role: 'member',
+      permissions: [],
+    };
+    const checked = checkSessionModelChoice(workspace, requested, chooser);
+    // A connection that does not exist is a bad field of the draft here,
+    // not a missing resource.
+    if (!checked.ok)
+      throw new AutomationError(
+        400,
+        checked.rejection.error,
+        checked.rejection.code,
+      );
+    const { modelConfigId, model, effort } = checked.choice;
+    return modelConfigId ? { modelConfigId, model, effort } : null;
+  }
+
   // ─── Writes ────────────────────────────────────────────────────────────
 
   function insert(
@@ -342,6 +407,13 @@ export function createAutomationCore(
       input.targetSessionJid,
       input.workspaceJid,
     );
+    const model = checkModel(
+      input.model,
+      input.sessionMode,
+      execution,
+      input.workspaceJid,
+      createdBy,
+    );
     const nowIso = now().toISOString();
     const automation: Automation = {
       id: crypto.randomUUID(),
@@ -352,7 +424,7 @@ export function createAutomationCore(
       schedule: normalizeSchedule(input.schedule),
       sessionMode: input.sessionMode,
       targetSessionJid,
-      model: null,
+      model,
       deliveryRouteJid,
       execution,
       status: 'active',
@@ -423,6 +495,20 @@ export function createAutomationCore(
       targetSessionJid !== current.targetSessionJid
         ? null
         : current.deliveryRouteJid;
+    // A kept choice is not checked again (the launch does that), but it must
+    // still fit: moving to a bound session needs the choice cleared.
+    let model = current.model;
+    if (has('model')) {
+      model = checkModel(
+        patch.model,
+        draft.sessionMode,
+        current.execution,
+        current.workspaceJid,
+        current.createdBy,
+      );
+    } else {
+      assertModelFits(model, draft.sessionMode, current.execution);
+    }
 
     const nowDate = now();
     const next: Automation = {
@@ -433,6 +519,7 @@ export function createAutomationCore(
         : current.schedule,
       sessionMode: draft.sessionMode,
       targetSessionJid,
+      model,
       deliveryRouteJid,
       revision: current.revision + 1,
       updatedAt: nowDate.toISOString(),
@@ -489,10 +576,13 @@ export function createAutomationCore(
     return next;
   }
 
-  /** What `actor` may see of an automation: viewers miss host commands. */
+  /**
+   * What `actor` may see of an automation: viewers miss host commands and,
+   * as everywhere else, the model choice.
+   */
   function present(actor: AutomationActor, automation: Automation): Automation {
     return actor.kind === 'viewer'
-      ? redactAutomationForGuest(automation)
+      ? { ...redactAutomationForGuest(automation), model: null }
       : automation;
   }
 
@@ -794,12 +884,19 @@ export function createAutomationCore(
         });
         return { automation };
       }
-      case 'automation_update':
+      case 'automation_update': {
+        // The agent tools carry no model: it is chosen in the Web only, so a
+        // stray field in a request leaves it as it is.
+        const { model: _model, ...patch } = request.patch as AutomationPatch;
         return {
-          automation: update(actor, request.id, request.expectedRevision, {
-            ...request.patch,
-          }),
+          automation: update(
+            actor,
+            request.id,
+            request.expectedRevision,
+            patch,
+          ),
         };
+      }
       case 'automation_pause':
         return { automation: service.pause(actor, request.id) };
       case 'automation_resume':
