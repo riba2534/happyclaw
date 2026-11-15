@@ -30,9 +30,13 @@ export interface ModelOptionsDefault {
 /** One model of a non-ChatGPT connection. */
 export interface ConnectionModelEntry {
   id: string;
-  /** Empty or absent: no effort control is offered. */
+  /**
+   * Empty: the model takes none, unless `effortsSource` is `none`, which
+   * means nothing is known and every effort may be picked, unverified.
+   */
   efforts?: string[];
   defaultEffort?: string | null;
+  effortsSource?: string;
   displayName?: string | null;
   display_name?: string | null;
 }
@@ -73,7 +77,12 @@ export interface ChoiceModel {
   label: string;
   efforts: string[];
   defaultEffort: string | null;
+  /** Nothing is known about its efforts: all are offered, none verified. */
+  effortsUnverified: boolean;
 }
+
+/** Every effort a model nothing is known about may be given. */
+const UNVERIFIED_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
 
 // ─── Loading ──────────────────────────────────────────────────────────
 
@@ -142,14 +151,19 @@ export function connectionModels(option: ModelConnectionOption): ChoiceModel[] {
       label: entry.label || entry.value,
       efforts: entry.efforts ?? [],
       defaultEffort: entry.defaultEffort || null,
+      effortsUnverified: false,
     }));
   }
-  return (option.models ?? []).map((entry) => ({
-    id: entry.id,
-    label: entry.displayName || entry.display_name || entry.id,
-    efforts: entry.efforts ?? [],
-    defaultEffort: entry.defaultEffort ?? null,
-  }));
+  return (option.models ?? []).map((entry) => {
+    const unknown = !entry.efforts?.length && entry.effortsSource === 'none';
+    return {
+      id: entry.id,
+      label: entry.displayName || entry.display_name || entry.id,
+      efforts: unknown ? UNVERIFIED_EFFORTS : (entry.efforts ?? []),
+      defaultEffort: entry.defaultEffort ?? null,
+      effortsUnverified: unknown,
+    };
+  });
 }
 
 /**
@@ -159,14 +173,20 @@ export function connectionModels(option: ModelConnectionOption): ChoiceModel[] {
 export function choiceEfforts(
   option: ModelConnectionOption,
   model: string | null,
-): { efforts: string[]; defaultEffort: string | null } {
+): { efforts: string[]; defaultEffort: string | null; unverified: boolean } {
   const id = model ?? connectionOwnModel(option);
   const entry = connectionModels(option).find((item) => item.id === id);
-  if (!entry?.efforts.length) return { efforts: [], defaultEffort: null };
+  if (!entry?.efforts.length) {
+    return { efforts: [], defaultEffort: null, unverified: false };
+  }
   const defaultEffort =
     entry.defaultEffort ??
     (option.codex && !model ? (option.codex.defaultEffort ?? null) : null);
-  return { efforts: entry.efforts, defaultEffort };
+  return {
+    efforts: entry.efforts,
+    defaultEffort,
+    unverified: entry.effortsUnverified,
+  };
 }
 
 /** How a model of the connection is named: its display name, else its id. */

@@ -54,6 +54,11 @@ interface ModelEntry {
   /** A name the connection declares for it, when it differs from the id. */
   displayName: string | null;
   efforts: readonly string[];
+  /**
+   * Nothing is known about its efforts (none listed, source `none`): any
+   * effort may be given, and it goes as picked, unverified.
+   */
+  effortsUnverified: boolean;
 }
 
 /**
@@ -71,6 +76,7 @@ function modelsOf(option: ConnectionOption): ModelEntry[] {
       id: entry.value,
       displayName: entry.label !== entry.value ? entry.label : null,
       efforts: entry.efforts,
+      effortsUnverified: false,
     }));
   }
   if (!('models' in option) || !option.models) return [];
@@ -80,6 +86,8 @@ function modelsOf(option: ConnectionOption): ModelEntry[] {
       id: entry.id,
       displayName: displayName && displayName !== entry.id ? displayName : null,
       efforts: entry.efforts,
+      effortsUnverified:
+        entry.efforts.length === 0 && entry.effortsSource === 'none',
     };
   });
 }
@@ -194,7 +202,9 @@ function listModels(
     .forEach((entry, offset) => {
       const efforts = entry.efforts.length
         ? ` · 档位 ${entry.efforts.join('/')}`
-        : '';
+        : entry.effortsUnverified
+          ? ' · 档位未验证'
+          : '';
       const mark = entry.id === current ? '（当前）' : '';
       lines.push(
         `${start + offset + 1}. ${modelLabel(entry)}${efforts}${mark}`,
@@ -312,14 +322,14 @@ export function runModelCommand(input: ModelCommandInput): string {
     return choose(option, entry.id, numbered[3] ?? null);
   }
 
-  // A trailing word is an effort when the rest names a model; otherwise the
-  // whole text is the name (a display name may contain spaces).
-  const split = args.match(/^(.+?)\s+(\S+)$/);
-  let matches = split ? findModels(view, split[1]) : [];
-  let effort = split ? split[2] : null;
-  if (matches.length === 0) {
-    matches = findModels(view, args);
-    effort = null;
+  // The whole text first: a display name may contain spaces, its last word
+  // too. Otherwise a trailing word is an effort when the rest names a model.
+  let matches = findModels(view, args);
+  let effort: string | null = null;
+  const split = matches.length === 0 ? args.match(/^(.+?)\s+(\S+)$/) : null;
+  if (split) {
+    matches = findModels(view, split[1]);
+    effort = split[2];
   }
   if (matches.length === 0) {
     return `没有找到模型 ${args}，发送 /model 查看连接和模型。`;

@@ -1195,9 +1195,12 @@ Legacy 渠道 facade 位于 `/api/config/user-im/*`，涵盖飞书、Telegram、
 「每次新建」和「持续会话」的 Agent 自动化有效：绑定已有会话时 400
 `automation_model_bound_session`（改成绑定已有会话也要同时清除它），脚本 400
 `automation_model_script`。选择按 `model-selection` 的规则校验，选择者是自动化的创建者，
-不合法时 400 与同样的 `code`（配置不存在也是 400 `MODEL_CONFIG_NOT_FOUND`）。每次新建的
-运行会话创建时就是这个选择；持续会话每次运行前，会话的选择与它不同时改成它（暖 Runner 在
-本轮结束后退出）。没有设置时不改动任何会话的选择。Agent 的 `automation_*` 工具不能设置或
+不合法时 400 与同样的 `code`（配置不存在也是 400 `MODEL_CONFIG_NOT_FOUND`）。模型只给
+自动化自己建的会话：持续会话接上的是已有会话（`targetSessionJid` 指向别的会话，或从绑定已有
+会话改过来）时同样 400 `automation_model_bound_session`。每次新建的运行会话创建时就是这个
+选择；持续会话每次运行前，会话的选择与它不同时改成它（暖 Runner 在本轮结束后退出）。PATCH
+把模型清除时，自动化自己的持续会话若仍是它给的选择，回到默认。没有设置时不改动任何会话的
+选择。选择者已停用或不存在时按没有任何权限校验。Agent 的 `automation_*` 工具不能设置或
 修改它。
 
 旧的 `/api/tasks*` 全部返回 410，提示改用 `/api/automations`。

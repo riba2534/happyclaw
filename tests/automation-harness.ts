@@ -25,6 +25,8 @@ export interface FakeRuntime {
   }>;
   archived: string[];
   deleted: string[];
+  /** Sessions an automation stopped giving its model (sessionJid). */
+  released: string[];
   cancelled: Array<{ sessionJid: string; inputMessageId: string }>;
   notices: Array<{ routeJid: string; text: string }>;
   scripts: Array<{ sessionJid: string; text: string }>;
@@ -42,6 +44,7 @@ export function createFakeRuntime(
     created: [],
     archived: [],
     deleted: [],
+    released: [],
     cancelled: [],
     notices: [],
     scripts: [],
@@ -75,6 +78,9 @@ export function createFakeRuntime(
           archived: runtime.archived.includes(c.sessionJid),
         })),
     resolveDeliveryRoute: ({ preferredRouteJid }) => preferredRouteJid,
+    releaseAutomationSessionModel({ sessionJid }) {
+      runtime.released.push(sessionJid);
+    },
     async archiveAutomationSession(jid) {
       runtime.archived.push(jid);
     },

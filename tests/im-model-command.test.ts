@@ -211,7 +211,8 @@ describe('/model shows', () => {
     expect(run('2').split('\n')).toEqual([
       'GLM 的模型：',
       '1. glm-5.3 · 档位 low/high/max（当前）',
-      '2. glm-5.3-air',
+      // Nothing is known about its efforts.
+      '2. glm-5.3-air · 档位未验证',
       '发送 /model 2.<编号> [档位] 切换。',
     ]);
     const first = run('5').split('\n');
@@ -220,7 +221,7 @@ describe('/model shows', () => {
     expect(first.at(-1)).toContain('/model 5 2 看下一页');
     const second = run('5 2').split('\n');
     expect(second[0]).toBe('Big 的模型（第 2/2 页）：');
-    expect(second[1]).toBe('21. big-21');
+    expect(second[1]).toBe('21. big-21 · 档位未验证');
     expect(run('5 3')).toBe('Big 的模型只有 2 页。');
     expect(run('9')).toBe('没有编号为 9 的连接，发送 /model 查看列表。');
   });
@@ -248,11 +249,14 @@ describe('/model picks', () => {
       modelConfigId: 'relay',
       model: 'kimi-k3',
     });
-    // The last word is an effort when the rest names a model: it is checked
-    // against that model (which takes none).
-    expect(run('glm-5.3-air low')).toBe(
-      '⚠️ 模型 glm-5.3-air 不支持推理档位 low',
+    // The last word is an effort when the rest names a model.
+    expect(run('opus high')).toBe(
+      '已切换到 Claude 官方 · opus · 档位 high，下一条消息起生效。',
     );
+    expect(stored()).toMatchObject({
+      modelConfigId: 'official',
+      effort: 'high',
+    });
   });
 
   test('a name several connections offer asks for the number', () => {
