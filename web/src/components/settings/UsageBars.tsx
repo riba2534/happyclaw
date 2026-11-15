@@ -1,5 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { api } from '@/api/client';
+import type {
+  MagpieQuotasUsage,
+  MagpieQuotaWindow,
+} from '@/lib/model-providers';
 import { cn } from '@/lib/utils';
 import type {
   CachedOAuthUsage,
@@ -9,6 +13,12 @@ import type {
   OAuthUsageBucket,
   ProviderQuotaObservation,
 } from './types';
+
+/** What the usage route answers, by the kind of connection. */
+type ProviderUsage =
+  | CachedOAuthUsage
+  | CodexRateLimitsUsage
+  | MagpieQuotasUsage;
 
 const POLL_INTERVAL_MS = 3 * 60 * 1000;
 const LIVE_OBSERVATION_FRESHNESS_MS = 5 * 60 * 1000;
@@ -280,6 +290,122 @@ function CodexUsage({
   );
 }
 
+/** One magpie usage window: what is left of it and when it renews. */
+function QuotaWindowColumn({ quota }: { quota: MagpieQuotaWindow }) {
+  const remaining = quota.unlimited
+    ? null
+    : clampUsagePercentage(quota.remaining);
+  const reset = formatResetTime(quota.resetsAt);
+  const label = quota.name || '额度';
+  return (
+    <div className="min-w-0 rounded-lg bg-muted/50 px-2.5 py-2">
+      <div className="flex min-w-0 items-center justify-between gap-2">
+        <span
+          className="truncate text-micro font-medium text-muted-foreground"
+          title={label}
+        >
+          {label}
+        </span>
+        <span className="shrink-0 font-mono text-micro text-muted-foreground tabular-nums">
+          {quota.unlimited
+            ? '不限量'
+            : remaining === null
+              ? '—'
+              : `剩余 ${Math.round(remaining)}%`}
+        </span>
+      </div>
+      <div className="mt-1.5 h-1 overflow-hidden rounded-full bg-foreground/10">
+        {remaining !== null && (
+          <div
+            className={`h-full rounded-full transition-all ${barColor(100 - remaining)}`}
+            style={{ width: `${remaining}%` }}
+          />
+        )}
+      </div>
+      {reset && (
+        <div className="mt-1 truncate text-micro text-faint-foreground">
+          {reset} 后重置
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * The accounts a magpie gateway routes to, each with its windows as magpie
+ * read them. A failed read names its reason, for the gateway as a whole or
+ * for one account.
+ */
+function MagpieUsage({
+  usage,
+  className,
+}: {
+  usage: MagpieQuotasUsage;
+  className?: string;
+}) {
+  if (usage.error) {
+    return (
+      <div
+        className={cn('text-micro break-words text-warning', className)}
+        title={usage.error}
+      >
+        无法读取 magpie 用量：{usage.error}
+      </div>
+    );
+  }
+  if (usage.accounts.length === 0) {
+    return (
+      <div className={cn('text-micro text-muted-foreground', className)}>
+        magpie 还没有能查询用量的账号
+      </div>
+    );
+  }
+  return (
+    <div className={cn('min-w-0 space-y-3', className)}>
+      {usage.accounts.map((account, index) => (
+        <section
+          key={`${account.provider}-${account.name}-${index}`}
+          aria-label={`${account.name} 的用量`}
+          className="min-w-0 space-y-1.5"
+        >
+          <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 text-micro">
+            <span className="min-w-0 truncate font-medium text-foreground">
+              {account.name}
+            </span>
+            <span className="font-mono text-muted-foreground">
+              {account.provider}
+            </span>
+            {account.plan && (
+              <span className="text-muted-foreground">{account.plan}</span>
+            )}
+          </div>
+          {account.error ? (
+            <div className="text-micro break-words text-error">
+              读取失败：{account.error}
+            </div>
+          ) : account.windows.length === 0 ? (
+            <div className="text-micro text-muted-foreground">没有用量窗口</div>
+          ) : (
+            <div className="grid min-w-0 grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-3">
+              {account.windows.map((quota, quotaIndex) => (
+                <QuotaWindowColumn
+                  key={`${quota.name}-${quotaIndex}`}
+                  quota={quota}
+                />
+              ))}
+            </div>
+          )}
+        </section>
+      ))}
+      {Number.isFinite(usage.fetchedAt) && usage.fetchedAt > 0 && (
+        <div className="text-micro text-faint-foreground">
+          更新于 {new Date(usage.fetchedAt).toLocaleTimeString()}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function displayRateLimitType(type: string | undefined): string {
   switch (type) {
     case 'five_hour':
@@ -362,9 +488,7 @@ export function UsageBars({
   providerVersion?: string;
   className?: string;
 }) {
-  const [usage, setUsage] = useState<
-    CachedOAuthUsage | CodexRateLimitsUsage | null
-  >(null);
+  const [usage, setUsage] = useState<ProviderUsage | null>(null);
   const [loading, setLoading] = useState(true);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -376,7 +500,7 @@ export function UsageBars({
     const fetchUsage = async () => {
       if (document.visibilityState !== 'visible') return;
       try {
-        const data = await api.get<CachedOAuthUsage | CodexRateLimitsUsage>(
+        const data = await api.get<ProviderUsage>(
           `/api/config/claude/providers/${providerId}/usage`,
         );
         if (!cancelled) setUsage(data);
@@ -406,6 +530,9 @@ export function UsageBars({
   if (loading || !usage) return null;
   if ('kind' in usage && usage.kind === 'codex_rate_limits') {
     return <CodexUsage usage={usage} className={className} />;
+  }
+  if ('kind' in usage && usage.kind === 'magpie_quotas') {
+    return <MagpieUsage usage={usage} className={className} />;
   }
   if (!('data' in usage) || !usage.data) return null;
 

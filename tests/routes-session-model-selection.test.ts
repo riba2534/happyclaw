@@ -121,7 +121,8 @@ function savedProviders() {
       anthropicAuthToken: 'glm-token',
       models: [
         { id: 'glm-5.3', contextWindow: 1_000_000 },
-        { id: 'glm-5.3-air', effort: 'low' },
+        // Declared to take no effort; the legacy default effort goes with it.
+        { id: 'glm-5.3-air', efforts: [], effort: 'low' },
         { id: 'glm-5.3-legacy', hidden: true },
       ],
       codexOAuthCredentials: null,
@@ -300,11 +301,15 @@ describe('GET /:jid/model-selection', () => {
         models: [
           {
             id: 'opus',
+            displayName: null,
             efforts: ['low', 'medium', 'high', 'xhigh', 'max'],
             defaultEffort: 'medium',
             // Only a declared window counts; the registry's is a suggestion.
             contextWindow: null,
             effortsSource: 'registry',
+            maxOutputTokens: null,
+            vendor: null,
+            upstreamMissingSince: null,
           },
         ],
       },
@@ -324,25 +329,37 @@ describe('GET /:jid/model-selection', () => {
         models: [
           {
             id: 'glm-5.3',
+            displayName: null,
             efforts: ['low', 'high', 'max'],
             defaultEffort: 'high',
             contextWindow: 1_000_000,
             effortsSource: 'registry',
+            maxOutputTokens: null,
+            vendor: null,
+            upstreamMissingSince: null,
           },
-          // Nothing is known about it: no effort is offered, claimed or sent.
+          // Declared to take no effort: none is offered, claimed or passed.
           {
             id: 'glm-5.3-air',
+            displayName: null,
             efforts: [],
             defaultEffort: null,
             contextWindow: null,
-            effortsSource: 'none',
+            effortsSource: 'declared',
+            maxOutputTokens: null,
+            vendor: null,
+            upstreamMissingSince: null,
           },
           {
             id: 'glm-5.3-legacy',
+            displayName: null,
             efforts: [],
             defaultEffort: null,
             contextWindow: null,
             effortsSource: 'none',
+            maxOutputTokens: null,
+            vendor: null,
+            upstreamMissingSince: null,
           },
         ],
       },
@@ -355,10 +372,14 @@ describe('GET /:jid/model-selection', () => {
         models: [
           {
             id: 'glm-5.3',
+            displayName: null,
             efforts: ['low', 'high', 'max'],
             defaultEffort: 'high',
             contextWindow: null,
             effortsSource: 'registry',
+            maxOutputTokens: null,
+            vendor: null,
+            upstreamMissingSince: null,
           },
         ],
       },
@@ -947,7 +968,7 @@ describe('model-selection inside a configuration that is not ChatGPT', () => {
   });
 
   test('an effort goes with a model that takes it', async () => {
-    // glm-5.3-air has no known efforts, though it is configured to run low.
+    // glm-5.3-air is declared to take none, though it was configured to run low.
     const refused = await call('PUT', '', {
       modelConfigId: 'glm',
       model: 'glm-5.3-air',

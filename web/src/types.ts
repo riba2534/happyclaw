@@ -112,13 +112,21 @@ export interface AgentProfile {
 /**
  * One model of a connection as the chat picker and the Agent forms get it:
  * its resolved capabilities (efforts low to high, empty when none; window
- * null when unknown) and where the efforts come from.
+ * null when unknown), where the efforts come from, and what its vendor says
+ * about it (absent on older servers). `effortsSource: 'none'` is a model
+ * nothing is known about, which may run at any effort.
  */
 export type ConnectionModel = { id: string } & Pick<
   ResolvedModelCapabilities,
   'efforts' | 'defaultEffort' | 'contextWindow'
 > &
-  Partial<Pick<ResolvedModelCapabilities, 'effortsSource'>>;
+  Partial<Pick<ResolvedModelCapabilities, 'effortsSource'>> & {
+    /** The vendor's name for the model, when its list gives one. */
+    displayName?: string | null;
+    maxOutputTokens?: number | null;
+    vendor?: string | null;
+    upstreamMissingSince?: string | null;
+  };
 
 export interface ModelConfigOption {
   id: string;

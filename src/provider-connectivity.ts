@@ -5,15 +5,22 @@
 // 结果只回传状态码、耗时、错误分类和脱敏后的错误摘要，绝不回传密钥。
 
 import { randomUUID } from 'node:crypto';
+import fs from 'node:fs';
 import { createRequire } from 'node:module';
+import path from 'node:path';
 
 import { CLAUDE_OAUTH_BETA, CLAUDE_OAUTH_USAGE_URL } from './claude-oauth.js';
 import {
   classifyProviderError,
+  isMagpieAliasModelId,
+  isMagpieModelList,
+  parseMagpieQuotas,
   parseModelList,
   splitOneMillionSuffix,
   type DiscoveredModel,
+  type MagpieQuotaAccount,
   type ProviderErrorCode,
+  type ProviderGateway,
   type ProviderTestRecord,
 } from './model-providers.js';
 import type { ProviderAuthMode } from './runtime-config.js';
@@ -64,20 +71,75 @@ export interface ProviderConnectivityProbe {
   code?: ProviderErrorCode;
 }
 
-function claudeCodeUserAgent(): string {
-  // Some coding-plan endpoints only admit coding agents, so probe with the
-  // same User-Agent family the bundled Claude Code sends.
+const SDK_PACKAGE = '@anthropic-ai/claude-agent-sdk';
+
+/**
+ * The Claude Code version the bundled SDK ships, read from the SDK's
+ * package.json. The package's `exports` do not include `./package.json`
+ * (requiring it throws ERR_PACKAGE_PATH_NOT_EXPORTED), so the file is found
+ * next to the entry point the package does export.
+ */
+export function bundledClaudeCodeVersion(
+  resolveEntry: () => string = () => require.resolve(SDK_PACKAGE),
+): string | null {
   try {
-    const pkg = require('@anthropic-ai/claude-agent-sdk/package.json') as {
-      claudeCodeVersion?: string;
-    };
-    if (pkg.claudeCodeVersion) {
-      return `claude-cli/${pkg.claudeCodeVersion} (external, sdk-ts)`;
+    let dir = path.dirname(resolveEntry());
+    for (let depth = 0; depth < 4; depth++) {
+      const file = path.join(dir, 'package.json');
+      if (fs.existsSync(file)) {
+        const pkg = JSON.parse(fs.readFileSync(file, 'utf-8')) as {
+          name?: unknown;
+          claudeCodeVersion?: unknown;
+        };
+        if (pkg.name === SDK_PACKAGE) {
+          return typeof pkg.claudeCodeVersion === 'string' &&
+            pkg.claudeCodeVersion
+            ? pkg.claudeCodeVersion
+            : null;
+        }
+      }
+      dir = path.dirname(dir);
     }
   } catch {
     // Fall through to a version-less agent string.
   }
-  return 'claude-cli (external, sdk-ts)';
+  return null;
+}
+
+let claudeCodeUserAgentValue: string | undefined;
+
+/**
+ * What tests and model lists send as User-Agent: the agent string of the
+ * bundled Claude Code, versioned as it sends it. Some coding-plan endpoints
+ * only admit coding agents.
+ */
+export function claudeCodeUserAgent(): string {
+  if (claudeCodeUserAgentValue) return claudeCodeUserAgentValue;
+  const version = bundledClaudeCodeVersion();
+  claudeCodeUserAgentValue = version
+    ? `claude-cli/${version} (external, sdk-ts)`
+    : 'claude-cli (external, sdk-ts)';
+  return claudeCodeUserAgentValue;
+}
+
+let happyClawUserAgentValue: string | undefined;
+
+/**
+ * HappyClaw's own User-Agent, for requests a gateway must not take for
+ * Claude Code's: magpie renames every model whose id says neither claude nor
+ * anthropic for Claude Code's model discovery (`anthropic/magpie-<n>`).
+ */
+export function happyClawUserAgent(): string {
+  if (happyClawUserAgentValue) return happyClawUserAgentValue;
+  let version = '';
+  try {
+    const pkg = require('../package.json') as { version?: unknown };
+    if (typeof pkg.version === 'string') version = pkg.version;
+  } catch {
+    // A version-less agent string still is not Claude Code's.
+  }
+  happyClawUserAgentValue = version ? `HappyClaw/${version}` : 'HappyClaw';
+  return happyClawUserAgentValue;
 }
 
 /** `Name: value` lines, as Claude Code reads ANTHROPIC_CUSTOM_HEADERS. */
@@ -267,10 +329,11 @@ function upstreamHeaders(
   credential: string,
   authMode: ProviderAuthMode,
   customHeaders?: string,
+  userAgent: string = claudeCodeUserAgent(),
 ): Record<string, string> {
   const headers: Record<string, string> = {
     'anthropic-version': '2023-06-01',
-    'user-agent': claudeCodeUserAgent(),
+    'user-agent': userAgent,
     'x-claude-code-session-id': randomUUID(),
   };
   for (const [name, value] of parseCustomHeaders(customHeaders)) {
@@ -554,6 +617,8 @@ export type ModelDiscoveryResult =
       models: DiscoveredModel[];
       source: 'endpoint' | 'builtin' | 'catalog';
       authMode?: ProviderAuthMode;
+      /** What the list says the endpoint is (only magpie labels its rows). */
+      gateway: ProviderGateway | null;
     }
   | {
       ok: false;
@@ -562,9 +627,29 @@ export type ModelDiscoveryResult =
       message: string;
     };
 
+/** A successful answer's JSON body as `parse` reads it, else null. */
+function parseJsonAnswer<T>(
+  answer: UpstreamAnswer,
+  parse: (json: unknown) => T | null,
+): T | null {
+  if (!answer.ok) return null;
+  try {
+    return parse(JSON.parse(answer.bodyText));
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Read a vendor's model list. A missing list endpoint reads as a wrong
  * address, and a body that is not a model list as UNKNOWN.
+ *
+ * The list is read the way Claude Code would read it, which magpie answers
+ * with its discovery aliases (`anthropic/magpie-<n>`) in place of most ids.
+ * A magpie list showing aliases is read once more under HappyClaw's own
+ * agent string, which magpie answers with the real ids. When that read
+ * fails or still shows aliases, the whole read fails: the aliased list is
+ * missing most models. No alias is ever returned.
  */
 export async function discoverEndpointModels(
   input: {
@@ -576,32 +661,74 @@ export async function discoverEndpointModels(
   },
   options: FetchOptions = {},
 ): Promise<ModelDiscoveryResult> {
+  const read = (mode: ProviderAuthMode, userAgent?: string) =>
+    requestUpstream(
+      input.url,
+      {
+        method: 'GET',
+        headers: upstreamHeaders(
+          input.credential,
+          mode,
+          input.customHeaders,
+          userAgent,
+        ),
+      },
+      { ...options, maxBytes: MAX_MODEL_LIST_BYTES },
+    );
   const { result: answer, authMode } = await withAuthModeFallback(
     input.authMode,
     input.explicitAuthMode,
-    (mode) =>
-      requestUpstream(
-        input.url,
-        {
-          method: 'GET',
-          headers: upstreamHeaders(input.credential, mode, input.customHeaders),
-        },
-        { ...options, maxBytes: MAX_MODEL_LIST_BYTES },
-      ),
+    (mode) => read(mode),
     {
       refused: (outcome) => refusedCredential(outcome.status),
       accepted: (outcome) => outcome.ok,
     },
   );
-  let models: DiscoveredModel[] | null = null;
-  if (answer.ok) {
-    try {
-      models = parseModelList(JSON.parse(answer.bodyText));
-    } catch {
-      models = null;
+  let models = parseJsonAnswer(answer, parseModelList);
+  if (
+    models &&
+    isMagpieModelList(models) &&
+    models.some((model) => isMagpieAliasModelId(model.id))
+  ) {
+    const second = await read(authMode ?? input.authMode, happyClawUserAgent());
+    const reread = parseJsonAnswer(second, parseModelList);
+    // Without the real ids the first list is missing most models: a catalog
+    // sync would take them for gone. The read fails instead.
+    if (
+      !reread ||
+      !isMagpieModelList(reread) ||
+      reread.some((model) => isMagpieAliasModelId(model.id))
+    ) {
+      if (!second.ok) {
+        const probe = answerProbe(second, [
+          input.credential,
+          ...customHeaderValues(input.customHeaders),
+        ]);
+        return {
+          ok: false,
+          code: probe.code!,
+          status: second.status,
+          message: probe.message!,
+        };
+      }
+      return {
+        ok: false,
+        code: 'UNKNOWN',
+        status: second.status,
+        message: 'magpie 没有给出真实的模型名，请稍后重试',
+      };
     }
+    models = reread;
   }
-  if (models) return { ok: true, models, source: 'endpoint', authMode };
+  if (models) {
+    return {
+      ok: true,
+      models: models.filter((model) => !isMagpieAliasModelId(model.id)),
+      source: 'endpoint',
+      authMode,
+      gateway: isMagpieModelList(models) ? 'magpie' : null,
+    };
+  }
   if (answer.ok) {
     return {
       ok: false,
@@ -636,4 +763,69 @@ export function discoverAnthropicModels(
     },
     options,
   );
+}
+
+// ─── magpie quotas ─────────────────────────────────────────────
+
+export type MagpieQuotasResult =
+  | { ok: true; accounts: MagpieQuotaAccount[] }
+  | {
+      ok: false;
+      code: ProviderErrorCode;
+      status: number | null;
+      message: string;
+    };
+
+/** Where a magpie at `baseUrl` reports its accounts' usage. */
+function magpieQuotasUrl(baseUrl: string): string {
+  return `${baseUrl.trim().replace(/\/+$/, '')}/v1/magpie/quotas`;
+}
+
+/**
+ * Read a magpie's accounts and their usage windows
+ * (`GET /v1/magpie/quotas`), which bills nothing. Sent with the gateway key
+ * the connection runs with, in the header it runs with.
+ */
+export async function fetchMagpieQuotas(
+  input: {
+    baseUrl: string;
+    credential: string;
+    authMode: ProviderAuthMode;
+    customHeaders?: string;
+  },
+  options: FetchOptions = {},
+): Promise<MagpieQuotasResult> {
+  const answer = await requestUpstream(
+    magpieQuotasUrl(input.baseUrl),
+    {
+      method: 'GET',
+      headers: upstreamHeaders(
+        input.credential,
+        input.authMode,
+        input.customHeaders,
+        happyClawUserAgent(),
+      ),
+    },
+    { timeoutMs: 10_000, ...options },
+  );
+  const accounts = parseJsonAnswer(answer, parseMagpieQuotas);
+  if (accounts) return { ok: true, accounts };
+  if (answer.ok) {
+    return {
+      ok: false,
+      code: 'UNKNOWN',
+      status: answer.status,
+      message: '返回的内容不是 magpie 额度列表',
+    };
+  }
+  const probe = answerProbe(answer, [
+    input.credential,
+    ...customHeaderValues(input.customHeaders),
+  ]);
+  return {
+    ok: false,
+    code: probe.code!,
+    status: answer.status,
+    message: probe.message!,
+  };
 }

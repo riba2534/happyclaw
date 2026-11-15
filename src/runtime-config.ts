@@ -27,31 +27,40 @@ import { normalizeLegacyCodexModel } from './codex-gateway/convert-request.js';
 import { retiredCodexReauthReason } from './codex-gateway/oauth.js';
 import {
   buildConnectionModelEnv,
+  carrySyncedModelFields,
   CONNECTION_ENV_PREFILL,
   CONNECTION_MODEL_ENV_KEYS,
   effectiveProviderModels,
   findModelEntry,
   getModelPreset,
+  isMagpieAliasModelId,
   isModelEffort,
   isValidModelId,
   launchModelName,
+  maxOutputTokensFor,
   MAX_PROVIDER_MODEL_ID_LENGTH,
   MAX_PROVIDER_MODELS,
   MODEL_EFFORTS,
   normalizeConnectionModelRoles,
   normalizeContextWindow,
-  normalizeProviderBaseUrl,
+  normalizeIsoTime,
   normalizeProviderModels,
   ONE_MILLION_CONTEXT,
+  presetAppliesAt,
   PROVIDER_ERROR_CODES,
   resolveModelCapabilities,
   splitOneMillionSuffix,
+  toolSearchEnabled,
   windowOf,
   type ConnectionModelRoles,
   type ModelEffort,
+  type ProviderCatalogError,
+  type ProviderCatalogPublic,
   type ProviderErrorCode,
+  type ProviderGateway,
   type ProviderModelEntry,
   type ProviderTestRecord,
+  type ToolSearchSetting,
 } from './model-providers.js';
 
 const MAX_FIELD_LENGTH = 2000;
@@ -177,6 +186,14 @@ const THIRD_PARTY_CONFIGURABLE_ENV_KEYS: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * Model environment the launch derives that a connection's own env may
+ * still set: the value the admin wrote replaces the derived one.
+ */
+const USER_TUNABLE_MODEL_ENV: ReadonlySet<string> = new Set([
+  'CLAUDE_CODE_MAX_OUTPUT_TOKENS',
+]);
+
+/**
  * Haiku tier behind the ChatGPT subscription gateway: Claude Code's own
  * small-fast model id (2.1.x first-party default). The gateway maps every
  * claude-* model to the provider's Codex model and recognizes haiku-tier
@@ -202,6 +219,7 @@ function isCodexGatewayEndpoint(baseUrl: string): boolean {
 /** Provider env values that Claude Code parses as positive integers. */
 const POSITIVE_INTEGER_PROVIDER_ENV_KEYS = new Set([
   'CLAUDE_CODE_MAX_CONTEXT_TOKENS',
+  'CLAUDE_CODE_MAX_OUTPUT_TOKENS',
   'API_TIMEOUT_MS',
 ]);
 
@@ -437,6 +455,11 @@ export interface ClaudeProviderConfig {
    */
   models?: ProviderModelEntry[];
   roles?: ConnectionModelRoles;
+  /**
+   * The same-turn fallback model a launch is handed, whose declared reply
+   * limit counts toward CLAUDE_CODE_MAX_OUTPUT_TOKENS like the roles'.
+   */
+  fallbackModel?: string;
   updatedAt: string | null;
 }
 
@@ -638,6 +661,12 @@ interface StoredProviderV4 {
   lastTest?: ProviderTestRecord;
   /** Which of the connection's models Claude Code uses besides the turn's. */
   roles?: ConnectionModelRoles;
+  /** The gateway the connection is (detected from its model list). */
+  gateway?: ProviderGateway;
+  /** Tool search, when the admin chose; absent follows the gateway. */
+  toolSearch?: 'on' | 'off';
+  /** Catalog sync and gateway detection state; runtime, not a setting. */
+  catalog?: ProviderCatalogState;
   /**
    * Set once CONNECTION_ENV_PREFILL has been given to the connection (by the
    * add wizard, or by the read-time migration for older connections), so a
@@ -700,6 +729,9 @@ export interface UnifiedProvider {
   models?: ProviderModelEntry[];
   /** Only roles naming one of `models`; absent when none is set. */
   roles?: ConnectionModelRoles;
+  gateway?: ProviderGateway;
+  toolSearch?: 'on' | 'off';
+  catalog?: ProviderCatalogState;
   envPrefill?: 1;
   presetId?: string;
   lastTest?: ProviderTestRecord | null;
@@ -764,9 +796,55 @@ export interface UnifiedProviderPublic {
   roles: ConnectionModelRoles;
   presetId: string | null;
   lastTest: ProviderTestRecord | null;
+  /** The gateway the connection is; null for any other endpoint. */
+  gateway: ProviderGateway | null;
+  /** The admin's tool search choice; `default` follows the gateway. */
+  toolSearch: ToolSearchSetting;
+  /** Whether launches turn Claude Code's tool search on. */
+  toolSearchEnabled: boolean;
+  /** magpie only: the catalog sync's state and the models it found. */
+  catalog: ProviderCatalogPublic | null;
   customEnv: Record<string, string>;
   updatedAt: string;
 }
+
+/**
+ * A third-party connection's catalog state. Every such connection is checked
+ * once for a gateway (its model list says magpie); a magpie connection's
+ * list is then kept in step with the gateway's (model-catalog-sync.ts).
+ */
+export interface ProviderCatalogState {
+  /** magpie: new upstream models join the list by themselves. */
+  autoAdd?: true;
+  /** When a model list was last read successfully, by a check or a sync. */
+  checkedAt?: string;
+  /** When a magpie catalog sync last succeeded. */
+  syncedAt?: string;
+  /** The last failed check or sync; cleared by a successful one. */
+  error?: ProviderCatalogError;
+  /** Failed attempts in a row, for the backoff. */
+  failures?: number;
+  /** No scheduled attempt before this time. */
+  retryAt?: string;
+  /** Upstream models the list does not have (auto-add off, or no room). */
+  newModels?: ProviderModelEntry[];
+  /** Every id the last sync saw upstream, to tell a new model from a known one. */
+  knownIds?: string[];
+}
+
+/** A connection write refused for a reason the client can name. */
+export class ProviderWriteError extends Error {
+  constructor(
+    message: string,
+    readonly code: 'MAGPIE_MODELS_REQUIRED',
+  ) {
+    super(message);
+    this.name = 'ProviderWriteError';
+  }
+}
+
+/** Upstream models a catalog remembers past the list; magpie lists ~60. */
+const MAX_CATALOG_NEW_MODELS = 500;
 
 const MAX_PROVIDERS = 20;
 const POOL_CONFIG_FILE = path.join(CLAUDE_CONFIG_DIR, 'provider-pool.json');
@@ -1540,6 +1618,7 @@ function toStoredProviderV4(
       ? { codexOAuthLastRefreshError: provider.codexOAuthLastRefreshError }
       : {}),
     ...connectionListFields(provider),
+    ...gatewayFields(provider),
     ...(provider.envPrefill === 1 ? { envPrefill: 1 as const } : {}),
     ...(provider.claudeOAuthCredentials && provider.claudeOAuthGrantId
       ? { claudeOAuthGrantId: provider.claudeOAuthGrantId }
@@ -1583,9 +1662,7 @@ function connectionListFields(provider: {
       ? getModelPreset(provider.presetId)
       : null;
   const presetId =
-    preset &&
-    normalizeProviderBaseUrl(provider.anthropicBaseUrl) ===
-      normalizeProviderBaseUrl(preset.baseUrl)
+    preset && presetAppliesAt(preset, provider.anthropicBaseUrl)
       ? preset.id
       : null;
   // Absent fields stay undefined, which JSON leaves out of the file.
@@ -1595,6 +1672,95 @@ function connectionListFields(provider: {
     presetId: presetId ?? undefined,
     lastTest: normalizeProviderTestRecord(provider.lastTest) ?? undefined,
   };
+}
+
+/**
+ * The gateway fields of a provider as they are stored and read: the gateway
+ * (always magpie for a connection made from the magpie preset), the tool
+ * search choice and a well-formed catalog state, none of them for an
+ * official endpoint or a ChatGPT subscription. Malformed parts are dropped.
+ */
+function gatewayFields(provider: {
+  type?: unknown;
+  anthropicBaseUrl: string;
+  presetId?: unknown;
+  gateway?: unknown;
+  toolSearch?: unknown;
+  catalog?: unknown;
+}): Pick<StoredProviderV4, 'gateway' | 'toolSearch' | 'catalog'> {
+  if (provider.type !== 'third_party' || isCodexGatewayProvider(provider)) {
+    return { gateway: undefined, toolSearch: undefined, catalog: undefined };
+  }
+  const preset =
+    typeof provider.presetId === 'string'
+      ? getModelPreset(provider.presetId)
+      : null;
+  const gateway: ProviderGateway | undefined =
+    preset?.gateway ?? (provider.gateway === 'magpie' ? 'magpie' : undefined);
+  const toolSearch =
+    provider.toolSearch === 'on' || provider.toolSearch === 'off'
+      ? provider.toolSearch
+      : undefined;
+  return {
+    gateway,
+    toolSearch,
+    catalog: normalizeCatalogState(provider.catalog),
+  };
+}
+
+/** A stored error code; one from a newer release reads as UNKNOWN. */
+function storedErrorCode(value: unknown): ProviderErrorCode {
+  return (PROVIDER_ERROR_CODES as readonly unknown[]).includes(value)
+    ? (value as ProviderErrorCode)
+    : 'UNKNOWN';
+}
+
+function normalizeCatalogState(raw: unknown): ProviderCatalogState | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  const record = raw as Record<string, unknown>;
+  const state: ProviderCatalogState = {};
+  if (record.autoAdd === true) state.autoAdd = true;
+  const checkedAt = normalizeIsoTime(record.checkedAt);
+  if (checkedAt) state.checkedAt = checkedAt;
+  const syncedAt = normalizeIsoTime(record.syncedAt);
+  if (syncedAt) state.syncedAt = syncedAt;
+  const error =
+    record.error && typeof record.error === 'object'
+      ? (record.error as Record<string, unknown>)
+      : null;
+  const errorAt = normalizeIsoTime(error?.at);
+  if (error && errorAt && typeof error.message === 'string') {
+    state.error = {
+      code: storedErrorCode(error.code),
+      message: error.message.slice(0, 300),
+      at: errorAt,
+    };
+  }
+  if (
+    typeof record.failures === 'number' &&
+    Number.isSafeInteger(record.failures) &&
+    record.failures > 0
+  ) {
+    state.failures = record.failures;
+  }
+  const retryAt = normalizeIsoTime(record.retryAt);
+  if (retryAt) state.retryAt = retryAt;
+  const newModels = Array.isArray(record.newModels)
+    ? (normalizeProviderModels(
+        record.newModels.slice(0, MAX_CATALOG_NEW_MODELS),
+        { max: MAX_CATALOG_NEW_MODELS },
+      ) ?? [])
+    : [];
+  if (newModels.length > 0) state.newModels = newModels;
+  if (Array.isArray(record.knownIds)) {
+    state.knownIds = record.knownIds
+      .filter(
+        (id): id is string =>
+          typeof id === 'string' && id.length <= MAX_PROVIDER_MODEL_ID_LENGTH,
+      )
+      .slice(0, MAX_CATALOG_NEW_MODELS);
+  }
+  return Object.keys(state).length > 0 ? state : undefined;
 }
 
 function nullableNumber(value: unknown): number | null | undefined {
@@ -1623,11 +1789,7 @@ export function normalizeProviderTestRecord(
     return null;
   }
   // A code from a newer release reads as UNKNOWN rather than dropping the test.
-  const code: ProviderErrorCode | null = record.ok
-    ? null
-    : (PROVIDER_ERROR_CODES as readonly unknown[]).includes(record.code)
-      ? (record.code as ProviderErrorCode)
-      : 'UNKNOWN';
+  const code = record.ok ? null : storedErrorCode(record.code);
   return {
     ok: record.ok,
     code,
@@ -1705,6 +1867,10 @@ function fromStoredProviderV4(stored: StoredProviderV4): UnifiedProvider {
       ...stored,
       anthropicBaseUrl: stored.anthropicBaseUrl || '',
       anthropicModel: stored.anthropicModel || '',
+    }),
+    ...gatewayFields({
+      ...stored,
+      anthropicBaseUrl: stored.anthropicBaseUrl || '',
     }),
     ...(stored.envPrefill === 1 ? { envPrefill: 1 as const } : {}),
     ...(typeof stored.claudeOAuthGrantId === 'string'
@@ -2418,9 +2584,18 @@ export function nextProviderModelList(
   next: { anthropicModel: string; models?: readonly ProviderModelEntry[] },
 ): ProviderModelEntry[] | undefined {
   const { model, oneMillion } = splitOneMillionSuffix(next.anthropicModel);
-  const list =
+  // A submitted list keeps what the vendor and the catalog sync said about
+  // each model it still has, and never a magpie discovery alias.
+  const submitted =
     next.models !== undefined
-      ? next.models
+      ? carrySyncedModelFields(
+          next.models.filter((entry) => !isMagpieAliasModelId(entry.id)),
+          current ? effectiveProviderModels(current) : [],
+        )
+      : undefined;
+  const list =
+    submitted !== undefined
+      ? submitted
       : current && splitOneMillionSuffix(current.anthropicModel).model !== model
         ? effectiveProviderModels(current)
         : current?.models;
@@ -2518,6 +2693,71 @@ export function recordProviderTest(
   return state.providers[idx];
 }
 
+/** A magpie connection must offer a model: the gateway has no default. */
+function assertGatewayModels(provider: UnifiedProvider): void {
+  if (
+    provider.gateway === 'magpie' &&
+    effectiveProviderModels(provider).length === 0
+  ) {
+    throw new ProviderWriteError(
+      'Magpie 连接至少需要一个模型，请先获取模型列表并选择',
+      'MAGPIE_MODELS_REQUIRED',
+    );
+  }
+}
+
+export interface ProviderCatalogUpdate {
+  gateway?: ProviderGateway;
+  models?: ProviderModelEntry[];
+  catalog: ProviderCatalogState;
+}
+
+/**
+ * Keep what a catalog sync or a gateway check learned about a connection:
+ * the gateway, the synced model list, the catalog state. `build` derives
+ * them from the connection as it is stored at the moment of writing, in the
+ * same synchronous read and write, so an edit an admin saved while the list
+ * was being read (a model removed, auto-add switched) is merged into rather
+ * than overwritten. Nothing is written when the endpoint or the credential
+ * changed meanwhile, since the list describes the old ones, or when `build`
+ * returns null. Runtime state like a test record: `updatedAt` stays.
+ * Returns the stored connection, or null when nothing was written.
+ */
+export function recordProviderCatalog(
+  id: string,
+  checked: UnifiedProvider,
+  build: (current: UnifiedProvider) => ProviderCatalogUpdate | null,
+): UnifiedProvider | null {
+  const state = readStoredStateV4();
+  if (!state) return null;
+  const idx = state.providers.findIndex((provider) => provider.id === id);
+  if (idx < 0) return null;
+  const current = state.providers[idx];
+  if (testedConnectionIdentity(current) !== testedConnectionIdentity(checked)) {
+    return null;
+  }
+  const update = build(current);
+  if (!update) return null;
+  const next: UnifiedProvider = { ...current };
+  if (update.models) {
+    Object.assign(
+      next,
+      connectionListFields({ ...next, models: update.models }),
+    );
+  }
+  Object.assign(
+    next,
+    gatewayFields({
+      ...next,
+      gateway: update.gateway ?? next.gateway,
+      catalog: update.catalog,
+    }),
+  );
+  state.providers[idx] = next;
+  writeStoredStateV4(state);
+  return next;
+}
+
 export function createProvider(input: {
   name: string;
   type: 'official' | 'third_party';
@@ -2536,8 +2776,18 @@ export function createProvider(input: {
   /** Raw roles; those not naming one of the connection's models are dropped. */
   roles?: unknown;
   presetId?: string;
+  /** What a model list read before saving found the endpoint to be. */
+  gateway?: ProviderGateway;
+  toolSearch?: ToolSearchSetting;
+  /** magpie: new upstream models join the list by themselves. */
+  catalogAutoAdd?: boolean;
 }): UnifiedProvider {
   const authKind = selectedClaudeAuthKind(input.type, input);
+  // magpie answers WebFetch's domain check itself only on its own address,
+  // so a connection made from its preset skips the check unless told not to.
+  const webFetchPreflightPolicy =
+    input.webFetchPreflightPolicy ??
+    (getModelPreset(input.presetId)?.gateway === 'magpie' ? 'skip' : undefined);
   const requestedModel = normalizeDefaultModel(input.anthropicModel ?? '');
   const anthropicModel = splitOneMillionSuffix(requestedModel).model;
   const state: StoredStateV5 = readStoredStateV4() || {
@@ -2558,7 +2808,7 @@ export function createProvider(input: {
     id: crypto.randomBytes(8).toString('hex'),
     name: normalizeProfileName(input.name),
     type: input.type,
-    ...(input.webFetchPreflightPolicy === 'skip'
+    ...(webFetchPreflightPolicy === 'skip'
       ? { webFetchPreflightPolicy: 'skip' as const }
       : {}),
     anthropicBaseUrl: input.anthropicBaseUrl
@@ -2603,6 +2853,16 @@ export function createProvider(input: {
       presetId: input.presetId,
     }),
   );
+  Object.assign(
+    provider,
+    gatewayFields({
+      ...provider,
+      gateway: input.gateway,
+      toolSearch: input.toolSearch,
+      catalog: input.catalogAutoAdd ? { autoAdd: true } : undefined,
+    }),
+  );
+  assertGatewayModels(provider);
   applyClaudeAuthKind(provider, authKind);
   if (provider.claudeOAuthCredentials) {
     provider.claudeOAuthGrantId = crypto.randomBytes(8).toString('hex');
@@ -2628,6 +2888,8 @@ export function updateProvider(
     roles?: unknown;
     /** Null forgets the preset (the endpoint no longer is the vendor's). */
     presetId?: string | null;
+    toolSearch?: ToolSearchSetting;
+    catalogAutoAdd?: boolean;
   },
 ): UnifiedProvider {
   const state = readStoredStateV4();
@@ -2688,6 +2950,44 @@ export function updateProvider(
         patch.presetId === undefined ? current.presetId : patch.presetId,
     }),
   );
+  // What was detected about the endpoint describes the old address; the
+  // next check looks again. The admin's own choices stay.
+  const moved = updated.anthropicBaseUrl !== current.anthropicBaseUrl;
+  // An empty state is stored as none (normalizeCatalogState).
+  const nextCatalog: ProviderCatalogState = moved ? {} : { ...current.catalog };
+  if (patch.catalogAutoAdd ?? current.catalog?.autoAdd) {
+    nextCatalog.autoAdd = true;
+  } else {
+    delete nextCatalog.autoAdd;
+  }
+  // A new model the admin added is no longer new.
+  if (nextCatalog.newModels) {
+    const listed = effectiveProviderModels(updated);
+    const kept = nextCatalog.newModels.filter(
+      (entry) => !findModelEntry(listed, entry.id),
+    );
+    if (kept.length > 0) nextCatalog.newModels = kept;
+    else delete nextCatalog.newModels;
+  }
+  Object.assign(
+    updated,
+    gatewayFields({
+      ...updated,
+      gateway: moved ? undefined : current.gateway,
+      toolSearch:
+        patch.toolSearch === undefined
+          ? current.toolSearch
+          : patch.toolSearch === 'default'
+            ? undefined
+            : patch.toolSearch,
+      catalog: nextCatalog,
+    }),
+  );
+  // Only an edit of the models can leave a magpie connection without one; a
+  // pass-through relay detected as magpie later keeps taking other edits.
+  if (patch.models !== undefined || patch.anthropicModel !== undefined) {
+    assertGatewayModels(updated);
+  }
   // A test describes the endpoint, header, env and probe it ran against.
   updated.lastTest =
     updated.anthropicBaseUrl === current.anthropicBaseUrl &&
@@ -3155,16 +3455,43 @@ export function toPublicProvider(
     codexDefaultEffort: isCodexGatewayProvider(provider)
       ? resolveCodexProviderDefaultEffort(provider)
       : null,
-    models: providerModels(provider),
+    models: providerModels(provider).map(publicModelEntry),
     roles: provider.roles ?? {},
     presetId: provider.presetId ?? null,
     lastTest: provider.lastTest ?? null,
+    gateway: provider.gateway ?? null,
+    toolSearch: provider.toolSearch ?? 'default',
+    toolSearchEnabled: providerToolSearchEnabled(provider),
+    catalog:
+      provider.gateway === 'magpie'
+        ? {
+            autoAdd: provider.catalog?.autoAdd === true,
+            syncedAt: provider.catalog?.syncedAt ?? null,
+            error: provider.catalog?.error ?? null,
+            newModels: (provider.catalog?.newModels ?? []).map(
+              publicModelEntry,
+            ),
+          }
+        : null,
     customEnv: sanitizeCustomEnvMap(
       provider.customEnv || {},
       CONNECTION_ENV_WRITE,
     ),
     updatedAt: provider.updatedAt,
   };
+}
+
+/** A model as the API shows it: the sync's bookkeeping stays inside. */
+function publicModelEntry(entry: ProviderModelEntry): ProviderModelEntry {
+  const { synced: _synced, ...rest } = entry;
+  return rest;
+}
+
+/** Whether launches on this connection turn Claude Code's tool search on. */
+export function providerToolSearchEnabled(
+  provider: Pick<UnifiedProvider, 'toolSearch' | 'gateway'>,
+): boolean {
+  return toolSearchEnabled(provider.toolSearch, provider.gateway);
 }
 
 /**
@@ -3641,6 +3968,8 @@ export function buildClaudeEnvLines(
     anthropicModel: config.anthropicModel,
     models: config.models,
   });
+  // The selected connection's env when given, else the global connection's.
+  const customEnv = profileCustomEnv ?? getActiveProfileCustomEnv();
   if (isCodexGatewayEndpoint(config.anthropicBaseUrl)) {
     // A ChatGPT subscription keeps no model list: every tier runs the turn's
     // Codex model as named, except a Claude haiku id that lets the gateway
@@ -3660,8 +3989,11 @@ export function buildClaudeEnvLines(
       model: config.anthropicModel,
       models,
       roles: config.roles,
+      fallbackModel: config.fallbackModel,
     });
     for (const [key, value] of Object.entries(modelEnv)) {
+      // The admin's own reply limit for the connection wins.
+      if (USER_TUNABLE_MODEL_ENV.has(key) && customEnv[key]?.trim()) continue;
       lines.push(`${key}=${sanitizeEnvValue(value)}`);
     }
   } else if (config.anthropicModel) {
@@ -3677,14 +4009,47 @@ export function buildClaudeEnvLines(
     );
   }
 
-  // The selected connection's env when given, else the global connection's.
-  const customEnv = profileCustomEnv ?? getActiveProfileCustomEnv();
   for (const [key, value] of Object.entries(customEnv)) {
     if (!value.trim() || isSkippedConnectionEnvKey(key)) continue;
     lines.push(`${key}=${sanitizeCustomEnvValue(key, value)}`);
   }
 
   return lines;
+}
+
+/**
+ * The CLAUDE_CODE_MAX_OUTPUT_TOKENS a launch on `config` derives from its
+ * models (as buildClaudeEnvLines writes it), or null when it derives none:
+ * not a third-party endpoint, a model of the launch that declares no reply
+ * limit, or an env that names the key itself (the connection's own, the
+ * Workspace's override). The Runner pins a derived value above every
+ * settings file, since a launch whose models cap their replies must not be
+ * raised by an admin's or a workspace's settings; a value HappyClaw did not
+ * derive stays theirs to set.
+ */
+export function derivedMaxOutputTokens(
+  config: ClaudeProviderConfig,
+  connectionEnv: Record<string, string> | undefined,
+  workspaceEnv?: Record<string, string>,
+): number | null {
+  if (
+    !config.anthropicBaseUrl ||
+    isCodexGatewayEndpoint(config.anthropicBaseUrl)
+  ) {
+    return null;
+  }
+  for (const env of [connectionEnv, workspaceEnv]) {
+    if (env?.CLAUDE_CODE_MAX_OUTPUT_TOKENS?.trim()) return null;
+  }
+  return maxOutputTokensFor(
+    effectiveProviderModels({
+      anthropicModel: config.anthropicModel,
+      models: config.models,
+    }),
+    config.anthropicModel,
+    config.roles,
+    config.fallbackModel,
+  );
 }
 
 export function getActiveProfileCustomEnv(): Record<string, string> {
@@ -3930,6 +4295,9 @@ export function mergeClaudeEnvConfig(
       : {}),
     ...(!override.anthropicBaseUrl && global.roles
       ? { roles: global.roles }
+      : {}),
+    ...(!override.anthropicBaseUrl && global.fallbackModel
+      ? { fallbackModel: global.fallbackModel }
       : {}),
     updatedAt: global.updatedAt,
   };

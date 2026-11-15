@@ -199,9 +199,10 @@ export function ProviderList({
               }
             />
 
-            {/* 订阅用量：Claude OAuth 与 ChatGPT 订阅 */}
+            {/* 订阅用量：Claude OAuth、ChatGPT 订阅与 magpie 的各个账号 */}
             {(provider.type === 'official' ||
-              provider.hasCodexOAuthCredentials) && (
+              provider.hasCodexOAuthCredentials ||
+              provider.gateway === 'magpie') && (
               <UsageBars
                 providerId={provider.id}
                 providerVersion={provider.updatedAt}

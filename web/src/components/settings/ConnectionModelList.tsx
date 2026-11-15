@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Loader2, RefreshCw, Trash2 } from 'lucide-react';
 
+import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { IconButton } from '@/components/common/IconButton';
 import {
@@ -12,9 +13,13 @@ import {
   type ConnectionModelRoles,
   type ProviderModelEntry,
 } from '@/lib/model-providers';
+import { cn } from '@/lib/utils';
+import { formatSessionTime } from '../../lib/session-presentation';
+import { ConnectionCatalog } from './ConnectionCatalog';
 import {
   confirmProtocolChange,
   connectionKind,
+  connectionWriteErrorMessage,
   discoverModels,
   discoveredModelsFor,
   errorCopy,
@@ -25,6 +30,7 @@ import {
 import {
   ModelCapabilityFields,
   ModelRolesFields,
+  formatContextWindow,
   withAddDefaults,
 } from './ModelCapabilityFields';
 import { ManualModelInput } from './ModelPicker';
@@ -65,12 +71,15 @@ export function ConnectionModelList({
   const [refreshing, setRefreshing] = useState(false);
   const preset = getModelPreset(provider.presetId);
 
+  // A catalog sync may rewrite what the vendor says about the models without
+  // the admin's edits, so the list itself is watched too.
+  const storedModels = JSON.stringify(provider.models);
   useEffect(() => {
     setModels(effectiveProviderModels(provider));
     setRoles(provider.roles ?? {});
     // The stored list changes only with the provider record.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [provider.id, provider.updatedAt]);
+  }, [provider.id, provider.updatedAt, storedModels]);
 
   const save = async (
     patch: {
@@ -97,7 +106,7 @@ export function ConnectionModelList({
       setError(
         agents
           ? `这个模型正被智能体「${agents.join('」「')}」使用。先在智能体设置里改用其他模型，再删除。`
-          : getErrorMessage(err, failure),
+          : (connectionWriteErrorMessage(err) ?? getErrorMessage(err, failure)),
       );
       return false;
     } finally {
@@ -170,10 +179,45 @@ export function ConnectionModelList({
     }
   };
 
+  /**
+   * Adds upstream models the catalog sync found, as magpie describes them:
+   * the next sync keeps their metadata current, and a model it says nothing
+   * about offers every effort in the pickers.
+   */
+  const addUpstream = async (entries: ProviderModelEntry[]) => {
+    const known = new Set(models.map((entry) => entry.id));
+    const additions = entries.filter((entry) => !known.has(entry.id));
+    if (additions.length === 0) return true;
+    const added = await saveModels([...models, ...additions]);
+    if (added) setNotice(`已添加 ${additions.length} 个模型`);
+    return added;
+  };
+
+  const setAutoAdd = async (next: boolean) => {
+    setBusy(true);
+    try {
+      onSaved(await updateConnection(provider.id, { catalogAutoAdd: next }));
+      setNotice(next ? '已开启自动添加上游新模型' : '已关闭自动添加上游新模型');
+    } catch (err) {
+      setError(getErrorMessage(err, '保存自动添加设置失败'));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const disabled = busy || refreshing;
 
   return (
     <div className="space-y-3">
+      {provider.gateway === 'magpie' && provider.catalog && (
+        <ConnectionCatalog
+          catalog={provider.catalog}
+          listed={models}
+          onAdd={addUpstream}
+          onAutoAddChange={(next) => void setAutoAdd(next)}
+          disabled={disabled}
+        />
+      )}
       {models.length === 0 ? (
         <p className="rounded-lg px-3 py-4 text-caption text-muted-foreground ring-1 ring-surface-border">
           还没有模型。获取模型列表或手动添加。
@@ -184,17 +228,47 @@ export function ConnectionModelList({
           className="divide-y divide-surface-border overflow-hidden rounded-lg ring-1 ring-surface-border"
         >
           {models.map((entry) => {
-            const name = presetModelName(preset, entry.id);
+            // The vendor's own name leads, with the id under it; a model
+            // known only by its id keeps the id first.
+            const named = !!entry.displayName;
+            const about = [
+              named ? null : presetModelName(preset, entry.id),
+              entry.maxOutputTokens
+                ? `最长回复 ${formatContextWindow(entry.maxOutputTokens)}`
+                : null,
+            ].filter(Boolean);
             return (
               <li key={entry.id} className="min-w-0 space-y-2 px-3 py-2">
                 <div className="flex min-w-0 items-center gap-2">
                   <div className="min-w-0 flex-1">
-                    <div className="truncate font-mono text-caption text-foreground">
-                      {entry.id}
+                    <div className="flex min-w-0 items-center gap-1.5">
+                      <span
+                        className={cn(
+                          'min-w-0 truncate text-caption text-foreground',
+                          !named && 'font-mono',
+                        )}
+                      >
+                        {named ? entry.displayName : entry.id}
+                      </span>
+                      {entry.vendor && (
+                        <Badge variant="neutral" title="提供这个模型的服务">
+                          {entry.vendor}
+                        </Badge>
+                      )}
+                      {entry.upstreamMissingSince && (
+                        <Badge
+                          variant="warning"
+                          title={`${formatSessionTime(entry.upstreamMissingSince)}起上游不再列出这个模型；不会自动删除，不再需要时手动删除。`}
+                        >
+                          上游已不提供
+                        </Badge>
+                      )}
                     </div>
-                    {name && (
+                    {(named || about.length > 0) && (
                       <div className="truncate text-micro text-muted-foreground">
-                        {name}
+                        {named && <span className="font-mono">{entry.id}</span>}
+                        {named && about.length > 0 && ' · '}
+                        {about.join(' · ')}
                       </div>
                     )}
                   </div>

@@ -756,6 +756,7 @@ describe('POST /providers/discover-models', () => {
       ok: true,
       source: 'endpoint',
       authMode: 'x-api-key',
+      gateway: null,
       models: [
         { id: 'glm-5.3', name: 'GLM 5.3', contextWindow: 1_000_000 },
         { id: 'glm-5.2' },
@@ -988,6 +989,7 @@ describe('POST /providers/discover-models', () => {
       ok: true,
       source: 'endpoint',
       authMode: 'x-api-key',
+      gateway: null,
       models: [{ id: 'claude-opus-5-5', name: 'Claude Opus 5.5' }],
     });
     const [url, init] = anthropic.mock.calls[0];
@@ -1007,6 +1009,7 @@ describe('POST /providers/discover-models', () => {
     expect(body).toEqual({
       ok: true,
       source: 'catalog',
+      gateway: null,
       models: [{ id: 'gpt-6-sol' }],
     });
   });

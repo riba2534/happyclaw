@@ -151,8 +151,14 @@ describe('presets', () => {
     for (const preset of MODEL_PRESETS) {
       expect(ids.has(preset.id)).toBe(false);
       ids.add(preset.id);
-      expect(normalizeProviderBaseUrl(preset.baseUrl)).toMatch(/^https:\/\//);
       expect(describeBaseUrlProblem(preset.baseUrl)).toBeNull();
+      if (preset.editableBaseUrl) {
+        // A gateway the user runs: its address is local, its models its own.
+        expect(preset.gateway).toBeTruthy();
+        expect(preset.models).toEqual([]);
+        continue;
+      }
+      expect(normalizeProviderBaseUrl(preset.baseUrl)).toMatch(/^https:\/\//);
       expect(preset.models.length).toBeGreaterThan(0);
       for (const model of preset.models) {
         expect(isValidModelId(presetModelEntry(model).id)).toBe(true);
@@ -573,6 +579,7 @@ describe('resolved capabilities', () => {
       defaultEffort: null,
       effortsSource: 'none',
       contextSource: 'none',
+      thinkingDisabled: false,
     });
   });
 

@@ -60,7 +60,8 @@ beforeAll(() => {
     anthropicAuthToken: 'glm-token',
     anthropicModel: 'glm-5',
     models: [
-      { id: 'glm-5' },
+      // Declared to take no effort (a vendor list's empty levels).
+      { id: 'glm-5', efforts: [] },
       { id: 'glm-5-air', efforts: ['low', 'medium'], defaultEffort: 'low' },
       { id: 'glm-5-long', contextWindow: 1_000_000 },
     ],
@@ -285,11 +286,13 @@ describe('an Agent runs the model it is bound to', () => {
       select({ modelConfigId: relay.id, effort: 'high' }).launchEffort,
     ).toBe('high');
     expect(select({ modelConfigId: relay.id }).launchEffort).toBeNull();
-    // A named model nothing is known about still takes none.
+    // A named model nothing is known about runs the effort as picked, and
+    // none without a pick.
     pick(relay.id, 'relay-a');
     expect(
       select({ modelConfigId: relay.id, effort: 'high' }).launchEffort,
-    ).toBeNull();
+    ).toBe('high');
+    expect(select({ modelConfigId: relay.id }).launchEffort).toBeNull();
   });
 
   test("only the Agent's own binding reports a dropped Agent model", () => {

@@ -109,6 +109,8 @@ import {
   deleteProvider,
   providerToConfig,
   toPublicProvider,
+  providerToolSearchEnabled,
+  ProviderWriteError,
   getFeishuProviderConfig,
   getFeishuProviderConfigWithSource,
   toPublicFeishuProviderConfig,
@@ -229,6 +231,7 @@ import {
   connectionTestResult,
   discoverAnthropicModels,
   discoverEndpointModels,
+  fetchMagpieQuotas,
   redact,
   testAnthropicApiKey,
   testProviderConnectivity,
@@ -242,14 +245,22 @@ import {
   findPresetsByBaseUrl,
   getModelPreset,
   modelsUrlFor,
-  normalizeProviderBaseUrl,
+  presetAppliesAt,
   presetModelEntry,
   splitOneMillionSuffix,
+  type MagpieQuotasUsage,
   type ModelPreset,
   type ProviderErrorCode,
   type ProviderModelEntry,
 } from '../model-providers.js';
 import { isCodexGatewayBaseUrl } from '../codex-gateway/resolve-gateway-url.js';
+import {
+  catalogSyncSkip,
+  noteConnectionModelList,
+  setCatalogToolSearchChangeListener,
+  storedConnectionAccess,
+  syncProviderCatalog,
+} from '../model-catalog-sync.js';
 import {
   buildSessionMountUpdate,
   buildDetachedWorkspaceUpdate,
@@ -350,6 +361,11 @@ export function injectConfigDeps(d: any) {
   deps = d;
   restorePendingProviderRuntimeSafetyBlocks();
   restorePendingAdminHostOnlyRuntimeSafetyBlocks(d);
+  // A sync that marks a connection magpie flips its default tool search:
+  // its runners retire after their current query, as for an edit.
+  setCatalogToolSearchChangeListener((providerId) => {
+    deps?.queue?.drainProviderRunnersForCredentialRefresh?.(providerId);
+  });
 }
 
 function createTelegramApiAgent(proxyUrl?: string): HttpsAgent | ProxyAgent {
@@ -1553,6 +1569,9 @@ configRoutes.post(
       bindSystemMainIfUnbound(provider.id);
       return c.json(toPublicProvider(provider), 201);
     } catch (err) {
+      if (err instanceof ProviderWriteError) {
+        return c.json({ error: err.message, code: err.code }, 400);
+      }
       const message =
         err instanceof Error ? err.message : 'Failed to create provider';
       logger.warn({ err }, 'Failed to create provider');
@@ -1770,10 +1789,14 @@ configRoutes.patch(
                 : {}),
             },
           };
-          // The WebFetch policy is fixed at launch too, but needs no stop:
-          // this connection's runners exit after their current query.
+          // The WebFetch policy and tool search are fixed at launch too, but
+          // need no stop: this connection's runners exit after their current
+          // query.
           if (
-            updated.webFetchPreflightPolicy !== previous.webFetchPreflightPolicy
+            updated.webFetchPreflightPolicy !==
+              previous.webFetchPreflightPolicy ||
+            providerToolSearchEnabled(updated) !==
+              providerToolSearchEnabled(previous)
           ) {
             deps?.queue?.drainProviderRunnersForCredentialRefresh?.(id);
           }
@@ -1797,6 +1820,9 @@ configRoutes.patch(
         });
       });
     } catch (err) {
+      if (err instanceof ProviderWriteError) {
+        return c.json({ error: err.message, code: err.code }, 400);
+      }
       const message =
         err instanceof Error ? err.message : 'Failed to update provider';
       logger.warn({ err }, 'Failed to update provider');
@@ -2082,13 +2108,7 @@ function resolveCheckedConnection(
       stored?.anthropicBaseUrl ||
       named?.baseUrl ||
       '';
-    // A preset only speaks for its own endpoint.
-    const preset =
-      named &&
-      normalizeProviderBaseUrl(baseUrl) ===
-        normalizeProviderBaseUrl(named.baseUrl)
-        ? named
-        : null;
+    const preset = named && presetAppliesAt(named, baseUrl) ? named : null;
     const draftToken = draft.anthropicAuthToken?.trim();
     const token =
       draftToken || stored?.anthropicAuthToken || stored?.anthropicApiKey || '';
@@ -2384,12 +2404,14 @@ async function discoverModels(
         ok: true,
         models: [...CLAUDE_SUBSCRIPTION_MODELS],
         source: 'builtin',
+        gateway: null,
       };
     case 'chatgpt': {
       await ensureCodexProviderCatalog(connection.stored.id);
       return {
         ok: true,
         source: 'catalog',
+        gateway: null,
         models: listCodexModelsForProvider(connection.stored).models.map(
           (entry) => ({
             id: entry.value,
@@ -2427,6 +2449,15 @@ configRoutes.post(
       return c.json({ error: resolved.error }, resolved.status);
     }
     const result = await discoverModels(resolved.connection);
+    // A saved connection's own list says what its endpoint is.
+    if (
+      result.ok &&
+      resolved.stored &&
+      resolved.connection.kind === 'third_party' &&
+      !draftChangesConnection(draft, resolved.stored)
+    ) {
+      noteConnectionModelList(resolved.stored, result.gateway);
+    }
     logger.info(
       {
         providerId: validation.data.providerId ?? null,
@@ -2466,6 +2497,21 @@ configRoutes.post(
       return c.json({ error: resolved.error }, resolved.status);
     }
     const { connection, stored } = resolved;
+    // Without a model the probe would ask for a bare Claude name, which magpie
+    // routes by its own machine's Claude Code settings: test a listed model.
+    if (
+      connection.kind === 'third_party' &&
+      !connection.model.trim() &&
+      (connection.preset?.gateway === 'magpie' || stored?.gateway === 'magpie')
+    ) {
+      return c.json(
+        {
+          error: 'Magpie 连接要先选一个模型再测试',
+          code: 'MAGPIE_MODELS_REQUIRED',
+        },
+        400,
+      );
+    }
     const result = await testConnection(connection);
 
     if (stored && !draftChangesConnection(draft, stored)) {
@@ -2546,14 +2592,12 @@ configRoutes.get(
   systemConfigMiddleware,
   async (c) => {
     const { id } = c.req.param();
-    if (
-      getProviders().some(
-        (provider) =>
-          provider.id === id &&
-          provider.anthropicBaseUrl === CODEX_GATEWAY_BASE_URL_PLACEHOLDER,
-      )
-    ) {
+    const stored = getProviderById(id);
+    if (stored?.anthropicBaseUrl === CODEX_GATEWAY_BASE_URL_PLACEHOLDER) {
       return c.json(getCodexProviderRateLimits(id));
+    }
+    if (stored?.gateway === 'magpie') {
+      return c.json(await readMagpieQuotas(stored));
     }
     try {
       const usage = await fetchOAuthUsage(id);
@@ -2565,6 +2609,61 @@ configRoutes.get(
     }
   },
 );
+
+// ─── POST /claude/providers/:id/catalog/sync — 检测网关、同步 magpie 模型目录 ─────
+// 打开连接详情时调用：未检测过的第三方连接检测一次是否 magpie；magpie 连接
+// 刷新模型元数据、标记上游已不提供的模型、记录新模型。只改模型元数据，不停
+// Runner，不清会话。刚同步过（60 秒内）直接返回上次的结果。
+configRoutes.post(
+  '/claude/providers/:id/catalog/sync',
+  authMiddleware,
+  systemConfigMiddleware,
+  async (c) => {
+    const { id } = c.req.param();
+    const provider = getProviderById(id);
+    if (!provider) return c.json({ error: '未找到指定供应商' }, 404);
+    if (!storedConnectionAccess(provider)) {
+      return c.json(
+        {
+          error: '只有第三方地址的连接有模型目录',
+          code: 'CATALOG_UNSUPPORTED',
+        },
+        400,
+      );
+    }
+    const user = c.get('user') as AuthUser;
+    // Only a sync that reads upstream spends the admin's per-minute checks.
+    if (!catalogSyncSkip(provider) && !takeConnectivityCheck(user.id)) {
+      return c.json({ error: '测试过于频繁，请稍后再试' }, 429);
+    }
+    const result = await syncProviderCatalog(id);
+    const current = getProviderById(id);
+    return c.json({
+      provider: toPublicProvider(current ?? provider),
+      result,
+    });
+  },
+);
+
+/**
+ * The usage of a magpie connection's accounts, read from the gateway with
+ * the key the connection runs with. A failed read says why.
+ */
+async function readMagpieQuotas(
+  provider: UnifiedProvider,
+): Promise<MagpieQuotasUsage> {
+  const access = storedConnectionAccess(provider);
+  const fetchedAt = Date.now();
+  const result = access
+    ? await fetchMagpieQuotas(access)
+    : ({ ok: false, message: '连接缺少地址或密钥' } as const);
+  return {
+    kind: 'magpie_quotas',
+    accounts: result.ok ? result.accounts : [],
+    fetchedAt,
+    error: result.ok ? null : result.message,
+  };
+}
 
 // ─── POST /claude/apply — 应用配置到所有容器 ─────
 configRoutes.post(

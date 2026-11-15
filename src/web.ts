@@ -89,6 +89,7 @@ import guestRoutes from './routes/guests.js';
 import workItemRoutes from './routes/work-items.js';
 import { codexGatewayApp } from './codex-gateway/gateway.js';
 import { initCodexCatalogSync } from './codex-gateway/model-catalog-sync.js';
+import { initModelCatalogSync } from './model-catalog-sync.js';
 import { CODEX_GATEWAY_ROUTE } from './codex-gateway/types.js';
 import channelAccountRoutes, {
   injectChannelAccountDeps,
@@ -4010,6 +4011,8 @@ export function startWebServer(webDeps: WebDeps): void {
   });
   // Codex 模型目录：读磁盘缓存后后台同步上游（永不阻塞启动）。
   initCodexCatalogSync();
+  // 第三方连接检测 magpie，magpie 连接定时同步模型目录（启动后延迟执行）。
+  initModelCatalogSync();
 
   httpServer = serve(
     {

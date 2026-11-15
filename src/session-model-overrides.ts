@@ -96,34 +96,64 @@ export function modelEffortsFor(
   return connectionModelCapabilities(provider, model).efforts;
 }
 
+/**
+ * Whether `model` takes `effort`. A model whose efforts nothing declares or
+ * knows takes any effort Claude Code has: it is tried as picked. A ChatGPT
+ * model's catalog always decides.
+ */
 function modelTakesEffort(
   provider: ModelConfiguration,
   model: string,
   effort: string,
 ): boolean {
-  return (
-    isModelEffort(effort) && modelEffortsFor(provider, model).includes(effort)
-  );
-}
-
-/**
- * The effort a launch on `model` runs Claude Code at: the first of `picks`
- * (most specific first) the model takes, else its default, else none.
- */
-export function resolveLaunchEffort(
-  provider: ModelConfiguration,
-  model: string,
-  picks: ReadonlyArray<string | null | undefined>,
-): ModelEffort | null {
-  if (!model) return null;
-  const { efforts, defaultEffort } = connectionModelCapabilities(
+  if (!isModelEffort(effort)) return false;
+  if (provider.codexOAuthCredentials || !model) {
+    return modelEffortsFor(provider, model).includes(effort);
+  }
+  const { efforts, effortsSource } = connectionModelCapabilities(
     provider,
     model,
   );
-  for (const pick of picks) {
-    if (isModelEffort(pick) && efforts.includes(pick)) return pick;
+  return effortsSource === 'none' || efforts.includes(effort);
+}
+
+/** The effort and thinking a launch on one model runs Claude Code with. */
+export interface LaunchReasoning {
+  /** Null: HappyClaw passes no effort (Claude Code may still use its own). */
+  effort: ModelEffort | null;
+  /** The model is declared to take no effort and not to reason. */
+  thinkingDisabled: boolean;
+}
+
+/**
+ * How a launch on `model` reasons. A model with known efforts runs at the
+ * first of `picks` (most specific first) it takes, else its default. A model
+ * declared to take none gets no effort, and thinking off only when it is
+ * also declared not to reason (`thinks: false`). A model nothing is known
+ * about runs at the first pick
+ * that is an effort at all, as picked, and gets none without one.
+ */
+export function resolveLaunchReasoning(
+  provider: ModelConfiguration,
+  model: string,
+  picks: ReadonlyArray<string | null | undefined>,
+): LaunchReasoning {
+  if (!model) return { effort: null, thinkingDisabled: false };
+  const { efforts, defaultEffort, effortsSource, thinkingDisabled } =
+    connectionModelCapabilities(provider, model);
+  if (effortsSource === 'none') {
+    return {
+      effort:
+        picks.find((pick): pick is ModelEffort => isModelEffort(pick)) ?? null,
+      thinkingDisabled: false,
+    };
   }
-  return defaultEffort;
+  for (const pick of picks) {
+    if (isModelEffort(pick) && efforts.includes(pick)) {
+      return { effort: pick, thinkingDisabled };
+    }
+  }
+  return { effort: defaultEffort, thinkingDisabled };
 }
 
 /**
@@ -368,13 +398,25 @@ export function chatGptLaunchModel(
 /** A model a conversation or an Agent may pick within a configuration. */
 export interface ConnectionModelChoice {
   id: string;
-  /** Efforts the model takes; empty: none, and none is sent. */
+  /** The vendor's name for the model, when its list gave one. */
+  displayName: string | null;
+  /**
+   * Efforts the model is known to take. Empty: declared to take none
+   * (`effortsSource: 'declared'`), or unknown (`'none'`), in which case any
+   * effort may be picked and is tried as is.
+   */
   efforts: ModelEffort[];
   /** The effort the model runs at when nothing is picked. */
   defaultEffort: ModelEffort | null;
   contextWindow: number | null;
   /** Where the efforts come from; only `registry` is verified. */
   effortsSource: ModelCapabilitySource;
+  /** The longest reply the vendor declares, in tokens. */
+  maxOutputTokens: number | null;
+  /** Who serves the model behind a gateway. */
+  vendor: string | null;
+  /** When a catalog sync found the model gone upstream; null while listed. */
+  upstreamMissingSince: string | null;
 }
 
 /**
@@ -390,6 +432,7 @@ export function listConnectionModels(
       const efforts = entry.efforts.filter(isModelEffort);
       return {
         id: entry.value,
+        displayName: null,
         efforts,
         defaultEffort:
           isModelEffort(entry.defaultEffort) &&
@@ -398,6 +441,9 @@ export function listConnectionModels(
             : null,
         contextWindow: null,
         effortsSource: 'registry',
+        maxOutputTokens: null,
+        vendor: null,
+        upstreamMissingSince: null,
       };
     });
   }
@@ -405,10 +451,14 @@ export function listConnectionModels(
     const capabilities = resolveModelCapabilities(entry);
     return {
       id: entry.id,
+      displayName: entry.displayName ?? null,
       efforts: capabilities.efforts,
       defaultEffort: capabilities.defaultEffort,
       contextWindow: capabilities.contextWindow,
       effortsSource: capabilities.effortsSource,
+      maxOutputTokens: entry.maxOutputTokens ?? null,
+      vendor: entry.vendor ?? null,
+      upstreamMissingSince: entry.upstreamMissingSince ?? null,
     };
   });
 }
@@ -513,9 +563,10 @@ export interface SessionChoiceRejection {
 /**
  * Check a model and effort a chooser submits for `provider`. Unlike a stored
  * choice, a new one must be confirmed by the configuration's model list (a
- * ChatGPT subscription: its catalog), and efforts, which only a ChatGPT
- * subscription offers, above the ceiling need the chooser's
- * `manage_system_config`.
+ * ChatGPT subscription: its catalog). A model whose efforts are unknown
+ * takes any effort Claude Code has; one declared to take none takes none.
+ * Efforts above the ceiling, which only a ChatGPT subscription offers, need
+ * the chooser's `manage_system_config`.
  */
 export function validateSessionChoice(
   provider: ModelConfiguration,

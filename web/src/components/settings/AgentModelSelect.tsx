@@ -5,9 +5,33 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import type { ModelConfigOption } from '../../types';
+import { MODEL_EFFORTS, type ModelEffort } from '@/lib/model-providers';
+import type { ConnectionModel, ModelConfigOption } from '../../types';
 
 const DEFAULT_MODEL_VALUE = '__default__';
+
+/** How a connection's model is named: the vendor's name, else its id. */
+export function modelLabel(
+  config: Pick<ModelConfigOption, 'models'> | undefined,
+  id: string,
+): string {
+  return config?.models.find((item) => item.id === id)?.displayName || id;
+}
+
+/**
+ * The efforts an Agent may pick on a model: what it takes, or every level
+ * for a model nothing is known about (`unverified`), which the server lets
+ * run at any of them. A model declared to take none offers none.
+ */
+export function selectableEfforts(model: ConnectionModel | null): {
+  efforts: ModelEffort[];
+  unverified: boolean;
+} {
+  if (model?.effortsSource === 'none') {
+    return { efforts: [...MODEL_EFFORTS], unverified: true };
+  }
+  return { efforts: model?.efforts ?? [], unverified: false };
+}
 
 /**
  * The (connection, model) fields a save of an Agent changes. A pinned model
@@ -78,7 +102,7 @@ export function AgentModelSelect({
       <SelectContent>
         <SelectItem value={DEFAULT_MODEL_VALUE}>
           {config
-            ? `连接默认（${defaultModel || '由中转站决定'}）`
+            ? `连接默认（${defaultModel ? modelLabel(config, defaultModel) : '由中转站决定'}）`
             : '随跟随的智能体'}
         </SelectItem>
         {missing && (
@@ -86,7 +110,7 @@ export function AgentModelSelect({
         )}
         {listed.map((model) => (
           <SelectItem key={model.id} value={model.id}>
-            {model.id}
+            {model.displayName || model.id}
           </SelectItem>
         ))}
       </SelectContent>

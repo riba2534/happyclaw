@@ -50,3 +50,21 @@ export function resolveRunSdkEffort(input: {
   }
   return resolveAgentSdkEffort(input.agentProfile?.runtimePolicy);
 }
+
+export type RunSdkThinking =
+  | { type: 'adaptive'; display: 'summarized' }
+  | { type: 'disabled' };
+
+/**
+ * The SDK `thinking` option of a run. A model the host declared to take no
+ * effort and not to reason runs with thinking off, and HappyClaw passes it no
+ * effort either (the host sends `launchEffort: null`). Every other run lets
+ * the model decide how much to think and streams the summary.
+ */
+export function resolveRunSdkThinking(input: {
+  thinking?: 'disabled';
+}): RunSdkThinking {
+  return input.thinking === 'disabled'
+    ? { type: 'disabled' }
+    : { type: 'adaptive', display: 'summarized' };
+}

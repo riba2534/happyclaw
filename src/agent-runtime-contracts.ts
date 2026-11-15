@@ -38,6 +38,12 @@ export interface ContainerOutput {
   providerQuotaObservation?: ProviderQuotaObservation;
   providerRateLimitResetsAt?: number;
   providerFailureNotice?: string;
+  /**
+   * The upstream's own words for a provider failure (Claude Code's
+   * `API Error: …` text), capped. The host reads a gateway's usage-limit
+   * wording from it; it is never shown as is.
+   */
+  providerErrorText?: string;
   providerRateLimitScope?: 'account' | 'model';
   providerRateLimitModel?: string;
   providerFailureClass?: 'account' | 'transient' | 'config';
