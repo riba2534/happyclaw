@@ -8,6 +8,7 @@ import {
   automationCellBadge,
   automationFormFrom,
   automationSubtitle,
+  automationTakesModel,
   automationUnreadTone,
   automationsBySession,
   defaultScheduleForm,
@@ -15,6 +16,7 @@ import {
   emptyAutomationForm,
   fieldOfError,
   groupAutomationRuns,
+  modelPatchFromForm,
   scheduleFormFrom,
   scheduleFromForm,
   type ScheduleForm,
@@ -219,6 +221,62 @@ describe('form draft', () => {
       preRunCheckTimeout: '5',
     });
     expect(draftFromForm(values).endAt).toBe('2099-01-01T00:00:00.000Z');
+  });
+
+  test('only agent runs in sessions of their own take a model', () => {
+    expect(
+      automationTakesModel({ execution: 'agent', sessionMode: 'fresh' }),
+    ).toBe(true);
+    expect(
+      automationTakesModel({ execution: 'agent', sessionMode: 'persistent' }),
+    ).toBe(true);
+    expect(
+      automationTakesModel({ execution: 'agent', sessionMode: 'bound' }),
+    ).toBe(false);
+    expect(
+      automationTakesModel({ execution: 'script', sessionMode: 'persistent' }),
+    ).toBe(false);
+  });
+
+  test('a creation names a model only when one is picked and applies', () => {
+    const model = { modelConfigId: 'glm', model: 'glm-5.3', effort: null };
+    const values = { ...emptyAutomationForm({ workspaceJid: 'web:home' }) };
+    expect(draftFromForm(values)).not.toHaveProperty('model');
+    expect(draftFromForm({ ...values, model }).model).toEqual(model);
+    expect(
+      draftFromForm({ ...values, model, sessionMode: 'bound' }),
+    ).not.toHaveProperty('model');
+    expect(
+      draftFromForm({
+        ...values,
+        model,
+        execution: 'script',
+        sessionMode: 'persistent',
+      }),
+    ).not.toHaveProperty('model');
+  });
+
+  test('an edit sends a changed model, and null where one no longer applies', () => {
+    const model = { modelConfigId: 'glm', model: 'glm-5.3', effort: 'high' };
+    const saved = automation({ sessionMode: 'persistent', model });
+    const values = automationFormFrom(saved);
+    expect(values.model).toEqual(model);
+    expect(modelPatchFromForm(values, saved)).toEqual({});
+    expect(
+      modelPatchFromForm(
+        { ...values, model: { ...model, effort: null } },
+        saved,
+      ),
+    ).toEqual({ model: { ...model, effort: null } });
+    expect(modelPatchFromForm({ ...values, model: null }, saved)).toEqual({
+      model: null,
+    });
+    expect(
+      modelPatchFromForm({ ...values, sessionMode: 'bound' }, saved),
+    ).toEqual({ model: null });
+    // Nothing to clear on an automation that never had one.
+    const plain = automation({ sessionMode: 'bound', model: null });
+    expect(modelPatchFromForm(automationFormFrom(plain), plain)).toEqual({});
   });
 
   test.each([

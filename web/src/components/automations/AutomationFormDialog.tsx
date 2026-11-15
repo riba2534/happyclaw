@@ -38,9 +38,11 @@ import {
   SCHEDULE_PRESET_LABELS,
   WEEKDAY_LABELS,
   automationFormFrom,
+  automationTakesModel,
   draftFromForm,
   emptyAutomationForm,
   fieldOfError,
+  modelPatchFromForm,
   type AutomationFormField,
   type AutomationFormValues,
   type ScheduleForm,
@@ -59,6 +61,7 @@ import {
   listedSessions,
   sessionDisplayName,
 } from '../../lib/session-presentation';
+import { SessionModelChoiceField } from '../chat/SessionModelChoiceField';
 
 const PRESETS: SchedulePreset[] = [
   'minutes',
@@ -190,6 +193,7 @@ function AutomationForm({
   const allowHostCommands =
     user?.role === 'admin' && workspace?.execution_mode === 'host';
   const script = values.execution === 'script';
+  const takesModel = automationTakesModel(values);
 
   useEffect(() => {
     if (values.workspaceJid) void loadAgents(values.workspaceJid);
@@ -265,6 +269,9 @@ function AutomationForm({
         // sessions are the server's to pick.
         const patch: AutomationPatchBody = { ...draft };
         delete (patch as Partial<typeof draft>).execution;
+        // A model goes only when it changed: an omitted one stays as it is.
+        delete patch.model;
+        Object.assign(patch, modelPatchFromForm(values, automation));
         if (values.sessionMode === 'bound')
           patch.targetSessionJid = targetSessionJid;
         saved = await update(automation.id, revision, patch);
@@ -377,6 +384,8 @@ function AutomationForm({
                     ...current,
                     workspaceJid: event.target.value,
                     targetSessionJid: null,
+                    // It was picked among the other workspace's options.
+                    model: null,
                   }))
                 }
                 className="w-full"
@@ -620,6 +629,26 @@ function AutomationForm({
             </div>
           )}
         </Field>
+
+        {takesModel && values.workspaceJid && (
+          <Field
+            label="模型"
+            hint={
+              values.sessionMode === 'fresh'
+                ? '每次运行新建的会话使用这个模型。'
+                : '每次运行前把会话换回这个模型；跟随智能体时不改动会话自己的选择。'
+            }
+          >
+            {(id) => (
+              <SessionModelChoiceField
+                id={id}
+                workspaceJid={values.workspaceJid}
+                value={values.model}
+                onChange={(model) => set('model', model)}
+              />
+            )}
+          </Field>
+        )}
 
         <div className="grid gap-5 sm:grid-cols-2">
           <Field
