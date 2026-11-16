@@ -187,6 +187,33 @@ export interface StreamGeneration {
   streamMs?: number;
 }
 
+/**
+ * What the calls finished since the last result add up to, for the live
+ * display only: the ledger still settles at the result. Each call counts
+ * once, when the message_delta with its stop_reason arrives.
+ */
+export interface UsageProgress {
+  calls: number;
+  inputTokens: number;
+  cacheReadInputTokens: number;
+  cacheCreationInputTokens: number;
+  outputTokens: number;
+  streamOutputTokens: number;
+  streamMs: number;
+}
+
+function emptyProgress(): UsageProgress {
+  return {
+    calls: 0,
+    inputTokens: 0,
+    cacheReadInputTokens: 0,
+    cacheCreationInputTokens: 0,
+    outputTokens: 0,
+    streamOutputTokens: 0,
+    streamMs: 0,
+  };
+}
+
 export interface AssistantUsageBatch {
   eventId: string;
   tokens: Pick<
@@ -243,7 +270,46 @@ export class AssistantUsageCollector {
     { startedAt: number; stoppedAt?: number }
   >();
 
+  private progress = emptyProgress();
+  private readonly progressIds = new Set<string>();
+  private progressChanged = false;
+
   constructor(private readonly now: () => number = Date.now) {}
+
+  /** The live totals when a call finished since the last read. */
+  takeUsageProgress(): UsageProgress | undefined {
+    if (!this.progressChanged) return undefined;
+    this.progressChanged = false;
+    return { ...this.progress };
+  }
+
+  /** Start the live totals afresh: the next calls answer the next input. */
+  resetUsageProgress(): void {
+    this.progress = emptyProgress();
+    this.progressIds.clear();
+    this.progressChanged = false;
+  }
+
+  private countFinishedCall(id: string): void {
+    if (this.progressIds.has(id)) return;
+    const tokens = this.streamFinalById.get(id);
+    if (!tokens) return;
+    this.progressIds.add(id);
+    const p = this.progress;
+    p.calls += 1;
+    p.inputTokens += tokens.inputTokens;
+    p.cacheReadInputTokens += tokens.cacheReadInputTokens;
+    p.cacheCreationInputTokens += tokens.cacheCreationInputTokens;
+    p.outputTokens += tokens.outputTokens;
+    const timing = this.streamTimingById.get(id);
+    const ms =
+      timing?.stoppedAt !== undefined ? timing.stoppedAt - timing.startedAt : 0;
+    if (ms > 0 && tokens.outputTokens > 0) {
+      p.streamOutputTokens += tokens.outputTokens;
+      p.streamMs += ms;
+    }
+    this.progressChanged = true;
+  }
 
   private collectContent(sdkMessage: Record<string, unknown>): void {
     const message = sdkMessage.message as Record<string, unknown> | undefined;
@@ -353,6 +419,9 @@ export class AssistantUsageCollector {
       id,
       previous ? maxTokens(previous, tokens) : tokens,
     );
+    if (event.type === 'message_delta' && this.finalIds.has(id)) {
+      this.countFinishedCall(id);
+    }
   }
 
   drain(

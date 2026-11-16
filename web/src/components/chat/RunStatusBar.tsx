@@ -12,6 +12,12 @@ import {
 import { useShellStore } from '../../stores/shell';
 import { useConnectionStatus } from '../../hooks/useConnectionStatus';
 import { useReplyRate } from '../../hooks/useReplyRate';
+import {
+  cacheHitRate,
+  formatHitRate,
+  formatTokensPerSecond,
+  generationTokensPerSecond,
+} from '../../lib/usage-metrics';
 import { useRunElapsed } from '../../hooks/useRunElapsed';
 import { useThrottledValue } from '../../hooks/useThrottledValue';
 import { sessionJidOf } from '../../lib/session-jid';
@@ -95,6 +101,16 @@ export const RunStatusBar = memo(function RunStatusBar({
   const stillGoing = useAfterDelay(running && quiet, QUIET_DELAY_MS);
   const elapsed = useRunElapsed(runtimeJid);
   const rate = useReplyRate(agentId);
+  // Measured as each model call ends; primitives, so a call's end renders
+  // the bar once.
+  const hitRate = useChatStore((s) => {
+    const p = s.agentStreaming[agentId]?.usageProgress;
+    return p && p.cacheReadInputTokens > 0 ? cacheHitRate(p) : null;
+  });
+  const measuredRate = useChatStore((s) => {
+    const p = s.agentStreaming[agentId]?.usageProgress;
+    return p ? generationTokensPerSecond(p) : null;
+  });
   const offline = useConnectionStatus() === 'offline';
   const busyOnly = (proactive && hidden) || quiet;
   const label = offline
@@ -132,9 +148,18 @@ export const RunStatusBar = memo(function RunStatusBar({
 
   if (!running || ended || (quiet && !stillGoing)) return null;
 
+  // Once a call has ended, its measured speed replaces the estimate from
+  // the reply's characters.
+  const speed =
+    measuredRate != null
+      ? formatTokensPerSecond(measuredRate)
+      : rate != null
+        ? `${rate} tok/s`
+        : null;
   const meta = [
     elapsed != null && !offline ? formatRunElapsed(elapsed) : null,
-    rate != null && !stopping && !offline ? `${rate} tok/s` : null,
+    hitRate != null && !offline ? `命中 ${formatHitRate(hitRate)}` : null,
+    speed != null && !stopping && !offline ? speed : null,
   ].filter(Boolean);
   return (
     <div

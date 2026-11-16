@@ -1056,6 +1056,9 @@ export function feedStreamEventToCard(
     case 'usage':
       if (se.usage) session.patchUsageNote(se.usage);
       break;
+    case 'usage_progress':
+      // The Web's live totals; a card shows the settled usage only.
+      break;
     case 'permission_denied': {
       // A denied tool call is a real signal (the agent wanted to do something
       // it wasn't allowed to) — render it in red so it stands out from the

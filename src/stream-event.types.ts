@@ -44,6 +44,7 @@ export type StreamEventType =
   | 'context_audit'
   | 'todo_update'
   | 'usage'
+  | 'usage_progress'
   | 'status'
   | 'init';
 
@@ -443,6 +444,20 @@ export interface StreamEvent {
     content: string;
     status: 'pending' | 'in_progress' | 'completed';
   }>;
+  /**
+   * Live totals of the calls finished so far in this run (usage_progress),
+   * sent as each call ends. Display only: never billed or persisted; the
+   * `usage` event settles the reply.
+   */
+  usageProgress?: {
+    calls: number;
+    inputTokens: number;
+    cacheReadInputTokens: number;
+    cacheCreationInputTokens: number;
+    outputTokens: number;
+    streamOutputTokens: number;
+    streamMs: number;
+  };
   /** input_total is a complete per-input display snapshot, never a billable delta. */
   usageProjection?: 'input_total';
   /** Token usage data emitted at query completion */

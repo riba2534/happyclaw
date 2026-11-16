@@ -70,6 +70,62 @@ describe('stream generation timing', () => {
     expect(collector.drain(undefined)?.tokens.streamMs).toBeUndefined();
   });
 
+  test('live progress adds each finished call once, and starts afresh', () => {
+    let now = 0;
+    const collector = new AssistantUsageCollector(() => now);
+    const startWithCache = (id: string) => ({
+      type: 'stream_event',
+      parent_tool_use_id: null,
+      event: {
+        type: 'message_start',
+        message: {
+          id,
+          usage: {
+            input_tokens: 10,
+            cache_read_input_tokens: 990,
+            output_tokens: 1,
+          },
+        },
+      },
+    });
+    collector.observeStreamEvent(startWithCache('msg_1'));
+    expect(collector.takeUsageProgress()).toBeUndefined();
+    now = 2_000;
+    collector.observeStreamEvent(stop(100));
+    expect(collector.takeUsageProgress()).toEqual({
+      calls: 1,
+      inputTokens: 10,
+      cacheReadInputTokens: 990,
+      cacheCreationInputTokens: 0,
+      outputTokens: 100,
+      streamOutputTokens: 100,
+      streamMs: 2_000,
+    });
+    // Read once; a repeated stop of the same call adds nothing.
+    collector.observeStreamEvent(stop(100));
+    expect(collector.takeUsageProgress()).toBeUndefined();
+
+    collector.observeStreamEvent(startWithCache('msg_2'));
+    now = 3_000;
+    collector.observeStreamEvent(stop(50));
+    expect(collector.takeUsageProgress()).toMatchObject({
+      calls: 2,
+      cacheReadInputTokens: 1_980,
+      streamOutputTokens: 150,
+      streamMs: 3_000,
+    });
+
+    collector.resetUsageProgress();
+    collector.observeStreamEvent(startWithCache('msg_3'));
+    now = 4_000;
+    collector.observeStreamEvent(stop(10));
+    expect(collector.takeUsageProgress()).toMatchObject({
+      calls: 1,
+      streamOutputTokens: 10,
+      streamMs: 1_000,
+    });
+  });
+
   test('the per-input display total sums the timed calls', () => {
     const projection = new InputUsageProjection('input-1');
     const usage = (eventId: string, tokens: number, ms?: number) => ({
