@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 const mocks = vi.hoisted(() => {
   const authState = {
     login: vi.fn(),
+    loginSecondFactor: vi.fn(),
     register: vi.fn(),
     initialized: true as boolean | null,
     checkStatus: vi.fn(),
@@ -72,6 +73,7 @@ let container: HTMLDivElement | null = null;
 beforeEach(() => {
   mocks.navigate.mockClear();
   mocks.authState.login.mockReset();
+  mocks.authState.loginSecondFactor.mockReset();
   mocks.authState.user = null;
   mocks.authState.setupStatus = null;
   mocks.authState.deploymentMode = undefined;
@@ -140,6 +142,59 @@ describe('login before provider configuration', () => {
       );
     },
   );
+});
+
+describe('two-factor login', () => {
+  const submit = async () =>
+    act(async () => {
+      container
+        ?.querySelector('form')
+        ?.dispatchEvent(
+          new Event('submit', { bubbles: true, cancelable: true }),
+        );
+    });
+
+  test('asks for a code after the password, then signs in', async () => {
+    mocks.authState.login.mockResolvedValue({ mfaChallenge: 'challenge-1' });
+    mocks.authState.loginSecondFactor.mockImplementation(async () => {
+      mocks.authState.user = { role: 'member', must_change_password: false };
+    });
+    await act(async () => root?.render(<LoginPage />));
+    await submit();
+    expect(mocks.navigate).not.toHaveBeenCalled();
+    const code = container!.querySelector<HTMLInputElement>('#login-mfa-code')!;
+    expect(code.autocomplete).toBe('one-time-code');
+    expect(code.inputMode).toBe('numeric');
+
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype,
+        'value',
+      )!.set!.call(code, '123456');
+      code.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await submit();
+    expect(mocks.authState.loginSecondFactor).toHaveBeenCalledWith(
+      'challenge-1',
+      '123456',
+    );
+    expect(mocks.navigate).toHaveBeenCalledWith('/chat');
+  });
+
+  test('an expired challenge goes back to the password', async () => {
+    mocks.authState.login.mockResolvedValue({ mfaChallenge: 'challenge-1' });
+    mocks.authState.loginSecondFactor.mockRejectedValue({
+      status: 400,
+      message: 'Verification expired',
+      body: { code: 'MFA_EXPIRED' },
+    });
+    await act(async () => root?.render(<LoginPage />));
+    await submit();
+    await submit();
+    expect(container?.querySelector('#login-mfa-code')).toBeNull();
+    expect(container?.querySelector('#login-password')).not.toBeNull();
+    expect(container?.textContent).toContain('请重新输入密码');
+  });
 });
 
 describe('registration and the deployment mode', () => {

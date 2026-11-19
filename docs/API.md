@@ -55,7 +55,11 @@ Public：
 - `POST /api/auth/setup`，仅用户表为空时可用；可带
   `deployment_mode: "multi_user" | "single_user_host"`，在创建管理员的 Home 工作区之前保存。
   只写入这一项，其他系统设置仍按环境变量生效；不带时什么也不存
-- `POST /api/auth/login`
+- `POST /api/auth/login`：开启了二次验证的账号密码正确时不下发会话，返回
+  `{ mfa_required: true, challenge }`
+- `POST /api/auth/login/2fa`：`{ challenge, code }`，`code` 为验证器的 6 位验证码或一个恢复码；
+  成功后下发会话。challenge 只在内存中，绑定用户，5 分钟过期，最多试 5 次，用过即作废；
+  失败返回 400（`code: MFA_INVALID`，过期或用尽为 `MFA_EXPIRED`），并与密码失败共用登录限流
 - `GET /api/auth/register/status`：单人宿主机模式下恒为关闭
 - `POST /api/auth/register`：单人宿主机模式下 403
 - `GET /api/auth/avatars/:filename`
@@ -69,6 +73,15 @@ Public：
 - `GET /api/auth/sessions`
 - `DELETE /api/auth/sessions/:id`
 - `POST /api/auth/avatar`
+- `GET /api/auth/2fa`：`{ enabled, recovery_codes_remaining }`
+- `POST /api/auth/2fa/setup`：生成待确认的 TOTP 密钥（RFC 6238，SHA-1、6 位、30 秒），返回
+  `{ secret, otpauth_uri, qr_data_url }`；已开启时 409
+- `POST /api/auth/2fa/enable`：`{ code }`，确认后开启并返回 10 个恢复码（只此一次，库里只存哈希）
+- `POST /api/auth/2fa/disable`：`{ password, code }`，`code` 可以是恢复码
+- `POST /api/auth/2fa/recovery-codes`：`{ code }`（只接受验证器验证码），重新生成恢复码
+
+二次验证的接口在验证码或密码错误时返回 400 而不是 401（Web 客户端把 401 当作登录失效）。
+同一个 30 秒步长的验证码只接受一次。访客没有二次验证，这些接口不在访客放行清单里。
 
 `POST /api/auth/login` 的失败次数按三个桶计数，任一超限返回 429：用户名+IP
 （`maxLoginAttempts`/`loginLockoutMinutes`）、用户名（4 倍/1 小时）、客户端 IP
@@ -1572,6 +1585,8 @@ Web 和 Runtime 不再把它们当作第二个可写真相源。
 - `PATCH|DELETE /api/admin/users/:id`
 - `POST /api/admin/users/:id/restore`
 - `DELETE /api/admin/users/:id/sessions`
+- `DELETE /api/admin/users/:id/2fa`：清除他人的二次验证与恢复码（丢失验证器时的恢复路径），
+  写审计 `mfa_reset`；不能用于自己。用户列表的每行带 `two_factor_enabled`
 - `GET /api/admin/permission-templates`
 - `GET|POST /api/admin/invites`
 - `DELETE /api/admin/invites/:code`

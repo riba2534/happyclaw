@@ -735,18 +735,23 @@ v88 把每个工作区的旧主会话迁成普通会话，映射记在 router_st
   `work_decisions`
 - 记忆：`workspace_memory_*`（含召回索引 `workspace_memory_recall_fts`）
 - Web Push：`web_push_subscriptions`（每行记着登记它的登录会话，会话结束即删除）
+- 登录因子：`user_totp`、`user_recovery_codes`（删除用户时一并删除）
 - 用量与计费：`usage_records`、`usage_events`、`usage_daily_summary`、
   `usage_event_connections` 及 `billing_*`、订阅、余额和兑换码相关表
 
 Channel Reliability 的 Inbox/Turn/Outbox/Card 表由
 `src/channel-reliability-store.ts` 在同一数据库连接上创建；同样，`session_worktrees` 由
 `src/session-worktree-store.ts`，自动化表由 `src/automation-store.ts`，团队模式表由 `src/work-item-store.ts`，
-`web_push_subscriptions` 由 `src/web-push-store.ts`，等待、补注、用量连接
+`web_push_subscriptions` 由 `src/web-push-store.ts`，登录因子表由 `src/auth-factor-store.ts`，等待、补注、用量连接
 和 Web 发送去重表由 `src/runtime-state-store.ts` 创建。
 
 ## 8. 认证与权限
 
 - Cookie 会话使用 HMAC 签名，密钥来自环境变量、持久文件或首次自动生成。
+- 二次验证（TOTP，`src/totp.ts`、`src/auth-mfa.ts`）：开启后密码正确只换来一个内存中的
+  challenge（5 分钟、5 次、单次使用），`POST /api/auth/login/2fa` 交验证码或恢复码后才下发会话，
+  失败与密码失败共用登录限流；同一步长的验证码只收一次。密钥用 `claude-provider.key` 加密存放，
+  恢复码只存哈希（`src/auth-factor-store.ts`）。丢失验证器由有 `manage_users` 的人在用户管理里重置。
 - `canAccessGroup`、`canModifyGroup` 和 `canDeleteGroup` 不提供 admin 全局旁路；
   工作区和渠道资源按 `created_by` 隔离。
 - Host 工作区额外要求 admin 角色。

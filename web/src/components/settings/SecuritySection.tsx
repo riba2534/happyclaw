@@ -12,6 +12,7 @@ import { api } from '../../api/client';
 import { useAuthStore } from '../../stores/auth';
 import { SettingsGroup, SettingsRow, SettingsSection } from './SettingsLayout';
 import { SettingsFormFooter } from './SettingsFormControls';
+import { TwoFactorSection } from './TwoFactorSection';
 import { getErrorMessage, type SessionInfo } from './types';
 
 const COLLAPSED_SESSION_COUNT = 10;
@@ -51,7 +52,7 @@ function describeUserAgent(userAgent: string | null): string {
 }
 
 export function SecuritySection() {
-  const { logout, changePassword } = useAuthStore();
+  const { logout, changePassword, user } = useAuthStore();
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
@@ -239,6 +240,8 @@ export function SecuritySection() {
           </Button>
         </SettingsFormFooter>
       </SettingsSection>
+
+      {user?.role !== 'guest' && <TwoFactorSection />}
 
       <SettingsSection
         title="登录设备"

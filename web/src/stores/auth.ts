@@ -45,6 +45,8 @@ export interface UserPublic {
   guest_owner_id?: string | null;
   /** Owner username, only present in the admin users list. */
   guest_owner_username?: string | null;
+  /** Two-factor authentication is on; only present in the admin users list. */
+  two_factor_enabled?: boolean;
 }
 
 export interface AppearanceConfig {
@@ -103,7 +105,15 @@ interface AuthState {
   /** Applies a deployment mode switched in settings. */
   setDeploymentMode: (mode: DeploymentMode) => void;
   checking: boolean;
-  login: (username: string, password: string) => Promise<void>;
+  /**
+   * Log in with a password. With two-factor authentication on, nothing is
+   * signed in yet: the returned challenge goes to loginSecondFactor.
+   */
+  login: (
+    username: string,
+    password: string,
+  ) => Promise<{ mfaChallenge: string } | null>;
+  loginSecondFactor: (challenge: string, code: string) => Promise<void>;
   register: (data: {
     username: string;
     password: string;
@@ -163,6 +173,26 @@ function discardPrewarms(): void {
   holder.__groupsPrewarm = undefined;
 }
 
+interface LoginResponse {
+  success: boolean;
+  user: UserPublic;
+  setupStatus?: SetupStatus;
+  appearance?: AppearanceConfig;
+}
+
+// Public pages never run checkAuth, so `checking` may still hold its
+// initial true; the signed-in shell must not wait on it.
+function signedInState(data: LoginResponse) {
+  return {
+    authenticated: true,
+    user: data.user,
+    setupStatus: data.setupStatus ?? null,
+    appearance: data.appearance ?? null,
+    initialized: true,
+    checking: false,
+  };
+}
+
 export const useAuthStore = create<AuthState>((set, get) => ({
   authenticated: false,
   user: null,
@@ -181,22 +211,21 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     resetUserScopedStores();
     discardPrewarms();
     await clearMessageSnapshotCache();
-    const data = await api.post<{
-      success: boolean;
-      user: UserPublic;
-      setupStatus?: SetupStatus;
-      appearance?: AppearanceConfig;
-    }>('/api/auth/login', { username, password });
-    // Public pages never run checkAuth, so `checking` may still hold its
-    // initial true; the signed-in shell must not wait on it.
-    set({
-      authenticated: true,
-      user: data.user,
-      setupStatus: data.setupStatus ?? null,
-      appearance: data.appearance ?? null,
-      initialized: true,
-      checking: false,
+    const data = await api.post<
+      | LoginResponse
+      | { mfa_required: true; challenge: string; user?: undefined }
+    >('/api/auth/login', { username, password });
+    if (!data.user) return { mfaChallenge: data.challenge };
+    set(signedInState(data));
+    return null;
+  },
+
+  loginSecondFactor: async (challenge: string, code: string) => {
+    const data = await api.post<LoginResponse>('/api/auth/login/2fa', {
+      challenge,
+      code,
     });
+    set(signedInState(data));
   },
 
   register: async (payload) => {
