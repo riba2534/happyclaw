@@ -1115,7 +1115,34 @@ describe('a reply on a phone', () => {
     const phoneButton = container.querySelector(
       'button[aria-label^="用量详情"]',
     );
-    expect(phoneButton?.textContent).toBe('99.8% · 63.0 tok/s');
+    expect(phoneButton?.textContent).toBe('命中 99.8% · 63.0 tok/s');
+  });
+
+  const usageDetails = async (usage: Record<string, number>) => {
+    await mount(
+      reply({ has_trace: false, token_usage: JSON.stringify(usage) }),
+    );
+    await click(container.querySelector('button[aria-label^="用量详情"]'));
+    return document.body.textContent ?? '';
+  };
+
+  it('has no hit rate in the details when nothing was cached', async () => {
+    const details = await usageDetails({
+      inputTokens: 1200,
+      outputTokens: 300,
+    });
+    expect(details).toContain('输入');
+    expect(details).not.toContain('缓存命中率');
+  });
+
+  it('explains a 0% hit rate after a cache write', async () => {
+    const details = await usageDetails({
+      inputTokens: 200,
+      outputTokens: 300,
+      cacheCreationInputTokens: 1000,
+    });
+    expect(details).toContain('缓存命中率');
+    expect(details).toContain('首轮或上下文刚重置时没有可读的缓存');
   });
 
   it('leaves a 0% hit rate out of the usage line', async () => {

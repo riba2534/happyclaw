@@ -232,7 +232,13 @@ function tokenUsageView(
       rows.push(['缓存写入', formatTokens(breakdown.cacheCreationInputTokens)]);
     }
   }
-  if (hitRate !== null) {
+  // Neither a cache read nor a cache write: usually a provider without prompt
+  // caching, where a hit rate says nothing.
+  if (
+    hitRate !== null &&
+    (breakdown.cacheReadInputTokens > 0 ||
+      breakdown.cacheCreationInputTokens > 0)
+  ) {
     rows.push([
       '缓存命中率',
       formatHitRate(hitRate),
@@ -275,7 +281,7 @@ function tokenUsageView(
       </div>
     ) : null;
   const glance = [
-    showHitRate ? formatHitRate(hitRate) : null,
+    showHitRate ? `命中 ${formatHitRate(hitRate)}` : null,
     tps !== null ? formatTokensPerSecond(tps) : null,
   ]
     .filter(Boolean)
