@@ -373,12 +373,14 @@ preset 的身份和默认风格，只低于平台的安全、权限、工具和�
   项目/local settings 文件设置：Host 模式下那是管理员自己的仓库，Container 模式下所有者
   本就能读到该连接的凭据。
 - 连接的工具搜索（`toolSearch`：开、关、默认；默认对 magpie 连接为开，其余为关）：生效为开
-  时 Runner 在 flag settings 的 env 里钉 `ENABLE_TOOL_SEARCH=true`；为关时，有自己地址的连接
-  （第三方与 ChatGPT 网关）钉 `false`，因为 Claude Code 2.1.304 起在自定义 `ANTHROPIC_BASE_URL`
-  后面会自行打开它；官方连接与工作区自带环境不写，由 Claude Code 和 settings 决定。生效值变化后
-  与 WebFetch 域名检查一样，使用该连接的 Runner 在本轮结束后退出，SDK 会话保留。上游以提到
-  `defer_loading` 的 400 拒绝延迟加载的工具时（magpie 对不能原地加载的路由如此），Claude Code
-  自己改为完整声明全部工具重发（`tests/e2e/provider-failure-upstream.mjs` 的 `refuse-deferred`）。
+  时 Runner 在 flag settings 的 env 里钉 `ENABLE_TOOL_SEARCH=true`，为关时不写进 settings。
+  Claude Code 2.1.304 起在自定义 `ANTHROPIC_BASE_URL` 后面会自行打开它，所以自定义地址
+  （第三方连接、ChatGPT 网关、工作区自带的地址）上没开、进程环境也没设它时，Runner 在 CLI 的
+  进程环境里写 `ENABLE_TOOL_SEARCH=false`（`defaultToolSearchEnv`）；进程环境是最低一层，连接或
+  工作区的环境变量与各层 settings 仍照旧决定。生效值变化后与 WebFetch 域名检查一样，使用该连接的
+  Runner 在本轮结束后退出，SDK 会话保留。上游以提到 `defer_loading` 的 400 拒绝延迟加载的工具时
+  （magpie 对不能原地加载的路由如此），Claude Code 自己改为完整声明全部工具重发
+  （`tests/e2e/provider-failure-upstream.mjs` 的 `refuse-deferred`）。
 - 连接的 WebFetch 域名检查（`webFetchPreflightPolicy`）：Claude Code 的 WebFetch 会先把
   域名发到 `api.anthropic.com` 预检，连不上 Anthropic 时第三方连接的 WebFetch 必然失败；它只从
   settings 读 `skipWebFetchPreflight`，没有环境变量。连接选 `skip` 时 Runner 在 flag
@@ -396,7 +398,8 @@ preset 的身份和默认风格，只低于平台的安全、权限、工具和�
   2.1.323 起把不认识的模型当作 1M，而 1M 窗口不按阈值压缩、只等上游的「prompt is too long」，
   别家上游的措辞不同，会话满了就每轮失败；所以没有 `[1m]`、且声明了长度或名字不是 Claude 模型的
   启动写 `CLAUDE_CODE_DISABLE_1M_CONTEXT=1` 保住 200K 上限（`keepsTwoHundredKWindow`），ChatGPT
-  网关的启动也写；它作用于整个启动，带 `[1m]` 的角色模型此时同样按 200K。只用
+  网关的启动也写；它作用于整个启动，带 `[1m]` 的角色模型此时同样按 200K；连接环境变量里自己写的
+  同名键优先。只用
   条目上声明的长度，能力表里的长度只作为添加时的预填值，不会自行打开 `[1m]`。只改
   上下文长度不算换模型。子代理、后台轻量调用和 opus/sonnet 档由连接的 `roles` 从同一
   连接的模型里选，未设置时跟随本轮模型；宿主侧短调用（`sdkQuery`：标题、`/recall`、Bug

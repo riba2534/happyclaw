@@ -548,6 +548,13 @@ describe('connection model env', () => {
       false,
     );
     expect(keepsTwoHundredKWindow('opus', null)).toBe(false);
+    expect(keepsTwoHundredKWindow('cursor/claude-opus-5-5@300k', null)).toBe(
+      false,
+    );
+    // Only Claude's own families: a name merely containing "claude" is not
+    // one Claude Code knows.
+    expect(keepsTwoHundredKWindow('claude-distill-qwen-72b', null)).toBe(true);
+    expect(keepsTwoHundredKWindow('myproxy/claude-coder', null)).toBe(true);
     expect(keepsTwoHundredKWindow('claude-opus-5-5', 200_000)).toBe(true);
     expect(keepsTwoHundredKWindow('', null)).toBe(false);
   });

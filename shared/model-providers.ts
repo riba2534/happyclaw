@@ -494,6 +494,9 @@ export function autoCompactWindowFor(
   return contextWindow;
 }
 
+/** A Claude model id, under any provider prefix (`anthropic/…`). */
+const CLAUDE_MODEL_NAME_RE = /(?:^|\/)claude-(?:opus|sonnet|haiku|fable|\d)/i;
+
 /**
  * Whether a third-party launch of `launchModel` (as launchModelName names it)
  * needs CLAUDE_CODE_DISABLE_1M_CONTEXT=1 to keep the 200K window Claude Code
@@ -508,7 +511,7 @@ export function keepsTwoHundredKWindow(
   if (!model || oneMillion) return false;
   if (contextWindow) return true;
   return (
-    !/claude/i.test(model) &&
+    !CLAUDE_MODEL_NAME_RE.test(model) &&
     !Object.hasOwn(CLAUDE_CODE_ALIASES, model.toLowerCase())
   );
 }
@@ -521,7 +524,6 @@ export const CONNECTION_MODEL_ENV_KEYS = [
   'ANTHROPIC_DEFAULT_HAIKU_MODEL',
   'CLAUDE_CODE_SUBAGENT_MODEL',
   'CLAUDE_CODE_AUTO_COMPACT_WINDOW',
-  'CLAUDE_CODE_DISABLE_1M_CONTEXT',
   'CLAUDE_CODE_EFFORT_LEVEL',
 ] as const;
 
@@ -553,8 +555,9 @@ export interface ConnectionModelEnvInput {
  * the whole launch, and the longest reply they all declare
  * (maxOutputTokensFor).
  * A pass-through connection (no model) only gets the roles it names.
- * CLAUDE_CODE_MAX_OUTPUT_TOKENS is not one of CONNECTION_MODEL_ENV_KEYS: a
- * value in the connection's own env replaces it.
+ * CLAUDE_CODE_MAX_OUTPUT_TOKENS and CLAUDE_CODE_DISABLE_1M_CONTEXT are not
+ * CONNECTION_MODEL_ENV_KEYS: a value in the connection's own env replaces
+ * them.
  */
 export function buildConnectionModelEnv(
   input: ConnectionModelEnvInput,

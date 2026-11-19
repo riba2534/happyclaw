@@ -223,34 +223,9 @@ describe('a magpie launch', () => {
 
   test('tool search is on by default and follows the setting', () => {
     expect(runner.resolveProviderToolSearch(magpie.id)).toBe(true);
-    // Off is pinned: Claude Code 2.1.304+ turns it on behind a gateway.
     runtimeConfig.updateProvider(magpie.id, { toolSearch: 'off' });
-    expect(runner.resolveProviderToolSearch(magpie.id)).toBe(false);
+    expect(runner.resolveProviderToolSearch(magpie.id)).toBeUndefined();
     runtimeConfig.updateProvider(magpie.id, { toolSearch: 'default' });
     expect(runner.resolveProviderToolSearch(null)).toBeUndefined();
-  });
-
-  test('another endpoint pins it off by default; Anthropic decides for itself', () => {
-    const relay = runtimeConfig.createProvider({
-      name: 'Relay',
-      type: 'third_party',
-      anthropicBaseUrl: 'http://127.0.0.1:3555',
-      anthropicAuthToken: 'relay-key',
-      anthropicModel: 'glm-5',
-    });
-    const official = runtimeConfig.createProvider({
-      name: 'Anthropic',
-      type: 'official',
-      anthropicApiKey: 'sk-ant-test-key',
-    });
-    try {
-      expect(runner.resolveProviderToolSearch(relay.id)).toBe(false);
-      runtimeConfig.updateProvider(relay.id, { toolSearch: 'on' });
-      expect(runner.resolveProviderToolSearch(relay.id)).toBe(true);
-      expect(runner.resolveProviderToolSearch(official.id)).toBeUndefined();
-    } finally {
-      runtimeConfig.deleteProvider(relay.id);
-      runtimeConfig.deleteProvider(official.id);
-    }
   });
 });

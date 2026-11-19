@@ -186,6 +186,23 @@ describe('buildClaudeEnvLines', () => {
     expect(lines).toContain('CLAUDE_CODE_DISABLE_1M_CONTEXT=1');
   });
 
+  test("the connection's own CLAUDE_CODE_DISABLE_1M_CONTEXT replaces the derived one", () => {
+    for (const anthropicBaseUrl of [
+      'https://relay.example.com',
+      CODEX_GATEWAY_BASE_URL_PLACEHOLDER,
+    ]) {
+      const lines = buildClaudeEnvLines(
+        config({ anthropicBaseUrl, anthropicModel: 'k3' }),
+        { CLAUDE_CODE_DISABLE_1M_CONTEXT: '0' },
+      );
+      expect(
+        lines.filter((line) =>
+          line.startsWith('CLAUDE_CODE_DISABLE_1M_CONTEXT='),
+        ),
+      ).toEqual(['CLAUDE_CODE_DISABLE_1M_CONTEXT=0']);
+    }
+  });
+
   test('injects nothing implicitly: no effort, no timeout, no traffic flags', () => {
     const lines = buildClaudeEnvLines(
       config({ anthropicModel: 'k3' }),

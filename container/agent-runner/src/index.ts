@@ -72,7 +72,10 @@ import {
   parseTranscript,
   transcriptSinceLastCompaction,
 } from './session-history.js';
-import { StreamEventProcessor } from './stream-processor.js';
+import {
+  isHookToolProgress,
+  StreamEventProcessor,
+} from './stream-processor.js';
 import {
   ActiveTurnStopper,
   consumeInterruptSentinel,
@@ -130,7 +133,7 @@ import {
 } from './claude-runtime-env.js';
 import { pinBoundProviderSettings } from './provider-env-pin.js';
 import { webFetchPreflightSettings } from './web-fetch-preflight.js';
-import { pinToolSearch } from './tool-search.js';
+import { defaultToolSearchEnv, pinToolSearch } from './tool-search.js';
 import { pinMaxOutputTokens } from './max-output-pin.js';
 import {
   assistantMessageText,
@@ -2989,7 +2992,14 @@ async function runQueryAttempt(
   // Auto-compaction is configured through Claude Code's own environment
   // variables: they outrank the `autoCompactWindow` setting and apply to the
   // window Claude Code resolved for the model, 1M-native models included.
-  const claudeRuntimeEnv: ClaudeRuntimeEnv = buildClaudeRuntimeEnv(process.env);
+  const claudeRuntimeEnv: ClaudeRuntimeEnv = {
+    ...buildClaudeRuntimeEnv(process.env),
+    ...defaultToolSearchEnv(
+      process.env,
+      CLAUDE_PROVIDER_RUNTIME.endpointKind,
+      containerInput.toolSearch,
+    ),
+  };
   // The bound connection outranks every settings file the CLI reads (the
   // admin's, the workspace's project and local ones), in host and container
   // mode alike.
@@ -3114,9 +3124,7 @@ async function runQueryAttempt(
     if (runThinking.type === 'disabled') {
       log('Run thinking: off (the model does not reason)');
     }
-    if (containerInput.toolSearch !== undefined) {
-      log(`Run tool search: ${containerInput.toolSearch ? 'on' : 'off'}`);
-    }
+    if (containerInput.toolSearch) log('Run tool search: on');
     if (containerInput.maxOutputTokens) {
       log(`Run reply limit: ${containerInput.maxOutputTokens} (pinned)`);
     }
@@ -3576,6 +3584,7 @@ async function runQueryAttempt(
       }
 
       if (message.type === 'tool_progress') {
+        if (isHookToolProgress(message)) continue;
         if (!suppressOutputAfterInterrupt) {
           visibleOutputStarted = true;
         }

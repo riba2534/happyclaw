@@ -1002,7 +1002,7 @@ Provider（模型连接：一份凭据和一个端点，提供一组模型）：
   凭据、`ANTHROPIC_CUSTOM_HEADERS` 或轻量后台模型变更后清空）、`gateway`
   （`'magpie' | null`，见下）、`toolSearch`（`'on' | 'off' | 'default'`）、
   `toolSearchEnabled`（启动是否开启 Claude Code 的工具搜索：`default` 对 magpie 为开，
-  其余为关；有自己地址的连接为关时，启动钉 `ENABLE_TOOL_SEARCH=false`）和 `catalog`（只对 magpie 连接非空：
+  其余为关）和 `catalog`（只对 magpie 连接非空：
   `{ autoAdd, syncedAt, error, newModels }`）。
   创建请求可带 `models`（条目同上，`upstreamMissingSince` 除外）、`roles`（指向不在列表里的模型时丢弃）、`presetId`（未知预设
   400）、`gateway: 'magpie'`（创建前的模型发现识别出 magpie 时由 Web 带上）、

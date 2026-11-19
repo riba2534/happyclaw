@@ -191,6 +191,7 @@ const THIRD_PARTY_CONFIGURABLE_ENV_KEYS: ReadonlySet<string> = new Set([
  */
 const USER_TUNABLE_MODEL_ENV: ReadonlySet<string> = new Set([
   'CLAUDE_CODE_MAX_OUTPUT_TOKENS',
+  'CLAUDE_CODE_DISABLE_1M_CONTEXT',
 ]);
 
 /**
@@ -3985,7 +3986,9 @@ export function buildClaudeEnvLines(
     }
     lines.push(`ANTHROPIC_DEFAULT_HAIKU_MODEL=${CODEX_GATEWAY_HAIKU_MODEL}`);
     // Codex model names are not Claude Code's (keepsTwoHundredKWindow).
-    lines.push('CLAUDE_CODE_DISABLE_1M_CONTEXT=1');
+    if (!customEnv.CLAUDE_CODE_DISABLE_1M_CONTEXT?.trim()) {
+      lines.push('CLAUDE_CODE_DISABLE_1M_CONTEXT=1');
+    }
   } else if (config.anthropicBaseUrl) {
     const modelEnv = buildConnectionModelEnv({
       model: config.anthropicModel,

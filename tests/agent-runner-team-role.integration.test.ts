@@ -178,9 +178,6 @@ async function firstMainRequest(
       isHome: false,
       isAdminHome: false,
       interactionMode: 'proactive',
-      // A connection with tool search off, as the host launches it: every
-      // tool is declared in full, so the request shows what the model has.
-      toolSearch: false,
       // A Feishu input, so the plain session gets the channel's format note.
       channelContext: {
         schemaVersion: 1,

@@ -9,7 +9,7 @@ import { afterAll, beforeAll, describe, expect, test } from 'vitest';
 
 import { writeCliSecretFiles } from '../container/agent-runner/src/cli-secret-files.js';
 import { pinBoundProviderSettings } from '../container/agent-runner/src/provider-env-pin.js';
-import { pinToolSearch } from '../container/agent-runner/src/tool-search.js';
+import { defaultToolSearchEnv } from '../container/agent-runner/src/tool-search.js';
 import {
   buildClaudeContextPlan,
   loadHostClaudeSettings,
@@ -290,6 +290,8 @@ async function runTurn(options: {
     CLAUDE_CONFIG_DIR: config,
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
   });
+  // As the Runner does behind a custom endpoint: every tool declared in full.
+  Object.assign(env, defaultToolSearchEnv(env, 'custom', undefined));
   const start = hits.length;
   bashCommand = options.dumpEnvTo
     ? `env | grep -E '^(ANTHROPIC|CLAUDE_CODE|CLAUDE_AUTOCOMPACT|AWS_BEARER|CLOUD_ML)' | sort > ${options.dumpEnvTo}`
@@ -298,12 +300,9 @@ async function runTurn(options: {
         `ps -ww -o command= -p $PPID > ${options.dumpArgvTo}`
       : undefined;
   // As the Runner does: the pin and external MCP servers reach the CLI as
-  // files, never argv. The bound connection has tool search off, so every
-  // tool is declared in full.
+  // files, never argv.
   const files = writeCliSecretFiles(
-    options.pin === false
-      ? {}
-      : pinToolSearch(pinBoundProviderSettings(env), false),
+    options.pin === false ? {} : pinBoundProviderSettings(env),
     options.mcpServers ?? {},
     dir,
   );
