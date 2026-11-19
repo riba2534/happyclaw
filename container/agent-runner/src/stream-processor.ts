@@ -30,6 +30,10 @@ import { BackgroundTaskDrainTracker } from './background-task-drain.js';
 // Bounds for the per-Task final-answer capture forwarded on task_notification.
 const SUB_AGENT_RESULT_MAX_CHARS = 16_000;
 const SUB_AGENT_RESULT_MAX_TASKS = 64;
+// Tasks whose foreground/background state is remembered for their
+// task_notification; past this the oldest is forgotten (and counts as
+// background).
+const TASK_BACKGROUND_STATE_MAX_TASKS = 256;
 
 // SDK 任务终态（task_updated.patch.status 语义下"不会再有后续信号"的状态）。
 // web/src/stores/chat.ts、src/web.ts、src/index.ts 各有等价映射——SDK 新增
@@ -286,12 +290,21 @@ export class StreamEventProcessor {
       description: string;
       taskType?: string;
       isBackgrounded: boolean;
-      /** task_started reported is_backgrounded (notice-worthy completion). */
-      startedInBackground?: boolean;
       /** Launched by a sub-agent rather than the main Agent. */
       launchedBySubAgent: boolean;
     }
   >();
+
+  // Whether each SDK task ran in the background, for task_notification's
+  // isBackground: the Web announces only background completions. Kept apart
+  // from pendingSdkTasks because a foreground sub-agent's terminal
+  // task_updated settles it there before its task_notification arrives.
+  // Written by task_started (only when the CLI states is_backgrounded),
+  // task_updated and background_tasks_changed; read and dropped by
+  // task_notification. A task that never notifies (a nested sub-agent ending
+  // with its parent, a watcher) stays until the oldest entries are dropped
+  // past TASK_BACKGROUND_STATE_MAX_TASKS.
+  private readonly taskRanInBackground = new Map<string, boolean>();
 
   // tool_use_ids issued inside a sub-agent (raw parent_tool_use_id != null).
   // A background task started by one of these tools reports its completion
@@ -1491,13 +1504,13 @@ export class StreamEventProcessor {
               ? message.task_type
               : undefined,
           isBackgrounded: false,
-          startedInBackground: message.is_backgrounded === true,
           launchedBySubAgent:
             subAgentOwned || typeof message.parent_task_id === 'string',
         });
         this.log(
           `[pending-tasks] +${message.task_id.slice(0, 12)} (${shorten(desc, 60)}) → ${this.pendingSdkTasks.size} pending`,
         );
+        this.recordStartedTaskBackground(message);
       }
       this.emitStreamEvent({
         eventType: 'task_start',
@@ -1556,6 +1569,9 @@ export class StreamEventProcessor {
         this.sdkTaskIdToToolUseId.get(message.task_id) || message.task_id;
       const patchStatus = message.patch?.status;
       const pending = this.pendingSdkTasks.get(message.task_id);
+      if (message.task_id && message.patch?.is_backgrounded === true) {
+        this.recordTaskBackground(message.task_id, true);
+      }
       if (pending && message.patch?.is_backgrounded === true) {
         pending.isBackgrounded = true;
         if (pending.taskType === 'local_bash') {
@@ -1616,6 +1632,7 @@ export class StreamEventProcessor {
       this.backgroundLevelTaskIds.clear();
       for (const task of tasks) {
         this.backgroundLevelTaskIds.add(task.task_id);
+        this.recordTaskBackground(task.task_id, true);
         const existing = this.pendingSdkTasks.get(task.task_id);
         const launchedBySubAgent = typeof task.parent_task_id === 'string';
         if (!existing) {
@@ -2451,12 +2468,14 @@ export class StreamEventProcessor {
     summary: string;
     output_file?: string;
     usage?: any;
+    skip_transcript?: boolean;
+    ambient?: boolean;
   }): void {
     if (this.isSubAgentOwnedTask(message)) {
       this.backgroundDrain.markNonBlocking(message.task_id);
     }
     this.backgroundDrain.taskNotification(message.task_id);
-    const isBackground = this.isBackgroundTaskNotification(message);
+    const isBackground = this.takeNotificationIsBackground(message);
     this.settlePendingSdkTask(
       message.task_id,
       `task_notification:${message.status}`,
@@ -2526,22 +2545,50 @@ export class StreamEventProcessor {
 
   /**
    * The SDK also sends task_notification for foreground tasks (a Bash call
-   * that ran past the progress threshold, a blocking sub-agent). Only a task
-   * that actually ran in the background is news to the reader; one this
-   * process never registered (e.g. from before a restart) counts as
-   * background. Must run before the pending entry is settled.
+   * that ran past the progress threshold, a blocking sub-agent); only a task
+   * that ran in the background is news to the reader. A task this process
+   * never saw start (e.g. from before a restart) counts as background. Tasks
+   * that are not activity (skip_transcript, ambient watchers) never are.
    */
-  private isBackgroundTaskNotification(message: {
+  private takeNotificationIsBackground(message: {
+    task_id: string;
+    skip_transcript?: boolean;
+    ambient?: boolean;
+  }): boolean {
+    const ranInBackground = this.taskRanInBackground.get(message.task_id);
+    this.taskRanInBackground.delete(message.task_id);
+    if (message.skip_transcript === true || message.ambient === true) {
+      return false;
+    }
+    return ranInBackground !== false;
+  }
+
+  /**
+   * The CLI states is_backgrounded only for local_agent and local_bash. A task
+   * already in the background level, or whose Task/Agent call asked for
+   * run_in_background, runs in the background whatever task_started says.
+   */
+  private recordStartedTaskBackground(message: {
     task_id: string;
     tool_use_id?: string;
-  }): boolean {
-    const pending = this.pendingSdkTasks.get(message.task_id);
-    if (!pending) return true;
-    if (pending.isBackgrounded || pending.startedInBackground) return true;
-    if (this.backgroundLevelTaskIds.has(message.task_id)) return true;
-    const toolUseId =
-      message.tool_use_id || this.sdkTaskIdToToolUseId.get(message.task_id);
-    return !!toolUseId && this.backgroundTaskToolUseIds.has(toolUseId);
+    is_backgrounded?: boolean;
+  }): void {
+    const inBackground =
+      message.is_backgrounded === true ||
+      this.backgroundLevelTaskIds.has(message.task_id) ||
+      (!!message.tool_use_id &&
+        this.backgroundTaskToolUseIds.has(message.tool_use_id));
+    if (!inBackground && message.is_backgrounded !== false) return;
+    this.recordTaskBackground(message.task_id, inBackground);
+  }
+
+  private recordTaskBackground(taskId: string, inBackground: boolean): void {
+    this.taskRanInBackground.delete(taskId);
+    this.taskRanInBackground.set(taskId, inBackground);
+    if (this.taskRanInBackground.size > TASK_BACKGROUND_STATE_MAX_TASKS) {
+      const oldest = this.taskRanInBackground.keys().next().value;
+      if (oldest !== undefined) this.taskRanInBackground.delete(oldest);
+    }
   }
 
   /**
