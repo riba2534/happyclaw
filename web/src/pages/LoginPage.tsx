@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { Loader2, Globe, Sparkles } from 'lucide-react';
+import { Loader2, Globe, Sparkles, KeyRound } from 'lucide-react';
 import { useAuthStore } from '../stores/auth';
 import { LogoLoading } from '../components/common/LogoLoading';
 import { api } from '../api/client';
@@ -19,6 +19,15 @@ interface RegisterStatus {
 
 type Tab = 'login' | 'register';
 
+function passkeyError(err: unknown): string {
+  const code = apiErrorBody(err)?.code;
+  if (code === 'PASSKEY_INVALID') return '这个通行密钥未登记在本站，或已被删除';
+  if (code === 'PASSKEY_NOT_ALLOWED') {
+    return '当前地址未允许使用通行密钥，请联系管理员';
+  }
+  return extractErrorMessage(err) || '通行密钥登录失败';
+}
+
 export function LoginPage() {
   const [searchParams] = useSearchParams();
   const [requestedTab, setTab] = useState<Tab>(
@@ -32,6 +41,12 @@ export function LoginPage() {
   const navigate = useNavigate();
   const login = useAuthStore((state) => state.login);
   const loginSecondFactor = useAuthStore((state) => state.loginSecondFactor);
+  const loginWithPasskey = useAuthStore((state) => state.loginWithPasskey);
+  // Passkeys need a secure context (HTTPS or localhost) and WebAuthn.
+  const passkeysUsable =
+    typeof window !== 'undefined' &&
+    window.isSecureContext &&
+    typeof window.PublicKeyCredential === 'function';
   const register = useAuthStore((state) => state.register);
   const initialized = useAuthStore((state) => state.initialized);
   const checkStatus = useAuthStore((state) => state.checkStatus);
@@ -106,6 +121,39 @@ export function LoginPage() {
       enterApp();
     } catch (err) {
       setError(extractErrorMessage(err) || '登录失败');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Offer saved passkeys in the username field's suggestions (conditional
+  // UI) while the password form shows; the button below aborts this wait.
+  useEffect(() => {
+    if (!passkeysUsable || tab !== 'login' || mfaChallenge) return;
+    let cancelled = false;
+    void (async () => {
+      const { browserSupportsWebAuthnAutofill } =
+        await import('@simplewebauthn/browser');
+      if (cancelled || !(await browserSupportsWebAuthnAutofill())) return;
+      try {
+        if (await loginWithPasskey({ autofill: true })) enterApp();
+      } catch (err) {
+        if (!cancelled) setError(passkeyError(err));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [passkeysUsable, tab, mfaChallenge]);
+
+  const handlePasskey = async () => {
+    setError('');
+    setLoading(true);
+    try {
+      if (await loginWithPasskey()) enterApp();
+    } catch (err) {
+      setError(passkeyError(err));
     } finally {
       setLoading(false);
     }
@@ -301,7 +349,7 @@ export function LoginPage() {
                       placeholder="请输入用户名"
                       required
                       autoFocus
-                      autoComplete="username"
+                      autoComplete="username webauthn"
                       className="h-9"
                     />
                   </div>
@@ -329,6 +377,18 @@ export function LoginPage() {
                     {loading && <Loader2 className="animate-spin" />}
                     {loading ? '登录中...' : '登录'}
                   </Button>
+                  {passkeysUsable && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      disabled={loading}
+                      onClick={() => void handlePasskey()}
+                      className="h-9 w-full"
+                    >
+                      <KeyRound />
+                      使用通行密钥登录
+                    </Button>
+                  )}
                 </form>
 
                 {regStatus.allowRegistration && !singleUserHost && (

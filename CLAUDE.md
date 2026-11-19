@@ -735,7 +735,7 @@ v88 把每个工作区的旧主会话迁成普通会话，映射记在 router_st
   `work_decisions`
 - 记忆：`workspace_memory_*`（含召回索引 `workspace_memory_recall_fts`）
 - Web Push：`web_push_subscriptions`（每行记着登记它的登录会话，会话结束即删除）
-- 登录因子：`user_totp`、`user_recovery_codes`（删除用户时一并删除）
+- 登录因子：`user_totp`、`user_recovery_codes`、`webauthn_credentials`（删除用户时一并删除）
 - 用量与计费：`usage_records`、`usage_events`、`usage_daily_summary`、
   `usage_event_connections` 及 `billing_*`、订阅、余额和兑换码相关表
 
@@ -752,6 +752,9 @@ Channel Reliability 的 Inbox/Turn/Outbox/Card 表由
   challenge（5 分钟、5 次、单次使用），`POST /api/auth/login/2fa` 交验证码或恢复码后才下发会话，
   失败与密码失败共用登录限流；同一步长的验证码只收一次。密钥用 `claude-provider.key` 加密存放，
   恢复码只存哈希（`src/auth-factor-store.ts`）。丢失验证器由有 `manage_users` 的人在用户管理里重置。
+- 通行密钥（`src/passkeys.ts`）：无用户名登录，成功即下发会话、视同已过二次验证。origin 取请求的
+  `Origin` 头，只接受与 `Host` 同源、localhost 或 `CORS_ALLOWED_ORIGINS` 列出的 HTTPS 地址；
+  RP ID 随凭据保存，换了主机名的凭据不被接受。管理员重置二次验证不删除通行密钥，删除需要当前密码。
 - `canAccessGroup`、`canModifyGroup` 和 `canDeleteGroup` 不提供 admin 全局旁路；
   工作区和渠道资源按 `created_by` 隔离。
 - Host 工作区额外要求 admin 角色。

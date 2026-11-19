@@ -475,7 +475,7 @@ authRoutes.post('/login/2fa', authJsonBodyLimit, async (c) => {
 });
 
 /** Create the session of a completed login and answer with the user. */
-function issueLoginSession(
+export function issueLoginSession(
   c: Context<{ Variables: Variables }>,
   user: User,
   username: string,

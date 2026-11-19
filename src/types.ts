@@ -797,7 +797,9 @@ export type AuthEventType =
   | 'mfa_enabled'
   | 'mfa_disabled'
   | 'mfa_reset'
-  | 'mfa_recovery_codes_regenerated';
+  | 'mfa_recovery_codes_regenerated'
+  | 'passkey_added'
+  | 'passkey_removed';
 
 export interface AuthAuditLog {
   id: number;

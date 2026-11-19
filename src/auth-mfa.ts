@@ -8,7 +8,7 @@ import QRCode from 'qrcode';
 
 import {
   consumeRecoveryCode,
-  deleteAuthFactorsForUser,
+  deleteTwoFactorForUser,
   enableTotp,
   getUserTotp,
   markTotpStepUsed,
@@ -197,6 +197,6 @@ export function regenerateRecoveryCodes(userId: string): string[] {
 
 export function removeTwoFactor(userId: string): boolean {
   const had = !!getUserTotp(userId);
-  deleteAuthFactorsForUser(userId);
+  deleteTwoFactorForUser(userId);
   return had;
 }
