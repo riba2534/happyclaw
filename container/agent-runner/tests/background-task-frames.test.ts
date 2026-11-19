@@ -30,6 +30,13 @@ function holds(p: StreamEventProcessor) {
   };
 }
 
+const synthesizedCompletions = (events: any[]) =>
+  events
+    .filter(
+      (event) => event.eventType === 'task_notification' && event.isSynthetic,
+    )
+    .map((event) => event.toolUseId);
+
 // The level and task_started of a background Bash, in the other order.
 const BACKGROUND_BASH_STARTED_FIRST: Frame[] = [
   BACKGROUND_BASH_LAUNCH[0],
@@ -84,4 +91,37 @@ describe('what holds the result on measured Claude Code 2.1.328 frames', () => {
       expect(holds(processor).pendingBgTasks).toBe(0);
     },
   );
+});
+
+describe('safety net on measured Claude Code 2.1.328 frames', () => {
+  test.each([
+    ['a sub-agent launched without run_in_background', BACKGROUND_AGENT_LAUNCH],
+    ['a background Bash', BACKGROUND_BASH_LAUNCH],
+  ])(
+    'does not report %s as completed when the query ends early',
+    (_name, launch) => {
+      const { processor, events } = makeProcessor();
+      replay(processor, launch);
+      processor.cleanup();
+      expect(synthesizedCompletions(events)).toEqual([]);
+    },
+  );
+
+  test('still closes out a foreground sub-agent whose completion never came', () => {
+    const { processor, events } = makeProcessor();
+    replay(processor, FOREGROUND_AGENT.slice(0, 3));
+    processor.cleanup();
+    expect(synthesizedCompletions(events)).toEqual(['toolu_main_agent_1']);
+  });
+
+  test('a tool_use_summary does not complete a sub-agent running in the background', () => {
+    const { processor, events } = makeProcessor();
+    replay(processor, BACKGROUND_AGENT_LAUNCH);
+    processor.processToolUseSummary({
+      type: 'tool_use_summary',
+      summary: 'Launched a sub-agent',
+      preceding_tool_use_ids: ['toolu_main_agent_1'],
+    });
+    expect(synthesizedCompletions(events)).toEqual([]);
+  });
 });

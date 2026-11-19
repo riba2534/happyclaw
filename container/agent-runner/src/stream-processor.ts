@@ -253,7 +253,10 @@ export class StreamEventProcessor {
     { toolUseId: string; toolName: string }
   >();
 
-  // Background Task tool_use_ids (run_in_background: true)
+  // tool_use_ids whose task runs in the background: a Task/Agent call with
+  // run_in_background: true, or any call whose SDK task the CLI reports in
+  // the background (Agent calls run there by default). The tool_use_summary
+  // synthesis and the cleanup safety net take every other one for foreground.
   private readonly backgroundTaskToolUseIds = new Set<string>();
 
   // SDK internal task_id → API tool_use_id mapping.
@@ -2588,6 +2591,8 @@ export class StreamEventProcessor {
   private recordTaskBackground(taskId: string, inBackground: boolean): void {
     this.taskRanInBackground.delete(taskId);
     this.taskRanInBackground.set(taskId, inBackground);
+    const toolUseId = this.sdkTaskIdToToolUseId.get(taskId);
+    if (inBackground && toolUseId) this.backgroundTaskToolUseIds.add(toolUseId);
     if (this.taskRanInBackground.size > TASK_BACKGROUND_STATE_MAX_TASKS) {
       const oldest = this.taskRanInBackground.keys().next().value;
       if (oldest !== undefined) this.taskRanInBackground.delete(oldest);
