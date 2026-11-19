@@ -27,10 +27,21 @@ export interface StuckRecoveryCandidate {
    * null for an `ipc_injected` candidate whose opening input the model has
    * answered, which only the idle rule can restart. */
   ipcOwedMs: number | null;
-  /** The query in flight holds its result for unsettled background work;
-   * see GroupQueue.markRunnerBackgroundHold. */
+  /** How long the query in flight has held its result for unsettled
+   * background work (see GroupQueue.markRunnerBackgroundHold); null when it
+   * holds none. */
+  backgroundHoldMs: number | null;
+  /** The hold defers recovery: it is younger than BACKGROUND_HOLD_MAX_MS. */
   backgroundTasksHeld: boolean;
 }
+
+/**
+ * How long a result held for background work keeps stuck recovery off, from
+ * the hold's first result; a hold that ends and comes back starts again. The
+ * Runner's keepalive for the host's idle close and process watchdog stops at
+ * the same bound (BACKGROUND_HOLD_KEEPALIVE_MAX_MS in the agent-runner).
+ */
+export const BACKGROUND_HOLD_MAX_MS = 2 * 60 * 60 * 1000;
 
 export type StuckRecoveryDecision =
   | {
@@ -151,11 +162,13 @@ export async function resolveRunnerCpuActivity(
  * A query holding its result for unsettled background work is deferred: the
  * Runner sends no completion receipt until that work settles, so its IPC debt
  * cannot be paid, and a sub-agent waiting on the network shows neither output
- * nor CPU. Restarting would kill it. Such a runner is bounded instead by
- * silence: with no output for min(CONTAINER_TIMEOUT, IDLE_TIMEOUT) the host
- * closes it, and the CONTAINER_TIMEOUT watchdog follows; the main agent,
- * which keeps answering input while held, is left to the same bounds. The IPC
- * ceiling resumes, from the moment the hold ends, for input still owed.
+ * nor CPU. Restarting would kill it. The Runner keeps the host's idle close
+ * and process watchdog off meanwhile, so the hold itself is the bound: past
+ * BACKGROUND_HOLD_MAX_MS the deferral lapses and the rules below judge the
+ * query on its original clocks (input owed since before then meets the IPC
+ * ceiling at once), and the keepalive has stopped, so silence closes the
+ * runner as before. The IPC ceiling resumes, from the moment the hold ends,
+ * for input still owed.
  */
 export function decideStuckRunnerRecovery(
   candidate: StuckRecoveryCandidate,

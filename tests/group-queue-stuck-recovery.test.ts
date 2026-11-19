@@ -1021,6 +1021,127 @@ describe('#618: IPC-injected follow-ups are visible to stuck recovery', () => {
       q.markRunnerServingQuery(jid, answer(queryId));
       expect(getState(q, jid).ipcOwedSinceAt).toBe(releasedAt);
     });
+
+    // #881: the Runner holds its result while background work runs. Input
+    // injected meanwhile gets no receipt until the work settles, and a
+    // sub-agent waiting on the network shows neither output nor CPU.
+    describe('a result held for background work (#881)', () => {
+      const HOUR = 60 * MINUTE;
+      const BUSY = { outputs: true, cpu: 'active' } as const;
+      const SILENT = { outputs: false, cpu: 'inactive' } as const;
+
+      /** A cold query on a Host runner: its result held from now, with
+       * input injected a minute later that it has not answered. */
+      function heldColdQuery(): GroupQueue {
+        const q = new GroupQueue();
+        q.setHostModeChecker(() => true);
+        q.enqueueTask(
+          jid,
+          'cold-turn',
+          () => new Promise<void>((resolve) => (exitRunner = resolve)),
+        );
+        q.registerProcess(jid, { pid: 4302 } as never, {
+          containerName: null,
+          groupFolder: folder,
+          agentId: AGENT_ID,
+        });
+        q.markRunnerActivity(jid);
+        q.markRunnerBackgroundHold(jid, true);
+        clock += MINUTE;
+        inject(q, 'injected while held');
+        return q;
+      }
+
+      test.each([
+        ['busy', BUSY],
+        ['silent, with no CPU', SILENT],
+      ] as const)(
+        'input injected while held is owed past the ceiling, %s, without a restart',
+        (_name, how) => {
+          const q = heldColdQuery();
+          expect(patrol(q, 40 * MINUTE, how)).toBeNull();
+          expect(
+            q.getStuckPendingGroups(IDLE_THRESHOLD_MS, FORCE_RESTART_MS),
+          ).toMatchObject([
+            {
+              reason: 'ipc_injected',
+              backgroundTasksHeld: true,
+              ipcOwedMs: 40 * MINUTE,
+            },
+          ]);
+        },
+      );
+
+      test('a warm query held after its answer is left alone too', () => {
+        const q = warmRunner();
+        const queryId = inject(q);
+        q.markRunnerServingQuery(jid, answer(queryId));
+        q.markRunnerBackgroundHold(jid, true);
+        clock += MINUTE;
+        inject(q, 'injected while held');
+
+        expect(patrol(q, 40 * MINUTE, SILENT)).toBeNull();
+      });
+
+      test.each([
+        [
+          'busy',
+          BUSY,
+          { atMs: FORCE_RESTART_MS, reason: 'absolute_ipc_ceiling' },
+        ],
+        ['silent', SILENT, { atMs: IDLE_THRESHOLD_MS, reason: 'idle' }],
+      ] as const)(
+        'once the work settles the original rules count from then, %s',
+        (_name, how, restart) => {
+          const q = heldColdQuery();
+          clock += 40 * MINUTE;
+          // The result reporting the work settled.
+          q.markRunnerActivity(jid);
+          q.markRunnerBackgroundHold(jid, false);
+
+          expect(patrol(q, 11 * MINUTE, how)).toEqual(restart);
+        },
+      );
+
+      test.each([
+        ['busy', BUSY],
+        ['silent', SILENT],
+      ] as const)(
+        'a hold defers recovery for two hours from its first result, %s',
+        (_name, how) => {
+          const q = heldColdQuery();
+          // Answers to the input are held results too; they keep the start.
+          clock += HOUR;
+          q.markRunnerActivity(jid);
+          q.markRunnerBackgroundHold(jid, true);
+
+          // The input waits from before the bound: owed at once past it.
+          expect(patrol(q, HOUR, how)).toEqual({
+            atMs: HOUR - MINUTE,
+            reason: 'absolute_ipc_ceiling',
+          });
+          expect(
+            q.getStuckPendingGroups(IDLE_THRESHOLD_MS, FORCE_RESTART_MS)[0],
+          ).toMatchObject({
+            backgroundTasksHeld: false,
+            backgroundHoldMs: 2 * HOUR,
+          });
+        },
+      );
+
+      test('a hold that ends and comes back counts from its own start', () => {
+        const q = heldColdQuery();
+        clock += 90 * MINUTE;
+        q.markRunnerActivity(jid);
+        q.markRunnerBackgroundHold(jid, false);
+        q.markRunnerBackgroundHold(jid, true);
+
+        expect(patrol(q, 2 * HOUR, BUSY)).toEqual({
+          atMs: 2 * HOUR,
+          reason: 'absolute_ipc_ceiling',
+        });
+      });
+    });
   });
 
   describe('background work holding the result', () => {

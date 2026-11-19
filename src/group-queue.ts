@@ -9,9 +9,10 @@ import { logger } from './logger.js';
 import { resolveFeishuCliBoundAccountId } from './feishu-cli-runtime.js';
 import { isIpcInputPayloadFilename } from './ipc-delivery-recovery.js';
 import { agentIdOfJid, sessionIpcDir } from './utils.js';
-import type {
-  RunnerRuntime,
-  StuckRecoveryCandidate,
+import {
+  BACKGROUND_HOLD_MAX_MS,
+  type RunnerRuntime,
+  type StuckRecoveryCandidate,
 } from './stuck-runner-recovery.js';
 import type { StreamEvent } from './stream-event.types.js';
 import type { ChannelTurnContext, InteractionMode } from './types.js';
@@ -263,6 +264,10 @@ interface GroupState {
    * background task but a backgrounded Bash) is unsettled. Only meaningful
    * while it equals `queryId`; a later query never inherits it. */
   backgroundHoldQueryId?: string | null;
+  /** When the hold on `backgroundHoldQueryId` began: its first held result.
+   * Later held results of the same query keep it; the end of the hold
+   * clears it, so a new hold counts from its own start. */
+  backgroundHoldSince?: number | null;
   /** IPC deliveries written to this runner but not yet acknowledged by a
    * healthy agent query result. Keyed by deliveryId for out-of-order acks. */
   pendingIpcDeliveries: Map<string, IpcDeliveryReceipt>;
@@ -1592,19 +1597,25 @@ export class GroupQueue {
    * backgrounded Bash (sub-agents and workflows, but also monitors and MCP
    * tasks), 0 once they settle. The CLI keeps answering input meanwhile, but
    * the Runner sends no completion receipt, so the query's IPC debt cannot be
-   * paid and stuck recovery defers instead of restarting. When the hold
+   * paid and stuck recovery defers instead of restarting, for at most
+   * BACKGROUND_HOLD_MAX_MS from the hold's first result. When the hold
    * ends, debt still owed starts aging from then: the Runner could not have
-   * paid it earlier.
+   * paid it earlier. Past the bound nothing moves: the original rules judge
+   * the query on its original clocks.
    */
   markRunnerBackgroundHold(groupJid: string, held: boolean): void {
     const state = this.resolveActiveState(groupJid);
     if (!state?.active || !state.queryInFlight || !state.queryId) return;
     if (held) {
-      state.backgroundHoldQueryId = state.queryId;
+      if (state.backgroundHoldQueryId !== state.queryId) {
+        state.backgroundHoldQueryId = state.queryId;
+        state.backgroundHoldSince = Date.now();
+      }
       return;
     }
     if (state.backgroundHoldQueryId !== state.queryId) return;
     state.backgroundHoldQueryId = null;
+    state.backgroundHoldSince = null;
     const now = Date.now();
     if (state.ipcOwedSinceAt !== null) state.ipcOwedSinceAt = now;
     if (state.ipcAppendedSinceAt != null) state.ipcAppendedSinceAt = now;
@@ -1726,6 +1737,7 @@ export class GroupQueue {
     state.ipcAppendedSinceAt = null;
     state.ipcOpenedAt = null;
     state.backgroundHoldQueryId = null;
+    state.backgroundHoldSince = null;
     state.queryId = null;
     state.queryStartedAt = null;
     state.announcedQueryId = null;
@@ -1895,6 +1907,12 @@ export class GroupQueue {
       hasIpcOwed && ipcOwedSinceAt !== null
         ? Math.max(0, now - ipcOwedSinceAt)
         : null;
+    const backgroundHoldMs =
+      state.queryInFlight &&
+      state.queryId !== null &&
+      state.backgroundHoldQueryId === state.queryId
+        ? Math.max(0, now - (state.backgroundHoldSince ?? now))
+        : null;
     const reachedIdleThreshold = idleMs >= idleThresholdMs;
     const reachedAbsoluteIpcCeiling =
       ipcOwedMs !== null && ipcOwedMs >= ipcForceThresholdMs;
@@ -1915,10 +1933,9 @@ export class GroupQueue {
       runnerPid: state.process?.pid ?? null,
       ipcOwedSinceAt,
       ipcOwedMs,
+      backgroundHoldMs,
       backgroundTasksHeld:
-        state.queryInFlight &&
-        state.queryId !== null &&
-        state.backgroundHoldQueryId === state.queryId,
+        backgroundHoldMs !== null && backgroundHoldMs < BACKGROUND_HOLD_MAX_MS,
     };
   }
 
@@ -3237,6 +3254,7 @@ export class GroupQueue {
       state.ipcAppendedSinceAt = null;
       state.ipcOpenedAt = null;
       state.backgroundHoldQueryId = null;
+      state.backgroundHoldSince = null;
       state.queryInFlight = false;
       state.queryId = null;
       state.queryStartedAt = null;

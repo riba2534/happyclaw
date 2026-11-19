@@ -15246,8 +15246,8 @@ async function recoverStuckPendingGroups(): Promise<void> {
   for (const candidate of stuckGroups) {
     const pid = candidate.runnerPid ?? undefined;
     // A held result defers whatever the CPU shows (decideStuckRunnerRecovery),
-    // so skip the probe. The hold can last as long as its background work:
-    // log it at info once per query.
+    // so skip the probe. The hold can last up to BACKGROUND_HOLD_MAX_MS: log
+    // it at info once per query.
     if (candidate.backgroundTasksHeld) {
       const firstForQuery =
         loggedBackgroundHoldQueries.get(candidate.jid) !== candidate.queryId;
@@ -15260,6 +15260,7 @@ async function recoverStuckPendingGroups(): Promise<void> {
           queryId: candidate.queryId,
           idleMs: candidate.idleMs,
           ipcOwedMs: candidate.ipcOwedMs,
+          backgroundHoldMs: candidate.backgroundHoldMs,
           pid,
           reason: candidate.reason,
           runtime: candidate.runtime,
@@ -15289,7 +15290,8 @@ async function recoverStuckPendingGroups(): Promise<void> {
       );
       continue;
     }
-    const { jid, idleMs, reason, runtime, ipcOwedMs } = currentCandidate;
+    const { jid, idleMs, reason, runtime, ipcOwedMs, backgroundHoldMs } =
+      currentCandidate;
     const decision = decideStuckRunnerRecovery(
       currentCandidate,
       cpuActivity,
@@ -15301,6 +15303,7 @@ async function recoverStuckPendingGroups(): Promise<void> {
           chatJid: jid,
           idleMs,
           ipcOwedMs,
+          backgroundHoldMs,
           pid,
           reason,
           runtime,
@@ -15317,6 +15320,7 @@ async function recoverStuckPendingGroups(): Promise<void> {
         chatJid: jid,
         idleMs,
         ipcOwedMs,
+        backgroundHoldMs,
         reason,
         runtime,
         cpuActivity,

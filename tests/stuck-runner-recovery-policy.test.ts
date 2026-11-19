@@ -34,6 +34,7 @@ function ipcCandidate(overrides: Partial<Candidate> = {}): Candidate {
     runnerPid: 4242,
     ipcOwedSinceAt: 1,
     ipcOwedMs: 3 * 60 * 1000,
+    backgroundHoldMs: null,
     backgroundTasksHeld: false,
     ...overrides,
   };
