@@ -304,9 +304,10 @@ export class StreamEventProcessor {
   // task_updated settles it there before its task_notification arrives.
   // Written by task_started (foreground unless something says background),
   // task_updated and background_tasks_changed; read and dropped by
-  // task_notification. A task never seen to start counts as background. A task that never notifies (a nested sub-agent ending
-  // with its parent, a watcher) stays until the oldest entries are dropped
-  // past TASK_BACKGROUND_STATE_MAX_TASKS.
+  // task_notification. A task never seen to start counts as background. A
+  // task that never notifies (a nested sub-agent ending with its parent, a
+  // watcher) stays until the oldest entries are dropped past
+  // TASK_BACKGROUND_STATE_MAX_TASKS.
   private readonly taskRanInBackground = new Map<string, boolean>();
 
   // tool_use_ids issued inside a sub-agent (raw parent_tool_use_id != null).
