@@ -2821,12 +2821,6 @@ async function runQueryAttempt(
       inputTurnCompleted && ipcDeliveryTracker.hasPendingTurns
         ? ipcDeliveryTracker.currentTurnReceipts
         : undefined;
-    // A result held open for background work completes no turn, yet it may
-    // already answer the IPC input. Name it so the host stops counting that
-    // input as owed while the reply waits.
-    const answeredIpcDeliveryIds = inputTurnCompleted
-      ? undefined
-      : ipcDeliveryTracker.answeredPendingDeliveryIds;
     durableInputCompletion.publishResult(
       inputTurnCompleted,
       ipcDeliveryTracker.hasPendingTurns,
@@ -2856,9 +2850,6 @@ async function runQueryAttempt(
       ...(ipcReceipts && ipcReceipts.length > 0 ? { ipcReceipts } : {}),
       ...(activeIpcReceipts && activeIpcReceipts.length > 0
         ? { activeIpcReceipts }
-        : {}),
-      ...(answeredIpcDeliveryIds && answeredIpcDeliveryIds.length > 0
-        ? { answeredIpcDeliveryIds }
         : {}),
     });
 
