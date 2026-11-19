@@ -425,7 +425,7 @@ export function shouldFailIncompleteQueryExit(
 }
 
 /** The longest interval between keepalives while a result is held. */
-export const BACKGROUND_HOLD_KEEPALIVE_MAX_INTERVAL_MS = 5 * 60_000;
+const BACKGROUND_HOLD_KEEPALIVE_MAX_INTERVAL_MS = 5 * 60_000;
 
 /**
  * How often a held result tells the host it is alive: three times within the

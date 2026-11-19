@@ -26,7 +26,7 @@ import {
   verifyTotp,
 } from './totp.js';
 
-export const RECOVERY_CODE_COUNT = 10;
+const RECOVERY_CODE_COUNT = 10;
 const CHALLENGE_TTL_MS = 5 * 60 * 1000;
 const CHALLENGE_MAX_ATTEMPTS = 5;
 const CHALLENGE_MAX_ENTRIES = 10_000;
@@ -133,7 +133,7 @@ function readTotpSecret(userId: string, sealed: string): string {
 }
 
 /** Ten codes of ten base32 characters (50 random bits each), `xxxxx-xxxxx`. */
-export function generateRecoveryCodes(): string[] {
+function generateRecoveryCodes(): string[] {
   return Array.from({ length: RECOVERY_CODE_COUNT }, () => {
     const code = base32Encode(crypto.randomBytes(7)).slice(0, 10).toLowerCase();
     return `${code.slice(0, 5)}-${code.slice(5)}`;

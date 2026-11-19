@@ -16,7 +16,7 @@ import {
  * `explicit` (any member may first-claim an unowned group with
  * /owner_mention) or `transfer_reset` (credential-transfer quarantine).
  */
-export const OWNER_IDENTITY_CLAIM_SOURCES: readonly string[] = [
+const OWNER_IDENTITY_CLAIM_SOURCES: readonly string[] = [
   'configured',
   'trusted_direct',
   'auto_feishu',
