@@ -1600,8 +1600,8 @@ export class GroupQueue {
    * paid and stuck recovery defers instead of restarting, for at most
    * BACKGROUND_HOLD_MAX_MS from the hold's first result. When the hold
    * ends, debt still owed starts aging from then: the Runner could not have
-   * paid it earlier. Past the bound nothing moves: the original rules judge
-   * the query on its original clocks.
+   * paid it earlier. Past the bound no clock is reset: the original rules
+   * judge the query on the clocks it has.
    */
   markRunnerBackgroundHold(groupJid: string, held: boolean): void {
     const state = this.resolveActiveState(groupJid);
