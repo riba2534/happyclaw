@@ -5196,8 +5196,12 @@ export async function runHostAgent(
 /** A concrete agent runner (Docker or host) — both share this signature. */
 export type AgentRunner = typeof runContainerAgent | typeof runHostAgent;
 
-/** The idle close and process watchdog of a runner launched for `group`. */
-function runnerLivenessFor(
+/**
+ * The idle close and process watchdog of a runner launched for `group`. The
+ * host's idle close and the idle close the Runner is told
+ * (`ContainerInput.hostIdleCloseMs`) both come from here, for the same group.
+ */
+export function runnerLivenessFor(
   group: Pick<RegisteredGroup, 'containerConfig'>,
 ): RunnerLivenessTimeouts {
   const systemSettings = getSystemSettings();

@@ -244,22 +244,18 @@ interface GroupState {
    * of the absolute ceiling: the input that opened it over IPC until model
    * output carries the query's queryRunId, then the oldest input appended
    * to it (see markRunnerServingQuery); a continue that keeps the query in
-   * flight sets it back to the oldest (see markRunnerQueryIdle). Unlike
-   * lastActivityAt, ordinary runner output never refreshes it. */
+   * flight for input it left opens it again with that input (see
+   * markRunnerQueryIdle). Unlike lastActivityAt, ordinary runner output
+   * never refreshes it. */
   ipcOwedSinceAt: number | null;
   /** How the query in flight got its opening input: `stdin` at a cold
-   * start; `ipc` when an inject opened it, `ipc_echoed` once model output
-   * carried its queryRunId. Null while a reservation still waits for its
-   * input, and between queries. */
+   * start; `ipc` when an inject opened it, or input a continue left opens it
+   * again, `ipc_echoed` once model output carried its queryRunId. Null while
+   * a reservation still waits for its input, and between queries. */
   queryOpening?: 'stdin' | 'ipc' | 'ipc_echoed' | null;
   /** Oldest IPC inject appended to the query in flight after its opening
    * input. */
   ipcAppendedSinceAt?: number | null;
-  /** When the input that opened the query in flight over IPC was injected,
-   * or when a background hold ended after that; null for a query opened on
-   * stdin. The echo leaves it: a continue that keeps the query in flight owes
-   * that input again (see markRunnerQueryIdle). */
-  ipcOpenedAt?: number | null;
   /** Query whose result the runner holds while background work (any SDK
    * background task but a backgrounded Bash) is unsettled. Only meaningful
    * while it equals `queryId`; a later query never inherits it. */
@@ -462,7 +458,6 @@ export class GroupQueue {
         ipcOwedSinceAt: null,
         queryOpening: null,
         ipcAppendedSinceAt: null,
-        ipcOpenedAt: null,
         pendingIpcDeliveries: new Map(),
         acknowledgedIpcDeliveryIds: new Set(),
       };
@@ -1619,7 +1614,6 @@ export class GroupQueue {
     const now = Date.now();
     if (state.ipcOwedSinceAt !== null) state.ipcOwedSinceAt = now;
     if (state.ipcAppendedSinceAt != null) state.ipcAppendedSinceAt = now;
-    if (state.ipcOpenedAt != null) state.ipcOpenedAt = now;
   }
 
   acknowledgeIpcDeliveries(
@@ -1718,15 +1712,18 @@ export class GroupQueue {
         this.hasRemainingIpcMessages(state.groupFolder, state.agentId),
       );
       if (hasPendingReceipts || hasPendingFiles) {
-        // The query stays in flight for that input, owed again from its
-        // oldest IPC input: the opening one too, whose echo had stopped its
-        // clock, so the query restarts no later than if the model had never
-        // answered. A cold query with no IPC input is owed from now.
-        const owedSince = [state.ipcOwedSinceAt, state.ipcOpenedAt].filter(
-          (at): at is number => at != null,
-        );
-        state.ipcOwedSinceAt =
-          owedSince.length > 0 ? Math.min(...owedSince) : Date.now();
+        // The query stays in flight for that input. The continue answered
+        // what the Runner had taken, so what is left is input it has yet to
+        // take (or a receipt about to be acknowledged), and the Runner, idle
+        // now, takes it as its next turn: that input opens the query again.
+        // It is owed from the clock it already had, the oldest input the
+        // model had not answered (an echoed opening input is not; one
+        // appended to the query is), or from now; the model's output for
+        // it stops that clock as for any query opened over IPC, and the
+        // idle rule keeps watching until the query ends.
+        state.ipcOwedSinceAt ??= Date.now();
+        state.queryOpening = 'ipc';
+        state.ipcAppendedSinceAt = null;
         return;
       }
     }
@@ -1735,7 +1732,6 @@ export class GroupQueue {
     state.ipcOwedSinceAt = null;
     state.queryOpening = null;
     state.ipcAppendedSinceAt = null;
-    state.ipcOpenedAt = null;
     state.backgroundHoldQueryId = null;
     state.backgroundHoldSince = null;
     state.queryId = null;
@@ -2417,7 +2413,6 @@ export class GroupQueue {
       // here too); a later one is appended to it.
       if (startsCurrentQuery || !state.queryOpening) {
         state.queryOpening = 'ipc';
-        state.ipcOpenedAt = injectedAt;
       } else {
         state.ipcAppendedSinceAt ??= injectedAt;
       }
@@ -3185,7 +3180,6 @@ export class GroupQueue {
     state.ipcOwedSinceAt = null;
     state.queryOpening = task.acceptsInput ? 'stdin' : null;
     state.ipcAppendedSinceAt = null;
-    state.ipcOpenedAt = null;
     state.queryId = state.queryInFlight ? randomUUID() : null;
     state.queryStartedAt = state.queryInFlight ? Date.now() : null;
     state.announcedQueryId = null;
@@ -3252,7 +3246,6 @@ export class GroupQueue {
       state.ipcOwedSinceAt = null;
       state.queryOpening = null;
       state.ipcAppendedSinceAt = null;
-      state.ipcOpenedAt = null;
       state.backgroundHoldQueryId = null;
       state.backgroundHoldSince = null;
       state.queryInFlight = false;

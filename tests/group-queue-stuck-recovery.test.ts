@@ -837,70 +837,99 @@ describe('#618: IPC-injected follow-ups are visible to stuck recovery', () => {
       expect(getState(q, jid).ipcOwedSinceAt).toBe(appendedAt);
     });
 
-    // A continue the Runner runs on its own (compaction or truncation) ends
-    // with IPC of the query still unacknowledged or on disk, and the query
-    // stays in flight. It is owed from its opening input again, as if the
-    // model had never answered: restarted no later than before the echo.
+    // A continue the Runner runs on its own (compaction or truncation)
+    // answers what the Runner had taken and reports the query idle; the
+    // query stays in flight for IPC still unacknowledged or on disk, input
+    // the Runner, idle now, takes as its next turn. That input opens the
+    // query again: owed from when it came, until the model answers it.
+    test.each(['host', 'container'] as const)(
+      '%s: input left by a continue is owed from when it came, and the answer to it stops the clock',
+      (runtime) => {
+        const cpu = runtime === 'host' ? 'active' : 'unavailable';
+        const q = warmRunner(runtime);
+        const queryId = inject(q);
+        q.markRunnerServingQuery(jid, answer(queryId));
+        expect(patrol(q, 15 * MINUTE, { outputs: true, cpu })).toBeNull();
+        // Claude Code compacts and continues; a message comes meanwhile.
+        inject(q, 'sent during the continue');
+        const leftAt = clock;
+        clock += 30_000;
+
+        q.markRunnerQueryIdle(jid, { preserveIpcDebt: true });
+        expect(q.getActiveQueryId(jid)).toBe(queryId);
+        expect(getState(q, jid).ipcOwedSinceAt).toBe(leftAt);
+        expect(patrol(q, MINUTE, { outputs: false, cpu })).toBeNull();
+
+        // The Runner takes it, and the model works on it past the ceiling.
+        q.markRunnerActivity(jid);
+        q.markRunnerServingQuery(jid, answer(queryId));
+        expect(getState(q, jid).ipcOwedSinceAt).toBeNull();
+        expect(patrol(q, 15 * MINUTE, { outputs: true, cpu })).toBeNull();
+      },
+    );
+
+    // #618 still: the Runner never takes what the continue left.
     test.each([
-      [
-        'Host',
-        'host',
-        'inactive',
-        9,
-        { atMs: MINUTE, reason: 'absolute_ipc_ceiling' },
-      ],
+      ['Host', 'host', 'inactive', { atMs: 2.5 * MINUTE, reason: 'idle' }],
       [
         'Container',
         'container',
         'unavailable',
-        6,
-        { atMs: 4 * MINUTE, reason: 'absolute_ipc_ceiling' },
+        { atMs: 9.5 * MINUTE, reason: 'absolute_ipc_ceiling' },
       ],
     ] as const)(
-      '%s: an answered query a continue keeps in flight is owed from its opening input',
-      (_name, runtime, cpu, minutes, restart) => {
+      '%s: input a continue left and nobody takes is restarted in time',
+      (_name, runtime, cpu, restart) => {
         const q = warmRunner(runtime);
         const queryId = inject(q);
-        const injectedAt = clock;
         q.markRunnerServingQuery(jid, answer(queryId));
-        expect(patrol(q, minutes * MINUTE, { outputs: true, cpu })).toBeNull();
+        expect(patrol(q, 15 * MINUTE, { outputs: true, cpu })).toBeNull();
+        inject(q, 'sent during the continue');
+        clock += 30_000;
 
-        // The input file is still on disk.
         q.markRunnerQueryIdle(jid, { preserveIpcDebt: true });
-        expect(q.getActiveQueryId(jid)).toBe(queryId);
-        expect(getState(q, jid).ipcOwedSinceAt).toBe(injectedAt);
-        // Ten minutes after the input came.
         expect(patrol(q, 11 * MINUTE, { outputs: false, cpu })).toEqual(
           restart,
         );
       },
     );
 
-    test('a continue owes the opening input before one appended later', () => {
+    test('a continue owes appended input, not the opening input the model answered', () => {
       const q = warmRunner();
       const queryId = inject(q);
-      const injectedAt = clock;
       q.markRunnerServingQuery(jid, answer(queryId));
       clock += 5 * MINUTE;
       inject(q, 'appended');
+      const appendedAt = clock;
       clock += MINUTE;
+
+      q.markRunnerQueryIdle(jid, { preserveIpcDebt: true });
+      expect(getState(q, jid).ipcOwedSinceAt).toBe(appendedAt);
+    });
+
+    test('an opening input the model never answered stays owed from when it came', () => {
+      const q = warmRunner();
+      inject(q);
+      const injectedAt = clock;
+      clock += 2 * MINUTE;
 
       q.markRunnerQueryIdle(jid, { preserveIpcDebt: true });
       expect(getState(q, jid).ipcOwedSinceAt).toBe(injectedAt);
     });
 
-    test('a continue after a hold owes the opening input from its end', () => {
+    // The continue's own receipt is acknowledged only after handleAgentOutput
+    // has taken its idle report (see the wrappedOnOutput tests below).
+    test('a continue leaving only its answered input unacknowledged owes it from its end', () => {
       const q = warmRunner();
       const queryId = inject(q);
       q.markRunnerServingQuery(jid, answer(queryId));
       q.markRunnerBackgroundHold(jid, true);
       clock += 20 * MINUTE;
       q.markRunnerBackgroundHold(jid, false);
-      const releasedAt = clock;
       clock += MINUTE;
 
       q.markRunnerQueryIdle(jid, { preserveIpcDebt: true });
-      expect(getState(q, jid).ipcOwedSinceAt).toBe(releasedAt);
+      expect(getState(q, jid).ipcOwedSinceAt).toBe(clock);
     });
 
     test('an idle report for another query leaves the one in flight alone', () => {

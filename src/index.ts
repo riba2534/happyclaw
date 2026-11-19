@@ -125,10 +125,10 @@ import {
   runContainerAgent,
   runHostAgent,
   runAgentWithModelFallback,
+  runnerLivenessFor,
   willClearSessionOnProviderSwitch,
   writeGroupsSnapshot,
 } from './container-runner.js';
-import { resolveRunnerLivenessTimeouts } from './runner-liveness.js';
 import {
   decideStuckRunnerRecovery,
   resolveRunnerCpuActivity,
@@ -7496,11 +7496,7 @@ async function runTerminalWarmup(sessionJid: string): Promise<void> {
   const isAdminHome = isHome && owner?.role === 'admin';
 
   let idleTimer: ReturnType<typeof setTimeout> | null = null;
-  const warmupIdleCloseMs = resolveRunnerLivenessTimeouts({
-    executionTimeoutMs:
-      group.containerConfig?.timeout ?? getSystemSettings().containerTimeout,
-    idleTimeoutMs: getSystemSettings().idleTimeout,
-  }).idleCloseMs;
+  const warmupIdleCloseMs = runnerLivenessFor(group).idleCloseMs;
   const resetIdleTimer = () => {
     if (idleTimer) clearTimeout(idleTimer);
     idleTimer = setTimeout(() => {
@@ -12521,12 +12517,9 @@ async function processAgentConversation(
 
   // Track idle timer
   let idleTimer: ReturnType<typeof setTimeout> | null = null;
-  const agentRunnerIdleCloseMs = resolveRunnerLivenessTimeouts({
-    executionTimeoutMs:
-      effectiveGroup.containerConfig?.timeout ??
-      getSystemSettings().containerTimeout,
-    idleTimeoutMs: getSystemSettings().idleTimeout,
-  }).idleCloseMs;
+  // The idle close the Runner is told, which paces its keepalive while a
+  // result is held for background work: same function, same group.
+  const agentRunnerIdleCloseMs = runnerLivenessFor(effectiveGroup).idleCloseMs;
   const resetIdleTimer = () => {
     if (idleTimer) clearTimeout(idleTimer);
     idleTimer = setTimeout(() => {
