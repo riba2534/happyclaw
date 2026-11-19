@@ -73,7 +73,7 @@
     "shell-quote": "1.12.0"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "license": "MIT",
   "repository": {
