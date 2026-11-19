@@ -1994,6 +1994,54 @@ describe('/api/agent-profiles model within a configuration', () => {
     expect((await withTools(['Read, Grep'])).status).toBe(400);
   });
 
+  test('a sub-agent whose tools leave it none is refused, on create and on PATCH', async () => {
+    const definition = (tools: string[] | null) => ({
+      name: 'planner',
+      description: 'Plans work',
+      prompt: 'Plan.',
+      tools,
+    });
+    const refused = {
+      status: 400,
+      body: { code: 'SUBAGENT_NO_AVAILABLE_TOOLS', subagents: ['planner'] },
+    };
+    const create = (tools: string[] | null) =>
+      send('POST', '/', {
+        name: `Toolless Agent ${Math.random()}`,
+        runtime_policy: { subagents: { definitions: [definition(tools)] } },
+      });
+    expect(await create(['EnterPlanMode'])).toMatchObject(refused);
+    expect(await create(['CronCreate', 'ScheduleWakeup(x)'])).toMatchObject(
+      refused,
+    );
+    expect(await create([])).toMatchObject(refused);
+    const created = await create(['EnterPlanMode', 'Read']);
+    expect(created.status).toBe(201);
+
+    const at = `/${created.body.profile.id}`;
+    expect(
+      await send('PATCH', at, {
+        runtime_policy: {
+          subagents: { definitions: [definition(['ExitPlanMode'])] },
+        },
+      }),
+    ).toMatchObject(refused);
+    // Saved before such lists were refused: other edits still go through.
+    db.updateAgentProfile(created.body.profile.id, 'routes-agent-user', {
+      runtimePolicy: {
+        subagents: { definitions: [definition(['EnterPlanMode'])] },
+      } as never,
+    });
+    expect(await send('PATCH', at, { name: 'Toolless renamed' })).toMatchObject(
+      { status: 200 },
+    );
+    expect(
+      await send('PATCH', at, {
+        runtime_policy: { subagents: { definitions: [definition(null)] } },
+      }),
+    ).toMatchObject({ status: 200 });
+  });
+
   test('PATCH checks a model against the configuration it will belong to', async () => {
     const created = (
       await send('POST', '/', {

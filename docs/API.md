@@ -902,7 +902,10 @@ Skills 不再随有效上下文来源隐式继承。
 `name`、`description`、`prompt`、`tools`（`null` 为全部）、`model`、`effort`，经 SDK
 `options.agents` 注入）。名称为 2–48 位小写字母、数字或连字符，不能与内置子代理重名。
 `tools` 的每一项是一条工具规则：工具名，可带括号里的参数（如 `Bash(git log:*)`），不能含
-逗号或换行，否则 400；`CronCreate` 等 Runner 默认禁用的会话级工具运行时不提供。子代理与
+逗号或换行，否则 400；`CronCreate` 等 Runner 默认禁用的会话级工具运行时不提供。去掉这些
+工具后一个不剩（含 `tools: []`）的子代理在创建、导入、复制，以及 PATCH 带
+`runtime_policy.subagents` 时返回 400 与 `code: SUBAGENT_NO_AVAILABLE_TOOLS`、`subagents`
+（这些子代理的名称）；此前已保存的这类子代理运行时不注入并记告警。子代理与
 主 Agent 在同一个 Claude Code 进程里运行，只能用智能体所绑连接里的模型：创建时，以及
 PATCH 带 `runtime_policy.subagents` 或 `model_config_id` 时逐一校验，不在其中、智能体没有
 绑定连接，或连接是 ChatGPT 订阅时返回 400 与 `code: SUBAGENT_MODEL_NOT_IN_CONNECTION`；

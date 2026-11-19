@@ -12,6 +12,7 @@ import {
   subagentLaunchModels,
   subagentPolicyModels,
   subagentPolicyWithoutModels,
+  toollessSubagents,
 } from '../src/agent-subagents.js';
 import { AgentProfileRuntimePolicySchema } from '../src/schemas.js';
 import { RUNNER_DISALLOWED_BUILTIN_TOOLS } from '../container/agent-runner/src/builtin-tool-policy.js';
@@ -250,6 +251,51 @@ describe('resolveSubagentLaunch', () => {
     expect([...SUBAGENT_UNAVAILABLE_TOOLS].sort()).toEqual(
       [...RUNNER_DISALLOWED_BUILTIN_TOOLS].sort(),
     );
+    // The Web editor names the same ones before a save.
+    const editor = fs.readFileSync(
+      path.join(
+        process.cwd(),
+        'web/src/components/agents/AgentSubagentsEditor.tsx',
+      ),
+      'utf8',
+    );
+    const listed = /const UNAVAILABLE_TOOLS[^=]*=\s*\[([^\]]*)\]/.exec(
+      editor,
+    )?.[1];
+    expect(
+      [...(listed ?? '').matchAll(/'([^']+)'/g)].map((m) => m[1]).sort(),
+    ).toEqual([...SUBAGENT_UNAVAILABLE_TOOLS].sort());
+  });
+
+  test('a sub-agent left with no tool is not launched, never with none or all', () => {
+    const policy = normalizeSubagentPolicy({
+      definitions: [
+        { ...reviewer, name: 'planner', tools: ['EnterPlanMode'] },
+        { ...reviewer, name: 'empty', tools: [] },
+        { ...reviewer, name: 'every-tool', tools: null },
+        { ...reviewer, name: 'mixed', tools: ['CronList', 'Read'] },
+      ],
+    });
+    expect(toollessSubagents(policy)).toEqual(['planner', 'empty']);
+    const launch = resolveSubagentLaunch({
+      ...base,
+      policy,
+      onAgentConnection: false,
+    });
+    expect(Object.keys(launch.agents ?? {})).toEqual(['every-tool', 'mixed']);
+    expect(launch.agents?.['every-tool']).not.toHaveProperty('tools');
+    expect(launch.agents?.mixed.tools).toEqual(['Read']);
+    // None left: no definitions at all, not an empty set of them.
+    expect(
+      resolveSubagentLaunch({
+        ...base,
+        onAgentConnection: false,
+        policy: normalizeSubagentPolicy({
+          max_concurrent: 2,
+          definitions: [{ ...reviewer, tools: ['ExitPlanMode'] }],
+        }),
+      }),
+    ).toEqual({ maxConcurrent: 2 });
   });
 });
 

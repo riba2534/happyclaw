@@ -82,6 +82,7 @@ import { resolveAgentSdkEffort } from '../agent-effort.js';
 import {
   launchSubagentDefault,
   subagentPolicyModels,
+  toollessSubagents,
 } from '../agent-subagents.js';
 import {
   SYSTEM_CAPABILITY_LOCK_KEY,
@@ -344,6 +345,25 @@ function subagentModelRejection(
       };
 }
 
+/**
+ * Why a sub-agent policy cannot be saved for its tools, or null: a sub-agent
+ * whose list holds no tool a session has would run with none at all.
+ */
+function subagentToolsRejection(policy: AgentProfileRuntimePolicy): {
+  error: string;
+  code: 'SUBAGENT_NO_AVAILABLE_TOOLS';
+  subagents: string[];
+} | null {
+  const toolless = toollessSubagents(policy.subagents);
+  return toolless.length === 0
+    ? null
+    : {
+        error: `子代理 ${toolless.join('、')} 列出的工具在 HappyClaw 中都不可用（或列表为空），它将没有任何工具；请列出可用的工具，或不限定工具`,
+        code: 'SUBAGENT_NO_AVAILABLE_TOOLS',
+        subagents: toolless,
+      };
+}
+
 const AGENT_PROMPT_FIELD_LABELS: Record<string, string> = {
   identity_prompt: '身份定位（IDENTITY）',
   soul_prompt: '人格与表达（SOUL）',
@@ -450,6 +470,8 @@ function newProfileRejection(
     input.runtimePolicy,
   );
   if (subagentRejection) return { status: 400, body: subagentRejection };
+  const toolsRejection = subagentToolsRejection(input.runtimePolicy);
+  if (toolsRejection) return { status: 400, body: toolsRejection };
   if (hasEmptyCustomHostSkillSelection(input.runtimePolicy)) {
     return {
       status: 400,
@@ -1156,6 +1178,10 @@ agentProfileRoutes.patch('/:id', authMiddleware, async (c) => {
             effectiveRuntimePolicy,
           );
           if (subagentRejection) return c.json(subagentRejection, 400);
+        }
+        if (parsed.data.runtime_policy?.subagents !== undefined) {
+          const toolsRejection = subagentToolsRejection(effectiveRuntimePolicy);
+          if (toolsRejection) return c.json(toolsRejection, 400);
         }
         if (hasEmptyCustomHostSkillSelection(effectiveRuntimePolicy)) {
           return c.json(

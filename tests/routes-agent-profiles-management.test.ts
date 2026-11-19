@@ -467,6 +467,32 @@ describe('POST /:id/duplicate', () => {
     });
   });
 
+  test('a sub-agent saved with no tool it could run with is not copied', async () => {
+    // Saved before such lists were refused.
+    const source = db.createAgentProfile({
+      ownerUserId: MEMBER,
+      name: 'Toolless Copy Source',
+      runtimePolicy: {
+        subagents: {
+          definitions: [
+            {
+              name: 'planner',
+              description: 'Plans work',
+              prompt: 'Plan.',
+              tools: ['EnterPlanMode'],
+            },
+          ],
+        },
+      } as never,
+    });
+    const res = await call(`/${source.id}/duplicate`, { method: 'POST' });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({
+      code: 'SUBAGENT_NO_AVAILABLE_TOOLS',
+      subagents: ['planner'],
+    });
+  });
+
   test('drops host grants for a member, refuses the built-in, hides other owners', async () => {
     // Saved while the owner was an admin.
     const source = db.createAgentProfile({
@@ -776,6 +802,41 @@ describe('export and import', () => {
     });
     const bare = await (await call(`/${modelOnly.id}/export`)).json();
     expect(bare.agent.runtime_policy).not.toHaveProperty('subagents');
+  });
+
+  test('a file whose sub-agent would have no tool is refused, saying which', async () => {
+    const res = await call('/import', {
+      method: 'POST',
+      body: {
+        data: {
+          format: 'happyclaw-agent',
+          version: 1,
+          agent: {
+            name: 'Toolless Import',
+            runtime_policy: {
+              subagents: {
+                definitions: [
+                  {
+                    name: 'planner',
+                    description: 'Plans work',
+                    prompt: 'Plan.',
+                    tools: ['EnterPlanMode', 'ExitPlanMode'],
+                  },
+                ],
+              },
+            },
+          },
+        },
+      },
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({
+      code: 'SUBAGENT_NO_AVAILABLE_TOOLS',
+      subagents: ['planner'],
+    });
+    expect(
+      db.findAgentProfileNameConflict(MEMBER, 'Toolless Import'),
+    ).toBeUndefined();
   });
 });
 

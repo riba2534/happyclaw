@@ -10,8 +10,10 @@ import {
   compactSubagentPolicy,
   invalidSubagentTool,
   parseSubagentTools,
+  subagentDefinitionError,
   subagentEffortChoices,
   subagentPolicyWithoutModels,
+  unavailableSubagentTools,
 } from './AgentSubagentsEditor';
 
 (
@@ -77,6 +79,28 @@ describe('tool rules', () => {
     expect(invalidSubagentTool(['Read', 'Bash(git log:*)'])).toBeNull();
     expect(invalidSubagentTool(['Read', 'two words'])).toBe('two words');
     expect(invalidSubagentTool(['Bash(unclosed'])).toBe('Bash(unclosed');
+  });
+
+  test('tools no session has are named, and a list of only them is refused', () => {
+    expect(
+      unavailableSubagentTools(['Read', 'EnterPlanMode', 'CronList(x)']),
+    ).toEqual(['EnterPlanMode', 'CronList(x)']);
+    const withTools = (tools: string[] | null) =>
+      subagentDefinitionError(
+        {
+          name: 'planner',
+          description: 'Plans work',
+          prompt: 'Plan.',
+          tools,
+          model: null,
+          effort: null,
+        },
+        [],
+      );
+    expect(withTools(['EnterPlanMode'])).toContain('都不可用');
+    expect(withTools(['EnterPlanMode', 'ExitPlanMode'])).toContain('都不可用');
+    expect(withTools(['EnterPlanMode', 'Read'])).toBeNull();
+    expect(withTools(null)).toBeNull();
   });
 });
 

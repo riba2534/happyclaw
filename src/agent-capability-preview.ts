@@ -35,6 +35,7 @@ import {
   isUnavailableSubagentTool,
   resolveSubagentLaunchWithoutConnection,
   subagentPolicyModels,
+  toollessSubagents,
   type SubagentDefaultSource,
   type SubagentLaunch,
 } from './agent-subagents.js';
@@ -146,6 +147,12 @@ function previewSubagents(
       `子代理工具 ${unavailable.join('、')} 在 HappyClaw 中不可用（会话结束即失效或需要交互审批），运行时不会提供。`,
     );
   }
+  const toolless = toollessSubagents(policy);
+  if (toolless.length > 0) {
+    notes.push(
+      `子代理 ${toolless.join('、')} 没有任何可用的工具，运行时不会提供给主 Agent。`,
+    );
+  }
   if (subagentPolicyModels(policy).length > 0) {
     if (run?.onAgentConnection) {
       const gone = [
@@ -153,7 +160,9 @@ function previewSubagents(
         ...policy.definitions
           .filter(
             (definition) =>
-              definition.model && !launch.agents?.[definition.name]?.model,
+              definition.model &&
+              launch.agents?.[definition.name] &&
+              !launch.agents[definition.name].model,
           )
           .map((definition) => definition.model!),
       ];
