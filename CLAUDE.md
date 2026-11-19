@@ -506,9 +506,10 @@ preset 的身份和默认风格，只低于平台的安全、权限、工具和�
   相关条目（`workspace_memory_recall_fts`），全部条目的标题目录随每轮笔记增量注入。
 - 「工作区主人亲自发起」按每条输入的发送者判定（`src/workspace-owner-identity.ts`），记忆直写、
   `install_skill`、自动化、派发、`session_list` 与 Owner Profile 共用：Web 输入是主人的用户 id；
-  IM 输入的来源聊天是主人自己的注册，发送者是主人在同一 provider（跨主人的各个渠道账号）下由宿主
-  记录的可信身份（`configured`、`trusted_direct`、`auto_feishu`）。与聊天登记的 folder、绑定到
-  哪个工作区无关，别的 provider 下相同的值不算。
+  IM 输入的来源聊天是主人自己的注册，发送者是主人登记在 Home 或当前工作区的聊天上由宿主记录的
+  可信身份（`configured`、`trusted_direct`、`auto_feishu`），与聊天绑定到哪个工作区无关。按
+  provider 跨主人的各个渠道账号比较（企业微信、钉钉的 id 只在企业内唯一，按同一渠道账号比较），
+  别的 provider 下相同的值不算。
 - 禁用、删除或缺失的精确选择能力必须让配置失败，不得静默替换。
 - Prompt 或能力身份变化后必须失效旧的暖 Runner。
 
@@ -815,8 +816,8 @@ Channel Reliability 的 Inbox/Turn/Outbox/Card 表由
   工作区和渠道资源按 `created_by` 隔离。
 - Host 工作区额外要求 admin 角色。
 - 配对（或绑定后学习到）的私聊发送者在机器人里等同账号主人本人：可以 `/list`、`/bind` 到主人的
-  全部工作区（包括 Host 工作区），在任意工作区按主人轮次判定。配对页与渠道引导提示只给自己的账号
-  配对；没有「受委托的他人」这一角色。
+  全部工作区（包括 Host 工作区）；配对登记在 Home，配对私聊的发送者在任意工作区按主人轮次判定。
+  配对页与渠道引导提示只给自己的账号配对；没有「受委托的他人」这一角色。
 - 系统配置、用户、邀请、审计和计费使用独立 Permission Middleware。
 - 敏感写操作必须先停止或暂停相关 Runner，并在提交失败时恢复队列。
 - API 返回资源不存在时通常使用 404 隐藏其他用户资源是否存在。

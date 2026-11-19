@@ -8,6 +8,9 @@ import {
 const OWNER = 'owner-1';
 const OTHER_USER = 'user-2';
 const HOME = 'home-owner';
+const B = 'ws-b';
+const W = 'ws-w';
+const V = 'ws-v';
 
 /**
  * Registrations as the host writes them: discovery and pairing record every
@@ -108,11 +111,11 @@ const rows: Array<
     owner_im_id: '222',
     owner_claim_source: 'trusted_direct',
   },
-  // A row another user left on the owner's bot (e.g. before a credential
-  // transfer).
+  // A row another user left on the owner's bot and Home folder (e.g. before
+  // a credential transfer).
   {
     jid: 'telegram:223#account:tg-a',
-    folder: 'home-user-2',
+    folder: HOME,
     created_by: OTHER_USER,
     channel_account_id: 'tg-a',
     owner_im_id: '223',
@@ -142,15 +145,79 @@ const rows: Array<
     created_by: OWNER,
     channel_account_id: 'tg-legacy',
   },
+  // An account whose default workspace is W registers its chats there; the
+  // identities recorded on them (a hand-filled Feishu app's first direct
+  // chat, an owner the owner typed in) belong to W.
+  {
+    jid: 'feishu:oc_w#account:fs-w',
+    folder: W,
+    created_by: OWNER,
+    channel_account_id: 'fs-w',
+    owner_im_id: 'ou_w',
+    owner_claim_source: 'auto_feishu',
+  },
+  {
+    jid: 'telegram:-2001#account:tg-a',
+    folder: W,
+    created_by: OWNER,
+    channel_account_id: 'tg-a',
+    owner_im_id: '555',
+    owner_claim_source: 'configured',
+  },
+  // WeCom and DingTalk ids are per enterprise: two of the owner's bots in
+  // two enterprises.
+  {
+    jid: 'wecom:c2c:zhangsan#account:wc-a',
+    folder: HOME,
+    created_by: OWNER,
+    channel_account_id: 'wc-a',
+    owner_im_id: 'zhangsan',
+    owner_claim_source: 'trusted_direct',
+  },
+  {
+    jid: 'wecom:group:g1#account:wc-a',
+    folder: HOME,
+    created_by: OWNER,
+    channel_account_id: 'wc-a',
+  },
+  {
+    jid: 'wecom:group:g2#account:wc-b',
+    folder: HOME,
+    created_by: OWNER,
+    channel_account_id: 'wc-b',
+  },
+  {
+    jid: 'dingtalk:c2c:staff1#account:dt-a',
+    folder: HOME,
+    created_by: OWNER,
+    channel_account_id: 'dt-a',
+    owner_im_id: 'staff1',
+    owner_claim_source: 'trusted_direct',
+  },
+  {
+    jid: 'dingtalk:cidA#account:dt-a',
+    folder: HOME,
+    created_by: OWNER,
+    channel_account_id: 'dt-a',
+  },
+  {
+    jid: 'dingtalk:cidB#account:dt-b',
+    folder: HOME,
+    created_by: OWNER,
+    channel_account_id: 'dt-b',
+  },
 ];
 
 const byJid = new Map(rows.map((row) => [row.jid, row]));
 
+/** Judged by default in ws-b, a workspace that is not Home (#863). */
 function lookup(
   overrides: Partial<Parameters<typeof isWorkspaceOwnerInput>[1]> = {},
 ) {
   return {
     ownerUserId: OWNER,
+    workspaceFolder: B,
+    homeFolder: HOME,
     registration: (jid: string) => byJid.get(jid),
     ownerRegistrations: () => rows.filter((row) => row.created_by === OWNER),
     ...overrides,
@@ -173,7 +240,49 @@ describe('whether the workspace owner sent an input', () => {
   });
 
   test("the owner's own paired direct chat, whichever workspace it is bound to", () => {
-    expect(isOwner('tg:111', 'telegram:111#account:tg-a')).toBe(true);
+    // Registered under Home: the owner in B, in Home, and in any other
+    // workspace of the owner's.
+    for (const workspaceFolder of [B, HOME, W, V]) {
+      expect(
+        isOwner('tg:111', 'telegram:111#account:tg-a', { workspaceFolder }),
+      ).toBe(true);
+    }
+  });
+
+  test('identities registered to another workspace count only there', () => {
+    const at = (workspaceFolder: string) => ({ workspaceFolder });
+    // W's identities in W.
+    expect(isOwner('ou_w', 'feishu:oc_w#account:fs-w', at(W))).toBe(true);
+    expect(isOwner('tg:555', 'telegram:-1001#account:tg-a', at(W))).toBe(true);
+    // Not in Home, nor in B or V.
+    for (const workspaceFolder of [HOME, B, V]) {
+      expect(
+        isOwner('ou_w', 'feishu:oc_w#account:fs-w', at(workspaceFolder)),
+      ).toBe(false);
+      expect(
+        isOwner('tg:555', 'telegram:-1001#account:tg-a', at(workspaceFolder)),
+      ).toBe(false);
+    }
+    // An owner without a Home workspace has only the workspace's own.
+    expect(
+      isOwner('tg:111', 'telegram:111#account:tg-a', {
+        workspaceFolder: B,
+        homeFolder: undefined,
+      }),
+    ).toBe(false);
+  });
+
+  test('WeCom and DingTalk ids are compared within one channel account', () => {
+    // The same enterprise's bot: the owner.
+    expect(isOwner('wecom:zhangsan', 'wecom:group:g1#account:wc-a')).toBe(true);
+    expect(isOwner('dingtalk:staff1', 'dingtalk:cidA#account:dt-a')).toBe(true);
+    // Another enterprise's bot: the same userid or staffId is someone else.
+    expect(isOwner('wecom:zhangsan', 'wecom:group:g2#account:wc-b')).toBe(
+      false,
+    );
+    expect(isOwner('dingtalk:staff1', 'dingtalk:cidB#account:dt-b')).toBe(
+      false,
+    );
   });
 
   test('the owner speaking in a group is judged by sender; members never count', () => {

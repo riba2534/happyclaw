@@ -231,12 +231,14 @@ Agent Runtime 的 Workspace Memory MCP 还叠加执行上下文策略：
 
 owner 输入的判定在宿主（`src/workspace-owner-identity.ts`）：Web 输入的 sender 等于
 owner 用户 id；IM 输入的来源聊天必须是工作区主人（`created_by`）自己的注册，发送者 IM id
-必须等于主人在**同一渠道（provider）**下任一聊天注册中由宿主记录的 owner（claim source 为
+必须等于主人**登记在 Home 工作区或当前工作区**的聊天注册中由宿主记录的 owner（claim source 为
 `configured`、`trusted_direct` 或 `auto_feishu`）。也就是「发送者是工作区主人自己的可信 IM
-身份」，与聊天登记的 folder、绑定到哪个工作区的会话无关：主人自己的配对私聊绑到非 Home 工作区
-的会话时，在那里同样是主人。比较按 provider、跨主人的各个渠道账号进行：sender 由平台给出、
-不可伪造，飞书 open_id、QQ openid 这类按应用区分的 id 跨应用不会撞值；不同 provider 的相同值
-不算同一人；其他用户的注册与身份永远不算；群成员按自己的 sender 判定，不因所在的群而成为主人。自动化运行、
+身份」，与聊天绑定到哪个工作区的会话无关：发现和配对把聊天登记在账号的默认工作区（未设置时为
+Home），绑定只改目标会话，所以主人自己的配对私聊绑到非 Home 工作区的会话时，在那里同样是主人。
+账号默认工作区设为 W 时登记在 W 的身份只在 W 算主人，不在 Home 和其他工作区算。比较按
+provider、跨主人的各个渠道账号进行：sender 由平台给出、不可伪造，飞书 open_id、QQ openid 这类
+按应用区分的 id 跨应用不会撞值；企业微信 userid、钉钉 staffId/senderId 只在一个企业或应用内
+唯一，只在同一渠道账号内比较；不同 provider 的相同值不算同一人；其他用户的注册与身份永远不算；群成员按自己的 sender 判定，不因所在的群而成为主人。自动化运行、
 `work_item_input` 等宿主合成的输入永远不算主人亲自发起。`install_skill`、自动化的 owner 轮次、
 `work_delegate` 与 `session_list` 的主人轮次、HappyClaw Owner Profile 用同一判定。
 
@@ -381,8 +383,9 @@ Owner Claim：
 
 - 可信的 1:1 私聊可以从第一条持久化人类消息学习 owner。
 - 配对（`/pair`）或绑定后学习到的私聊发送者在机器人里等同主人本人：IM 命令可以 `/list`
-  主人的全部工作区，`/bind` 到其中任意一个（包括宿主机工作区），在主人任意工作区里都按主人
-  轮次判定（见 4.5）。配对页和渠道引导提示只给主人自己的账号配对。
+  主人的全部工作区，`/bind` 到其中任意一个（包括宿主机工作区）。配对登记在 Home，所以配对私聊
+  的发送者在主人任意工作区里都按主人轮次判定（见 4.5）。配对页和渠道引导提示只给主人自己的
+  账号配对。
 - 未认领群聊不会让“第一个发命令的人”自动成为 owner。
 - 群聊用 `/owner_mention` 显式认领。
 - `/release_owner` 清除 owner 与 allowlist，并把 legacy `owner_mentioned` 降级。

@@ -127,6 +127,8 @@ function ipcHost(
       Object.keys(registrations).filter(
         (jid) => registrations[jid].folder === folder,
       ),
+    getUserHomeGroup: (userId: string) =>
+      userId === OWNER ? { folder: HOME } : undefined,
     getGroupsByOwner: (userId: string) =>
       Object.entries(registrations)
         .filter(([, row]) => row.created_by === userId)

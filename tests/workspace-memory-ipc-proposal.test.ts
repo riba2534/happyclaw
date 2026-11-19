@@ -59,6 +59,15 @@ const registrations: Record<string, Record<string, unknown>> = {
     channel_account_id: 'tg-b',
     target_agent_id: SESSION,
   },
+  // Registered to another workspace W (its account defaults to W), with an
+  // owner the owner typed in: that identity is the owner in W only.
+  'telegram:-2001#account:tg-a': {
+    folder: 'ws-w',
+    created_by: OWNER,
+    channel_account_id: 'tg-a',
+    owner_im_id: '555',
+    owner_claim_source: 'configured',
+  },
   [OTHER_USER_DM]: {
     folder: 'home-user-2',
     created_by: 'user-2',
@@ -82,7 +91,8 @@ function host(inputs: Record<string, AgentBuilderPersistedInput>) {
   }));
   const activeAgentBuilderTurns = new AgentBuilderTurnRegistry();
   const globals: Record<string, unknown> = {
-    getUserHomeGroup: () => undefined,
+    getUserHomeGroup: (userId: string) =>
+      userId === OWNER ? { jid: `web:${HOME}`, folder: HOME } : undefined,
     resolveBroadcastFolder: () => FOLDER,
     registeredGroups: registrations,
     getRegisteredGroup: (jid: string) => registrations[jid],
@@ -239,6 +249,7 @@ describe('what a Workspace Memory write becomes on the host', () => {
       'dm-owner': human('tg:111', OWNER_DM),
       'other-bot': human('tg:111', OTHER_BOT_GROUP),
       'other-provider': human('111', GROUP),
+      'w-identity': human('tg:555', OTHER_BOT_GROUP),
       'other-user': human('tg:222', OTHER_USER_DM),
       composed: {
         ...human('tg:111', OWNER_DM),
@@ -257,10 +268,12 @@ describe('what a Workspace Memory write becomes on the host', () => {
         proposal: false,
       });
     }
-    // The same value on another provider, another user's chat, and an input
-    // the host composed all only propose.
+    // The same value on another provider, an identity registered to another
+    // workspace W, another user's chat, and an input the host composed all
+    // only propose.
     for (const [turn, chat] of [
       ['other-provider', GROUP],
+      ['w-identity', OTHER_BOT_GROUP],
       ['other-user', OTHER_USER_DM],
       ['composed', OWNER_DM],
     ]) {

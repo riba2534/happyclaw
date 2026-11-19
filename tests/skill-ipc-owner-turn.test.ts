@@ -60,6 +60,15 @@ const groups: Record<string, Record<string, string>> = {
     owner_im_id: '222',
     owner_claim_source: 'trusted_direct',
   },
+  // A chat registered to workspace W (its account defaults to W), with an
+  // owner the owner typed in.
+  'telegram:-2001#account:tg-a': {
+    folder: 'ws-w',
+    created_by: OWNER,
+    channel_account_id: 'tg-a',
+    owner_im_id: '555',
+    owner_claim_source: 'configured',
+  },
 };
 
 const lookup = {
@@ -68,6 +77,8 @@ const lookup = {
     Object.entries(groups)
       .filter(([, row]) => row.created_by === userId)
       .map(([jid, row]) => ({ jid, ...row })),
+  getUserHomeGroup: (userId: string) =>
+    userId === OWNER ? { folder: FOLDER } : undefined,
 };
 
 function check(
@@ -93,6 +104,7 @@ function check(
   }
   return skillMutationTurnRejection({
     registry,
+    sourceFolder: options.folder ?? FOLDER,
     turnScope: scope,
     ownerUserId: OWNER,
     loadPersistedInput: (_chatJid, messageId) => messages[messageId] ?? null,
@@ -189,6 +201,12 @@ describe('install_skill / uninstall_skill only from the owner’s own turn', () 
     expect(
       check({ m1: input('tg:222', 'telegram:222#account:tg-x') }, inWsB),
     ).toBe(SKILL_MUTATION_NON_OWNER_REJECTION);
+    // An identity registered to workspace W installs from W only: not from
+    // Home (Skills are account-wide) nor from B.
+    const w555 = { m1: input('tg:555', 'telegram:-1001#account:tg-a') };
+    expect(check(w555, { folder: 'ws-w', agentId: 'session-w' })).toBeNull();
+    expect(check(w555)).toBe(SKILL_MUTATION_NON_OWNER_REJECTION);
+    expect(check(w555, inWsB)).toBe(SKILL_MUTATION_NON_OWNER_REJECTION);
     // A host-composed input carrying the owner's own sender and chat neither.
     for (const extra of [
       { source_kind: 'work_item_input' },
@@ -203,6 +221,7 @@ describe('install_skill / uninstall_skill only from the owner’s own turn', () 
 
   test('an owner claimed only by /owner_mention is not trusted', () => {
     groups['feishu:oc_claimed'] = {
+      folder: FOLDER,
       created_by: OWNER,
       owner_im_id: 'ou_claimer',
       owner_claim_source: 'explicit',
@@ -221,6 +240,7 @@ describe('install_skill / uninstall_skill only from the owner’s own turn', () 
       'explicit',
     ]) {
       groups[chat] = {
+        folder: FOLDER,
         created_by: OWNER,
         owner_im_id: 'ou_claimed',
         owner_claim_source: claim,
@@ -245,6 +265,7 @@ describe('install_skill / uninstall_skill only from the owner’s own turn', () 
         const skillAllowed =
           skillMutationTurnRejection({
             registry,
+            sourceFolder: FOLDER,
             turnScope: scope,
             ownerUserId: OWNER,
             loadPersistedInput: load,
@@ -252,6 +273,8 @@ describe('install_skill / uninstall_skill only from the owner’s own turn', () 
           }) === null;
         const memoryWrites = isWorkspaceMemoryOwnerTurn({
           ownerUserId: OWNER,
+          workspaceFolder: FOLDER,
+          homeFolder: FOLDER,
           registration: lookup.getGroup,
           ownerRegistrations: () => lookup.getGroupsByOwner(OWNER),
           requireActiveOwnerTurn: (isOwnerInput) =>

@@ -278,10 +278,11 @@ describe('HappyClaw Owner Profile actual sender identity', () => {
 });
 
 describe('HappyClaw Owner Profile owner-anchored sender identity', () => {
-  // Legacy unscoped Feishu chats; the account is on the row.
+  // Legacy unscoped Feishu chats of the Home workspace.
   const rows = [
     {
       jid: 'feishu:oc_home',
+      folder: 'home-folder',
       created_by: 'owner-1',
       channel_account_id: 'fs-legacy',
       owner_im_id: 'ou_owner',
@@ -289,15 +290,18 @@ describe('HappyClaw Owner Profile owner-anchored sender identity', () => {
     },
     {
       jid: 'feishu:legacy-topic',
+      folder: 'home-folder',
       created_by: 'owner-1',
       channel_account_id: 'fs-legacy',
     },
-    { jid: 'qq:c2c:ou_owner', created_by: 'owner-1' },
+    { jid: 'qq:c2c:ou_owner', folder: 'home-folder', created_by: 'owner-1' },
   ];
   const lookup = (
     overrides: Partial<Parameters<typeof isWorkspaceOwnerInput>[1]> = {},
   ) => ({
     ownerUserId: 'owner-1',
+    workspaceFolder: 'home-folder',
+    homeFolder: 'home-folder',
     registration: (jid: string) => rows.find((row) => row.jid === jid),
     ownerRegistrations: () => rows,
     ...overrides,
