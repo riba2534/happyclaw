@@ -208,10 +208,39 @@ Stirling。配置后在文件面板打开一个 docx 确认能预览；第二次
 用户在「设置 → 安全 → 通行密钥」添加后，可以在登录页用设备的指纹、面容或屏幕锁直接登录。
 部署侧需要确认：
 
-- 页面必须通过 HTTPS 域名访问（本机 `localhost` 除外）。HTTP 局域网 IP 地址不是安全上下文，
-  浏览器不提供通行密钥，设置页会说明原因；IP 地址也不能作为 RP ID。
+- 页面必须通过 HTTPS 域名访问（本机用 `localhost`）。IP 地址（包括 `127.0.0.1` 和 IPv6
+  地址）不能作为 RP ID，即使是 HTTPS 也会被拒绝（`PASSKEY_IP_HOST`），设置页和登录页会
+  提示改用 localhost 或域名；HTTP 的域名不是安全上下文，返回 `PASSKEY_INSECURE`。
 - 通行密钥绑定创建时的主机名。换域名后旧的通行密钥不能再用，需要用密码登录后重新添加。
 - 反向代理要原样转发 `Host`；改写了 `Host` 时，把公网地址（如 `https://claw.example.com`）
   加进 `CORS_ALLOWED_ORIGINS`，否则会返回 `PASSKEY_NOT_ALLOWED`。`*` 不会放行通行密钥。
 
-验证：在 HTTPS 地址上添加一个通行密钥，退出后在登录页点「使用通行密钥登录」，应直接进入。
+验证：在 HTTPS 地址上添加一个通行密钥（需要输入当前密码，开了二次验证还要验证码），退出后
+在登录页点「使用通行密钥登录」，应直接进入。
+
+## 9. 二次验证的应急恢复
+
+用户在「设置 → 安全 → 二次验证」开启后，登录时除了密码还要输入验证器 App 的验证码或一个
+恢复码。部署侧需要知道：
+
+- 验证器密钥用 `data/config/claude-provider.key` 加密存放（与渠道账号凭据是同一把密钥）。
+  这个文件丢失或被替换后，验证器的验证码都无法校验：登录第二步返回
+  `MFA_SECRET_UNREADABLE`，日志里有对应错误。恢复码只存加盐哈希、不依赖这把密钥，仍可登录。
+  迁移、恢复时随 `data/` 一起保留它。
+- 普通用户丢失验证器且恢复码用完时，由有 `manage_users` 的人在「用户管理」里重置二次验证。
+- 唯一的管理员（或单人宿主机模式下的唯一账号）丢失验证器、恢复码用完、也没有能用的通行密钥
+  时，没有人能在 Web 上替他重置，只能在服务机上删除他的二次验证（需要 `sqlite3` 命令行工具，
+  macOS 自带；服务不必停止）：
+
+  ```bash
+  cd /Users/riba2534/airepo/happyclaw
+  sqlite3 data/db/messages.db <<'SQL'
+  DELETE FROM user_totp WHERE user_id = (SELECT id FROM users WHERE username = 'admin');
+  DELETE FROM user_recovery_codes WHERE user_id = (SELECT id FROM users WHERE username = 'admin');
+  SQL
+  ```
+
+  把 `admin` 换成实际用户名。之后只用密码即可登录，登录后在设置里重新开启。密码也忘了时，先用
+  `npm run reset:admin -- <用户名> <新密码>` 重置密码（它不动二次验证）。怀疑通行密钥落入他人
+  手中时，用同样的方式删除 `webauthn_credentials` 里该用户的行；其他用户的通行密钥由管理员在
+  「用户管理 → 撤销通行密钥」删除。
