@@ -465,22 +465,23 @@ describe('StreamEventProcessor observability mapping', () => {
       tool_use_id: 'toolu_unseen',
       description: 'sub-agent bash',
       task_type: 'local_bash',
-      is_backgrounded: true,
+      is_backgrounded: false,
       owned_by_subagent: true,
     });
-    // The main Agent's own background Bash carries no flag and stays a debt.
+    // The main Agent's own background sub-agent carries no flag and stays a
+    // debt (its own backgrounded Bash is detached and owes nothing).
     processor.processSystemMessage({
       type: 'system',
       subtype: 'task_started',
-      task_id: 'bash-main',
+      task_id: 'agent-main',
       tool_use_id: 'toolu_main',
-      description: 'main bash',
-      task_type: 'local_bash',
+      description: 'main agent',
+      task_type: 'local_agent',
       is_backgrounded: true,
     });
     for (const [taskId, toolUseId] of [
       ['bash-sub', 'toolu_unseen'],
-      ['bash-main', 'toolu_main'],
+      ['agent-main', 'toolu_main'],
     ]) {
       processor.processSystemMessage({
         type: 'system',
