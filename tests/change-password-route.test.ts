@@ -27,6 +27,7 @@ vi.mock('../src/logger.js', () => ({
 
 const db = await import('../src/db.js');
 const { saveRegistrationConfig } = await import('../src/runtime-config.js');
+const { resetLoginAttemptsForTest } = await import('../src/auth.js');
 const authRoutes = (await import('../src/routes/auth.js')).default;
 const adminRoutes = (await import('../src/routes/admin.js')).default;
 
@@ -107,6 +108,42 @@ describe('PUT /api/auth/password', () => {
 
     // Neither attempt changed anything.
     expect((await login(ADMIN_PASSWORD)).status).toBe(200);
+  });
+
+  test('wrong current passwords count as failed logins', async () => {
+    const cookie = cookieFrom(await login(ADMIN_PASSWORD));
+    const ip = '198.51.100.77';
+    for (let i = 0; i < 5; i += 1) {
+      const wrong = await send('PUT', '/api/auth/password', {
+        cookie,
+        ip,
+        body: {
+          current_password: `not-it-${i}-123`,
+          new_password: 'admin-password-9',
+        },
+      });
+      expect(wrong.status).toBe(400);
+    }
+    const limited = await send('PUT', '/api/auth/password', {
+      cookie,
+      ip,
+      body: {
+        current_password: ADMIN_PASSWORD,
+        new_password: 'admin-password-9',
+      },
+    });
+    expect(limited.status).toBe(429);
+    expect(await limited.json()).toMatchObject({ code: 'TOO_MANY_ATTEMPTS' });
+    // The same limit guards the login form from that address.
+    expect(
+      (
+        await send('POST', '/api/auth/login', {
+          ip,
+          body: { username: 'admin', password: ADMIN_PASSWORD },
+        })
+      ).status,
+    ).toBe(429);
+    resetLoginAttemptsForTest();
   });
 
   test('a change takes effect at once: the new password logs in, the old does not', async () => {

@@ -28,6 +28,7 @@
     "@anthropic-ai/claude-agent-sdk": "0.3.328",
     "@hono/node-server": "^2.1.8",
     "@larksuiteoapi/node-sdk": "^1.58.0",
+    "@simplewebauthn/server": "14.1.0",
     "@wecom/aibot-node-sdk": "^1.0.7",
     "adm-zip": "^0.6.1",
     "axios": "^1.20.0",
@@ -72,7 +73,7 @@
     "shell-quote": "1.12.0"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "license": "MIT",
   "repository": {

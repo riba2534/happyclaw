@@ -17,7 +17,8 @@ vi.mock('../../stores/auth', () => ({
 vi.mock('../../api/client', () => ({
   api: { get: vi.fn(async () => ({ sessions: [] })), delete: vi.fn() },
 }));
-vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
+const toast = vi.hoisted(() => ({ success: vi.fn(), error: vi.fn() }));
+vi.mock('sonner', () => ({ toast }));
 
 const { SecuritySection } = await import('./SecuritySection');
 (
@@ -80,6 +81,19 @@ describe('SecuritySection change password', () => {
       'new-password-1',
     );
     expect(field('confirm-new-password').value).toBe('');
+  });
+
+  test('too many wrong current passwords says when to try again', async () => {
+    mocks.changePassword.mockRejectedValueOnce({
+      status: 429,
+      message: 'Too many attempts. Try again in 840s',
+      body: { code: 'TOO_MANY_ATTEMPTS', retry_after_seconds: 840 },
+    } as never);
+    await type('current-password', 'old-password');
+    await type('new-password', 'new-password-1');
+    await type('confirm-new-password', 'new-password-1');
+    await act(async () => submitButton().click());
+    expect(toast.error).toHaveBeenCalledWith('尝试次数过多，请 14 分钟后再试');
   });
 
   test('a new password equal to the current one is flagged', async () => {

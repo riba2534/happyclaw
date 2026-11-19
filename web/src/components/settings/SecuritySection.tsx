@@ -9,9 +9,12 @@ import { ListGroup, ListRow } from '@/components/common/ListRow';
 import { PasswordInput } from '@/components/common/PasswordInput';
 import { confirmDialog } from '@/stores/confirm';
 import { api } from '../../api/client';
+import { authErrorMessage } from '../../lib/auth-errors';
 import { useAuthStore } from '../../stores/auth';
 import { SettingsGroup, SettingsRow, SettingsSection } from './SettingsLayout';
 import { SettingsFormFooter } from './SettingsFormControls';
+import { PasskeySection } from './PasskeySection';
+import { TwoFactorSection } from './TwoFactorSection';
 import { getErrorMessage, type SessionInfo } from './types';
 
 const COLLAPSED_SESSION_COUNT = 10;
@@ -51,7 +54,7 @@ function describeUserAgent(userAgent: string | null): string {
 }
 
 export function SecuritySection() {
-  const { logout, changePassword } = useAuthStore();
+  const { logout, changePassword, user } = useAuthStore();
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
@@ -109,7 +112,7 @@ export function SecuritySection() {
       toast.success('密码已修改，其他设备的登录会话已撤销');
       void loadSessions();
     } catch (error) {
-      toast.error(getErrorMessage(error, '修改密码失败'));
+      toast.error(authErrorMessage(error, '修改密码失败'));
     } finally {
       setChangingPassword(false);
     }
@@ -239,6 +242,9 @@ export function SecuritySection() {
           </Button>
         </SettingsFormFooter>
       </SettingsSection>
+
+      {user?.role !== 'guest' && <TwoFactorSection />}
+      {user?.role !== 'guest' && <PasskeySection />}
 
       <SettingsSection
         title="登录设备"

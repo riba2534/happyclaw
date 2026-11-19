@@ -232,6 +232,10 @@ describe('schema version head', () => {
     // web-push-store.ts (schema-v91-web-push.test.ts).
     // v92: automations.model_config_id / model / reasoning_effort, the model
     // an automation's run sessions use (schema-v92-automation-model.test.ts).
-    expect(db.CURRENT_SCHEMA_VERSION).toBe(92);
+    // v93: second login factors, user_totp and user_recovery_codes, created
+    // by auth-factor-store.ts (schema-v93-auth-factors.test.ts).
+    // v94: passkeys, webauthn_credentials, created by auth-factor-store.ts
+    // (schema-v94-passkeys.test.ts).
+    expect(db.CURRENT_SCHEMA_VERSION).toBe(94);
   });
 });

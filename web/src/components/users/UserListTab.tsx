@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
   Edit3,
+  Fingerprint,
   KeyRound,
   LogOut,
   MoreHorizontal,
@@ -85,6 +86,10 @@ function StatusBadges({ user }: { user: UserPublic }) {
         {status?.label ?? user.status}
       </Badge>
       {user.must_change_password && <Badge variant="warning">需改密</Badge>}
+      {user.two_factor_enabled && <Badge variant="neutral">二次验证</Badge>}
+      {!!user.passkey_count && (
+        <Badge variant="neutral">通行密钥 {user.passkey_count}</Badge>
+      )}
     </>
   );
 }
@@ -117,6 +122,8 @@ export function UserListTab({
     deleteUser,
     restoreUser,
     revokeUserSessions,
+    resetUserTwoFactor,
+    revokeUserPasskeys,
   } = useUsersStore();
 
   const [query, setQuery] = useState<UserQuery>({
@@ -225,6 +232,40 @@ export function UserListTab({
     }
   };
 
+  const handleResetTwoFactor = async (user: UserPublic) => {
+    const confirmed = await confirmDialog({
+      title: '重置二次验证',
+      message: `关闭 ${user.username} 的二次验证并作废其恢复码？对方下次只需密码即可登录，可以重新设置。`,
+      confirmText: '重置',
+      variant: 'danger',
+    });
+    if (!confirmed) return;
+    try {
+      await resetUserTwoFactor(user.id);
+      setNotice(`已重置 ${user.username} 的二次验证`);
+      await fetchUsers(query);
+    } catch (err) {
+      setError(getErrorMessage(err, '操作失败'));
+    }
+  };
+
+  const handleRevokePasskeys = async (user: UserPublic) => {
+    const confirmed = await confirmDialog({
+      title: '撤销通行密钥',
+      message: `删除 ${user.username} 的全部 ${user.passkey_count ?? 0} 个通行密钥？这些通行密钥不能再登录，对方可以用密码登录后重新添加。`,
+      confirmText: '撤销',
+      variant: 'danger',
+    });
+    if (!confirmed) return;
+    try {
+      await revokeUserPasskeys(user.id);
+      setNotice(`已撤销 ${user.username} 的通行密钥`);
+      await fetchUsers(query);
+    } catch (err) {
+      setError(getErrorMessage(err, '操作失败'));
+    }
+  };
+
   const renderActions = (user: UserPublic) => {
     if (!canOperateTargetUser(user)) return null;
     const isSelf = user.id === currentUser?.id;
@@ -284,6 +325,24 @@ export function UserListTab({
                   icon: LogOut,
                   onSelect: () => void handleRevokeAll(user),
                 },
+                ...(user.two_factor_enabled
+                  ? [
+                      {
+                        label: '重置二次验证',
+                        icon: ShieldOff,
+                        onSelect: () => void handleResetTwoFactor(user),
+                      },
+                    ]
+                  : []),
+                ...(user.passkey_count
+                  ? [
+                      {
+                        label: '撤销通行密钥',
+                        icon: Fingerprint,
+                        onSelect: () => void handleRevokePasskeys(user),
+                      },
+                    ]
+                  : []),
                 {
                   label: '删除',
                   icon: Trash2,

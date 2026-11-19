@@ -55,7 +55,21 @@ Public：
 - `POST /api/auth/setup`，仅用户表为空时可用；可带
   `deployment_mode: "multi_user" | "single_user_host"`，在创建管理员的 Home 工作区之前保存。
   只写入这一项，其他系统设置仍按环境变量生效；不带时什么也不存
-- `POST /api/auth/login`
+- `POST /api/auth/login`：开启了二次验证的账号密码正确时不下发会话，返回
+  `{ mfa_required: true, challenge }`
+- `POST /api/auth/login/2fa`：`{ challenge, code }`，`code` 为验证器的 6 位验证码或一个恢复码；
+  成功后下发会话。challenge 只在内存中，绑定用户，5 分钟过期，最多试 5 次，用过即作废；
+  失败返回 400（`code: MFA_INVALID`，过期或用尽为 `MFA_EXPIRED`），并与密码失败共用登录限流。
+  密码正确时只退还这一次计数、不清除用户名+IP 桶里已有的失败，第二步成功才清除，所以重新输入
+  密码不会重置验证码的猜测次数。验证器密钥无法解密（加密密钥被替换）时返回 500
+  `MFA_SECRET_UNREADABLE`，不计失败、challenge 保留，可改用恢复码
+- `POST /api/auth/passkey/login/options`：无用户名登录（可发现凭据）的 WebAuthn 选项。每个客户端
+  （IPv4 地址或 IPv6 /64，loopback 与未知地址不分）最多保留 50 个未用的登录 challenge，超出时
+  丢弃它自己最早的那个
+- `POST /api/auth/passkey/login`：`{ response }`（`navigator.credentials.get` 的 JSON），成功即下发
+  会话，视同已过二次验证。challenge 过期、用过或不存在返回 400 `PASSKEY_EXPIRED`（重新取选项
+  再试）；凭据未登记、属于别的主机、`userHandle` 不是凭据所属用户、签名或用户验证不通过，以及
+  停用账号和访客，返回 400 `PASSKEY_INVALID`
 - `GET /api/auth/register/status`：单人宿主机模式下恒为关闭
 - `POST /api/auth/register`：单人宿主机模式下 403
 - `GET /api/auth/avatars/:filename`
@@ -65,10 +79,51 @@ Public：
 - `POST /api/auth/logout`
 - `GET /api/auth/me`：顶层带 `deploymentMode`（生效值）
 - `PUT /api/auth/profile`
-- `PUT /api/auth/password`
+- `PUT /api/auth/password`：当前密码错误返回 400 `CURRENT_PASSWORD_INCORRECT`，与登录共用限流
 - `GET /api/auth/sessions`
 - `DELETE /api/auth/sessions/:id`
 - `POST /api/auth/avatar`
+- `GET /api/auth/2fa`：`{ enabled, recovery_codes_remaining }`
+- `POST /api/auth/2fa/setup`：生成待确认的 TOTP 密钥（RFC 6238，SHA-1、6 位、30 秒），返回
+  `{ secret, otpauth_uri, qr_data_url }`；已开启时 409 `MFA_ALREADY_ENABLED`
+- `POST /api/auth/2fa/enable`：`{ password, code }`，当前密码和第一个验证码都对才开启，返回
+  `{ success, recovery_codes, sessions_revoked }`：10 个恢复码只此一次（库里只存逐条加盐的哈希），
+  同时注销该账号除当前会话外的全部会话（写进审计 `mfa_enabled` 的 `details`）
+- `POST /api/auth/2fa/disable`：`{ password, code }`，`code` 可以是恢复码；未开启时 409
+  `MFA_NOT_ENABLED`
+- `POST /api/auth/2fa/recovery-codes`：`{ code }`（只接受验证器验证码），重新生成恢复码
+
+改密码、二次验证和通行密钥的接口重新核对当前密码与验证码时，先占用一次登录限流计数再校验，
+错误的密码和验证码与登录失败共用同一组桶（用户名小写 + 客户端 IP），超限返回 429
+`{ code: "TOO_MANY_ATTEMPTS", retry_after_seconds }`。错误一律返回 400 而不是 401（Web 客户端
+把 401 当作登录失效），并带 `code`：请求体无效 `INVALID_REQUEST`、当前密码错误
+`CURRENT_PASSWORD_INCORRECT`、验证码错误 `MFA_INVALID`、需要验证码却没给 `MFA_REQUIRED`、
+验证器密钥无法解密 `MFA_SECRET_UNREADABLE`（500）。同一个 30 秒步长的验证码只接受一次。访客没有
+二次验证，这些接口不在访客放行清单里。
+
+通行密钥（WebAuthn，`src/passkeys.ts`、`src/routes/passkeys.ts`）：
+
+- `GET /api/auth/passkeys`：`{ passkeys: [{ id, name, rp_id, created_at, last_used_at }], rp_id,
+unavailable_reason, two_factor_enabled }`，`unavailable_reason` 说明当前页面地址为什么不能用通行
+  密钥，`two_factor_enabled` 为真时添加还要验证码
+- `POST /api/auth/passkeys/options`：`{ password, code? }`，先重新验证本人：当前密码，开了二次
+  验证时还要验证码（可以是恢复码），失败计入登录限流（见上文的错误码）；通过后返回注册选项
+  （要求可发现凭据与用户验证，attestation `none`，算法 EdDSA、ES256、RS256）。每人最多 20 个，
+  超出 409 `PASSKEY_LIMIT_REACHED`
+- `POST /api/auth/passkeys`：`{ response, name? }`，用上一步的 challenge 验证后保存，写审计
+  `passkey_added`；保存前再查一次上限（409 `PASSKEY_LIMIT_REACHED`）
+- `PATCH /api/auth/passkeys/:id`：`{ name }`，只能改自己的，否则 404
+- `POST /api/auth/passkeys/:id/delete`：`{ password }`，密码错误 400 `CURRENT_PASSWORD_INCORRECT`
+  并计入登录限流，写审计 `passkey_removed`
+
+没有配置的公网地址，仪式的 origin 取请求的 `Origin` 头，只在它与 `Host` 同源、是 localhost
+（`CORS_ALLOW_LOCALHOST=false` 时除外）或列在 `CORS_ALLOWED_ORIGINS`（`*` 不算）时接受，且必须
+是 HTTPS（localhost 可用 HTTP）；否则 400，`code` 为 `PASSKEY_NO_ORIGIN`、`PASSKEY_INSECURE` 或
+`PASSKEY_NOT_ALLOWED`。RP ID 是该 origin 的主机名，必须是域名：IP 地址（含 `127.0.0.1` 与 IPv6
+地址）返回 400 `PASSKEY_IP_HOST`。RP ID 随凭据保存，登录时只接受同一 RP ID 的凭据。challenge
+存在内存里，绑定用途、用户、origin 和 RP ID，5 分钟过期，只能用一次。改密码和管理员重置二次验证
+都不删除通行密钥，撤销用 `DELETE /api/admin/users/:id/passkeys`；删除用户时一并删除。访客没有
+通行密钥：管理接口返回 403，访客的凭据不能登录。
 
 `POST /api/auth/login` 的失败次数按三个桶计数，任一超限返回 429：用户名+IP
 （`maxLoginAttempts`/`loginLockoutMinutes`）、用户名（4 倍/1 小时）、客户端 IP
@@ -1597,6 +1652,10 @@ Web 和 Runtime 不再把它们当作第二个可写真相源。
 - `PATCH|DELETE /api/admin/users/:id`
 - `POST /api/admin/users/:id/restore`
 - `DELETE /api/admin/users/:id/sessions`
+- `DELETE /api/admin/users/:id/2fa`：清除他人的二次验证与恢复码（丢失验证器时的恢复路径，不动通行密钥），
+  写审计 `mfa_reset`；不能用于自己。用户列表的每行带 `two_factor_enabled` 和 `passkey_count`
+- `DELETE /api/admin/users/:id/passkeys`：删除他人的全部通行密钥，返回 `{ success, removed }`，
+  有删除时写审计 `passkeys_revoked`；权限与重置二次验证相同，不能用于自己（自己的在设置里删）
 - `GET /api/admin/permission-templates`
 - `GET|POST /api/admin/invites`
 - `DELETE /api/admin/invites/:code`

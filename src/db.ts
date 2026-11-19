@@ -1,3 +1,7 @@
+import {
+  deleteAuthFactorsForUser,
+  initAuthFactorStore,
+} from './auth-factor-store.js';
 import { selectChannelReplyBatch } from './channel-reply-source.js';
 import crypto from 'crypto';
 import Database from './sqlite-compat.js';
@@ -2631,6 +2635,10 @@ export function initDatabase(
   // v90 -> v91: Web Push subscriptions (web_push_subscriptions). The table is
   // new and additive, nothing is backfilled.
   initWebPushStore(db);
+  // v92 -> v93: second login factors (user_totp, user_recovery_codes).
+  // v93 -> v94: passkeys (webauthn_credentials). The tables are new and
+  // additive, nothing is backfilled.
+  initAuthFactorStore(db);
 
   // v63 -> v64: early Feishu reply enrichment embedded quoted ancestors in
   // messages.content, leaking prompt scaffolding into Web history and then
@@ -11099,6 +11107,7 @@ export function deleteUser(id: string): void {
   const tx = db.transaction((userId: string) => {
     prepareCached('DELETE FROM user_sessions WHERE user_id = ?').run(userId);
     deleteWebPushSubscriptionsForUser(userId);
+    deleteAuthFactorsForUser(userId);
     prepareCached(`UPDATE users
        SET status = 'deleted', deleted_at = ?, disable_reason = COALESCE(disable_reason, 'deleted_by_admin'), updated_at = ?
        WHERE id = ?`).run(now, now, userId);
@@ -13632,6 +13641,7 @@ export function closeDatabase(): void {
   bindWorkspaceMemoryDatabase(null);
   bindOwnerProfileDatabase(null);
   initRuntimeStateStore(null);
+  initAuthFactorStore(null);
   initAutomationStore(null);
   initWorkItemStore(null);
   initWebPushStore(null);

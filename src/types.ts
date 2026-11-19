@@ -822,7 +822,14 @@ export type AuthEventType =
   | 'system_settings_updated'
   | 'host_integration_updated'
   | 'storage_source_saved'
-  | 'storage_source_deleted';
+  | 'storage_source_deleted'
+  | 'mfa_enabled'
+  | 'mfa_disabled'
+  | 'mfa_reset'
+  | 'mfa_recovery_codes_regenerated'
+  | 'passkey_added'
+  | 'passkey_removed'
+  | 'passkeys_revoked';
 
 export interface AuthAuditLog {
   id: number;
