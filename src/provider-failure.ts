@@ -29,6 +29,72 @@ export const PROVIDER_MODEL_CONFIG_USER_NOTICE =
 export const CODEX_REAUTH_REQUIRED_USER_NOTICE =
   '⚠️ ChatGPT 订阅登录已失效，本次请求未被执行。请管理员在「模型配置」中重新登录 ChatGPT 后再发送。';
 
+/**
+ * A request the upstream refused as sent (a config failure that names its
+ * reason): resending it is pointless, so the user has to change something.
+ */
+export const PROVIDER_REQUEST_REJECTED_USER_NOTICE =
+  '⚠️ 模型服务拒绝了这次请求，本次请求未被执行。原样重试会得到同样的结果，请根据上游的说明调整连接、模型或设置后再发送。';
+
+/**
+ * A turn that still overflows the model's window after Claude Code compacted
+ * the conversation: what is left is usually one input or attachment too
+ * large for the model.
+ */
+export const PROVIDER_CONTEXT_OVERFLOW_USER_NOTICE =
+  '⚠️ 这次请求超过了模型的上下文上限，自动压缩之后仍然放不下（多半是这条输入或附件太大）。请缩短后重新发送，或发送 /fresh 开一个新窗口。';
+
+const UPSTREAM_EXCERPT_MAX_CHARS = 240;
+
+/**
+ * The upstream's own words about a failure as a notice may show them: the
+ * message of a JSON error body if there is one, on one line, with addresses
+ * and anything shaped like a key or token blanked, cut to a few hundred
+ * characters. The notice also reaches IM groups, so it carries no more of
+ * the upstream's answer than a user needs to act on.
+ */
+export function upstreamErrorExcerpt(
+  text: string | null | undefined,
+): string | undefined {
+  let excerpt = text?.trim().replace(/^API Error:\s*/i, '');
+  if (!excerpt) return undefined;
+  const messages = [
+    ...excerpt.matchAll(/"message"\s*:\s*"((?:[^"\\]|\\.)*)"/g),
+  ];
+  const inner = messages.at(-1)?.[1];
+  if (inner) {
+    const status = /^\d{3}\b/.exec(excerpt)?.[0];
+    try {
+      excerpt = JSON.parse(`"${inner}"`) as string;
+    } catch {
+      excerpt = inner;
+    }
+    if (status && !excerpt.startsWith(status)) excerpt = `${status} ${excerpt}`;
+  }
+  excerpt = excerpt
+    .replace(/\s+/g, ' ')
+    .replace(/[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g, '[已隐藏]')
+    .replace(/\b(?:sk|pk|rk|ak)-[\w-]{8,}/gi, '[已隐藏]')
+    .replace(/\b[A-Za-z0-9_]{32,}\b|[A-Za-z0-9+/]{40,}={0,2}/g, '[已隐藏]')
+    .trim();
+  if (!excerpt) return undefined;
+  return excerpt.length > UPSTREAM_EXCERPT_MAX_CHARS
+    ? `${excerpt.slice(0, UPSTREAM_EXCERPT_MAX_CHARS).trimEnd()}…`
+    : excerpt;
+}
+
+/** Context overflow in the upstream's words, as Claude Code passes them on. */
+const CONTEXT_OVERFLOW_TEXT =
+  /prompt is too long|context (?:length|window)|maximum (?:context|prompt) length|exceeds? the maximum number of tokens|input is too long|too many (?:input )?tokens/i;
+
+function withUpstreamExcerpt(
+  notice: string,
+  text: string | null | undefined,
+): string {
+  const excerpt = upstreamErrorExcerpt(text);
+  return excerpt ? `${notice}\n上游返回：${excerpt}` : notice;
+}
+
 /** Failure classes as reported by the agent runner. */
 export type ProviderFailureClass = 'account' | 'transient' | 'config';
 
@@ -36,6 +102,8 @@ export type ProviderFailureClass = 'account' | 'transient' | 'config';
 export interface ProviderFailureClassification {
   readonly providerFailureClass?: ProviderFailureClass;
   readonly providerLivenessTimeout?: boolean;
+  /** What the upstream said, when the runner passed it on. */
+  readonly providerErrorText?: string;
 }
 
 /**
@@ -63,11 +131,19 @@ export function resolveTerminalProviderFailureNotice(
   output: ProviderFailureClassification,
 ): string | undefined {
   const failureClass = resolveProviderFailureClass(output);
-  if (failureClass === 'config') return PROVIDER_MODEL_CONFIG_USER_NOTICE;
+  const text = output.providerErrorText;
+  if (failureClass === 'config') {
+    if (text && CONTEXT_OVERFLOW_TEXT.test(text)) {
+      return withUpstreamExcerpt(PROVIDER_CONTEXT_OVERFLOW_USER_NOTICE, text);
+    }
+    return upstreamErrorExcerpt(text)
+      ? withUpstreamExcerpt(PROVIDER_REQUEST_REJECTED_USER_NOTICE, text)
+      : PROVIDER_MODEL_CONFIG_USER_NOTICE;
+  }
   if (failureClass !== 'transient') return undefined;
   return output.providerLivenessTimeout
     ? PROVIDER_LIVENESS_TIMEOUT_USER_NOTICE
-    : PROVIDER_TRANSIENT_FAILURE_USER_NOTICE;
+    : withUpstreamExcerpt(PROVIDER_TRANSIENT_FAILURE_USER_NOTICE, text);
 }
 
 export interface ProviderFailureHealth {

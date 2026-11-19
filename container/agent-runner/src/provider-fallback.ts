@@ -204,15 +204,37 @@ const TRANSIENT_PROVIDER_ASSISTANT_ERRORS = new Set<SDKAssistantMessageError>([
 ]);
 
 /**
- * `model_not_found` means the configured model name is not servable by this
- * endpoint. Every account in the pool would be asked for the same model, so
- * failover is guaranteed to fail the same way — and quarantining accounts for
- * it would empty the pool over a typo.
+ * The request cannot be served as sent: `model_not_found` means the model
+ * name is not servable by this endpoint, and `invalid_request` (or an
+ * `unknown` error with a rejecting HTTP status, upstreamErrorStatus) that the
+ * request itself was refused. Every account would be sent the same request,
+ * so failover is guaranteed to fail the same way, and quarantining accounts
+ * for it would empty the pool over a typo.
  */
 const CONFIG_PROVIDER_ASSISTANT_ERRORS = new Set<SDKAssistantMessageError>([
   'invalid_request',
   'model_not_found',
 ]);
+
+/**
+ * HTTP statuses that answer the request as sent: resending the same request
+ * gets the same answer, so it is not a transient failure.
+ */
+const REJECTED_REQUEST_STATUSES = new Set([400, 404, 413, 422]);
+
+/**
+ * The upstream's HTTP status in Claude Code's error text (`API Error: 400 …`,
+ * `API Error: Request rejected (429) · …`), if it names one.
+ */
+export function upstreamErrorStatus(
+  errorText: string | null | undefined,
+): number | undefined {
+  const match = /^\s*API Error:\s*(?:(\d{3})\b|[^\n(]*\((\d{3})\))/.exec(
+    errorText ?? '',
+  );
+  const status = Number(match?.[1] ?? match?.[2]);
+  return Number.isInteger(status) ? status : undefined;
+}
 
 /**
  * Third-party Anthropic-compatible endpoints can emit an AssistantMessage
@@ -226,10 +248,18 @@ const CONFIG_PROVIDER_ASSISTANT_ERRORS = new Set<SDKAssistantMessageError>([
  */
 export function classifyProviderAssistantError(
   error: SDKAssistantMessageError | (string & {}) | undefined,
+  errorText?: string | null,
 ): ProviderFailureClass | undefined {
   if (!error) return undefined;
   if (ACCOUNT_PROVIDER_ASSISTANT_ERRORS.has(error as SDKAssistantMessageError))
     return 'account';
+  // Claude Code labels an upstream's refusal of the request itself (a 400
+  // naming a field it does not take) `unknown`; replaying it is wasted.
+  if (
+    error === 'unknown' &&
+    REJECTED_REQUEST_STATUSES.has(upstreamErrorStatus(errorText) ?? 0)
+  )
+    return 'config';
   if (
     TRANSIENT_PROVIDER_ASSISTANT_ERRORS.has(error as SDKAssistantMessageError)
   )
@@ -265,8 +295,13 @@ export function classifyProviderAssistantError(
 export function resolveAssistantErrorAttemptBoundary(input: {
   error: SDKAssistantMessageError | (string & {}) | undefined;
   parentToolUseId: string | null | undefined;
+  /** What the upstream said (assistantMessageText of the message). */
+  errorText?: string | null;
 }): ProviderFailureClass | undefined {
-  const failureClass = classifyProviderAssistantError(input.error);
+  const failureClass = classifyProviderAssistantError(
+    input.error,
+    input.errorText,
+  );
   if (!failureClass) return undefined;
   if ((input.parentToolUseId ?? null) === null) return failureClass;
   return failureClass === 'account' ? 'account' : undefined;

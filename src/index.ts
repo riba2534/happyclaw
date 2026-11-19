@@ -138,6 +138,7 @@ import { resolveFeishuCliBoundAccountId } from './feishu-cli-runtime.js';
 import { isValidWorkspaceFolderName } from './workspace-folder.js';
 import {
   PROVIDER_FAILURE_USER_NOTICE,
+  PROVIDER_CONTEXT_OVERFLOW_USER_NOTICE,
   resolveProviderFailureClass,
 } from './provider-failure.js';
 import { isProviderQuotaControlOutput } from './provider-quota-observation.js';
@@ -12775,7 +12776,7 @@ async function processAgentConversation(
       await settleAgentDeterministicFailure(
         'context-overflow',
         'context_overflow',
-        message,
+        PROVIDER_CONTEXT_OVERFLOW_USER_NOTICE,
         message,
       );
       return false;

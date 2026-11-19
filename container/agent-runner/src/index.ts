@@ -3833,6 +3833,7 @@ async function runQueryAttempt(
         const assistantErrorClass = resolveAssistantErrorAttemptBoundary({
           error: assistantError,
           parentToolUseId: msgParentToolUseId,
+          errorText: assistantMessageText(message),
         });
         if (assistantErrorClass) {
           log(
@@ -5030,7 +5031,7 @@ async function main(): Promise<void> {
         );
 
         if (overflowRetryCount >= MAX_OVERFLOW_RETRIES) {
-          const errorMsg = `上下文溢出错误：已重试 ${MAX_OVERFLOW_RETRIES} 次仍失败。请联系管理员检查 CLAUDE.md 大小或减少会话历史。`;
+          const errorMsg = `the context still overflows after ${MAX_OVERFLOW_RETRIES} attempts`;
           log(errorMsg);
           writeOutput({
             status: 'error',
@@ -5041,10 +5042,9 @@ async function main(): Promise<void> {
           process.exit(1);
         }
 
-        // 未超过重试次数，等待后继续下一轮循环（会触发自动压缩）
-        log(
-          'Retrying query after context overflow (will trigger auto-compaction)...',
-        );
+        // Claude Code compacts on an overflow by itself and asks again; one
+        // that still reaches here may pass on a later attempt.
+        log('Retrying query after context overflow...');
         await new Promise((r) => setTimeout(r, 3000));
         continue;
       }

@@ -1,6 +1,7 @@
 /**
- * Enough for any upstream's own sentence about a failure; the host only
- * matches a gateway's wording in it and never shows it to users.
+ * Enough for any upstream's own sentence about a failure. The host matches a
+ * gateway's wording in it, and a terminal notice shows a cleaned excerpt of
+ * it (upstreamErrorExcerpt in src/provider-failure.ts).
  */
 export const PROVIDER_ERROR_TEXT_MAX_CHARS = 1000;
 

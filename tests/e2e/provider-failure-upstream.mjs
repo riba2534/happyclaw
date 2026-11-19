@@ -71,6 +71,14 @@ const SCENARIOS = [
     slow: false,
     note: 'unservable model name',
   },
+  // Claude Code labels a refused request `unknown`; replaying it gets the
+  // same 400 (2.1.328).
+  {
+    mode: 'http:400',
+    expect: 'config',
+    slow: false,
+    note: 'request refused as sent',
+  },
   {
     mode: 'hang',
     expect: 'transient',
@@ -187,9 +195,11 @@ function startStub() {
               ? 'rate_limit_error'
               : status === 404
                 ? 'not_found_error'
-                : status === 401
-                  ? 'authentication_error'
-                  : 'api_error';
+                : status === 400
+                  ? 'invalid_request_error'
+                  : status === 401
+                    ? 'authentication_error'
+                    : 'api_error';
         res.writeHead(status, { 'Content-Type': 'application/json' });
         return res.end(
           JSON.stringify({

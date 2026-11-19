@@ -9,6 +9,7 @@ import {
   scopeChannelJid,
 } from '../src/channel-address.js';
 import { resolveInputChannelReplySource } from '../src/channel-reply-source.js';
+import { PROVIDER_CONTEXT_OVERFLOW_USER_NOTICE } from '../src/provider-failure.js';
 import { channelTurnScope } from '../src/channel-turn-registry.js';
 import { getChannelType } from '../src/im-channel.js';
 import {
@@ -350,6 +351,7 @@ describe('processAgentConversation error exits (Assistant mode)', () => {
         ? parseContainerMemoryLimit(options.memoryLimit).limit
         : null,
       resolveOomLoopAction,
+      PROVIDER_CONTEXT_OVERFLOW_USER_NOTICE,
       setRouterState: db.setRouterState,
       deleteRouterState: db.deleteRouterState,
     });
@@ -410,7 +412,11 @@ describe('processAgentConversation error exits (Assistant mode)', () => {
     for (const [error, notice] of [
       ['context_budget_exceeded: 提示词过大', 'context_overflow:提示词过大'],
       ['prompt_plan_invalid: 计划无效', 'context_overflow:计划无效'],
-      ['context_overflow: 上下文太长', 'context_overflow:上下文太长'],
+      // The runner's reason is kept for the record; the user reads what to do.
+      [
+        'context_overflow: 上下文太长',
+        `context_overflow:${PROVIDER_CONTEXT_OVERFLOW_USER_NOTICE}`,
+      ],
     ] as const) {
       const lane = errorLane();
 
