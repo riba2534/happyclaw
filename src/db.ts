@@ -2631,7 +2631,7 @@ export function initDatabase(
   // v90 -> v91: Web Push subscriptions (web_push_subscriptions). The table is
   // new and additive, nothing is backfilled.
   initWebPushStore(db);
-  // v91 -> v92: second login factors (user_totp, user_recovery_codes). The
+  // v92 -> v93: second login factors (user_totp, user_recovery_codes). The
   // tables are new and additive, nothing is backfilled.
   initAuthFactorStore(db);
 

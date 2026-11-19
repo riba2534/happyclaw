@@ -105,11 +105,15 @@ describe('schema v92 automation model', () => {
   test('backs up the v91 database and adds the columns; old automations have no model', () => {
     process.env.HAPPYCLAW_MIGRATION_BACKUP_DIR = backupDir;
     db.initDatabase();
-    expect(db.CURRENT_SCHEMA_VERSION).toBe(92);
-    expect(db.getRouterState('schema_version')).toBe('92');
+    expect(db.CURRENT_SCHEMA_VERSION).toBeGreaterThanOrEqual(92);
+    expect(db.getRouterState('schema_version')).toBe(
+      String(db.CURRENT_SCHEMA_VERSION),
+    );
     const backupName = fs
       .readdirSync(backupDir)
-      .find((name) => name.startsWith('messages-v91-to-v92-'));
+      .find((name) =>
+        name.startsWith(`messages-v91-to-v${db.CURRENT_SCHEMA_VERSION}-`),
+      );
     expect(backupName).toBeDefined();
     const backup = new Database(path.join(backupDir, backupName!), {
       readonly: true,

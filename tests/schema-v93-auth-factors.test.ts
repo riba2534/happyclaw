@@ -4,7 +4,7 @@ import path from 'node:path';
 import Database from 'better-sqlite3';
 import { afterAll, beforeAll, describe, expect, test, vi } from 'vitest';
 
-const root = fs.mkdtempSync(path.join(os.tmpdir(), 'schema-v92-factors-'));
+const root = fs.mkdtempSync(path.join(os.tmpdir(), 'schema-v93-factors-'));
 const storeDir = path.join(root, 'store');
 const groupsDir = path.join(root, 'groups');
 const dataDir = path.join(root, 'data');
@@ -37,7 +37,7 @@ function tableNames(conn: Database.Database): string[] {
   ).map((row) => row.name);
 }
 
-/** Build a current database, then rewind it to the v91 shape on disk. */
+/** Build a current database, then rewind it to the v92 shape on disk. */
 beforeAll(() => {
   process.env.HAPPYCLAW_SKIP_MIGRATION_BACKUP = '1';
   try {
@@ -50,7 +50,7 @@ beforeAll(() => {
   legacy.exec('DROP TABLE user_totp; DROP TABLE user_recovery_codes;');
   legacy
     .prepare(
-      "UPDATE router_state SET value = '91' WHERE key = 'schema_version'",
+      "UPDATE router_state SET value = '92' WHERE key = 'schema_version'",
     )
     .run();
   legacy.close();
@@ -62,8 +62,8 @@ afterAll(() => {
   fs.rmSync(root, { recursive: true, force: true });
 });
 
-describe('schema v92 second login factors', () => {
-  test('backs up the v91 database and creates the tables', () => {
+describe('schema v93 second login factors', () => {
+  test('backs up the v92 database and creates the tables', () => {
     process.env.HAPPYCLAW_MIGRATION_BACKUP_DIR = backupDir;
     db.initDatabase();
     expect(db.getRouterState('schema_version')).toBe(
@@ -72,7 +72,7 @@ describe('schema v92 second login factors', () => {
     const backupName = fs
       .readdirSync(backupDir)
       .find((name) =>
-        name.startsWith(`messages-v91-to-v${db.CURRENT_SCHEMA_VERSION}-`),
+        name.startsWith(`messages-v92-to-v${db.CURRENT_SCHEMA_VERSION}-`),
       );
     expect(backupName).toBeDefined();
     const backup = new Database(path.join(backupDir, backupName!), {
