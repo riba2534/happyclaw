@@ -137,6 +137,7 @@ import { defaultToolSearchEnv, pinToolSearch } from './tool-search.js';
 import { pinMaxOutputTokens } from './max-output-pin.js';
 import {
   assistantMessageText,
+  isContextOverflowText,
   providerErrorText,
 } from './provider-error-text.js';
 import {
@@ -1030,17 +1031,18 @@ function resolveAgentBuilderEnabled(input: ContainerInput): boolean {
 }
 
 /**
- * 检测是否为上下文溢出错误
+ * A result that reports a failure rather than answering: the SDK flags it,
+ * or Claude Code wrote its own error text (`API Error: …`, `Prompt is too
+ * long …`). A normal answer may quote an upstream's overflow wording.
  */
-function isContextOverflowError(msg: string): boolean {
-  const patterns: RegExp[] = [
-    /prompt is too long/i,
-    /maximum context length/i,
-    /context.*too large/i,
-    /exceeds.*token limit/i,
-    /context window.*exceeded/i,
-  ];
-  return patterns.some((pattern) => pattern.test(msg));
+function isErrorShapedResult(
+  resultMsg: Record<string, unknown>,
+  textResult: string,
+): boolean {
+  return (
+    resultMsg.is_error === true ||
+    /^\s*(?:API Error\b|Prompt is too long\b)/i.test(textResult)
+  );
 }
 
 /**
@@ -3833,6 +3835,7 @@ async function runQueryAttempt(
         const assistantErrorClass = resolveAssistantErrorAttemptBoundary({
           error: assistantError,
           parentToolUseId: msgParentToolUseId,
+          errorText: assistantMessageText(message),
         });
         if (assistantErrorClass) {
           log(
@@ -4115,7 +4118,11 @@ async function runQueryAttempt(
         }
 
         // SDK 将某些 API 错误包装为 subtype=success 的 result（不抛异常）
-        if (textResult && isContextOverflowError(textResult)) {
+        if (
+          textResult &&
+          isErrorShapedResult(resultMsg, textResult) &&
+          isContextOverflowText(textResult)
+        ) {
           log(
             `Context overflow detected in result: ${textResult.slice(0, 100)}`,
           );
@@ -4466,7 +4473,7 @@ async function runQueryAttempt(
     }
 
     // 检测上下文溢出错误
-    if (isContextOverflowError(errorMessage)) {
+    if (isContextOverflowText(errorMessage)) {
       log(`Context overflow detected: ${errorMessage}`);
       // ── 发射已累积的部分回复，避免用户已看到的流式内容丢失 ──
       const partialText = processor.getFullText();
@@ -4904,7 +4911,9 @@ async function main(): Promise<void> {
   // Query loop: run query -> wait for IPC message -> run new query -> repeat
   let resumeAt: string | undefined;
   let overflowRetryCount = 0;
-  const MAX_OVERFLOW_RETRIES = 3;
+  // Claude Code has compacted and asked again before an overflow gets here,
+  // so one more attempt only covers a passing failure of that compaction.
+  const MAX_OVERFLOW_RETRIES = 2;
   let consecutiveCompactions = 0;
   const MAX_CONSECUTIVE_COMPACTIONS = 3;
   // 暂存的会话历史上下文：当 auto-continue 阶段发生 sessionResumeFailed 时，
@@ -5030,7 +5039,7 @@ async function main(): Promise<void> {
         );
 
         if (overflowRetryCount >= MAX_OVERFLOW_RETRIES) {
-          const errorMsg = `上下文溢出错误：已重试 ${MAX_OVERFLOW_RETRIES} 次仍失败。请联系管理员检查 CLAUDE.md 大小或减少会话历史。`;
+          const errorMsg = `the context still overflows after ${MAX_OVERFLOW_RETRIES} attempts`;
           log(errorMsg);
           writeOutput({
             status: 'error',
@@ -5041,10 +5050,9 @@ async function main(): Promise<void> {
           process.exit(1);
         }
 
-        // 未超过重试次数，等待后继续下一轮循环（会触发自动压缩）
-        log(
-          'Retrying query after context overflow (will trigger auto-compaction)...',
-        );
+        // Claude Code compacts on an overflow by itself and asks again; one
+        // that still reaches here may pass on a later attempt.
+        log('Retrying query after context overflow...');
         await new Promise((r) => setTimeout(r, 3000));
         continue;
       }

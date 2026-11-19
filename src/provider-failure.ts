@@ -29,6 +29,102 @@ export const PROVIDER_MODEL_CONFIG_USER_NOTICE =
 export const CODEX_REAUTH_REQUIRED_USER_NOTICE =
   '⚠️ ChatGPT 订阅登录已失效，本次请求未被执行。请管理员在「模型配置」中重新登录 ChatGPT 后再发送。';
 
+/**
+ * A request the upstream refused as sent (a config failure that names its
+ * reason): resending it is pointless, so the user has to change something.
+ */
+export const PROVIDER_REQUEST_REJECTED_USER_NOTICE =
+  '⚠️ 模型服务拒绝了这次请求，本次请求未被执行。原样重试会得到同样的结果，请根据上游的说明调整连接、模型或设置后再发送。';
+
+/**
+ * A turn that still overflows the model's window after Claude Code compacted
+ * the conversation: what is left is usually one input or attachment too
+ * large for the model.
+ */
+export const PROVIDER_CONTEXT_OVERFLOW_USER_NOTICE =
+  '⚠️ 这次请求超过了模型的上下文上限，自动压缩之后仍然放不下。多半是这条输入或附件太大，请缩短后重新发送，或发送 /fresh 开一个新窗口；如果每次都这样，请检查工作区的 CLAUDE.md、Skills 和 MCP 是否过大。';
+
+const UPSTREAM_EXCERPT_MAX_CHARS = 240;
+
+/**
+ * The upstream's own words about a failure as a notice may show them: the
+ * message of a JSON error body if there is one, on one line, with addresses,
+ * keys (`sk-…`, `AIza…`, `AKIA…`, Bearer and `?key=` values), long hex
+ * strings and JWTs blanked, cut to a few hundred characters. Field names and
+ * model paths stay: they are what the user has to act on. The notice also
+ * reaches IM groups, so it carries no more of the upstream's answer than that.
+ */
+export function upstreamErrorExcerpt(
+  text: string | null | undefined,
+): string | undefined {
+  let excerpt = text?.trim().replace(/^API Error:\s*/i, '');
+  if (!excerpt) return undefined;
+  const messages = [
+    ...excerpt.matchAll(/"message"\s*:\s*"((?:[^"\\]|\\.)*)"/g),
+  ];
+  const inner = messages.at(-1)?.[1];
+  if (inner) {
+    const status = /^\d{3}\b/.exec(excerpt)?.[0];
+    try {
+      excerpt = JSON.parse(`"${inner}"`) as string;
+    } catch {
+      excerpt = inner;
+    }
+    if (status && !excerpt.startsWith(status)) excerpt = `${status} ${excerpt}`;
+  }
+  excerpt = excerpt
+    .replace(/\s+/g, ' ')
+    .replace(/[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g, '[已隐藏]')
+    .replace(/\b(?:sk|pk|rk|ak)-[\w-]{8,}/gi, '[已隐藏]')
+    .replace(/\bAIza[\w-]{30,}/g, '[已隐藏]')
+    .replace(/\bAKIA[0-9A-Z]{16}\b/g, '[已隐藏]')
+    .replace(/\b(Bearer\s+)[\w.~+/-]+=*/gi, '$1[已隐藏]')
+    .replace(
+      /([?&](?:key|api_key|apikey|token|access_token)=)[^&\s"']+/gi,
+      '$1[已隐藏]',
+    )
+    .replace(/\beyJ[\w-]+\.[\w-]+\.[\w-]+/g, '[已隐藏]')
+    .replace(/\b[0-9a-f]{32,}\b/gi, '[已隐藏]')
+    .trim();
+  if (!excerpt) return undefined;
+  const chars = Array.from(excerpt);
+  return chars.length > UPSTREAM_EXCERPT_MAX_CHARS
+    ? `${chars.slice(0, UPSTREAM_EXCERPT_MAX_CHARS).join('').trimEnd()}…`
+    : excerpt;
+}
+
+/**
+ * Context overflow in the upstream's words, as Claude Code passes them on.
+ * Kept in step with the Runner's isContextOverflowText
+ * (container/agent-runner/src/provider-error-text.ts); a shared table of
+ * wordings tests both.
+ */
+export function isContextOverflowText(
+  text: string | null | undefined,
+): boolean {
+  return CONTEXT_OVERFLOW_PATTERNS.some((pattern) => pattern.test(text ?? ''));
+}
+
+const CONTEXT_OVERFLOW_PATTERNS: readonly RegExp[] = [
+  /prompt is too long/i,
+  /maximum (?:context|prompt) length/i,
+  /context[_ ]length[_ ]exceeded/i,
+  /context window.*exceeded/i,
+  /exceeds? the context window/i,
+  /context.*too large/i,
+  /exceeds.*token limit/i,
+  /exceeds? the maximum number of tokens/i,
+  /input is too long/i,
+  /too many (?:input )?tokens/i,
+];
+
+function withUpstreamExcerpt(
+  notice: string,
+  excerpt: string | undefined,
+): string {
+  return excerpt ? `${notice}\n上游返回：${excerpt}` : notice;
+}
+
 /** Failure classes as reported by the agent runner. */
 export type ProviderFailureClass = 'account' | 'transient' | 'config';
 
@@ -36,6 +132,8 @@ export type ProviderFailureClass = 'account' | 'transient' | 'config';
 export interface ProviderFailureClassification {
   readonly providerFailureClass?: ProviderFailureClass;
   readonly providerLivenessTimeout?: boolean;
+  /** What the upstream said, when the runner passed it on. */
+  readonly providerErrorText?: string;
 }
 
 /**
@@ -63,11 +161,42 @@ export function resolveTerminalProviderFailureNotice(
   output: ProviderFailureClassification,
 ): string | undefined {
   const failureClass = resolveProviderFailureClass(output);
-  if (failureClass === 'config') return PROVIDER_MODEL_CONFIG_USER_NOTICE;
+  const text = output.providerErrorText;
+  const excerpt = upstreamErrorExcerpt(text);
+  if (failureClass === 'config') {
+    if (isContextOverflowText(text)) {
+      return withUpstreamExcerpt(
+        PROVIDER_CONTEXT_OVERFLOW_USER_NOTICE,
+        excerpt,
+      );
+    }
+    return excerpt
+      ? withUpstreamExcerpt(PROVIDER_REQUEST_REJECTED_USER_NOTICE, excerpt)
+      : PROVIDER_MODEL_CONFIG_USER_NOTICE;
+  }
   if (failureClass !== 'transient') return undefined;
   return output.providerLivenessTimeout
     ? PROVIDER_LIVENESS_TIMEOUT_USER_NOTICE
-    : PROVIDER_TRANSIENT_FAILURE_USER_NOTICE;
+    : withUpstreamExcerpt(PROVIDER_TRANSIENT_FAILURE_USER_NOTICE, excerpt);
+}
+
+/**
+ * The notice of an account failure that ends the input: the runner's own
+ * notice (an upstream limit text) when it has one, else the generic notice
+ * with the upstream's words, which name the real cause (a 403 for a model
+ * the subscription does not include reads as a quota wall otherwise).
+ */
+export function accountFailureNotice(output: {
+  readonly providerFailureNotice?: string;
+  readonly providerErrorText?: string;
+}): string {
+  return (
+    output.providerFailureNotice ||
+    withUpstreamExcerpt(
+      PROVIDER_FAILURE_USER_NOTICE,
+      upstreamErrorExcerpt(output.providerErrorText),
+    )
+  );
 }
 
 export interface ProviderFailureHealth {

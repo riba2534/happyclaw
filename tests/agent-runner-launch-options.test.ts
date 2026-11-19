@@ -181,6 +181,12 @@ describe('provider error text', () => {
       /publishProviderFailure\(\{\s*error: 'rate_limit',\s*failureClass: 'account',\s*errorText: textResult,\s*\}\)/,
     );
     // The liveness watchdog and the rate-limit events have no upstream words.
-    expect(runner.match(/^\s+errorText: /gm)).toHaveLength(2);
+    expect(
+      runner.match(/publishProviderFailure\(\{[^}]*?\n\s+errorText: /g),
+    ).toHaveLength(2);
+    // The classifier reads the same words to tell a refused request apart.
+    expect(runner).toMatch(
+      /resolveAssistantErrorAttemptBoundary\(\{\s*error: assistantError,\s*parentToolUseId: msgParentToolUseId,\s*errorText: assistantMessageText\(message\),\s*\}\)/,
+    );
   });
 });

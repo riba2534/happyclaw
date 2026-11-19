@@ -137,7 +137,8 @@ import { parseStuckRunnerForceRestartMs } from './stuck-runner-config.js';
 import { resolveFeishuCliBoundAccountId } from './feishu-cli-runtime.js';
 import { isValidWorkspaceFolderName } from './workspace-folder.js';
 import {
-  PROVIDER_FAILURE_USER_NOTICE,
+  accountFailureNotice,
+  PROVIDER_CONTEXT_OVERFLOW_USER_NOTICE,
   resolveProviderFailureClass,
 } from './provider-failure.js';
 import { isProviderQuotaControlOutput } from './provider-quota-observation.js';
@@ -12775,8 +12776,8 @@ async function processAgentConversation(
       await settleAgentDeterministicFailure(
         'context-overflow',
         'context_overflow',
-        message,
-        message,
+        PROVIDER_CONTEXT_OVERFLOW_USER_NOTICE,
+        PROVIDER_CONTEXT_OVERFLOW_USER_NOTICE,
       );
       return false;
     }
@@ -13560,8 +13561,7 @@ async function processAgentConversation(
         resetIdleTimer();
         return;
       }
-      output.result =
-        output.providerFailureNotice || PROVIDER_FAILURE_USER_NOTICE;
+      output.result = accountFailureNotice(output);
       automationTurns.settle(providerFailureInputId, {
         status: 'failed',
         error: output.result,

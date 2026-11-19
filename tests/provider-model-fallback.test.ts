@@ -9,6 +9,7 @@ import {
   ProviderFallbackModelState,
   ProviderFallbackTurnLedger,
   resolveAssistantErrorAttemptBoundary,
+  upstreamErrorStatus,
 } from '../container/agent-runner/src/provider-fallback.js';
 import {
   resolveClaudeProviderRuntime,
@@ -164,6 +165,67 @@ describe('provider model fallback lifecycle', () => {
       expect(classifyProviderAssistantError(error)).toBeDefined();
     }
     expect(classifyProviderAssistantError(undefined)).toBeUndefined();
+  });
+
+  // 2026-11-19: magpie's 400 for deferred tools came through as `unknown`
+  // and was replayed as an overload.
+  test('an unknown error whose upstream refused the request is not transient', () => {
+    for (const text of [
+      'API Error: 400 tools.defer_loading: deferred tools are not loaded in place',
+      'API Error: 404 no such route',
+      'API Error: Request rejected (413) · request entity too large',
+      'API Error: 422 Unprocessable Entity',
+    ]) {
+      expect(classifyProviderAssistantError('unknown', text), text).toBe(
+        'config',
+      );
+    }
+    for (const text of [
+      undefined,
+      'API Error: 429 Too Many Requests',
+      'API Error: 408 Request Timeout',
+      'API Error: 503 Service Unavailable',
+      'Connection error.',
+    ]) {
+      expect(classifyProviderAssistantError('unknown', text), text).toBe(
+        'transient',
+      );
+    }
+    // Only Claude Code's own `unknown` is reread; a labelled 5xx stays one.
+    expect(
+      classifyProviderAssistantError('server_error', 'API Error: 400 odd'),
+    ).toBe('transient');
+    // A sub-agent's refused request stays local to it, as before.
+    expect(
+      resolveAssistantErrorAttemptBoundary({
+        error: 'unknown',
+        parentToolUseId: 'toolu_sub',
+        errorText: 'API Error: 400 bad field',
+      }),
+    ).toBeUndefined();
+    expect(
+      resolveAssistantErrorAttemptBoundary({
+        error: 'unknown',
+        parentToolUseId: null,
+        errorText: 'API Error: 400 bad field',
+      }),
+    ).toBe('config');
+  });
+
+  test("upstreamErrorStatus reads both of Claude Code's shapes", () => {
+    expect(upstreamErrorStatus('API Error: 400 bad')).toBe(400);
+    expect(
+      upstreamErrorStatus('API Error: Request rejected (429) · usage limit'),
+    ).toBe(429);
+    expect(upstreamErrorStatus('API Error (claude-x): 400 bad')).toBe(400);
+    expect(
+      upstreamErrorStatus('API Error: Connection error (cause) (400)'),
+    ).toBe(400);
+    expect(upstreamErrorStatus('API Error: 128000 is too many')).toBe(
+      undefined,
+    );
+    expect(upstreamErrorStatus('Prompt is too long')).toBeUndefined();
+    expect(upstreamErrorStatus(undefined)).toBeUndefined();
   });
 
   test('only a verdict on the profile is classified as an account failure', () => {

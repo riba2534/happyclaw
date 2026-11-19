@@ -1,6 +1,7 @@
 /**
- * Enough for any upstream's own sentence about a failure; the host only
- * matches a gateway's wording in it and never shows it to users.
+ * Enough for any upstream's own sentence about a failure. The host matches a
+ * gateway's wording in it, and a terminal notice shows a cleaned excerpt of
+ * it (upstreamErrorExcerpt in src/provider-failure.ts).
  */
 export const PROVIDER_ERROR_TEXT_MAX_CHARS = 1000;
 
@@ -38,3 +39,27 @@ export function assistantMessageText(message: unknown): string | undefined {
   );
   return texts.length > 0 ? texts.join('\n') : undefined;
 }
+
+/**
+ * Context overflow in the upstream's words. Kept in step with the host's
+ * isContextOverflowText (src/provider-failure.ts); a shared table of
+ * wordings tests both.
+ */
+export function isContextOverflowText(
+  text: string | null | undefined,
+): boolean {
+  return CONTEXT_OVERFLOW_PATTERNS.some((pattern) => pattern.test(text ?? ''));
+}
+
+const CONTEXT_OVERFLOW_PATTERNS: readonly RegExp[] = [
+  /prompt is too long/i,
+  /maximum (?:context|prompt) length/i,
+  /context[_ ]length[_ ]exceeded/i,
+  /context window.*exceeded/i,
+  /exceeds? the context window/i,
+  /context.*too large/i,
+  /exceeds.*token limit/i,
+  /exceeds? the maximum number of tokens/i,
+  /input is too long/i,
+  /too many (?:input )?tokens/i,
+];

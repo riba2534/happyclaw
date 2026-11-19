@@ -52,6 +52,8 @@ const MODEL = 'stub-model';
 // Measured on Claude Code 2.1.238 and unchanged on 2.1.280. `expect` is the
 // providerFailureClass the runner must report; null means the turn has to
 // succeed normally.
+const QUOTED_OVERFLOW = 'Input is too long for requested model.';
+
 const SCENARIOS = [
   { mode: 'ok', expect: null, slow: false, note: 'healthy turn' },
   // magpie answers deferred tools with this 400 on a route that cannot load
@@ -70,6 +72,23 @@ const SCENARIOS = [
     expect: 'config',
     slow: false,
     note: 'unservable model name',
+  },
+  // Claude Code labels a refused request `unknown`; replaying it gets the
+  // same 400 (2.1.328).
+  // A normal answer may quote an upstream's overflow wording; only an
+  // error-shaped result is read as an overflow.
+  {
+    mode: 'quote-overflow',
+    expect: null,
+    slow: false,
+    answer: QUOTED_OVERFLOW,
+    note: 'answer quoting overflow wording',
+  },
+  {
+    mode: 'http:400',
+    expect: 'config',
+    slow: false,
+    note: 'request refused as sent',
   },
   {
     mode: 'hang',
@@ -187,9 +206,11 @@ function startStub() {
               ? 'rate_limit_error'
               : status === 404
                 ? 'not_found_error'
-                : status === 401
-                  ? 'authentication_error'
-                  : 'api_error';
+                : status === 400
+                  ? 'invalid_request_error'
+                  : status === 401
+                    ? 'authentication_error'
+                    : 'api_error';
         res.writeHead(status, { 'Content-Type': 'application/json' });
         return res.end(
           JSON.stringify({
@@ -203,7 +224,9 @@ function startStub() {
         'Cache-Control': 'no-cache',
         Connection: 'keep-alive',
       });
-      for (const e of okEvents('STUB_OK'))
+      for (const e of okEvents(
+        mode === 'quote-overflow' ? QUOTED_OVERFLOW : 'STUB_OK',
+      ))
         res.write(`event: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`);
       res.end();
     });
@@ -302,7 +325,7 @@ async function runScenario({ mode, port, timeoutMs, tmp, toolSearch }) {
     elapsedSec: Math.round((Date.now() - startedAt) / 1000),
     actual: failure ? (failure.providerFailureClass ?? '(unclassified)') : null,
     livenessTimeout: failure?.providerLivenessTimeout === true,
-    answer: answered?.result?.slice(0, 40),
+    answer: answered?.result?.slice(0, 60),
     stderr: stderr.slice(-2000),
   };
 }
@@ -348,7 +371,7 @@ for (const scenario of selected) {
   const refused = stub.refusedDeferred();
   const answered =
     scenario.expect === null
-      ? r.actual === null && r.answer === 'STUB_OK'
+      ? r.actual === null && r.answer === (scenario.answer ?? 'STUB_OK')
       : r.actual === scenario.expect;
   const ok = answered && (!scenario.expectRefusals || refused > 0);
   if (!ok) failed += 1;

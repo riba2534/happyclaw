@@ -474,6 +474,7 @@ describe('close handlers — provider failure classification carryover', () => {
       providerRateLimitModel: 'claude-fable-5',
       providerRateLimitResetsAt: resetsAt,
       providerFailureNotice: 'model tier exhausted',
+      providerErrorText: 'API Error: 429 model tier exhausted',
     });
     const resolved: ContainerOutput[] = [];
 
@@ -505,6 +506,8 @@ describe('close handlers — provider failure classification carryover', () => {
       providerRateLimitModel: 'claude-fable-5',
       providerRateLimitResetsAt: resetsAt,
       providerFailureNotice: 'model tier exhausted',
+      // The terminal notice is resolved again on this output and quotes it.
+      providerErrorText: 'API Error: 429 model tier exhausted',
     });
   });
 
