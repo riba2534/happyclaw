@@ -2046,12 +2046,10 @@ export function fallbackLaunchModel(
 }
 
 /**
- * ContainerInput.toolSearch for a launch on `providerId`: true when the
- * connection turns Claude Code's tool search on, false when a connection on
- * its own endpoint (a third-party one or the ChatGPT gateway) has it off,
- * since Claude Code 2.1.304 and later turn it on there by themselves.
- * Anthropic's own API and a launch on the Workspace's own environment
- * follow Claude Code's settings.
+ * ContainerInput.toolSearch for a launch on `providerId` (see pinToolSearch):
+ * the connection's choice on its own endpoint (a third-party one or the
+ * ChatGPT gateway), else only an explicit on. Anthropic's own API and a
+ * launch on the Workspace's own environment follow Claude Code's settings.
  */
 export function resolveProviderToolSearch(
   providerId: string | null,

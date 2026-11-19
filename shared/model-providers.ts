@@ -100,9 +100,8 @@ const ONE_MILLION_SUFFIX = '[1m]';
 const ONE_MILLION_SUFFIX_RE = /(?:\[1m\])+$/i;
 
 /**
- * The window of a model Claude Code does not recognize, without `[1m]`: what
- * Claude Code assumed up to 2.1.322, and what HappyClaw keeps it at with
- * CLAUDE_CODE_DISABLE_1M_CONTEXT (keepsTwoHundredKWindow).
+ * The window of a model Claude Code does not recognize, without `[1m]`
+ * (kept on 2.1.323+ by keepsTwoHundredKWindow).
  */
 export const CLAUDE_CODE_DEFAULT_CONTEXT = 200_000;
 /** The window `[1m]` gives a model. */
@@ -497,15 +496,9 @@ export function autoCompactWindowFor(
 
 /**
  * Whether a third-party launch of `launchModel` (as launchModelName names it)
- * needs CLAUDE_CODE_DISABLE_1M_CONTEXT=1. Claude Code 2.1.323 and later
- * assume 1M for a model they do not recognize, and on a 1M window they do
- * not compact at a threshold: they wait for the endpoint's "prompt is too
- * long", which other vendors word differently, so a full session fails every
- * turn. Claude Code before 2.1.323 assumed 200K and compacted in time. So
- * the 200K ceiling stays for a model without `[1m]` that declares its window
- * (200K or less) or whose name is not a Claude model's; a Claude model that
- * declares none keeps the window Claude Code knows for it, and a `[1m]`
- * launch keeps 1M.
+ * needs CLAUDE_CODE_DISABLE_1M_CONTEXT=1 to keep the 200K window Claude Code
+ * assumed before 2.1.323 (see CLAUDE.md §5): a model without `[1m]` that
+ * declares its window or that Claude Code does not know by name.
  */
 export function keepsTwoHundredKWindow(
   launchModel: string,
@@ -513,7 +506,11 @@ export function keepsTwoHundredKWindow(
 ): boolean {
   const { model, oneMillion } = splitOneMillionSuffix(launchModel);
   if (!model || oneMillion) return false;
-  return !!contextWindow || !/claude/i.test(model);
+  if (contextWindow) return true;
+  return (
+    !/claude/i.test(model) &&
+    !Object.hasOwn(CLAUDE_CODE_ALIASES, model.toLowerCase())
+  );
 }
 
 /** Keys the launch derives from the models and roles; not free env. */
@@ -566,7 +563,9 @@ export function buildConnectionModelEnv(
   const roles = input.roles ?? {};
   const named = (id: string | undefined): string | undefined =>
     id ? launchModelName(id, windowOf(input.models, id)) : undefined;
-  const current = named(input.model.trim() || undefined);
+  const model = input.model.trim();
+  const declared = model ? windowOf(input.models, model) : null;
+  const current = model ? launchModelName(model, declared) : undefined;
   if (current) env.ANTHROPIC_MODEL = current;
   const opus = named(roles.opus) ?? current;
   const sonnet = named(roles.sonnet) ?? current;
@@ -577,7 +576,6 @@ export function buildConnectionModelEnv(
   if (haiku) env.ANTHROPIC_DEFAULT_HAIKU_MODEL = haiku;
   if (subagent) env.CLAUDE_CODE_SUBAGENT_MODEL = subagent;
   if (current) {
-    const declared = windowOf(input.models, input.model);
     const window = autoCompactWindowFor(declared);
     if (window) env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = String(window);
     if (keepsTwoHundredKWindow(current, declared)) {

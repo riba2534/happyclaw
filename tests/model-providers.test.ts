@@ -529,9 +529,8 @@ describe('connection model env', () => {
     });
   });
 
-  // Claude Code 2.1.323+ assumes 1M for a model it does not recognize and
-  // then only compacts on the endpoint's "prompt is too long".
-  test('a launch without [1m] keeps the 200K ceiling unless Claude knows the model', () => {
+  // Claude Code 2.1.323+ assumes 1M for a model it does not recognize.
+  test('a launch without [1m] keeps the 200K ceiling next to its compact window', () => {
     expect(buildConnectionModelEnv({ model: 'small', models })).toMatchObject({
       CLAUDE_CODE_AUTO_COMPACT_WINDOW: '128000',
       CLAUDE_CODE_DISABLE_1M_CONTEXT: '1',
@@ -539,15 +538,6 @@ describe('connection model env', () => {
     expect(
       buildConnectionModelEnv({ model: 'big', models }),
     ).not.toHaveProperty('CLAUDE_CODE_DISABLE_1M_CONTEXT');
-    expect(
-      buildConnectionModelEnv({ model: 'claude-opus-5-5', models: [] }),
-    ).not.toHaveProperty('CLAUDE_CODE_DISABLE_1M_CONTEXT');
-    expect(
-      buildConnectionModelEnv({
-        model: 'claude-opus-5-5',
-        models: [{ id: 'claude-opus-5-5', contextWindow: 200_000 }],
-      }),
-    ).toMatchObject({ CLAUDE_CODE_DISABLE_1M_CONTEXT: '1' });
   });
 
   test('keepsTwoHundredKWindow', () => {
@@ -557,6 +547,7 @@ describe('connection model env', () => {
     expect(keepsTwoHundredKWindow('anthropic/claude-opus-5-5', null)).toBe(
       false,
     );
+    expect(keepsTwoHundredKWindow('opus', null)).toBe(false);
     expect(keepsTwoHundredKWindow('claude-opus-5-5', 200_000)).toBe(true);
     expect(keepsTwoHundredKWindow('', null)).toBe(false);
   });

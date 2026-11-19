@@ -62,6 +62,7 @@ const SCENARIOS = [
     expect: null,
     slow: false,
     toolSearch: true,
+    expectRefusals: true,
     note: 'deferred tools refused, sent again in full',
   },
   {
@@ -281,7 +282,7 @@ async function runScenario({ mode, port, timeoutMs, tmp, toolSearch }) {
       isHome: false,
       isAdminHome: false,
       turnId: `stub-${mode.replace(/[^a-z0-9]/gi, '-')}`,
-      ...(toolSearch ? { toolSearch: true } : {}),
+      toolSearch,
     }),
   );
 
@@ -345,17 +346,17 @@ for (const scenario of selected) {
   });
   // A refusal scenario that never saw a deferred tool proves nothing.
   const refused = stub.refusedDeferred();
-  const ok =
-    (scenario.expect === null
+  const answered =
+    scenario.expect === null
       ? r.actual === null && r.answer === 'STUB_OK'
-      : r.actual === scenario.expect) &&
-    (scenario.mode !== 'refuse-deferred' || refused > 0);
+      : r.actual === scenario.expect;
+  const ok = answered && (!scenario.expectRefusals || refused > 0);
   if (!ok) failed += 1;
   const detail =
     (scenario.expect === null
       ? `answer=${JSON.stringify(r.answer)}`
       : `class=${r.actual}${r.livenessTimeout ? ' +livenessTimeout' : ''}`) +
-    (scenario.mode === 'refuse-deferred' ? ` refused=${refused}` : '');
+    (scenario.expectRefusals ? ` refused=${refused}` : '');
   console.log(
     `${ok ? 'PASS' : 'FAIL'}  ${scenario.mode.padEnd(12)} ${String(r.elapsedSec).padStart(3)}s  ` +
       `expect=${scenario.expect ?? 'no failure'}  ${detail}  (${scenario.note})`,
