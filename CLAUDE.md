@@ -798,19 +798,22 @@ Channel Reliability 的 Inbox/Turn/Outbox/Card 表由
 - Cookie 会话使用 HMAC 签名，密钥来自环境变量、持久文件或首次自动生成。
 - 二次验证（TOTP，`src/totp.ts`、`src/auth-mfa.ts`）：开启后密码正确只换来一个内存中的
   challenge（5 分钟、5 次、单次使用），`POST /api/auth/login/2fa` 交验证码或恢复码后才下发会话，
-  失败与密码失败共用登录限流；发 challenge 时不清除已有的失败计数，第二步成功才清除。同一步长的
+  失败与密码失败共用登录限流；发 challenge 时不清除已有的失败计数，第二步成功才清除。challenge
+  绑定发出时的密码与二次验证设置，改密码、关闭或重置二次验证、停用或删除账号后即失效。同一步长的
   验证码只收一次。密钥用 `claude-provider.key` 加密存放，打不开时返回 `MFA_SECRET_UNREADABLE`；
   恢复码只存逐条加盐的哈希，不依赖密钥（`src/auth-factor-store.ts`）。开启需要当前密码，开启后
   注销其他会话。丢失验证器由有 `manage_users` 的人在用户管理里重置；唯一管理员的应急办法见
   `DEPLOYMENT.md`。
 - 登录后重新核对身份（改密码、开关二次验证、添加和删除通行密钥）用 `routes/auth.ts` 的
   `checkCurrentPassword`、`checkAccountCode`、`reauthenticate`：先占一次登录限流计数再校验，
-  错误返回 400 并带 `code`（不是 401）。
+  错误返回 400 并带 `code`（不是 401）；核对通过只退还计数，不清除已有的失败。管理员在用户管理里
+  改自己的密码同样要当前密码。
 - 通行密钥（`src/passkeys.ts`）：无用户名登录，成功即下发会话、视同已过二次验证；访客不能用。
   添加需要当前密码，开了二次验证还要验证码。origin 取请求的 `Origin` 头，只接受与 `Host` 同源、
   localhost 或 `CORS_ALLOWED_ORIGINS` 列出的 HTTPS 地址，IP 地址不能作 RP ID；RP ID 随凭据保存，
-  换了主机名的凭据不被接受。登录 challenge 每个客户端最多 50 个。改密码和管理员重置二次验证都
-  不删除通行密钥，管理员用 `DELETE /api/admin/users/:id/passkeys` 撤销；本人删除需要当前密码。
+  换了主机名的凭据不被接受。登录与注册 challenge 分开存放，登录 challenge 每个客户端最多 50 个
+  （分不出客户端的共用一个名额）。改密码和管理员重置二次验证都不删除通行密钥，管理员用
+  `DELETE /api/admin/users/:id/passkeys` 撤销（连同进行中的注册）；本人删除需要当前密码。
 - `canAccessGroup`、`canModifyGroup` 和 `canDeleteGroup` 不提供 admin 全局旁路；
   工作区和渠道资源按 `created_by` 隔离。
 - Host 工作区额外要求 admin 角色。
