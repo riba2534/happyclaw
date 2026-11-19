@@ -281,6 +281,15 @@ export interface UsageProgress {
   streamMs: number;
 }
 
+function addGeneration(
+  target: StreamGeneration,
+  extra: StreamGeneration,
+): void {
+  target.streamOutputTokens =
+    (target.streamOutputTokens ?? 0) + (extra.streamOutputTokens ?? 0);
+  target.streamMs = (target.streamMs ?? 0) + (extra.streamMs ?? 0);
+}
+
 function emptyProgress(): UsageProgress {
   return {
     calls: 0,
@@ -360,6 +369,8 @@ export class AssistantUsageCollector {
     string,
     { startedAt: number; stoppedAt?: number }
   >();
+  /** Generation of children settled to nothing; see foldCarriedGeneration. */
+  private carriedGeneration: StreamGeneration | undefined;
 
   private progress = emptyProgress();
   private readonly progressIds = new Set<string>();
@@ -446,6 +457,17 @@ export class AssistantUsageCollector {
     return streamMs > 0 && tokens.outputTokens > 0
       ? { streamOutputTokens: tokens.outputTokens, streamMs }
       : {};
+  }
+
+  /**
+   * A child whose tokens a cumulative result already billed settles to no
+   * event, but its generation time still belongs to the reply. Add it to the
+   * next usage event emitted.
+   */
+  foldCarriedGeneration(event: StreamGeneration): void {
+    if (!this.carriedGeneration) return;
+    addGeneration(event, this.carriedGeneration);
+    this.carriedGeneration = undefined;
   }
 
   private collectContent(sdkMessage: Record<string, unknown>): void {
@@ -751,8 +773,11 @@ export class AssistantUsageCollector {
     }
 
     if (child && (currentResidual || this.childResiduals.length)) {
-      if (this.deductChildResiduals(entry.id, root, currentResidual))
+      if (this.deductChildResiduals(entry.id, root, currentResidual)) {
+        if (generation.streamMs)
+          addGeneration((this.carriedGeneration ??= {}), generation);
         return undefined;
+      }
       Object.assign(modelUsage[entry.model], root);
     }
 

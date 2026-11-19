@@ -491,6 +491,55 @@ describe('Codex usage at SDK result boundaries', () => {
     },
   );
 
+  test('a child already billed by a cumulative result keeps its generation speed', () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      const { collector, child, flush } = usageAtResult();
+      child('sub', { input_tokens: 15 });
+      // The SDK bills the child before its own usage settles.
+      expect(flush({ [AUX]: tokens(15, 40) })).toMatchObject([
+        { inputTokens: 15, outputTokens: 40 },
+      ]);
+      const parent_tool_use_id = 'tool-sub';
+      vi.setSystemTime(1_000);
+      collector.observeStreamEvent({
+        type: 'stream_event',
+        parent_tool_use_id,
+        event: {
+          type: 'message_start',
+          message: { id: 'sub', usage: { input_tokens: 15 } },
+        },
+      });
+      vi.setSystemTime(3_000);
+      collector.observeStreamEvent({
+        type: 'stream_event',
+        parent_tool_use_id,
+        event: {
+          type: 'message_delta',
+          delta: { stop_reason: 'end_turn' },
+          usage: { input_tokens: 15, output_tokens: 40 },
+        },
+      });
+      collector.ingest(
+        assistant('main', { input_tokens: 100, output_tokens: 10 }, true),
+      );
+      const events = flush({
+        [AUX]: tokens(15, 40),
+        [MODEL]: tokens(100, 10),
+      });
+      // The child settles to nothing; its speed rides on the reply's event.
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({
+        eventId: 'claude-code:main',
+        inputTokens: 100,
+        streamOutputTokens: 40,
+        streamMs: 2_000,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   test('a residual is shared once by the waiting children and cannot pay for a later child', () => {
     const { child, flush, reconciler } = usageAtResult();
     child('a', { input_tokens: 100 });

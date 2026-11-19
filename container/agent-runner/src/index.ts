@@ -2395,6 +2395,8 @@ async function runQueryAttempt(
         ...reconciled.residual,
       });
     }
+    const lastEvent = events.at(-1);
+    if (lastEvent) assistantUsageCollector.foldCarriedGeneration(lastEvent);
     events.forEach((event, index) => {
       // Result cost/duration/turn count describe the whole SDK result, so
       // attach them only to the final event instead of multiplying them.
