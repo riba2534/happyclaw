@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, test } from 'vitest';
 
 import {
+  accountFailureNotice,
   PROVIDER_CONTEXT_OVERFLOW_USER_NOTICE,
   PROVIDER_FAILURE_USER_NOTICE,
   PROVIDER_LIVENESS_TIMEOUT_USER_NOTICE,
@@ -211,6 +212,28 @@ describe('model fallback is visible to the user', () => {
       );
       expect(after).toContain('providerFailureRetrying: true');
     }
+  });
+});
+
+describe('account failure notice', () => {
+  test("the runner's limit text stands; the generic notice gets the upstream's words", () => {
+    expect(
+      accountFailureNotice({
+        providerFailureNotice: "You've hit your limit · resets 3pm",
+        providerErrorText: 'API Error: 429 rate limited',
+      }),
+    ).toBe("You've hit your limit · resets 3pm");
+    // 2026-11-20: magpie's 403 for a model the subscription lacks read as
+    // "额度已用尽".
+    expect(
+      accountFailureNotice({
+        providerErrorText:
+          'API Error: 403 {"error":{"type":"permission_error","message":"Kimi Code: Your current subscription does not have access to Kimi Code right now."},"type":"error"}',
+      }),
+    ).toBe(
+      `${PROVIDER_FAILURE_USER_NOTICE}\n上游返回：403 Kimi Code: Your current subscription does not have access to Kimi Code right now.`,
+    );
+    expect(accountFailureNotice({})).toBe(PROVIDER_FAILURE_USER_NOTICE);
   });
 });
 

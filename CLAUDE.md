@@ -246,7 +246,8 @@ Web UI 约定：
   额度、认证等账号类按用量上限等待或结束；529/5xx、无输出等暂时类用同一连接重放一次；请求本身被拒
   （`invalid_request`、`model_not_found`，或 Claude Code 标为 `unknown`、上游为 400/404/413/422）
   直接结束，不重放。结束提示附上清洗过的上游原话（`upstreamErrorExcerpt`：只取 message，脱敏邮箱与
-  密钥形状的串，截断）；Claude Code 自动压缩后仍溢出时提示缩短输入或 `/fresh`。
+  密钥形状的串，截断），账号类只在没有 Runner 自带的限额文案时附上；Claude Code 自动压缩后仍溢出时
+  提示缩短输入或 `/fresh`。
 - 同一序列化键内的消息保持顺序。
 - 不同飞书话题、不同 Runtime Session 使用不同序列化键，可以并发。
 - Agent loop 运行期间到达的普通消息（Web 与全部 IM 渠道）逐条进入可见、可编辑和可排序的 durable 队列；

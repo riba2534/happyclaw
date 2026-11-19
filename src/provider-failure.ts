@@ -146,6 +146,22 @@ export function resolveTerminalProviderFailureNotice(
     : withUpstreamExcerpt(PROVIDER_TRANSIENT_FAILURE_USER_NOTICE, text);
 }
 
+/**
+ * The notice of an account failure that ends the input: the runner's own
+ * notice (an upstream limit text) when it has one, else the generic notice
+ * with the upstream's words, which name the real cause (a 403 for a model
+ * the subscription does not include reads as a quota wall otherwise).
+ */
+export function accountFailureNotice(output: {
+  readonly providerFailureNotice?: string;
+  readonly providerErrorText?: string;
+}): string {
+  return (
+    output.providerFailureNotice ||
+    withUpstreamExcerpt(PROVIDER_FAILURE_USER_NOTICE, output.providerErrorText)
+  );
+}
+
 export interface ProviderFailureHealth {
   profileId: string;
   healthy: boolean;
