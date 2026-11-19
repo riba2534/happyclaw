@@ -156,6 +156,27 @@ describe('login before provider configuration', () => {
   );
 });
 
+describe('the password step', () => {
+  test('too many attempts are reported in minutes', async () => {
+    mocks.authState.login.mockRejectedValue({
+      status: 429,
+      message: 'Too many login attempts. Try again in 61s',
+      body: { code: 'TOO_MANY_ATTEMPTS', retry_after_seconds: 61 },
+    });
+    await act(async () => root?.render(<LoginPage />));
+    await act(async () => {
+      container
+        ?.querySelector('form')
+        ?.dispatchEvent(
+          new Event('submit', { bubbles: true, cancelable: true }),
+        );
+    });
+    expect(container?.querySelector('[role="alert"]')?.textContent).toBe(
+      '尝试次数过多，请 2 分钟后再试',
+    );
+  });
+});
+
 describe('two-factor login', () => {
   const submit = async () =>
     act(async () => {
@@ -216,6 +237,21 @@ describe('two-factor login', () => {
     expect(mocks.authState.loginSecondFactor).toHaveBeenCalledWith(
       'challenge-1',
       'abcde-fghij',
+    );
+  });
+
+  test('too many wrong codes are reported in minutes', async () => {
+    mocks.authState.login.mockResolvedValue({ mfaChallenge: 'challenge-1' });
+    mocks.authState.loginSecondFactor.mockRejectedValue({
+      status: 429,
+      message: 'Too many login attempts. Try again in 840s',
+      body: { code: 'TOO_MANY_ATTEMPTS', retry_after_seconds: 840 },
+    });
+    await act(async () => root?.render(<LoginPage />));
+    await submit();
+    await submit();
+    expect(container?.querySelector('[role="alert"]')?.textContent).toBe(
+      '尝试次数过多，请 14 分钟后再试',
     );
   });
 

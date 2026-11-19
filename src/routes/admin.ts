@@ -2,9 +2,8 @@ import fs from 'fs';
 import { dropMfaChallengesForUser, removeTwoFactor } from '../auth-mfa.js';
 import { dropPasskeyRegistrationChallenges } from '../passkeys.js';
 import {
-  countPasskeys,
   deletePasskeysForUser,
-  isTotpEnabled,
+  loginFactorSummary,
 } from '../auth-factor-store.js';
 import path from 'path';
 import { Hono } from 'hono';
@@ -308,12 +307,12 @@ adminRoutes.get('/users', authMiddleware, usersManageMiddleware, (c) => {
     page: Number.isFinite(page) ? page : 1,
     pageSize: Number.isFinite(pageSize) ? pageSize : 50,
   });
+  const factors = loginFactorSummary(result.users.map((user) => user.id));
   return c.json({
     ...result,
     users: result.users.map((user) => ({
       ...user,
-      two_factor_enabled: isTotpEnabled(user.id),
-      passkey_count: countPasskeys(user.id),
+      ...factors.get(user.id),
     })),
   });
 });

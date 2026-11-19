@@ -283,6 +283,33 @@ export function countPasskeys(userId: string): number {
   return row.n;
 }
 
+/**
+ * Which of `userIds` have 2FA on and how many passkeys each has: one query
+ * per table for a whole page of users (the admin user list).
+ */
+export function loginFactorSummary(
+  userIds: readonly string[],
+): Map<string, { two_factor_enabled: boolean; passkey_count: number }> {
+  const summary = new Map(
+    userIds.map((id) => [id, { two_factor_enabled: false, passkey_count: 0 }]),
+  );
+  if (userIds.length === 0) return summary;
+  const ids = JSON.stringify(userIds);
+  const totp = stmt(
+    `SELECT user_id FROM user_totp
+     WHERE enabled_at IS NOT NULL
+       AND user_id IN (SELECT value FROM json_each(?))`,
+  ).all(ids) as Array<{ user_id: string }>;
+  for (const row of totp) summary.get(row.user_id)!.two_factor_enabled = true;
+  const passkeys = stmt(
+    `SELECT user_id, COUNT(*) AS n FROM webauthn_credentials
+     WHERE user_id IN (SELECT value FROM json_each(?))
+     GROUP BY user_id`,
+  ).all(ids) as Array<{ user_id: string; n: number }>;
+  for (const row of passkeys) summary.get(row.user_id)!.passkey_count = row.n;
+  return summary;
+}
+
 /** Remove all of a user's passkeys (admin revocation); returns how many. */
 export function deletePasskeysForUser(userId: string): number {
   return stmt('DELETE FROM webauthn_credentials WHERE user_id = ?').run(userId)

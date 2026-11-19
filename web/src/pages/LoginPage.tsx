@@ -126,7 +126,7 @@ export function LoginPage() {
       }
       enterApp();
     } catch (err) {
-      setError(extractErrorMessage(err) || '登录失败');
+      setError(authErrorMessage(err, '登录失败'));
     } finally {
       setLoading(false);
     }

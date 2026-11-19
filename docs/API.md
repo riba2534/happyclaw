@@ -98,7 +98,8 @@ Public：
 
 改密码、二次验证和通行密钥的接口重新核对当前密码与验证码时（开启二次验证时的第一个验证码也算），
 先占用一次登录限流计数再校验，错误的密码和验证码与登录失败共用同一组桶（用户名小写 + 客户端 IP）；
-核对通过只退还这一次计数，不清除已有的失败，只有真正登录成功才清除。超限返回 429
+核对通过只退还这一次计数，不清除已有的失败，只有真正登录成功才清除。超限返回 429（带
+`Retry-After` 头）
 `{ code: "TOO_MANY_ATTEMPTS", retry_after_seconds }`。错误一律返回 400 而不是 401（Web 客户端
 把 401 当作登录失效），并带 `code`：请求体无效 `INVALID_REQUEST`、当前密码错误
 `CURRENT_PASSWORD_INCORRECT`、验证码错误 `MFA_INVALID`、需要验证码却没给 `MFA_REQUIRED`、
@@ -129,7 +130,8 @@ unavailable_reason, two_factor_enabled }`，`unavailable_reason` 说明当前页
 都不删除通行密钥，撤销用 `DELETE /api/admin/users/:id/passkeys`；删除用户时一并删除。访客没有
 通行密钥：管理接口返回 403，访客的凭据不能登录。
 
-`POST /api/auth/login` 的失败次数按三个桶计数，任一超限返回 429：用户名+IP
+`POST /api/auth/login` 的失败次数按三个桶计数，任一超限返回 429（与 `/login/2fa` 及上面的复核
+接口同形：`{ error, code: "TOO_MANY_ATTEMPTS", retry_after_seconds }`，带 `Retry-After` 头）：用户名+IP
 （`maxLoginAttempts`/`loginLockoutMinutes`）、用户名（4 倍/1 小时）、客户端 IP
 （6 倍/同一窗口，IPv6 按 /64 合并；loopback 与未知地址不计）。客户端 IP 取自
 `getClientIp`，部署在反向代理后需设置 `TRUST_PROXY=true`。用户名超过 64 字符直接按无效凭据返回 401。

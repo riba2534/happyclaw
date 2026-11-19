@@ -69,7 +69,7 @@ vi.mock('../src/middleware/auth.js', async (importOriginal) => {
 const db = await import('../src/db.js');
 const { resetLoginAttemptsForTest } = await import('../src/auth.js');
 const { resetMfaChallengesForTest } = await import('../src/auth-mfa.js');
-const { insertPasskey, listPasskeys } =
+const { enableTotp, insertPasskey, listPasskeys, savePendingTotp } =
   await import('../src/auth-factor-store.js');
 const { totpCode, totpStep } = await import('../src/totp.js');
 const {
@@ -274,6 +274,8 @@ beforeAll(() => {
   createUser('carol');
   createUser('dave');
   createUser('ella');
+  createUser('nina');
+  createUser('omar');
   createUser('owner', 'admin');
   as('alice');
 });
@@ -744,5 +746,45 @@ describe('guests', () => {
     const response = await login(guestKey);
     expect(response.status).toBe(400);
     expect((await response.json()).code).toBe('PASSKEY_INVALID');
+  });
+});
+
+describe('admin user list', () => {
+  test('marks two-factor and counts passkeys per user', async () => {
+    const passkeyOf = (userId: string, id: string) =>
+      insertPasskey({
+        id,
+        user_id: userId,
+        rp_id: HOST,
+        public_key: 'AA',
+        counter: 0,
+        transports: null,
+        name: id,
+        created_at: new Date().toISOString(),
+      });
+    savePendingTotp('nina', 'sealed');
+    enableTotp('nina', 1, ['abcde-fghij']);
+    passkeyOf('nina', 'nina-1');
+    passkeyOf('nina', 'nina-2');
+    // An enrolment never confirmed is not on.
+    savePendingTotp('omar', 'sealed');
+    as('owner');
+    const { users } = await (
+      await app.request('/api/admin/users?pageSize=100')
+    ).json();
+    const row = (id: string) =>
+      users.find((user: { id: string }) => user.id === id);
+    expect(row('nina')).toMatchObject({
+      two_factor_enabled: true,
+      passkey_count: 2,
+    });
+    expect(row('omar')).toMatchObject({
+      two_factor_enabled: false,
+      passkey_count: 0,
+    });
+    expect(row('ella')).toMatchObject({
+      two_factor_enabled: false,
+      passkey_count: 1,
+    });
   });
 });

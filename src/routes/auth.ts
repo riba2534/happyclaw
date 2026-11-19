@@ -135,6 +135,27 @@ function reserveAttempt(username: string, ip: string) {
   );
 }
 
+/**
+ * The 429 of a reserved attempt that hit the limit, for the login steps and
+ * the re-checks alike: `code` lets the Web client say it in the user's
+ * words, `Retry-After` says when to try again.
+ */
+function tooManyAttemptsResponse(
+  c: Context<{ Variables: Variables }>,
+  retryAfterSeconds: number | undefined,
+  what = 'attempts',
+): Response {
+  if (retryAfterSeconds) c.header('Retry-After', String(retryAfterSeconds));
+  return c.json(
+    {
+      error: `Too many ${what}. Try again in ${retryAfterSeconds}s`,
+      code: 'TOO_MANY_ATTEMPTS',
+      retry_after_seconds: retryAfterSeconds,
+    },
+    429,
+  );
+}
+
 // --- Helper Functions ---
 
 export function isUsernameConflictError(err: unknown): boolean {
@@ -344,11 +365,10 @@ authRoutes.post('/login', authJsonBodyLimit, async (c) => {
       user_agent: ua,
       details: { reason: 'rate_limited' },
     });
-    return c.json(
-      {
-        error: `Too many login attempts. Try again in ${rateCheck.retryAfterSeconds}s`,
-      },
-      429,
+    return tooManyAttemptsResponse(
+      c,
+      rateCheck.retryAfterSeconds,
+      'login attempts',
     );
   }
 
@@ -454,11 +474,10 @@ authRoutes.post('/login/2fa', authJsonBodyLimit, async (c) => {
       user_agent: ua,
       details: { reason: 'rate_limited', step: 'second_factor' },
     });
-    return c.json(
-      {
-        error: `Too many login attempts. Try again in ${rateCheck.retryAfterSeconds}s`,
-      },
-      429,
+    return tooManyAttemptsResponse(
+      c,
+      rateCheck.retryAfterSeconds,
+      'login attempts',
     );
   }
   let method: ReturnType<typeof verifySecondFactor> = null;
@@ -972,20 +991,6 @@ authRoutes.put('/password', authMiddleware, async (c) => {
 // username, so a session cannot be used to guess either. Refusals are 400,
 // not 401: the Web client treats any 401 as a signed-out session, so a
 // mistyped password looked like being signed out.
-
-function tooManyAttemptsResponse(
-  c: Context<{ Variables: Variables }>,
-  retryAfterSeconds: number | undefined,
-): Response {
-  return c.json(
-    {
-      error: `Too many attempts. Try again in ${retryAfterSeconds}s`,
-      code: 'TOO_MANY_ATTEMPTS',
-      retry_after_seconds: retryAfterSeconds,
-    },
-    429,
-  );
-}
 
 function totpSecretUnreadableResponse(
   c: Context<{ Variables: Variables }>,
