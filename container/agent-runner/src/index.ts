@@ -208,6 +208,7 @@ import {
 } from './agent-turn-contract.js';
 import { prepareMessageStreamText } from './message-stream-text.js';
 import {
+  BackgroundHoldKeepalive,
   BackgroundProtocolDebtWatchdog,
   DurableInputTurnCompletion,
   isMergedBackgroundCompletionPlaceholder,
@@ -956,6 +957,9 @@ const SDK_COMPACTION_RESPONSE_TIMEOUT_MS = 10 * 60_000;
 const SDK_PROVIDER_FAILURE_EXIT_GRACE_MS = 250;
 const BACKGROUND_PROTOCOL_DEBT_TIMEOUT_MS = 15_000;
 const BACKGROUND_PROTOCOL_FAILURE_EXIT_GRACE_MS = 1_000;
+// See BackgroundHoldKeepalive: well inside the host's 30-minute idle close.
+const BACKGROUND_HOLD_KEEPALIVE_MS = 5 * 60_000;
+const BACKGROUND_HOLD_KEEPALIVE_MAX_MS = 2 * 60 * 60_000;
 
 function writeOutput(output: ContainerOutput): void {
   let correlatedOutput: ContainerOutput = activeOutputInputTurnId
@@ -2706,6 +2710,24 @@ async function runQueryAttempt(
     }
   };
 
+  const backgroundHoldKeepalive = new BackgroundHoldKeepalive({
+    intervalMs: BACKGROUND_HOLD_KEEPALIVE_MS,
+    maxMs: BACKGROUND_HOLD_KEEPALIVE_MAX_MS,
+    pendingCount: () => processor.getBlockingPendingSdkTaskCount(),
+    onTick: (pending) =>
+      emit({
+        status: 'stream',
+        result: null,
+        streamEvent: {
+          eventType: 'status',
+          agentScope: 'system',
+          statusText: `${pending} 个后台任务运行中，完成后将继续汇总`,
+          summary: `${pending} 个后台任务运行中，完成后将继续汇总`,
+          displayLevel: 'primary',
+        },
+      }),
+  });
+
   const armBackgroundProtocolDebtWatchdog = (
     blockingDebtCount: number,
   ): void => {
@@ -2799,6 +2821,12 @@ async function runQueryAttempt(
       inputTurnCompleted && ipcDeliveryTracker.hasPendingTurns
         ? ipcDeliveryTracker.currentTurnReceipts
         : undefined;
+    // A result held open for background work completes no turn, yet it may
+    // already answer the IPC input. Name it so the host stops counting that
+    // input as owed while the reply waits.
+    const answeredIpcDeliveryIds = inputTurnCompleted
+      ? undefined
+      : ipcDeliveryTracker.answeredPendingDeliveryIds;
     durableInputCompletion.publishResult(
       inputTurnCompleted,
       ipcDeliveryTracker.hasPendingTurns,
@@ -2828,6 +2856,9 @@ async function runQueryAttempt(
       ...(ipcReceipts && ipcReceipts.length > 0 ? { ipcReceipts } : {}),
       ...(activeIpcReceipts && activeIpcReceipts.length > 0
         ? { activeIpcReceipts }
+        : {}),
+      ...(answeredIpcDeliveryIds && answeredIpcDeliveryIds.length > 0
+        ? { answeredIpcDeliveryIds }
         : {}),
     });
 
@@ -4377,6 +4408,7 @@ async function runQueryAttempt(
           log(
             `Result #${resultCount} emitted; holding stream open for ${pendingBgTasks} background task(s): ${processor.describePendingSdkTasks().join(' | ')}`,
           );
+          backgroundHoldKeepalive.start();
           emit({
             status: 'stream',
             result: null,
@@ -4594,6 +4626,7 @@ async function runQueryAttempt(
     if (cacheLine) logInfo(cacheLine);
     firstResponseWatchdog?.clear();
     clearBackgroundProtocolDebtWatchdog();
+    backgroundHoldKeepalive.stop();
     backgroundResultGate.dispose();
     pendingBackgroundResult = undefined;
     // IPC watcher 清理：覆盖 try 块内的正常出口、catch 抛出，以及 try 内所有 early-return

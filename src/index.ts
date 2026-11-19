@@ -12920,6 +12920,9 @@ async function processAgentConversation(
     // input that opened it over IPC: that input's debt stops aging toward
     // the stuck-recovery ceiling.
     queue.markRunnerServingQuery(virtualJid, output.streamEvent);
+    if (output.answeredIpcDeliveryIds) {
+      queue.markIpcInputAnswered(virtualJid, output.answeredIpcDeliveryIds);
+    }
     const isInterruptStatus =
       output.status === 'stream' &&
       output.streamEvent?.eventType === 'status' &&
