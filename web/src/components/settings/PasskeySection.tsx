@@ -17,6 +17,7 @@ import { ListGroup, ListRow } from '@/components/common/ListRow';
 import { PasswordInput } from '@/components/common/PasswordInput';
 import { api } from '../../api/client';
 import { authErrorCode, authErrorMessage } from '../../lib/auth-errors';
+import { isIpHost } from '../../lib/passkey-host';
 import { SettingsSection } from './SettingsLayout';
 import { CodeInput } from './TwoFactorSection';
 
@@ -51,11 +52,6 @@ const UNAVAILABLE: Record<string, string> = {
   unsupported: '这个浏览器不支持通行密钥。',
 };
 
-/** An RP ID must be a domain: an IPv4 or IPv6 literal never works. */
-function isIpHost(hostname: string): boolean {
-  return /^\d{1,3}(\.\d{1,3}){3}$/.test(hostname) || hostname.includes(':');
-}
-
 function defaultName(): string {
   const ua = navigator.userAgent;
   if (/iPhone|iPad/.test(ua)) return 'iPhone / iPad';
@@ -72,19 +68,28 @@ type Mode =
   | { kind: 'rename'; passkey: Passkey }
   | { kind: 'remove'; passkey: Passkey };
 
-/** 设置 > 安全: passkeys that sign in without a password. */
-export function PasskeySection() {
+/**
+ * 设置 > 安全: passkeys that sign in without a password. `factorsVersion`
+ * changes when two-factor is turned on or off next to it, so whether adding
+ * one takes a code is read again.
+ */
+export function PasskeySection({
+  factorsVersion = 0,
+}: { factorsVersion?: number } = {}) {
   const [list, setList] = useState<PasskeyList | null>(null);
   const [mode, setMode] = useState<Mode | null>(null);
   const [value, setValue] = useState('');
   const [code, setCode] = useState('');
+  // The server asked for a code this list did not know about (two-factor
+  // turned on elsewhere since it loaded).
+  const [codeRequired, setCodeRequired] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const supported =
     typeof window !== 'undefined' &&
     typeof window.PublicKeyCredential === 'function';
-  const unavailable = isIpHost(window.location.hostname.replace(/^\[|\]$/g, ''))
+  const unavailable = isIpHost(window.location.hostname)
     ? 'ip_host'
     : !window.isSecureContext
       ? 'insecure'
@@ -95,7 +100,8 @@ export function PasskeySection() {
             list?.unavailable_reason === 'not_allowed'
           ? list.unavailable_reason
           : null;
-  const needsCode = mode?.kind === 'add' && !!list?.two_factor_enabled;
+  const needsCode =
+    mode?.kind === 'add' && (!!list?.two_factor_enabled || codeRequired);
 
   const load = useCallback(async () => {
     try {
@@ -107,11 +113,12 @@ export function PasskeySection() {
 
   useEffect(() => {
     void load();
-  }, [load]);
+  }, [load, factorsVersion]);
 
   const open = (next: Mode) => {
     setValue(next.kind === 'rename' ? next.passkey.name : '');
     setCode('');
+    setCodeRequired(false);
     setError(null);
     setMode(next);
   };
@@ -171,6 +178,10 @@ export function PasskeySection() {
     } catch (err) {
       // A code is spent once checked; the next try needs a fresh one.
       if (authErrorCode(err) !== 'CURRENT_PASSWORD_INCORRECT') setCode('');
+      if (authErrorCode(err) === 'MFA_REQUIRED') {
+        setCodeRequired(true);
+        void load();
+      }
       setError(
         authErrorCode(err) === 'PASSKEY_INVALID'
           ? '通行密钥验证失败'

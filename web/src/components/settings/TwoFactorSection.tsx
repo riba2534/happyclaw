@@ -129,8 +129,14 @@ function EnrolmentKey({ enrolment }: { enrolment: Enrolment }) {
   );
 }
 
-/** 设置 > 安全: an authenticator app (TOTP) as a second login step. */
-export function TwoFactorSection() {
+/**
+ * 设置 > 安全: an authenticator app (TOTP) as a second login step.
+ * `onChanged` runs after it is turned on or off or its recovery codes are
+ * renewed, for the sections that depend on it (adding a passkey).
+ */
+export function TwoFactorSection({
+  onChanged,
+}: { onChanged?: () => void } = {}) {
   const [status, setStatus] = useState<TwoFactorStatus | null>(null);
   const [flow, setFlow] = useState<Flow | null>(null);
   const [enrolment, setEnrolment] = useState<Enrolment | null>(null);
@@ -182,6 +188,7 @@ export function TwoFactorSection() {
       if (flow === 'disable') {
         await api.post('/api/auth/2fa/disable', { password, code });
         toast.success('二次验证已关闭');
+        onChanged?.();
         close();
         return;
       }
@@ -191,6 +198,7 @@ export function TwoFactorSection() {
           sessions_revoked?: number;
         }>('/api/auth/2fa/enable', { password, code });
         setCodes(result.recovery_codes);
+        onChanged?.();
         toast.success(
           result.sessions_revoked
             ? `二次验证已开启，其他 ${result.sessions_revoked} 个设备已退出登录`
@@ -203,6 +211,7 @@ export function TwoFactorSection() {
         { code },
       );
       setCodes(result.recovery_codes);
+      onChanged?.();
     } catch (err) {
       setError(authErrorMessage(err, '操作失败'));
     } finally {

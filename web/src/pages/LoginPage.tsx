@@ -6,6 +6,7 @@ import { LogoLoading } from '../components/common/LogoLoading';
 import { api } from '../api/client';
 import { extractErrorMessage } from '../utils/error';
 import { authErrorCode, authErrorMessage } from '../lib/auth-errors';
+import { isIpHost } from '../lib/passkey-host';
 import { Input } from '@/components/ui/input';
 import { PasswordInput } from '@/components/common/PasswordInput';
 import { Button } from '@/components/ui/button';
@@ -40,11 +41,13 @@ export function LoginPage() {
   const login = useAuthStore((state) => state.login);
   const loginSecondFactor = useAuthStore((state) => state.loginSecondFactor);
   const loginWithPasskey = useAuthStore((state) => state.loginWithPasskey);
-  // Passkeys need a secure context (HTTPS or localhost) and WebAuthn.
+  // Passkeys need a secure context (HTTPS or localhost), WebAuthn, and a
+  // domain: on an IP address the button could only fail.
   const passkeysUsable =
     typeof window !== 'undefined' &&
     window.isSecureContext &&
-    typeof window.PublicKeyCredential === 'function';
+    typeof window.PublicKeyCredential === 'function' &&
+    !isIpHost(window.location.hostname);
   const register = useAuthStore((state) => state.register);
   const initialized = useAuthStore((state) => state.initialized);
   const checkStatus = useAuthStore((state) => state.checkStatus);
