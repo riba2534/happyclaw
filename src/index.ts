@@ -12912,6 +12912,14 @@ async function processAgentConversation(
   };
 
   const handleAgentOutput = async (output: ContainerOutput) => {
+    // A Runner holding its result for background work says it is alive. Only
+    // the idle close starts over (the frame already reset the process
+    // watchdog): it is no output, so stuck recovery's activity clock, the
+    // turn trace, cards and Web never see it.
+    if (output.backgroundHoldKeepalive) {
+      resetIdleTimer();
+      return;
+    }
     // #547: warm-lifecycle bookkeeping — mark activity, and flag query-idle on
     // a substantive result / interruption so the runner can be kept warm.
     queue.markRunnerActivity(virtualJid);

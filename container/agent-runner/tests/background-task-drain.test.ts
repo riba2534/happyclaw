@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 
 import {
   BackgroundHoldKeepalive,
+  backgroundHoldKeepaliveIntervalMs,
   BackgroundProtocolDebtWatchdog,
   BackgroundTaskDrainTracker,
   DurableInputTurnCompletion,
@@ -355,55 +356,114 @@ describe('StreamEventProcessor background protocol integration', () => {
 });
 
 describe('BackgroundHoldKeepalive', () => {
-  test('repeats while tasks run, stops when they finish, and is bounded', () => {
+  const MINUTE = 60_000;
+
+  function keepalive(options: { pending?: () => number; maxMs?: number } = {}) {
+    let ticks = 0;
+    const keeper = new BackgroundHoldKeepalive({
+      intervalMs: MINUTE,
+      maxMs: options.maxMs ?? 10 * MINUTE,
+      pendingCount: options.pending ?? (() => 1),
+      onTick: () => ticks++,
+    });
+    return { keeper, ticks: () => ticks };
+  }
+
+  function withFakeTimers(run: () => void): void {
     vi.useFakeTimers();
     try {
-      let pending = 1;
-      const ticks: number[] = [];
-      const keepalive = new BackgroundHoldKeepalive({
-        intervalMs: 1_000,
-        maxMs: 10_000,
-        pendingCount: () => pending,
-        onTick: (count) => ticks.push(count),
-      });
-      keepalive.start();
-      keepalive.start();
-      vi.advanceTimersByTime(3_000);
-      expect(ticks).toEqual([1, 1, 1]);
-
-      pending = 0;
-      vi.advanceTimersByTime(1_000);
-      expect(keepalive.running).toBe(false);
-      expect(ticks).toHaveLength(3);
-
-      // A later hold in the same query shares the original bound.
-      pending = 2;
-      keepalive.start();
-      vi.advanceTimersByTime(20_000);
-      expect(keepalive.running).toBe(false);
-      expect(ticks.length).toBeLessThan(10);
-      expect(ticks.at(-1)).toBe(2);
+      run();
     } finally {
       vi.useRealTimers();
     }
+  }
+
+  test('ticks while a result is held and the work is live', () => {
+    withFakeTimers(() => {
+      const run = keepalive();
+      run.keeper.hold();
+      run.keeper.hold();
+      vi.advanceTimersByTime(3 * MINUTE);
+      expect(run.ticks()).toBe(3);
+
+      run.keeper.release();
+      vi.advanceTimersByTime(3 * MINUTE);
+      expect(run.ticks()).toBe(3);
+      expect(run.keeper.running).toBe(false);
+    });
   });
 
-  test('stop clears a running keepalive', () => {
-    vi.useFakeTimers();
-    try {
-      const ticks: number[] = [];
-      const keepalive = new BackgroundHoldKeepalive({
-        intervalMs: 1_000,
-        maxMs: 60_000,
+  test('stops at the bound, and later held results of the hold do not restart it', () => {
+    withFakeTimers(() => {
+      const run = keepalive({ maxMs: 5 * MINUTE });
+      run.keeper.hold();
+      vi.advanceTimersByTime(4 * MINUTE);
+      // An answer to input injected meanwhile is a held result too.
+      run.keeper.hold();
+      vi.advanceTimersByTime(10 * MINUTE);
+      expect(run.ticks()).toBe(4);
+      expect(run.keeper.running).toBe(false);
+
+      run.keeper.hold();
+      vi.advanceTimersByTime(10 * MINUTE);
+      expect(run.ticks()).toBe(4);
+    });
+  });
+
+  test('a hold that ends and comes back counts from its own start', () => {
+    withFakeTimers(() => {
+      const run = keepalive({ maxMs: 5 * MINUTE });
+      run.keeper.hold();
+      vi.advanceTimersByTime(4 * MINUTE);
+      // A result that holds nothing ends the hold.
+      run.keeper.release();
+      run.keeper.hold();
+      vi.advanceTimersByTime(10 * MINUTE);
+      expect(run.ticks()).toBe(4 + 4);
+    });
+  });
+
+  test('ticks pause once no work is live, without ending the hold', () => {
+    withFakeTimers(() => {
+      let pending = 1;
+      const run = keepalive({ pending: () => pending, maxMs: 5 * MINUTE });
+      run.keeper.hold();
+      vi.advanceTimersByTime(2 * MINUTE);
+      pending = 0;
+      vi.advanceTimersByTime(MINUTE);
+      expect(run.keeper.running).toBe(false);
+
+      // New work before any result reports the hold over: still the same
+      // hold, with the bound counted from its first result.
+      pending = 1;
+      run.keeper.hold();
+      vi.advanceTimersByTime(10 * MINUTE);
+      expect(run.ticks()).toBe(2 + 1);
+    });
+  });
+
+  test('an older host, which sent no idle close, gets no keepalive', () => {
+    withFakeTimers(() => {
+      let ticks = 0;
+      const keeper = new BackgroundHoldKeepalive({
+        intervalMs: backgroundHoldKeepaliveIntervalMs(undefined),
+        maxMs: 10 * MINUTE,
         pendingCount: () => 1,
-        onTick: (count) => ticks.push(count),
+        onTick: () => ticks++,
       });
-      keepalive.start();
-      keepalive.stop();
-      vi.advanceTimersByTime(5_000);
-      expect(ticks).toEqual([]);
-    } finally {
-      vi.useRealTimers();
-    }
+      keeper.hold();
+      vi.advanceTimersByTime(10 * MINUTE);
+      expect(ticks).toBe(0);
+      expect(keeper.running).toBe(false);
+    });
+  });
+
+  test("the interval is a third of the host's idle close, at most five minutes", () => {
+    // The 30-minute default, and the 60-second minimum of the settings.
+    expect(backgroundHoldKeepaliveIntervalMs(30 * MINUTE)).toBe(5 * MINUTE);
+    expect(backgroundHoldKeepaliveIntervalMs(9 * MINUTE)).toBe(3 * MINUTE);
+    expect(backgroundHoldKeepaliveIntervalMs(MINUTE)).toBe(20_000);
+    expect(backgroundHoldKeepaliveIntervalMs(undefined)).toBeNull();
+    expect(backgroundHoldKeepaliveIntervalMs(0)).toBeNull();
   });
 });

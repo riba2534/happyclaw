@@ -247,6 +247,13 @@ export interface ContainerInput {
    */
   maxOutputTokens?: number;
   /**
+   * The shortest silence the host tolerates before it closes the runner: its
+   * idle close (the process watchdog is never shorter). While a result is held
+   * for background work the Runner sends keepalives well within it
+   * (BackgroundHoldKeepalive). Absent from an older host, which gets none.
+   */
+  hostIdleCloseMs?: number;
+  /**
    * Team mode (团队模式): this session is a group's router or a work item's
    * worker. It picks the work tools, the team prompt section and the
    * disallowed tools; absent leaves the session exactly as it is.
@@ -469,6 +476,10 @@ export interface ContainerOutput {
    * >0 时主进程应把流式卡片保持在「后台任务运行中」而非定稿，后续 turn 的
    * 内容会继续追加到同一张卡。仅 sdk_final 类 result 携带。 */
   pendingBgTasks?: number;
+  /** Liveness only: a result is held for background work and the Runner is
+   * alive (BackgroundHoldKeepalive). The host starts its idle close over and
+   * does nothing else with it: no output, trace, card or Web frame. */
+  backgroundHoldKeepalive?: true;
   /** This SDK result durably completed the user-input turn associated with it.
    * False/absent for truncated, background-pending, interrupted, and error paths. */
   inputTurnCompleted?: boolean;

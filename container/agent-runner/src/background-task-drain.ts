@@ -424,49 +424,105 @@ export function shouldFailIncompleteQueryExit(
   );
 }
 
+/** The longest interval between keepalives while a result is held. */
+export const BACKGROUND_HOLD_KEEPALIVE_MAX_INTERVAL_MS = 5 * 60_000;
+
 /**
- * Repeats a held reply's status while background tasks run. Such a reply
- * emits nothing until they finish, and the host's idle close and process
- * watchdog read that silence as a hung runner. Bounded by `maxMs` from the
- * first start, so a task that never ends still lets the runner go idle.
+ * How often a held result tells the host it is alive: three times within the
+ * shortest silence the host tolerates (`ContainerInput.hostIdleCloseMs`, its
+ * idle close; the process watchdog is never shorter), and at least every five
+ * minutes. Null when the host did not say: an older host has no use for the
+ * keepalive frame, so none is sent.
+ */
+export function backgroundHoldKeepaliveIntervalMs(
+  hostIdleCloseMs: number | undefined,
+): number | null {
+  if (
+    typeof hostIdleCloseMs !== 'number' ||
+    !Number.isFinite(hostIdleCloseMs) ||
+    hostIdleCloseMs <= 0
+  ) {
+    return null;
+  }
+  return Math.max(
+    1_000,
+    Math.min(
+      BACKGROUND_HOLD_KEEPALIVE_MAX_INTERVAL_MS,
+      Math.floor(hostIdleCloseMs / 3),
+    ),
+  );
+}
+
+/**
+ * Keeps the host's idle close and process watchdog off while a result is held
+ * for background work. A held result emits nothing until the work settles, and
+ * a sub-agent waiting on the network or a long command is silent too; the host
+ * would read that silence as a hung runner and close it with its tasks.
+ *
+ * The hold runs from the first held result to the next result that holds
+ * nothing (or the end of the query attempt), as the host counts it
+ * (GroupQueue.markRunnerBackgroundHold). Ticks stop once no background task is
+ * live, and for good `maxMs` after the hold began, so a task that never ends
+ * still lets the runner go silent and the host close it; the host's stuck
+ * recovery defers for the same bound. A hold that ends and comes back counts
+ * from its own start.
  */
 export class BackgroundHoldKeepalive {
   private timer: ReturnType<typeof setInterval> | undefined;
-  private startedAt: number | null = null;
+  private heldSince: number | null = null;
 
   constructor(
     private readonly options: {
-      intervalMs: number;
+      /** Null sends no keepalive at all. */
+      intervalMs: number | null;
       maxMs: number;
       pendingCount: () => number;
-      onTick: (pending: number) => void;
+      onTick: () => void;
       now?: () => number;
     },
   ) {}
 
-  start(): void {
-    const now = this.options.now ?? Date.now;
-    this.startedAt ??= now();
-    if (this.timer) return;
-    this.timer = setInterval(() => {
-      const pending = this.options.pendingCount();
-      if (pending <= 0 || now() - (this.startedAt ?? 0) >= this.options.maxMs) {
-        this.stop();
-        return;
-      }
-      this.options.onTick(pending);
-    }, this.options.intervalMs);
+  /** A result was published while background work holds it. */
+  hold(): void {
+    const intervalMs = this.options.intervalMs;
+    if (intervalMs === null) return;
+    const now = this.now();
+    this.heldSince ??= now;
+    if (this.timer || now - this.heldSince >= this.options.maxMs) return;
+    this.timer = setInterval(() => this.tick(), intervalMs);
     this.timer.unref?.();
   }
 
-  stop(): void {
+  /** A result holds nothing any more, or the query attempt ended. */
+  release(): void {
+    this.clearTimer();
+    this.heldSince = null;
+  }
+
+  get running(): boolean {
+    return this.timer !== undefined;
+  }
+
+  private tick(): void {
+    if (
+      this.options.pendingCount() <= 0 ||
+      this.now() - (this.heldSince ?? 0) >= this.options.maxMs
+    ) {
+      // The hold itself lasts until a result says so; only the ticks stop.
+      this.clearTimer();
+      return;
+    }
+    this.options.onTick();
+  }
+
+  private clearTimer(): void {
     if (this.timer) {
       clearInterval(this.timer);
       this.timer = undefined;
     }
   }
 
-  get running(): boolean {
-    return this.timer !== undefined;
+  private now(): number {
+    return (this.options.now ?? Date.now)();
   }
 }

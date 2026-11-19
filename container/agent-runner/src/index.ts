@@ -209,6 +209,7 @@ import {
 import { prepareMessageStreamText } from './message-stream-text.js';
 import {
   BackgroundHoldKeepalive,
+  backgroundHoldKeepaliveIntervalMs,
   BackgroundProtocolDebtWatchdog,
   DurableInputTurnCompletion,
   isMergedBackgroundCompletionPlaceholder,
@@ -957,8 +958,8 @@ const SDK_COMPACTION_RESPONSE_TIMEOUT_MS = 10 * 60_000;
 const SDK_PROVIDER_FAILURE_EXIT_GRACE_MS = 250;
 const BACKGROUND_PROTOCOL_DEBT_TIMEOUT_MS = 15_000;
 const BACKGROUND_PROTOCOL_FAILURE_EXIT_GRACE_MS = 1_000;
-// See BackgroundHoldKeepalive: well inside the host's 30-minute idle close.
-const BACKGROUND_HOLD_KEEPALIVE_MS = 5 * 60_000;
+// See BackgroundHoldKeepalive. The host's stuck recovery defers a held result
+// for the same bound (BACKGROUND_HOLD_MAX_MS in src/stuck-runner-recovery.ts).
 const BACKGROUND_HOLD_KEEPALIVE_MAX_MS = 2 * 60 * 60_000;
 
 function writeOutput(output: ContainerOutput): void {
@@ -2711,21 +2712,13 @@ async function runQueryAttempt(
   };
 
   const backgroundHoldKeepalive = new BackgroundHoldKeepalive({
-    intervalMs: BACKGROUND_HOLD_KEEPALIVE_MS,
+    intervalMs: backgroundHoldKeepaliveIntervalMs(
+      containerInput.hostIdleCloseMs,
+    ),
     maxMs: BACKGROUND_HOLD_KEEPALIVE_MAX_MS,
     pendingCount: () => processor.getBlockingPendingSdkTaskCount(),
-    onTick: (pending) =>
-      emit({
-        status: 'stream',
-        result: null,
-        streamEvent: {
-          eventType: 'status',
-          agentScope: 'system',
-          statusText: `${pending} 个后台任务运行中，完成后将继续汇总`,
-          summary: `${pending} 个后台任务运行中，完成后将继续汇总`,
-          displayLevel: 'primary',
-        },
-      }),
+    onTick: () =>
+      emit({ status: 'stream', result: null, backgroundHoldKeepalive: true }),
   });
 
   const armBackgroundProtocolDebtWatchdog = (
@@ -2825,6 +2818,9 @@ async function runQueryAttempt(
       inputTurnCompleted,
       ipcDeliveryTracker.hasPendingTurns,
     );
+    // The host books the hold from this same result.
+    if (candidate.pendingBgTasks > 0) backgroundHoldKeepalive.hold();
+    else backgroundHoldKeepalive.release();
     emit({
       status: 'success',
       // Proactive SDK text is control-plane only; user-visible speech must
@@ -4399,7 +4395,6 @@ async function runQueryAttempt(
           log(
             `Result #${resultCount} emitted; holding stream open for ${pendingBgTasks} background task(s): ${processor.describePendingSdkTasks().join(' | ')}`,
           );
-          backgroundHoldKeepalive.start();
           emit({
             status: 'stream',
             result: null,
@@ -4617,7 +4612,7 @@ async function runQueryAttempt(
     if (cacheLine) logInfo(cacheLine);
     firstResponseWatchdog?.clear();
     clearBackgroundProtocolDebtWatchdog();
-    backgroundHoldKeepalive.stop();
+    backgroundHoldKeepalive.release();
     backgroundResultGate.dispose();
     pendingBackgroundResult = undefined;
     // IPC watcher 清理：覆盖 try 块内的正常出口、catch 抛出，以及 try 内所有 early-return

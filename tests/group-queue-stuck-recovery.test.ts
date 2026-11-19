@@ -1030,9 +1030,8 @@ describe('#618: IPC-injected follow-ups are visible to stuck recovery', () => {
       const BUSY = { outputs: true, cpu: 'active' } as const;
       const SILENT = { outputs: false, cpu: 'inactive' } as const;
 
-      /** A cold query on a Host runner: its result held from now, with
-       * input injected a minute later that it has not answered. */
-      function heldColdQuery(): GroupQueue {
+      /** A cold query in flight on a Host runner. */
+      function coldQuery(): GroupQueue {
         const q = new GroupQueue();
         q.setHostModeChecker(() => true);
         q.enqueueTask(
@@ -1046,6 +1045,13 @@ describe('#618: IPC-injected follow-ups are visible to stuck recovery', () => {
           agentId: AGENT_ID,
         });
         q.markRunnerActivity(jid);
+        return q;
+      }
+
+      /** A cold query whose result is held from now, with input injected a
+       * minute later that it has not answered. */
+      function heldColdQuery(): GroupQueue {
+        const q = coldQuery();
         q.markRunnerBackgroundHold(jid, true);
         clock += MINUTE;
         inject(q, 'injected while held');
@@ -1128,6 +1134,83 @@ describe('#618: IPC-injected follow-ups are visible to stuck recovery', () => {
           });
         },
       );
+
+      // handleAgentOutput of processAgentConversation over the real queue,
+      // up to where it binds the output's IPC coverage.
+      function hostOutputs(q: GroupQueue) {
+        const reached = new Error('reached the IPC coverage');
+        const resetIdleTimer = vi.fn();
+        const globals: Record<string, unknown> = {
+          queue: q,
+          virtualJid: jid,
+          isProviderQuotaControlOutput: () => false,
+          bindRunnerActiveIpcCoverage: () => {
+            throw reached;
+          },
+          resetIdleTimer,
+        };
+        createRuntimeSourceHarness(globals).install(
+          'handleAgentOutput',
+          'processAgentConversation',
+        );
+        const handle = globals.handleAgentOutput as (
+          output: object,
+        ) => Promise<void>;
+        return {
+          resetIdleTimer,
+          result: (output: object) =>
+            expect(handle({ status: 'success', ...output })).rejects.toBe(
+              reached,
+            ),
+          keepalive: () =>
+            handle({
+              status: 'stream',
+              result: null,
+              backgroundHoldKeepalive: true,
+            }),
+        };
+      }
+
+      test("the host books the hold from the Runner's result; keepalives touch only the idle close", async () => {
+        const q = coldQuery();
+        const host = hostOutputs(q);
+        await host.result({
+          result: null,
+          inputTurnCompleted: false,
+          pendingBgTasks: 2,
+        });
+        clock += MINUTE;
+        inject(q, 'injected while held');
+
+        for (let minute = 5; minute <= 40; minute += 5) {
+          clock += 5 * MINUTE;
+          await expect(host.keepalive()).resolves.toBeUndefined();
+        }
+        expect(host.resetIdleTimer).toHaveBeenCalledTimes(8);
+        // No activity for stuck recovery since the input came; it defers
+        // for the hold.
+        expect(
+          q.getStuckPendingGroups(IDLE_THRESHOLD_MS, FORCE_RESTART_MS),
+        ).toMatchObject([
+          {
+            backgroundTasksHeld: true,
+            idleMs: 40 * MINUTE,
+            ipcOwedMs: 40 * MINUTE,
+          },
+        ]);
+
+        await host.result({
+          result: 'summary',
+          inputTurnCompleted: true,
+          pendingBgTasks: 0,
+        });
+        expect(getState(q, jid)).toMatchObject({
+          backgroundHoldQueryId: null,
+          backgroundHoldSince: null,
+          ipcOwedSinceAt: clock,
+          lastActivityAt: clock,
+        });
+      });
 
       test('a hold that ends and comes back counts from its own start', () => {
         const q = heldColdQuery();
