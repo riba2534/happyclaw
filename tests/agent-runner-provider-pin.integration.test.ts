@@ -9,6 +9,7 @@ import { afterAll, beforeAll, describe, expect, test } from 'vitest';
 
 import { writeCliSecretFiles } from '../container/agent-runner/src/cli-secret-files.js';
 import { pinBoundProviderSettings } from '../container/agent-runner/src/provider-env-pin.js';
+import { defaultToolSearchEnv } from '../container/agent-runner/src/tool-search.js';
 import {
   buildClaudeContextPlan,
   loadHostClaudeSettings,
@@ -280,7 +281,7 @@ async function runTurn(options: {
   for (const [key, value] of Object.entries(process.env)) {
     if (
       typeof value === 'string' &&
-      !/^(ANTHROPIC_|CLAUDE_|AWS_|HTTPS?_PROXY)/.test(key)
+      !/^(ANTHROPIC_|CLAUDE_|AWS_|HTTPS?_PROXY|ENABLE_TOOL_SEARCH$)/.test(key)
     ) {
       env[key] = value;
     }
@@ -289,6 +290,8 @@ async function runTurn(options: {
     CLAUDE_CONFIG_DIR: config,
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
   });
+  // As the Runner does behind a custom endpoint: every tool declared in full.
+  Object.assign(env, defaultToolSearchEnv(env, 'custom', undefined));
   const start = hits.length;
   bashCommand = options.dumpEnvTo
     ? `env | grep -E '^(ANTHROPIC|CLAUDE_CODE|CLAUDE_AUTOCOMPACT|AWS_BEARER|CLOUD_ML)' | sort > ${options.dumpEnvTo}`

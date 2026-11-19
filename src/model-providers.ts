@@ -99,7 +99,10 @@ export function isMagpieAliasModelId(id: string): boolean {
 const ONE_MILLION_SUFFIX = '[1m]';
 const ONE_MILLION_SUFFIX_RE = /(?:\[1m\])+$/i;
 
-/** Claude Code's window for a model it does not recognize, without `[1m]`. */
+/**
+ * The window of a model Claude Code does not recognize, without `[1m]`
+ * (kept on 2.1.323+ by keepsTwoHundredKWindow).
+ */
 export const CLAUDE_CODE_DEFAULT_CONTEXT = 200_000;
 /** The window `[1m]` gives a model. */
 export const ONE_MILLION_CONTEXT = 1_000_000;
@@ -491,6 +494,31 @@ export function autoCompactWindowFor(
   return contextWindow;
 }
 
+/**
+ * A Claude model id as Claude Code names one (`claude-<family>-<version>`,
+ * `claude-3-…`), under any provider prefix (`anthropic/…`, `anthropic.…`).
+ */
+const CLAUDE_MODEL_NAME_RE = /(?:^|[/.])claude-(?:[a-z]+-)?\d/i;
+
+/**
+ * Whether a third-party launch of `launchModel` (as launchModelName names it)
+ * needs CLAUDE_CODE_DISABLE_1M_CONTEXT=1 to keep the 200K window Claude Code
+ * assumed before 2.1.323 (see CLAUDE.md §5): a model without `[1m]` that
+ * declares its window or that Claude Code does not know by name.
+ */
+export function keepsTwoHundredKWindow(
+  launchModel: string,
+  contextWindow: number | null | undefined,
+): boolean {
+  const { model, oneMillion } = splitOneMillionSuffix(launchModel);
+  if (!model || oneMillion) return false;
+  if (contextWindow) return true;
+  return (
+    !CLAUDE_MODEL_NAME_RE.test(model) &&
+    !Object.hasOwn(CLAUDE_CODE_ALIASES, model.toLowerCase())
+  );
+}
+
 /** Keys the launch derives from the models and roles; not free env. */
 export const CONNECTION_MODEL_ENV_KEYS = [
   'ANTHROPIC_MODEL',
@@ -525,11 +553,14 @@ export interface ConnectionModelEnvInput {
 /**
  * The model environment of one launch on a third-party endpoint: the turn's
  * model with `[1m]` when its window needs it, each tier and the sub-agent
- * model from the roles or else the turn's model, the compact window of the
- * turn's model, and the longest reply they all declare (maxOutputTokensFor).
+ * model from the roles or else the turn's model, the compact window and the
+ * 200K ceiling (keepsTwoHundredKWindow) of the turn's model, which apply to
+ * the whole launch, and the longest reply they all declare
+ * (maxOutputTokensFor).
  * A pass-through connection (no model) only gets the roles it names.
- * CLAUDE_CODE_MAX_OUTPUT_TOKENS is not one of CONNECTION_MODEL_ENV_KEYS: a
- * value in the connection's own env replaces it.
+ * CLAUDE_CODE_MAX_OUTPUT_TOKENS and CLAUDE_CODE_DISABLE_1M_CONTEXT are not
+ * CONNECTION_MODEL_ENV_KEYS: a value in the connection's own env replaces
+ * them.
  */
 export function buildConnectionModelEnv(
   input: ConnectionModelEnvInput,
@@ -538,7 +569,9 @@ export function buildConnectionModelEnv(
   const roles = input.roles ?? {};
   const named = (id: string | undefined): string | undefined =>
     id ? launchModelName(id, windowOf(input.models, id)) : undefined;
-  const current = named(input.model.trim() || undefined);
+  const model = input.model.trim();
+  const declared = model ? windowOf(input.models, model) : null;
+  const current = model ? launchModelName(model, declared) : undefined;
   if (current) env.ANTHROPIC_MODEL = current;
   const opus = named(roles.opus) ?? current;
   const sonnet = named(roles.sonnet) ?? current;
@@ -548,9 +581,12 @@ export function buildConnectionModelEnv(
   if (sonnet) env.ANTHROPIC_DEFAULT_SONNET_MODEL = sonnet;
   if (haiku) env.ANTHROPIC_DEFAULT_HAIKU_MODEL = haiku;
   if (subagent) env.CLAUDE_CODE_SUBAGENT_MODEL = subagent;
-  if (input.model.trim()) {
-    const window = autoCompactWindowFor(windowOf(input.models, input.model));
+  if (current) {
+    const window = autoCompactWindowFor(declared);
     if (window) env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = String(window);
+    if (keepsTwoHundredKWindow(current, declared)) {
+      env.CLAUDE_CODE_DISABLE_1M_CONTEXT = '1';
+    }
   }
   const maxOutput = maxOutputTokensFor(
     input.models,

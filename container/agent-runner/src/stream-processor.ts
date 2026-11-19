@@ -53,6 +53,20 @@ const SUB_AGENT_TASK_TYPES: ReadonlySet<string> = new Set([
   'local_workflow',
 ]);
 
+/**
+ * Agent SDK 0.3.323+ sends tool_progress while a turn waits on a long-running
+ * hook, under a `hook-` id that starts and ends no tool: shown, it would
+ * leave a tool running in the Web until the turn ends.
+ */
+export function isHookToolProgress(message: {
+  tool_use_id?: unknown;
+}): boolean {
+  return (
+    typeof message.tool_use_id === 'string' &&
+    message.tool_use_id.startsWith('hook-')
+  );
+}
+
 // Tool calls remembered by id so a result can be matched to its tool's name.
 const MAX_TRACKED_TOOL_CALLS = 512;
 
@@ -1311,9 +1325,11 @@ export class StreamEventProcessor {
    * Process a tool_progress message: the SDK's elapsed-time heartbeat of a
    * running tool. It arrives several times a second, so it is throttled per
    * tool (see emitToolProgress); the one-shot tool_progress events built from
-   * streamed tool input are not.
+   * streamed tool input are not. A hook's heartbeat is dropped
+   * (isHookToolProgress).
    */
   processToolProgress(message: any): void {
+    if (isHookToolProgress(message)) return;
     const parentToolUseId =
       message.parent_tool_use_id === undefined
         ? null

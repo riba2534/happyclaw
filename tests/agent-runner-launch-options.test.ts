@@ -9,7 +9,10 @@ import {
   PROVIDER_ERROR_TEXT_MAX_CHARS,
   providerErrorText,
 } from '../container/agent-runner/src/provider-error-text.js';
-import { pinToolSearch } from '../container/agent-runner/src/tool-search.js';
+import {
+  defaultToolSearchEnv,
+  pinToolSearch,
+} from '../container/agent-runner/src/tool-search.js';
 import { pinMaxOutputTokens } from '../container/agent-runner/src/max-output-pin.js';
 
 const runner = fs.readFileSync(
@@ -71,6 +74,24 @@ describe('tool search', () => {
       env: { ...pinned.env, ENABLE_TOOL_SEARCH: 'true' },
     });
     expect(pinned.env).not.toHaveProperty('ENABLE_TOOL_SEARCH');
+  });
+
+  // Claude Code 2.1.304+ turns it on behind a custom endpoint by itself.
+  test('behind a custom endpoint the process env defaults it off', () => {
+    expect(defaultToolSearchEnv({}, 'custom', undefined)).toEqual({
+      ENABLE_TOOL_SEARCH: 'false',
+    });
+    // Anything that already sets it, and every settings file above the
+    // process env, still decides.
+    expect(
+      defaultToolSearchEnv(
+        { ENABLE_TOOL_SEARCH: 'auto:5' },
+        'custom',
+        undefined,
+      ),
+    ).toEqual({});
+    expect(defaultToolSearchEnv({}, 'custom', true)).toEqual({});
+    expect(defaultToolSearchEnv({}, 'official', undefined)).toEqual({});
   });
 
   // Flag settings outrank every settings file, so a pinned 'false' would
