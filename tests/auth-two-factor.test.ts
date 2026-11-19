@@ -332,6 +332,26 @@ describe('two-factor login', () => {
     expect(login.status).toBe(429);
   });
 
+  test('a limited second step answers with a code and Retry-After', async () => {
+    const first = await challengeFor('alice');
+    const second = await challengeFor('alice');
+    for (let i = 0; i < 5; i += 1) {
+      await post('/api/auth/login/2fa', { challenge: first, code: '000000' });
+    }
+    for (const limited of [
+      await post('/api/auth/login/2fa', { challenge: second, code: '000000' }),
+      await post('/api/auth/login', { username: 'alice', password: PASSWORD }),
+    ]) {
+      expect(limited.status).toBe(429);
+      const body = await limited.json();
+      expect(body).toMatchObject({ code: 'TOO_MANY_ATTEMPTS' });
+      expect(body.retry_after_seconds).toBeGreaterThan(0);
+      expect(limited.headers.get('retry-after')).toBe(
+        String(body.retry_after_seconds),
+      );
+    }
+  });
+
   test('knowing the password does not reset the code guesses', async () => {
     const first = await challengeFor('alice');
     for (let i = 0; i < 4; i += 1) {
