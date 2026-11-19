@@ -95,6 +95,22 @@ describe('releasing a follow-up reservation', () => {
     expect(queue.getActiveQueryId(run.jid)).toBe(reservation);
   });
 
+  test('keeps such a turn once the runner has echoed it', () => {
+    const run = idleRunner('published-echoed');
+    const reservation = queue.reserveNextQuery(run.jid)!;
+    expect(queue.sendMessage(run.jid, 'direct turn')).toBe('sent');
+    // The model's first output pays the stuck-recovery debt of that input.
+    queue.markRunnerServingQuery(run.jid, {
+      eventType: 'text_delta',
+      agentScope: 'main',
+      text: 'On it',
+      queryRunId: reservation,
+    });
+
+    expect(queue.releaseQueryReservation(run.jid, reservation)).toBe(false);
+    expect(queue.getActiveQueryId(run.jid)).toBe(reservation);
+  });
+
   test('a retired runner serving such a turn closes only after it ends', () => {
     const run = idleRunner('published-retired');
     const reservation = queue.reserveNextQuery(run.jid)!;

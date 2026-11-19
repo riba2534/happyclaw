@@ -64,6 +64,9 @@ export interface ContainerOutput {
   sourceKind?: Exclude<MessageSourceKind, 'user_command'>;
   finalizationReason?: 'completed' | 'interrupted' | 'error' | 'truncated';
   pendingBgTasks?: number;
+  /** Liveness only, from a Runner holding its result for background work:
+   * the idle close starts over and nothing else happens. */
+  backgroundHoldKeepalive?: true;
   inputTurnCompleted?: boolean;
   queryIdle?: boolean;
   ipcReceipts?: RuntimeIpcReceipt[];

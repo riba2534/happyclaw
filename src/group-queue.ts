@@ -9,10 +9,12 @@ import { logger } from './logger.js';
 import { resolveFeishuCliBoundAccountId } from './feishu-cli-runtime.js';
 import { isIpcInputPayloadFilename } from './ipc-delivery-recovery.js';
 import { agentIdOfJid, sessionIpcDir } from './utils.js';
-import type {
-  RunnerRuntime,
-  StuckRecoveryCandidate,
+import {
+  BACKGROUND_HOLD_MAX_MS,
+  type RunnerRuntime,
+  type StuckRecoveryCandidate,
 } from './stuck-runner-recovery.js';
+import type { StreamEvent } from './stream-event.types.js';
 import type { ChannelTurnContext, InteractionMode } from './types.js';
 export type SendMessageResult = 'sent' | 'no_active';
 export interface IpcMessageCursor {
@@ -238,9 +240,34 @@ interface GroupState {
   interactionMode: InteractionMode | null;
   /** True when a _drain sentinel has been written for the current active runner. */
   drainSentinelWritten: boolean;
-  /** Oldest IPC inject still owed by the current logical query. Unlike
-   * lastActivityAt, ordinary runner output must never refresh this timestamp. */
+  /** Oldest IPC inject still owed by the current logical query, the clock
+   * of the absolute ceiling: the input that opened it over IPC until model
+   * output carries the query's queryRunId, then the oldest input appended
+   * to it (see markRunnerServingQuery); a continue that keeps the query in
+   * flight sets it back to the oldest (see markRunnerQueryIdle). Unlike
+   * lastActivityAt, ordinary runner output never refreshes it. */
   ipcOwedSinceAt: number | null;
+  /** How the query in flight got its opening input: `stdin` at a cold
+   * start; `ipc` when an inject opened it, `ipc_echoed` once model output
+   * carried its queryRunId. Null while a reservation still waits for its
+   * input, and between queries. */
+  queryOpening?: 'stdin' | 'ipc' | 'ipc_echoed' | null;
+  /** Oldest IPC inject appended to the query in flight after its opening
+   * input. */
+  ipcAppendedSinceAt?: number | null;
+  /** When the input that opened the query in flight over IPC was injected,
+   * or when a background hold ended after that; null for a query opened on
+   * stdin. The echo leaves it: a continue that keeps the query in flight owes
+   * that input again (see markRunnerQueryIdle). */
+  ipcOpenedAt?: number | null;
+  /** Query whose result the runner holds while background work (any SDK
+   * background task but a backgrounded Bash) is unsettled. Only meaningful
+   * while it equals `queryId`; a later query never inherits it. */
+  backgroundHoldQueryId?: string | null;
+  /** When the hold on `backgroundHoldQueryId` began: its first held result.
+   * Later held results of the same query keep it; the end of the hold
+   * clears it, so a new hold counts from its own start. */
+  backgroundHoldSince?: number | null;
   /** IPC deliveries written to this runner but not yet acknowledged by a
    * healthy agent query result. Keyed by deliveryId for out-of-order acks. */
   pendingIpcDeliveries: Map<string, IpcDeliveryReceipt>;
@@ -279,6 +306,20 @@ type ActiveGroupState = GroupState & { groupFolder: string; agentId: string };
 /** The runner registered its session, so its IPC directory is known. */
 function hasRunnerIpc(state: GroupState): state is ActiveGroupState {
   return !!state.groupFolder && !!state.agentId;
+}
+
+/**
+ * Output of the model or its tools and sub-agents, not a system event. The
+ * Runner emits its memory recall for an input as soon as it reads it and
+ * audits the context when it opens the SDK query; status lines, hooks and
+ * the CLI's system frames can likewise all come before a model request.
+ */
+function isModelOutput(event: StreamEvent): boolean {
+  return (
+    event.agentScope !== 'system' &&
+    event.isSynthetic !== true &&
+    event.eventType !== 'status'
+  );
 }
 
 export interface QueueGroupStatus {
@@ -419,6 +460,9 @@ export class GroupQueue {
         interactionMode: null,
         drainSentinelWritten: false,
         ipcOwedSinceAt: null,
+        queryOpening: null,
+        ipcAppendedSinceAt: null,
+        ipcOpenedAt: null,
         pendingIpcDeliveries: new Map(),
         acknowledgedIpcDeliveryIds: new Set(),
       };
@@ -1515,6 +1559,69 @@ export class GroupQueue {
     state.lastActivityAt = Date.now();
   }
 
+  /**
+   * A stream event of the Runner. The Runner stamps a query's id on its
+   * events once that query's input is the turn it serves, so model output
+   * carrying the id of the query in flight, opened over IPC, shows the CLI
+   * at work on that input: the input's debt stops aging toward the absolute
+   * ceiling, which guards a Runner whose output never gets to the input.
+   * The query still meets the idle rule until it ends (#618 is a CLI gone
+   * quiet after the Runner took the input), and the debt clock follows the
+   * oldest input appended to it, which only the query's end pays. A system
+   * event proves nothing (see isModelOutput), nor does a late event of an
+   * earlier query, which carries that query's id.
+   */
+  markRunnerServingQuery(
+    groupJid: string,
+    event: StreamEvent | undefined,
+  ): void {
+    const queryRunId = event?.queryRunId;
+    if (!queryRunId || !isModelOutput(event)) return;
+    const state = this.resolveActiveState(groupJid);
+    if (
+      !state?.active ||
+      !state.queryInFlight ||
+      state.queryId !== queryRunId ||
+      state.queryOpening !== 'ipc'
+    ) {
+      return;
+    }
+    state.queryOpening = 'ipc_echoed';
+    state.ipcOwedSinceAt = state.ipcAppendedSinceAt ?? null;
+  }
+
+  /**
+   * Record whether the query in flight holds its result for unsettled
+   * background work. Every result the Runner publishes carries
+   * `pendingBgTasks`: the SDK background tasks still running other than a
+   * backgrounded Bash (sub-agents and workflows, but also monitors and MCP
+   * tasks), 0 once they settle. The CLI keeps answering input meanwhile, but
+   * the Runner sends no completion receipt, so the query's IPC debt cannot be
+   * paid and stuck recovery defers instead of restarting, for at most
+   * BACKGROUND_HOLD_MAX_MS from the hold's first result. When the hold
+   * ends, debt still owed starts aging from then: the Runner could not have
+   * paid it earlier. Past the bound no clock is reset: the original rules
+   * judge the query on the clocks it has.
+   */
+  markRunnerBackgroundHold(groupJid: string, held: boolean): void {
+    const state = this.resolveActiveState(groupJid);
+    if (!state?.active || !state.queryInFlight || !state.queryId) return;
+    if (held) {
+      if (state.backgroundHoldQueryId !== state.queryId) {
+        state.backgroundHoldQueryId = state.queryId;
+        state.backgroundHoldSince = Date.now();
+      }
+      return;
+    }
+    if (state.backgroundHoldQueryId !== state.queryId) return;
+    state.backgroundHoldQueryId = null;
+    state.backgroundHoldSince = null;
+    const now = Date.now();
+    if (state.ipcOwedSinceAt !== null) state.ipcOwedSinceAt = now;
+    if (state.ipcAppendedSinceAt != null) state.ipcAppendedSinceAt = now;
+    if (state.ipcOpenedAt != null) state.ipcOpenedAt = now;
+  }
+
   acknowledgeIpcDeliveries(
     groupJid: string,
     receipts: IpcDeliveryReceipt[],
@@ -1588,12 +1695,19 @@ export class GroupQueue {
     return committed;
   }
 
+  /**
+   * The Runner reports the query in flight idle. `queryId`, when given, is
+   * the query the report is about: a later query is left alone.
+   */
   markRunnerQueryIdle(
     groupJid: string,
-    options?: { preserveIpcDebt?: boolean },
+    options?: { preserveIpcDebt?: boolean; queryId?: string },
   ): void {
     const state = this.resolveActiveState(groupJid);
     if (!state?.active || !state.queryInFlight) return;
+    if (options?.queryId !== undefined && state.queryId !== options.queryId) {
+      return;
+    }
     // Truncation/compaction continues report queryIdle even though they
     // refused later user IPC (acceptIpc=false). Wiping the #618/#622 debt
     // clock here hides a leftover IPC file from stuck recovery.
@@ -1603,11 +1717,27 @@ export class GroupQueue {
         state.groupFolder &&
         this.hasRemainingIpcMessages(state.groupFolder, state.agentId),
       );
-      if (hasPendingReceipts || hasPendingFiles) return;
+      if (hasPendingReceipts || hasPendingFiles) {
+        // The query stays in flight for that input, owed again from its
+        // oldest IPC input: the opening one too, whose echo had stopped its
+        // clock, so the query restarts no later than if the model had never
+        // answered. A cold query with no IPC input is owed from now.
+        const owedSince = [state.ipcOwedSinceAt, state.ipcOpenedAt].filter(
+          (at): at is number => at != null,
+        );
+        state.ipcOwedSinceAt =
+          owedSince.length > 0 ? Math.min(...owedSince) : Date.now();
+        return;
+      }
     }
     const completedQueryId = state.queryId;
     state.queryInFlight = false;
     state.ipcOwedSinceAt = null;
+    state.queryOpening = null;
+    state.ipcAppendedSinceAt = null;
+    state.ipcOpenedAt = null;
+    state.backgroundHoldQueryId = null;
+    state.backgroundHoldSince = null;
     state.queryId = null;
     state.queryStartedAt = null;
     state.announcedQueryId = null;
@@ -1708,8 +1838,9 @@ export class GroupQueue {
       !state.queryInFlight ||
       state.queryId !== expectedQueryId ||
       // Another path published IPC under this reservation while its owner
-      // was still preparing: the runner is serving a real turn now.
-      state.ipcOwedSinceAt !== null
+      // was still preparing: the runner is serving a real turn now, whether
+      // or not it has echoed it yet.
+      state.queryOpening != null
     ) {
       return false;
     }
@@ -1760,14 +1891,28 @@ export class GroupQueue {
     // Owed work: IPC input still owed by the query in flight (#618), or tasks
     // queued behind a runner that runs no query and never takes them. Tasks
     // waiting behind an in-flight query are not owed: a silent long tool call
-    // is not a stuck runner. The debt timestamp is cleared when the query
-    // reports idle and ordinary output never refreshes it.
+    // is not a stuck runner. A query opened over IPC stays owed until it
+    // reports idle, so a CLI that goes quiet after taking the input still
+    // meets the idle rule; its echo (markRunnerServingQuery) only stops the
+    // debt clock that drives the absolute ceiling. That clock then follows
+    // input appended to the query, and ordinary output never refreshes it.
     const ipcOwedSinceAt = state.ipcOwedSinceAt ?? null;
-    const hasIpcOwed = ipcOwedSinceAt !== null && state.queryInFlight;
+    const hasIpcOwed =
+      state.queryInFlight &&
+      (ipcOwedSinceAt !== null || state.queryOpening === 'ipc_echoed');
     const lastActivityAt = state.lastActivityAt ?? 0;
     if (lastActivityAt <= 0) return null;
     const idleMs = now - lastActivityAt;
-    const ipcOwedMs = hasIpcOwed ? Math.max(0, now - ipcOwedSinceAt) : null;
+    const ipcOwedMs =
+      hasIpcOwed && ipcOwedSinceAt !== null
+        ? Math.max(0, now - ipcOwedSinceAt)
+        : null;
+    const backgroundHoldMs =
+      state.queryInFlight &&
+      state.queryId !== null &&
+      state.backgroundHoldQueryId === state.queryId
+        ? Math.max(0, now - (state.backgroundHoldSince ?? now))
+        : null;
     const reachedIdleThreshold = idleMs >= idleThresholdMs;
     const reachedAbsoluteIpcCeiling =
       ipcOwedMs !== null && ipcOwedMs >= ipcForceThresholdMs;
@@ -1788,7 +1933,21 @@ export class GroupQueue {
       runnerPid: state.process?.pid ?? null,
       ipcOwedSinceAt,
       ipcOwedMs,
+      backgroundHoldMs,
+      backgroundTasksHeld:
+        backgroundHoldMs !== null && backgroundHoldMs < BACKGROUND_HOLD_MAX_MS,
     };
+  }
+
+  /** A task serving conversation input runs or waits on the lane of `jid`. */
+  private laneHasInputTask(jid: string): boolean {
+    const key = this.getSerializationKey(jid);
+    for (const [otherJid, other] of this.groups) {
+      if (this.getSerializationKey(otherJid) !== key) continue;
+      if (other.active && other.activeTask?.acceptsInput) return true;
+      if (other.pendingTasks.some((task) => task.acceptsInput)) return true;
+    }
+    return false;
   }
 
   /** Tasks queued for the lane of `jid` (its serialization key). */
@@ -2254,6 +2413,14 @@ export class GroupQueue {
       // Idle window restarts at the user's latest injected message (#618).
       const injectedAt = Date.now();
       state.lastActivityAt = injectedAt;
+      // The first input of a query opens it (a reservation takes its input
+      // here too); a later one is appended to it.
+      if (startsCurrentQuery || !state.queryOpening) {
+        state.queryOpening = 'ipc';
+        state.ipcOpenedAt = injectedAt;
+      } else {
+        state.ipcAppendedSinceAt ??= injectedAt;
+      }
       state.ipcOwedSinceAt ??= injectedAt;
       if (receipt) {
         state.pendingIpcDeliveries ??= new Map();
@@ -2965,7 +3132,12 @@ export class GroupQueue {
       logger.info({ groupJid: targetJid }, 'Restarting container');
       // The exit deferred the lane's queued work to this point.
       this.drainGroup(targetJid);
-      this.startLane(groupJid, 'restart');
+      // A conversation task already started or waiting (the replay of an
+      // unacknowledged delivery, a turn queued behind the old runner) reads
+      // the lane's input as the host's start would. Another start would only
+      // queue behind the runner it leaves warm, until stuck recovery
+      // restarts that too.
+      if (!this.laneHasInputTask(groupJid)) this.startLane(groupJid, 'restart');
     } finally {
       state.restarting = false;
     }
@@ -3011,6 +3183,9 @@ export class GroupQueue {
     state.queryInFlight = task.acceptsInput;
     state.idleSince = task.acceptsInput ? null : Date.now();
     state.ipcOwedSinceAt = null;
+    state.queryOpening = task.acceptsInput ? 'stdin' : null;
+    state.ipcAppendedSinceAt = null;
+    state.ipcOpenedAt = null;
     state.queryId = state.queryInFlight ? randomUUID() : null;
     state.queryStartedAt = state.queryInFlight ? Date.now() : null;
     state.announcedQueryId = null;
@@ -3075,6 +3250,11 @@ export class GroupQueue {
       state.drainSentinelWritten = false;
       state.lastActivityAt = null;
       state.ipcOwedSinceAt = null;
+      state.queryOpening = null;
+      state.ipcAppendedSinceAt = null;
+      state.ipcOpenedAt = null;
+      state.backgroundHoldQueryId = null;
+      state.backgroundHoldSince = null;
       state.queryInFlight = false;
       state.queryId = null;
       state.queryStartedAt = null;

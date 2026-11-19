@@ -2,7 +2,9 @@
  * A delegated worker's terminal outputs, run through the production
  * handleAgentOutput of processAgentConversation: a finished turn asks whether
  * the worker handed back a result, and a run whose connections all failed
- * fails the item. Each hook is a spy that stops the run where it is called.
+ * fails the item. Every output also tells stuck recovery which query the
+ * Runner serves and whether it still holds its result for background work.
+ * Each hook is a spy that stops the run where it is called.
  */
 import { describe, expect, test, vi } from 'vitest';
 
@@ -29,7 +31,12 @@ function host(teamRole: Record<string, unknown>) {
     settleDelegatedWorkerTurn,
     failDelegatedWorkerRun,
     automationTurns: new AutomationTurnTracker(),
-    queue: { markRunnerActivity: vi.fn(), markRunnerQueryIdle: vi.fn() },
+    queue: {
+      markRunnerActivity: vi.fn(),
+      markRunnerBackgroundHold: vi.fn(),
+      markRunnerServingQuery: vi.fn(),
+      markRunnerQueryIdle: vi.fn(),
+    },
     virtualJid: LANE,
     virtualChatJid: LANE,
     chatJid: 'web:mt-ws',
@@ -128,6 +135,146 @@ describe("a delegated worker's finished turn", () => {
       inputTurnCompleted: false,
     });
     expect(run.settleDelegatedWorkerTurn).not.toHaveBeenCalled();
+  });
+});
+
+describe('the background hold each output reports to stuck recovery', () => {
+  const HELD = {
+    status: 'success',
+    result: null,
+    inputTurnId: 'in-1',
+    inputTurnCompleted: false,
+    pendingBgTasks: 2,
+  };
+
+  // The hold is booked before anything else looks at the output; each run
+  // stops at the next hook.
+  function heldHost() {
+    const run = host(DELEGATED);
+    run.globals.bindRunnerActiveIpcCoverage = vi.fn(() => {
+      throw STOP;
+    });
+    const hold = (
+      run.globals.queue as {
+        markRunnerBackgroundHold: ReturnType<typeof vi.fn>;
+      }
+    ).markRunnerBackgroundHold;
+    const emit = (output: object) =>
+      expect(run.emit(output)).rejects.toBe(STOP);
+    return { emit, hold };
+  }
+
+  test('each result says whether background work still holds the turn', async () => {
+    const run = heldHost();
+    await run.emit(HELD);
+    expect(run.hold).toHaveBeenLastCalledWith(LANE, true);
+
+    await run.emit({
+      status: 'success',
+      result: null,
+      inputTurnId: 'in-1',
+      inputTurnCompleted: true,
+      pendingBgTasks: 0,
+    });
+    expect(run.hold).toHaveBeenLastCalledWith(LANE, false);
+  });
+
+  test('a notice between results leaves the hold alone', async () => {
+    const run = heldHost();
+    await run.emit(HELD);
+
+    // An oversized image in input taken while held, a compaction partial,
+    // and the session update after a query: none of them is a result.
+    await run.emit({
+      status: 'success',
+      result: '⚠️ 图片尺寸 1179×12000 超过 8000 像素上限，已跳过',
+      newSessionId: undefined,
+    });
+    await run.emit({
+      status: 'success',
+      result: 'partial answer',
+      sourceKind: 'compact_partial',
+      finalizationReason: 'completed',
+    });
+    await run.emit({ status: 'success', result: null, newSessionId: 's-1' });
+
+    expect(run.hold).toHaveBeenCalledTimes(1);
+    expect(run.hold).toHaveBeenLastCalledWith(LANE, true);
+  });
+
+  test.each([
+    [
+      'an interrupt whose next turn starts at once',
+      {
+        status: 'stream',
+        result: null,
+        streamEvent: { eventType: 'status', statusText: 'interrupted' },
+        queryIdle: false,
+      },
+    ],
+    [
+      'a model-fallback retry',
+      {
+        status: 'success',
+        result: '⚠️ 主模型已达用量上限，本轮起改用备用模型回复。',
+        sourceKind: 'provider_fallback_notice',
+      },
+    ],
+    [
+      'a context overflow',
+      {
+        status: 'success',
+        result: 'partial answer',
+        sourceKind: 'overflow_partial',
+        finalizationReason: 'error',
+      },
+    ],
+    [
+      'a provider failure',
+      {
+        status: 'success',
+        result: null,
+        inputTurnId: 'in-1',
+        providerFailure: true,
+        providerFailureClass: 'account',
+      },
+    ],
+  ])('%s ends the SDK query and the hold', async (_name, output) => {
+    const run = heldHost();
+    await run.emit(HELD);
+
+    await run.emit(output);
+
+    expect(run.hold).toHaveBeenLastCalledWith(LANE, false);
+  });
+});
+
+describe('the stream event each output shows stuck recovery', () => {
+  test('a stream event is passed on; other outputs pass none', async () => {
+    const run = host(DELEGATED);
+    run.globals.bindRunnerActiveIpcCoverage = vi.fn(() => {
+      throw STOP;
+    });
+    const serving = (
+      run.globals.queue as { markRunnerServingQuery: ReturnType<typeof vi.fn> }
+    ).markRunnerServingQuery;
+
+    const streamEvent = {
+      eventType: 'text_delta',
+      agentScope: 'main',
+      text: 'On it',
+      queryRunId: 'query-2',
+      turnId: 't-1',
+    };
+    await expect(
+      run.emit({ status: 'stream', result: null, streamEvent }),
+    ).rejects.toBe(STOP);
+    expect(serving).toHaveBeenLastCalledWith(LANE, streamEvent);
+
+    await expect(
+      run.emit({ status: 'success', result: null, newSessionId: 's-1' }),
+    ).rejects.toBe(STOP);
+    expect(serving).toHaveBeenLastCalledWith(LANE, undefined);
   });
 });
 

@@ -353,9 +353,9 @@ HappyClaw 优先通过 Web 设置管理配置，不要求用户维护一组庞�
 | `WEB_SESSION_SECRET`                 | 自动生成并持久化                  | Web 登录会话签名密钥                                                               |
 | `CONTAINER_IMAGE`                    | `riba2534/happyclaw-agent:latest` | 智能体容器镜像                                                                     |
 | `CONTAINER_IMAGE_HEADROOM`           | 从 core 标签派生 `-headroom`      | 启用 Headroom MCP 时使用的同版本能力镜像                                           |
-| `CONTAINER_TIMEOUT`                  | `1800000`                         | 容器硬超时，毫秒                                                                   |
+| `CONTAINER_TIMEOUT`                  | `1800000`                         | Runner 无输出看门狗，毫秒                                                          |
 | `IDLE_TIMEOUT`                       | `1800000`                         | 容器空闲保活时间，毫秒                                                             |
-| `STUCK_RUNNER_FORCE_RESTART_MINUTES` | `10`                              | IPC 债务强制恢复上限（整数分钟，范围 4–120；非法值回退默认）                       |
+| `STUCK_RUNNER_FORCE_RESTART_MINUTES` | `10`                              | IPC 债务强制恢复上限（整数分钟 4–120，非法值回退默认）；后台任务未结清时不适用     |
 | `ADMIN_HOST_ONLY_MODE`               | `false`                           | 管理员工作区与任务强制使用宿主机                                                   |
 | `HAPPYCLAW_DEPLOYMENT_MODE`          | `multi_user`                      | 部署方式：`multi_user` 或 `single_user_host`；Web 设置中保存过的值优先             |
 | `HAPPYCLAW_WORKSPACE_ROOT`           | `~/happyclaw`                     | 新建 Host 工作区的根目录；Web 设置中保存过的值优先                                 |

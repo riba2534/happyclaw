@@ -232,7 +232,10 @@ import {
   type FeishuCliRuntimeBinding,
 } from './feishu-cli-runtime.js';
 import { assertValidWorkspaceFolderName } from './workspace-folder.js';
-import { resolveRunnerLivenessTimeouts } from './runner-liveness.js';
+import {
+  resolveRunnerLivenessTimeouts,
+  type RunnerLivenessTimeouts,
+} from './runner-liveness.js';
 import {
   applyLaunchEffortEnv,
   resolveAgentSdkEffort,
@@ -718,6 +721,12 @@ export interface ContainerInput {
    * HappyClaw derived none, which leaves the key to the settings.
    */
   maxOutputTokens?: number;
+  /**
+   * The shortest silence the host tolerates before it closes the runner: the
+   * idle close of resolveRunnerLivenessTimeouts (the process watchdog is never
+   * shorter). The Runner paces its background-hold keepalive by it.
+   */
+  hostIdleCloseMs?: number;
   /** Source JID of the latest message that triggered this run (e.g. `discord:123…`).
    * Used by per-channel MCP tools (discord_*, etc.) to identify the current
    * incoming chat. Undefined when chatJid already encodes the IM source. */
@@ -3437,11 +3446,13 @@ export async function runContainerAgent(
         );
         container.kill();
       });
+      const liveness = runnerLivenessFor(group);
       // Derive a new input with docker-runtime plugins injected; never mutate
       // the caller's `input` object (queue/log/retry paths reuse the same ref).
       const dockerInput: ContainerInput = {
         ...input,
         usageAccountingMode: preparedLaunch.usageAccountingMode,
+        hostIdleCloseMs: liveness.idleCloseMs,
         webFetchPreflightPolicy:
           resolveProviderWebFetchPreflightPolicy(selectedProfileId),
         toolSearch: resolveProviderToolSearch(selectedProfileId),
@@ -3462,12 +3473,7 @@ export async function runContainerAgent(
       container.stdin.end();
 
       let timedOut = false;
-      const systemSettings = getSystemSettings();
-      const timeoutMs = resolveRunnerLivenessTimeouts({
-        executionTimeoutMs:
-          group.containerConfig?.timeout || systemSettings.containerTimeout,
-        idleTimeoutMs: systemSettings.idleTimeout,
-      }).watchdogMs;
+      const timeoutMs = liveness.watchdogMs;
 
       const killOnTimeout = () => {
         timedOut = true;
@@ -4744,6 +4750,7 @@ export async function runHostAgent(
       // prepareHostPlugins mirrors the docker path's pre-spawn materialize so
       // a freshly-enabled v2 user (no runtime/ on disk yet) doesn't see 0
       // plugins.
+      const liveness = runnerLivenessFor(group);
       const hostInput: ContainerInput = {
         ...input,
         usageAccountingMode: resolveCodexUsageAccountingMode(
@@ -4752,6 +4759,7 @@ export async function runHostAgent(
             ? undefined
             : containerOverride.anthropicBaseUrl,
         ),
+        hostIdleCloseMs: liveness.idleCloseMs,
         webFetchPreflightPolicy: resolveProviderWebFetchPreflightPolicy(
           hostSelectedProfileId,
         ),
@@ -4776,12 +4784,7 @@ export async function runHostAgent(
 
       // 9. 超时管理
       let timedOut = false;
-      const systemSettings = getSystemSettings();
-      const timeoutMs = resolveRunnerLivenessTimeouts({
-        executionTimeoutMs:
-          group.containerConfig?.timeout || systemSettings.containerTimeout,
-        idleTimeoutMs: systemSettings.idleTimeout,
-      }).watchdogMs;
+      const timeoutMs = liveness.watchdogMs;
 
       let killTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -5068,6 +5071,18 @@ export async function runHostAgent(
 
 /** A concrete agent runner (Docker or host) — both share this signature. */
 export type AgentRunner = typeof runContainerAgent | typeof runHostAgent;
+
+/** The idle close and process watchdog of a runner launched for `group`. */
+function runnerLivenessFor(
+  group: Pick<RegisteredGroup, 'containerConfig'>,
+): RunnerLivenessTimeouts {
+  const systemSettings = getSystemSettings();
+  return resolveRunnerLivenessTimeouts({
+    executionTimeoutMs:
+      group.containerConfig?.timeout || systemSettings.containerTimeout,
+    idleTimeoutMs: systemSettings.idleTimeout,
+  });
+}
 
 /**
  * Model-tier fallback lives inside agent-runner, and provider failover for a

@@ -297,6 +297,37 @@ Web UI 约定：
   的启动、终态和最终答复按发起它的输入写入 `subagent_checkpoints`；重跑同一输入时
   这些断点作为上下文回注给主 Agent：已完成的直接汇总，未完成的标明中断，部署、迁移、
   推送等非幂等操作要求先核实实际状态。宿主不会自动重跑任何子任务。
+- 卡死检测（`src/stuck-runner-recovery.ts`）每 30 秒查一次欠账的 Runner：query 还欠着经
+  IPC 注入的输入（IPC 债务，query 结束才还清），或 Runner 不在 query 中、同一会话却排着任务。
+  欠账且静默满 3 分钟时，Host 若 CPU 空闲就重启，CPU 忙或 Container（看不到 CPU）等静默满
+  `STUCK_RUNNER_FORCE_RESTART_MINUTES` 再重启。IPC 债务另有同样长、不看输出和 CPU 的绝对
+  上限：经 IPC 开场一轮 query 的输入从注入起算，到模型为这一 query 产出内容为止（带它
+  `queryRunId` 的正文、思考、工具调用、子代理等事件；Runner 读到输入就发出的记忆召回、
+  上下文审计，以及状态、hook 等系统事件和带上一个 query `queryRunId` 的迟到输出都不算。
+  上一轮结果后 SDK 流还开着的几秒里 pipe 进来的输入一被激活就按新 query 计，此后的事件都带
+  新 id）；之后追加进同一 query 的输入从最早一次追加起算，到 query 结束。暖 Runner 上持续
+  输出的一轮因此不会撞上限，模型开工后又静默下去的一轮仍按空闲规则重启。CLI 在主 Agent 的
+  工具调用期间每 30 秒发一次心跳（宿主收到 `tool_progress`），既刷新静默计时也算模型产出，
+  所以模型开工后卡住的工具调用与冷启动 query 一样，只受工具自身的超时约束。Runner 自行续写
+  （压缩后续写、截断续写）结束时，这一 query 若还有未确认回执或仍在磁盘上的 IPC 输入就留在
+  进行中，IPC 债务改从它最早一条 IPC 输入的注入时刻起算（已回显的开场输入也算）；续写结果的
+  回执确认后宿主再判一次，没有剩下的 IPC 输入就结束这一 query。重启后，已为该会话启动或排队
+  的会话任务（例如未确认投递的回放）就是下一轮，宿主不再另起一个。
+- 后台工作（除已转后台的 Bash 外的所有 SDK 后台任务，含子代理、监视器、MCP 任务）结清前，
+  CLI 照常接收输入，但 Runner 扣住结果、不发完成回执，这一 query 结束前 IPC 债务一直还不上。
+  Runner 发布的每个 result 都带 `pendingBgTasks`（结清后为 0），宿主只看 result 上的这个
+  值：大于 0 时把这一 query 记为扣住，卡死检测不做 CPU 探测，IPC 债务上限和空闲规则一律
+  defer（`background_tasks`），每个 query 只记一条 info 日志。中断、provider 失败、模型
+  回退重试、上下文溢出等结束 SDK query 的输出也解除扣住；解除时仍欠的 IPC 债务从解除时刻
+  重新计时。扣住期间子代理等网络或跑长命令时可能完全没有输出，Runner 于是按宿主经
+  `ContainerInput.hostIdleCloseMs` 传入的空闲关闭时长（min(`CONTAINER_TIMEOUT`,
+  `IDLE_TIMEOUT`)，看门狗不会更短）的三分之一、最长 5 分钟发一次保活控制帧
+  `backgroundHoldKeepalive`，没有存活的后台任务时暂停。宿主收到它只重置空闲关闭计时（帧本身
+  已重置进程看门狗），不算 Runner 活动，不进回合轨迹、Web、卡片或任何渠道。扣住从它的第一条
+  result 算起最多 2 小时（`BACKGROUND_HOLD_MAX_MS`，保活同一上限；不再扣住的 result 结束
+  这次扣住，之后再扣住重新计时）：超过后卡死检测按原规则和原有计时判定，扣住期间注入且仍欠着
+  的输入立即撞 IPC 债务上限；保活也停了，静默的 Runner 照常被空闲关闭和看门狗收掉。旧宿主
+  不传空闲关闭时长，Runner 就不发保活。
 - 一轮成功结束、最后一次模型响应只有思考而没有正文（静默停止）时，Claude Code 会先在
   轮内自行补问一次；仍无正文时 Runner 在同一 SDK 流里再要一次答复，每条输入最多一次。
   主动模式、已有后续输入排队、后台任务未结清时不续写。
@@ -787,7 +818,7 @@ Web 持久设置 > 环境变量 > 代码默认值
 | `CONTAINER_IMAGE`                    | `riba2534/happyclaw-agent:latest` | GitHub Actions 发布的 Runner 镜像                                     |
 | `CONTAINER_TIMEOUT`                  | `1800000`                         | Runner 无输出看门狗                                                   |
 | `IDLE_TIMEOUT`                       | `1800000`                         | 暖 Runner 空闲时间                                                    |
-| `STUCK_RUNNER_FORCE_RESTART_MINUTES` | `10`                              | IPC 债务强制恢复上限（4–120 分钟）                                    |
+| `STUCK_RUNNER_FORCE_RESTART_MINUTES` | `10`                              | IPC 债务强制恢复上限（4–120 分钟）；后台工作扣住结果的前 2 小时不适用 |
 | `MAX_CONCURRENT_CONTAINERS`          | `20`                              | Docker 并发                                                           |
 | `CONTAINER_MEMORY_LIMIT`             | 不限制                            | 单个容器内存上限，须带单位，同设 swap                                 |
 | `MAX_FILE_SIZE_MB`                   | `50`                              | Web/IM 入站文件上限                                                   |

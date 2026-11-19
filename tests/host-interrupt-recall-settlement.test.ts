@@ -137,6 +137,8 @@ function agentRun(name: string) {
     RECALL_STOP_TTL_MS: 10 * 60 * 1000,
     queue: {
       markRunnerActivity: vi.fn(),
+      markRunnerBackgroundHold: vi.fn(),
+      markRunnerServingQuery: vi.fn(),
       markRunnerQueryIdle: vi.fn(),
     },
     steeringTransitions: { shouldSuppressOutput: () => false },
