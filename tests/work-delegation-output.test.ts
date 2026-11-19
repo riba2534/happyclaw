@@ -8,6 +8,7 @@ import { describe, expect, test, vi } from 'vitest';
 
 import { AutomationTurnTracker } from '../src/automation-run-ledger.js';
 import { resolveContainerOutputInputTurnId } from '../src/channel-output-correlation.js';
+import { accountFailureNotice } from '../src/provider-failure.js';
 import * as interactionRuntime from '../src/workspace-interaction-runtime.js';
 import { createRuntimeSourceHarness } from './helpers/runtime-source.js';
 
@@ -48,6 +49,7 @@ function host(teamRole: Record<string, unknown>) {
     agentChannelTurnRuntimes: new Map(),
     activateAgentProjectionForInput: vi.fn(async () => {}),
     resolveProviderFailureClass: () => 'quota',
+    accountFailureNotice,
     broadcastContextUsage: vi.fn(async () => {}),
     rollbackIdleAgentCardReservation: vi.fn(),
     admittedWarmAgentInputs: new Map(),
