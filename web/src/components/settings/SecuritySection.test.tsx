@@ -14,9 +14,40 @@ vi.mock('../../stores/auth', () => ({
     logout: mocks.logout,
   }),
 }));
-vi.mock('../../api/client', () => ({
-  api: { get: vi.fn(async () => ({ sessions: [] })), delete: vi.fn() },
+// A server whose two-factor state the dialogs below change.
+const server = vi.hoisted(() => ({ twoFactor: false }));
+const api = vi.hoisted(() => ({
+  get: vi.fn(async (path: string) => {
+    if (path === '/api/auth/2fa') {
+      return { enabled: server.twoFactor, recovery_codes_remaining: 10 };
+    }
+    if (path === '/api/auth/passkeys') {
+      return {
+        passkeys: [],
+        rp_id: 'localhost',
+        unavailable_reason: null,
+        two_factor_enabled: server.twoFactor,
+      };
+    }
+    return { sessions: [] };
+  }),
+  post: vi.fn(async (path: string) => {
+    if (path === '/api/auth/2fa/setup') {
+      return {
+        secret: 'JBSWY3DPEHPK3PXP',
+        otpauth_uri: 'otpauth://totp/x',
+        qr_data_url: 'data:image/png;base64,AAAA',
+      };
+    }
+    if (path === '/api/auth/2fa/enable') {
+      server.twoFactor = true;
+      return { success: true, recovery_codes: ['abcde-fghij'] };
+    }
+    return {};
+  }),
+  delete: vi.fn(),
 }));
+vi.mock('../../api/client', () => ({ api }));
 const toast = vi.hoisted(() => ({ success: vi.fn(), error: vi.fn() }));
 vi.mock('sonner', () => ({ toast }));
 
@@ -29,6 +60,13 @@ let root: Root;
 let container: HTMLDivElement;
 beforeEach(async () => {
   mocks.changePassword.mockClear();
+  server.twoFactor = false;
+  Object.defineProperty(window, 'isSecureContext', {
+    value: true,
+    configurable: true,
+  });
+  (window as unknown as { PublicKeyCredential: unknown }).PublicKeyCredential =
+    function PublicKeyCredential() {};
   container = document.body.appendChild(document.createElement('div'));
   root = createRoot(container);
   await act(async () => root.render(<SecuritySection />));
@@ -126,5 +164,34 @@ describe('SecuritySection change password', () => {
       expect(toggle.getAttribute('aria-pressed')).toBe('true');
       expect(toggle.getAttribute('aria-label')).toBe('隐藏密码');
     }
+  });
+});
+
+describe('SecuritySection two-factor and passkeys', () => {
+  const button = (text: string) =>
+    [...document.querySelectorAll('button')].find(
+      (b) => b.textContent?.trim() === text,
+    )!;
+  const typeInto = async (selector: string, value: string) => {
+    const input = document.querySelector<HTMLInputElement>(selector)!;
+    await act(async () => {
+      setValue.call(input, value);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+  };
+
+  test('turning two-factor on makes adding a passkey ask for a code', async () => {
+    await act(async () => button('添加通行密钥').click());
+    expect(document.querySelector('#passkey-code')).toBeNull();
+    await act(async () => button('取消').click());
+
+    await act(async () => button('开启').click());
+    await typeInto('#two-factor-password', 'secret-password');
+    await typeInto('#two-factor-code', '123456');
+    await act(async () => button('确认').click());
+    await act(async () => button('我已保存').click());
+
+    await act(async () => button('添加通行密钥').click());
+    expect(document.querySelector('#passkey-code')).not.toBeNull();
   });
 });

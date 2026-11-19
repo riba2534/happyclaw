@@ -320,6 +320,26 @@ describe('passkey login', () => {
       .PublicKeyCredential;
   });
 
+  test('an IP address offers no passkey button and no autofill wait', async () => {
+    const happyDOM = (
+      window as unknown as { happyDOM: { setURL: (url: string) => void } }
+    ).happyDOM;
+    const previous = window.location.href;
+    for (const url of ['http://127.0.0.1:3000/login', 'http://[::1]:3000/']) {
+      happyDOM.setURL(url);
+      try {
+        await act(async () => root?.render(<LoginPage />));
+        await settle();
+        expect(passkeyButton()).toBeUndefined();
+        expect(mocks.authState.loginWithPasskey).not.toHaveBeenCalled();
+      } finally {
+        happyDOM.setURL(previous);
+      }
+    }
+    await act(async () => root?.render(<LoginPage />));
+    expect(passkeyButton()).toBeDefined();
+  });
+
   test('a failing autofill wait stays silent', async () => {
     mocks.authState.loginWithPasskey.mockRejectedValue({
       status: 400,

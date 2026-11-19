@@ -132,6 +132,32 @@ describe('PasskeySection', () => {
     );
   });
 
+  test('a code the list did not know about is asked for, not just reported', async () => {
+    api.get.mockResolvedValue({
+      passkeys: [],
+      rp_id: 'claw.example.com',
+      unavailable_reason: null,
+      two_factor_enabled: false,
+    });
+    api.post.mockRejectedValue({
+      status: 400,
+      message: 'A verification code is required',
+      body: { code: 'MFA_REQUIRED' },
+    });
+    await act(async () => root.render(<PasskeySection />));
+    await act(async () => button('添加通行密钥').click());
+    expect(document.querySelector('#passkey-code')).toBeNull();
+    await type(
+      document.querySelector<HTMLInputElement>('#passkey-password')!,
+      'secret-password',
+    );
+    await act(async () => button('继续').click());
+    expect(document.querySelector('#passkey-code')).not.toBeNull();
+    expect(document.querySelector('[role="alert"]')?.textContent).toBe(
+      '请输入验证器 App 上的验证码',
+    );
+  });
+
   test('an HTTP address explains why passkeys are unavailable', async () => {
     api.get.mockResolvedValue({
       passkeys: [PASSKEY],

@@ -64,6 +64,8 @@ export function SecuritySection() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [revokingId, setRevokingId] = useState<string | null>(null);
   const [showAllSessions, setShowAllSessions] = useState(false);
+  // Bumped when two-factor changes: adding a passkey may then need a code.
+  const [loginFactorsVersion, setLoginFactorsVersion] = useState(0);
 
   const loadSessions = useCallback(async () => {
     setLoading(true);
@@ -243,8 +245,14 @@ export function SecuritySection() {
         </SettingsFormFooter>
       </SettingsSection>
 
-      {user?.role !== 'guest' && <TwoFactorSection />}
-      {user?.role !== 'guest' && <PasskeySection />}
+      {user?.role !== 'guest' && (
+        <TwoFactorSection
+          onChanged={() => setLoginFactorsVersion((version) => version + 1)}
+        />
+      )}
+      {user?.role !== 'guest' && (
+        <PasskeySection factorsVersion={loginFactorsVersion} />
+      )}
 
       <SettingsSection
         title="登录设备"
