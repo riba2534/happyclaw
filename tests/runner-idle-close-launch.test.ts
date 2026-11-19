@@ -157,30 +157,68 @@ async function launch(
   }
 }
 
-describe("the host's idle close reaches the Runner", () => {
-  test.each(['host', 'container'] as const)(
-    '%s: the shorter of the idle and execution timeouts, as configured',
-    async (mode) => {
-      config.saveSystemSettings({
-        idleTimeout: 30 * 60_000,
-        containerTimeout: 30 * 60_000,
-      });
-      const byDefault = await launch(mode);
-      expect(byDefault).toBe(30 * 60_000);
-      expect(backgroundHoldKeepaliveIntervalMs(byDefault)).toBe(5 * 60_000);
+// One launch per test: each spawns a process, slow on a loaded machine.
+describe(
+  "the host's idle close reaches the Runner",
+  { timeout: 20_000 },
+  () => {
+    const MINUTE = 60_000;
+    // [case, idle timeout, execution timeout, workspace's own, idle close, keepalive interval]
+    const cases = [
+      [
+        'the defaults',
+        30 * MINUTE,
+        30 * MINUTE,
+        undefined,
+        30 * MINUTE,
+        5 * MINUTE,
+      ],
+      [
+        'the shortest idle timeout',
+        MINUTE,
+        30 * MINUTE,
+        undefined,
+        MINUTE,
+        20_000,
+      ],
+      [
+        'a shorter execution timeout',
+        30 * MINUTE,
+        6 * MINUTE,
+        undefined,
+        6 * MINUTE,
+        2 * MINUTE,
+      ],
+      [
+        "the workspace's own execution timeout",
+        30 * MINUTE,
+        30 * MINUTE,
+        3 * MINUTE,
+        3 * MINUTE,
+        MINUTE,
+      ],
+    ] as const;
 
-      config.saveSystemSettings({ idleTimeout: 60_000 });
-      const shortest = await launch(mode);
-      expect(shortest).toBe(60_000);
-      expect(backgroundHoldKeepaliveIntervalMs(shortest)).toBe(20_000);
-
-      config.saveSystemSettings({
-        idleTimeout: 30 * 60_000,
-        containerTimeout: 6 * 60_000,
-      });
-      expect(await launch(mode)).toBe(6 * 60_000);
-      // The workspace's own execution timeout comes first.
-      expect(await launch(mode, 3 * 60_000)).toBe(3 * 60_000);
-    },
-  );
-});
+    test.each(
+      (['host', 'container'] as const).flatMap((mode) =>
+        cases.map((entry) => [mode, ...entry] as const),
+      ),
+    )(
+      '%s, %s',
+      async (
+        mode,
+        _case,
+        idleTimeout,
+        containerTimeout,
+        own,
+        idleClose,
+        interval,
+      ) => {
+        config.saveSystemSettings({ idleTimeout, containerTimeout });
+        const sent = await launch(mode, own);
+        expect(sent).toBe(idleClose);
+        expect(backgroundHoldKeepaliveIntervalMs(sent)).toBe(interval);
+      },
+    );
+  },
+);
