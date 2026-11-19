@@ -56,6 +56,7 @@ const CONTEXT_OVERFLOW_PATTERNS: readonly RegExp[] = [
   /maximum (?:context|prompt) length/i,
   /context[_ ]length[_ ]exceeded/i,
   /context window.*exceeded/i,
+  /exceeds? the context window/i,
   /context.*too large/i,
   /exceeds.*token limit/i,
   /exceeds? the maximum number of tokens/i,

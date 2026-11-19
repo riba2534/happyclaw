@@ -49,10 +49,10 @@ const UPSTREAM_EXCERPT_MAX_CHARS = 240;
 /**
  * The upstream's own words about a failure as a notice may show them: the
  * message of a JSON error body if there is one, on one line, with addresses,
- * prefixed keys (`sk-…`), long hex strings and JWTs blanked, cut to a few
- * hundred characters. Field names and model paths stay: they are what the
- * user has to act on. The notice also reaches IM groups, so it carries no
- * more of the upstream's answer than that.
+ * keys (`sk-…`, `AIza…`, `AKIA…`, Bearer and `?key=` values), long hex
+ * strings and JWTs blanked, cut to a few hundred characters. Field names and
+ * model paths stay: they are what the user has to act on. The notice also
+ * reaches IM groups, so it carries no more of the upstream's answer than that.
  */
 export function upstreamErrorExcerpt(
   text: string | null | undefined,
@@ -76,6 +76,13 @@ export function upstreamErrorExcerpt(
     .replace(/\s+/g, ' ')
     .replace(/[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g, '[已隐藏]')
     .replace(/\b(?:sk|pk|rk|ak)-[\w-]{8,}/gi, '[已隐藏]')
+    .replace(/\bAIza[\w-]{30,}/g, '[已隐藏]')
+    .replace(/\bAKIA[0-9A-Z]{16}\b/g, '[已隐藏]')
+    .replace(/\b(Bearer\s+)[\w.~+/-]+=*/gi, '$1[已隐藏]')
+    .replace(
+      /([?&](?:key|api_key|apikey|token|access_token)=)[^&\s"']+/gi,
+      '$1[已隐藏]',
+    )
     .replace(/\beyJ[\w-]+\.[\w-]+\.[\w-]+/g, '[已隐藏]')
     .replace(/\b[0-9a-f]{32,}\b/gi, '[已隐藏]')
     .trim();
@@ -103,6 +110,7 @@ const CONTEXT_OVERFLOW_PATTERNS: readonly RegExp[] = [
   /maximum (?:context|prompt) length/i,
   /context[_ ]length[_ ]exceeded/i,
   /context window.*exceeded/i,
+  /exceeds? the context window/i,
   /context.*too large/i,
   /exceeds.*token limit/i,
   /exceeds? the maximum number of tokens/i,

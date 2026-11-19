@@ -279,6 +279,16 @@ describe('upstream error excerpt', () => {
     ).toBe('401 bad token [已隐藏]');
   });
 
+  test('blanks keys a gateway may echo back', () => {
+    expect(
+      upstreamErrorExcerpt(
+        'API Error: 400 API key not valid: AIzaSyA1234567890abcdefghijklmnopqrstu (https://example.test/v1?key=abc123&alt=sse) Authorization: Bearer abc.def-ghi AKIAABCDEFGHIJKLMNOP',
+      ),
+    ).toBe(
+      '400 API key not valid: [已隐藏] (https://example.test/v1?key=[已隐藏]&alt=sse) Authorization: Bearer [已隐藏] [已隐藏]',
+    );
+  });
+
   test('never cuts a character in half', () => {
     const excerpt = upstreamErrorExcerpt(`API Error: 400 ${'😀'.repeat(300)}`);
     expect(excerpt).toBe(`400 ${'😀'.repeat(236)}…`);
@@ -312,6 +322,7 @@ describe('context overflow wording', () => {
     'The input token count (190011) exceeds the maximum number of tokens allowed (131072).',
     'Input is too long for requested model.',
     'Too many input tokens',
+    'API Error: 400 Your input exceeds the context window of this model.',
   ];
   const other = [
     'API Error: 400 model X does not support the 1M context window',

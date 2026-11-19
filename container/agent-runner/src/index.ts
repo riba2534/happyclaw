@@ -1031,6 +1031,21 @@ function resolveAgentBuilderEnabled(input: ContainerInput): boolean {
 }
 
 /**
+ * A result that reports a failure rather than answering: the SDK flags it,
+ * or Claude Code wrote its own error text (`API Error: …`, `Prompt is too
+ * long …`). A normal answer may quote an upstream's overflow wording.
+ */
+function isErrorShapedResult(
+  resultMsg: Record<string, unknown>,
+  textResult: string,
+): boolean {
+  return (
+    resultMsg.is_error === true ||
+    /^\s*(?:API Error\b|Prompt is too long\b)/i.test(textResult)
+  );
+}
+
+/**
  * 检测会话转录中不可恢复的请求错误（400 invalid_request_error）。
  * 这类错误被固化在会话历史中，每次 resume 都会重放导致永久失败。
  * 例如：图片尺寸超过 8000px 限制、图片 MIME 声明与真实内容不一致等。
@@ -4103,7 +4118,11 @@ async function runQueryAttempt(
         }
 
         // SDK 将某些 API 错误包装为 subtype=success 的 result（不抛异常）
-        if (textResult && isContextOverflowText(textResult)) {
+        if (
+          textResult &&
+          isErrorShapedResult(resultMsg, textResult) &&
+          isContextOverflowText(textResult)
+        ) {
           log(
             `Context overflow detected in result: ${textResult.slice(0, 100)}`,
           );
