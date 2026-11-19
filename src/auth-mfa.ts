@@ -11,6 +11,7 @@ import {
   deleteTwoFactorForUser,
   enableTotp,
   getUserTotp,
+  isTotpEnabled,
   markTotpStepUsed,
   remainingRecoveryCodes,
   replaceRecoveryCodes,
@@ -173,7 +174,7 @@ export interface TwoFactorStatus {
 }
 
 export function twoFactorStatus(userId: string): TwoFactorStatus {
-  const enabled = !!getUserTotp(userId)?.enabled_at;
+  const enabled = isTotpEnabled(userId);
   return {
     enabled,
     recovery_codes_remaining: enabled ? remainingRecoveryCodes(userId) : 0,

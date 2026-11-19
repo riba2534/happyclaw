@@ -114,6 +114,26 @@ const authJsonBodyLimit = bodyLimit({
   onError: (c) => c.json({ error: 'Payload too large' }, 413),
 });
 
+export const INVALID_REQUEST = {
+  error: 'Invalid request',
+  code: 'INVALID_REQUEST',
+};
+const MFA_INVALID = { error: 'Invalid verification code', code: 'MFA_INVALID' };
+
+/**
+ * Check and count a login attempt in one synchronous step, under the
+ * system's login rate limit (see reserveLoginAttempt).
+ */
+function reserveAttempt(username: string, ip: string) {
+  const { maxLoginAttempts, loginLockoutMinutes } = getSystemSettings();
+  return reserveLoginAttempt(
+    username,
+    ip,
+    maxLoginAttempts,
+    loginLockoutMinutes,
+  );
+}
+
 // --- Helper Functions ---
 
 export function isUsernameConflictError(err: unknown): boolean {
@@ -314,13 +334,7 @@ authRoutes.post('/login', authJsonBodyLimit, async (c) => {
 
   // Rate limiting: check and count in one synchronous step, before the
   // awaited compare, so concurrent attempts cannot all pass the check.
-  const { maxLoginAttempts, loginLockoutMinutes } = getSystemSettings();
-  const rateCheck = reserveLoginAttempt(
-    username,
-    ip,
-    maxLoginAttempts,
-    loginLockoutMinutes,
-  );
+  const rateCheck = reserveAttempt(username, ip);
   if (!rateCheck.allowed) {
     logAuthEvent({
       event_type: 'login_failed',
@@ -414,12 +428,7 @@ authRoutes.post('/login', authJsonBodyLimit, async (c) => {
 authRoutes.post('/login/2fa', authJsonBodyLimit, async (c) => {
   const body = await c.req.json().catch(() => ({}));
   const validation = LoginSecondFactorSchema.safeParse(body);
-  if (!validation.success) {
-    return c.json(
-      { error: 'Invalid verification code', code: 'MFA_INVALID' },
-      400,
-    );
-  }
+  if (!validation.success) return c.json(MFA_INVALID, 400);
   const { challenge: token, code } = validation.data;
   const ip = getClientIp(c);
   const ua = c.req.header('user-agent') || null;
@@ -431,13 +440,7 @@ authRoutes.post('/login/2fa', authJsonBodyLimit, async (c) => {
     );
   }
   const { username } = challenge;
-  const { maxLoginAttempts, loginLockoutMinutes } = getSystemSettings();
-  const rateCheck = reserveLoginAttempt(
-    username,
-    ip,
-    maxLoginAttempts,
-    loginLockoutMinutes,
-  );
+  const rateCheck = reserveAttempt(username, ip);
   if (!rateCheck.allowed) {
     logAuthEvent({
       event_type: 'login_failed',
@@ -475,10 +478,7 @@ authRoutes.post('/login/2fa', authJsonBodyLimit, async (c) => {
       user_agent: ua,
       details: { reason: 'mfa_invalid' },
     });
-    return c.json(
-      { error: 'Invalid verification code', code: 'MFA_INVALID' },
-      400,
-    );
+    return c.json(MFA_INVALID, 400);
   }
   spendMfaChallenge(token);
   settleLoginAttempt(username, ip, 'success');
@@ -1000,6 +1000,23 @@ function totpSecretUnreadableResponse(
 }
 
 /**
+ * Reserve an attempt of the signed-in user, counted under the account's
+ * username; the 429 when the limit is reached.
+ */
+function reserveAccountAttempt(
+  c: Context<{ Variables: Variables }>,
+  user: AuthUser,
+): { username: string; ip: string } | Response {
+  const username = user.username.toLowerCase();
+  const ip = getClientIp(c);
+  const rateCheck = reserveAttempt(username, ip);
+  if (!rateCheck.allowed) {
+    return tooManyAttemptsResponse(c, rateCheck.retryAfterSeconds);
+  }
+  return { username, ip };
+}
+
+/**
  * Check the signed-in user's current password; a response when refused.
  * With `secondFactorFollows` a right password does not clear earlier
  * failures (see settleLoginAttempt): the code checked next does.
@@ -1012,18 +1029,9 @@ export async function checkCurrentPassword(
 ): Promise<Response | null> {
   const fullUser = getUserById(user.id);
   if (!fullUser) return c.json({ error: 'User not found' }, 404);
-  const username = user.username.toLowerCase();
-  const ip = getClientIp(c);
-  const { maxLoginAttempts, loginLockoutMinutes } = getSystemSettings();
-  const rateCheck = reserveLoginAttempt(
-    username,
-    ip,
-    maxLoginAttempts,
-    loginLockoutMinutes,
-  );
-  if (!rateCheck.allowed) {
-    return tooManyAttemptsResponse(c, rateCheck.retryAfterSeconds);
-  }
+  const attempt = reserveAccountAttempt(c, user);
+  if (attempt instanceof Response) return attempt;
+  const { username, ip } = attempt;
   let match: boolean;
   try {
     match = await verifyPassword(password, fullUser.password_hash);
@@ -1047,24 +1055,15 @@ export async function checkCurrentPassword(
 }
 
 /** Check a code of the signed-in user; a response when refused. */
-export function checkAccountCode(
+function checkAccountCode(
   c: Context<{ Variables: Variables }>,
   user: AuthUser,
   code: string,
   allowRecoveryCode: boolean,
 ): Response | null {
-  const username = user.username.toLowerCase();
-  const ip = getClientIp(c);
-  const { maxLoginAttempts, loginLockoutMinutes } = getSystemSettings();
-  const rateCheck = reserveLoginAttempt(
-    username,
-    ip,
-    maxLoginAttempts,
-    loginLockoutMinutes,
-  );
-  if (!rateCheck.allowed) {
-    return tooManyAttemptsResponse(c, rateCheck.retryAfterSeconds);
-  }
+  const attempt = reserveAccountAttempt(c, user);
+  if (attempt instanceof Response) return attempt;
+  const { username, ip } = attempt;
   let method: ReturnType<typeof verifySecondFactor>;
   try {
     method = verifySecondFactor(user.id, code, { allowRecoveryCode });
@@ -1073,12 +1072,7 @@ export function checkAccountCode(
     settleLoginAttempt(username, ip, 'not_evaluated');
     return totpSecretUnreadableResponse(c);
   }
-  if (!method) {
-    return c.json(
-      { error: 'Invalid verification code', code: 'MFA_INVALID' },
-      400,
-    );
-  }
+  if (!method) return c.json(MFA_INVALID, 400);
   settleLoginAttempt(username, ip, 'success');
   return null;
 }
@@ -1125,7 +1119,6 @@ function revokeOtherSessions(userId: string, currentSessionId: string): number {
 // Guests are read-only accounts their owner manages; they get no second
 // factor (none of these routes is on the guest allowlist).
 
-const INVALID_REQUEST = { error: 'Invalid request', code: 'INVALID_REQUEST' };
 const MFA_ALREADY_ON = {
   error: 'Two-factor authentication is already on',
   code: 'MFA_ALREADY_ENABLED',
@@ -1158,7 +1151,7 @@ authRoutes.post('/2fa/enable', authMiddleware, authJsonBodyLimit, async (c) => {
     await c.req.json().catch(() => ({})),
   );
   if (!validation.success) return c.json(INVALID_REQUEST, 400);
-  if (twoFactorStatus(user.id).enabled) return c.json(MFA_ALREADY_ON, 409);
+  if (isTotpEnabled(user.id)) return c.json(MFA_ALREADY_ON, 409);
   const denied = await checkCurrentPassword(c, user, validation.data.password);
   if (denied) return denied;
   let codes: string[] | null;
@@ -1168,12 +1161,7 @@ authRoutes.post('/2fa/enable', authMiddleware, authJsonBodyLimit, async (c) => {
     if (!(err instanceof TotpSecretUnreadableError)) throw err;
     return totpSecretUnreadableResponse(c);
   }
-  if (!codes) {
-    return c.json(
-      { error: 'Invalid verification code', code: 'MFA_INVALID' },
-      400,
-    );
-  }
+  if (!codes) return c.json(MFA_INVALID, 400);
   const sessionsRevoked = revokeOtherSessions(user.id, c.get('sessionId'));
   logAuthEvent({
     event_type: 'mfa_enabled',
@@ -1199,7 +1187,7 @@ authRoutes.post(
       await c.req.json().catch(() => ({})),
     );
     if (!validation.success) return c.json(INVALID_REQUEST, 400);
-    if (!twoFactorStatus(user.id).enabled) return c.json(MFA_OFF, 409);
+    if (!isTotpEnabled(user.id)) return c.json(MFA_OFF, 409);
     const wrongPassword = await checkCurrentPassword(
       c,
       user,
@@ -1230,7 +1218,7 @@ authRoutes.post(
       await c.req.json().catch(() => ({})),
     );
     if (!validation.success) return c.json(INVALID_REQUEST, 400);
-    if (!twoFactorStatus(user.id).enabled) return c.json(MFA_OFF, 409);
+    if (!isTotpEnabled(user.id)) return c.json(MFA_OFF, 409);
     // An authenticator code only: a recovery code cannot mint new ones.
     const denied = checkAccountCode(c, user, validation.data.code, false);
     if (denied) return denied;

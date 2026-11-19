@@ -34,6 +34,7 @@ import {
 import type { AuthUser } from '../types.js';
 import {
   checkCurrentPassword,
+  INVALID_REQUEST,
   issueLoginSession,
   reauthenticate,
 } from './auth.js';
@@ -201,7 +202,7 @@ passkeyRoutes.post(
       await c.req.json().catch(() => ({})),
     );
     if (!body.success) {
-      return c.json({ error: 'Invalid request', code: 'INVALID_REQUEST' }, 400);
+      return c.json(INVALID_REQUEST, 400);
     }
     if (countPasskeys(user.id) >= MAX_PASSKEYS_PER_USER) {
       return c.json(TOO_MANY_PASSKEYS, 409);
@@ -233,7 +234,7 @@ passkeyRoutes.post(
     const parsed = CredentialSchema.safeParse(body.response);
     const name = NameSchema.safeParse(body.name ?? '通行密钥');
     if (!parsed.success || !name.success) {
-      return c.json({ error: 'Invalid request', code: 'INVALID_REQUEST' }, 400);
+      return c.json(INVALID_REQUEST, 400);
     }
     // Checked again: options issued before the last slot filled are still live.
     if (countPasskeys(user.id) >= MAX_PASSKEYS_PER_USER) {
