@@ -4,9 +4,9 @@ import { describe, expect, test } from 'vitest';
 import {
   CacheHitRatePanel,
   cacheRateRows,
-  formatHitRate,
   type CacheRateResponse,
 } from '../web/src/components/usage/CacheHitRatePanel.js';
+import { formatHitRate } from '../web/src/lib/usage-metrics.js';
 
 const row = (hitRate: number | null) => ({
   inputTokens: 10,

@@ -8,6 +8,7 @@ import {
   type DataTableColumn,
 } from '@/components/common';
 import { Skeleton } from '@/components/ui/skeleton';
+import { formatHitRate } from '@/lib/usage-metrics';
 
 export interface CacheRateRow {
   inputTokens: number;
@@ -37,10 +38,6 @@ const DIMENSIONS: Array<{ value: Dimension; label: string }> = [
   { value: 'model', label: '模型' },
   { value: 'day', label: '日期' },
 ];
-
-export function formatHitRate(rate: number | null): string {
-  return rate === null ? '—' : `${(rate * 100).toFixed(1)}%`;
-}
 
 export function cacheRateRows(
   data: CacheRateResponse,

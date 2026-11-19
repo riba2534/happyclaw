@@ -3250,7 +3250,14 @@ function updateStreamingSnapshot(
 ): void {
   // Context audits are operator diagnostics. They must not enter user-facing
   // WebSocket snapshots, even if this helper is called outside the broadcaster.
-  if (event.eventType === 'context_audit') return;
+  // Live usage totals are owner-only and superseded within seconds; a
+  // snapshot is replayed to every viewer, so they stay out of it.
+  if (
+    event.eventType === 'context_audit' ||
+    event.eventType === 'usage_progress'
+  ) {
+    return;
+  }
 
   // turn 干净结束（silent-success）：删除快照而非累积，避免 WS 重连恢复到
   // 「生成中」僵尸快照。前端收到同一 idle 事件后清 waiting/streaming。
@@ -3601,12 +3608,15 @@ export function broadcastStreamEvent(
         event,
         runId: decision.runId,
       };
-  // Token usage and cost (the run's `usage` event) stay with the owner.
+  // Token usage and cost (the run's `usage` event and its live totals)
+  // stay with the owner.
   broadcastToGroupAudience(
     chatJid,
     msg,
     isHostGroupJid(chatJid),
-    event.eventType === 'usage' ? null : msg,
+    event.eventType === 'usage' || event.eventType === 'usage_progress'
+      ? null
+      : msg,
   );
 
   // Accumulate snapshot for both main and agent streams.

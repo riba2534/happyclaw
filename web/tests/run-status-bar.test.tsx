@@ -319,6 +319,55 @@ describe('the progress the Agent sent, in a proactive workspace', () => {
   });
 });
 
+describe('measured usage, refreshed as each model call ends', () => {
+  const progress = (
+    over: Partial<NonNullable<StreamingState['usageProgress']>> = {},
+  ) => ({
+    calls: 3,
+    inputTokens: 1_000,
+    cacheReadInputTokens: 99_000,
+    cacheCreationInputTokens: 0,
+    outputTokens: 1_780,
+    streamOutputTokens: 1_780,
+    streamMs: 10_000,
+    ...over,
+  });
+
+  it('shows the hit rate and the measured speed once a call has ended', async () => {
+    await mount({ partialText: '开头', usageProgress: progress() });
+    expect(meta()).toBe('12s · 命中 99.0% · 178 tok/s');
+  });
+
+  it('follows each call', async () => {
+    await mount({ partialText: '开头', usageProgress: progress() });
+    await set({
+      usageProgress: progress({
+        calls: 4,
+        cacheReadInputTokens: 49_000,
+        streamOutputTokens: 2_000,
+        streamMs: 20_000,
+      }),
+    });
+    expect(meta()).toBe('12s · 命中 98.0% · 100 tok/s');
+  });
+
+  it('leaves out a hit rate with nothing read from the cache', async () => {
+    await mount({
+      partialText: '开头',
+      usageProgress: progress({ cacheReadInputTokens: 0 }),
+    });
+    expect(meta()).toBe('12s · 178 tok/s');
+  });
+
+  it('measured speed replaces the estimate from the text', async () => {
+    await mount();
+    await write(3000);
+    expect(meta()).toBe('15s · 100 tok/s');
+    await set({ usageProgress: progress() });
+    expect(meta()).toBe('15s · 命中 99.0% · 178 tok/s');
+  });
+});
+
 describe('the speed beside the timer, while the reply streams', () => {
   it('shows the estimated speed after the timer', async () => {
     await mount();
