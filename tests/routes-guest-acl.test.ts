@@ -388,6 +388,14 @@ describe('guest guard: default deny', () => {
     ['POST', '/api/bug-report/submit'],
     ['PUT', '/api/auth/profile'],
     ['POST', '/api/auth/avatar'],
+    ['POST', '/api/auth/2fa/setup'],
+    ['POST', '/api/auth/2fa/enable'],
+    ['POST', '/api/auth/2fa/disable'],
+    ['POST', '/api/auth/2fa/recovery-codes'],
+    ['POST', '/api/auth/passkeys/options'],
+    ['POST', '/api/auth/passkeys'],
+    ['PATCH', '/api/auth/passkeys/c1'],
+    ['POST', '/api/auth/passkeys/c1/delete'],
     ['PUT', '/api/config/system'],
     ['POST', '/api/guests'],
     ['POST', '/api/admin/users'],
@@ -425,6 +433,8 @@ describe('guest guard: default deny', () => {
     '/api/browse/directories',
     '/api/guests',
     '/api/admin/users',
+    '/api/auth/2fa',
+    '/api/auth/passkeys',
   ];
   test.each(reads)('GET %s → 403', async (url) => {
     const res = await call(guestCookie, 'GET', url);

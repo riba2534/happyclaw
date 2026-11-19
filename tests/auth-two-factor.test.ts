@@ -64,6 +64,8 @@ const { resetMfaChallengesForTest } = await import('../src/auth-mfa.js');
 const authRoutes = (await import('../src/routes/auth.js')).default;
 const adminRoutes = (await import('../src/routes/admin.js')).default;
 
+const Database = (await import('better-sqlite3')).default;
+
 const app = new Hono()
   .route('/api/auth', authRoutes)
   .route('/api/admin', adminRoutes);
@@ -93,6 +95,19 @@ function createUser(id: string, role: 'admin' | 'member'): void {
   });
 }
 
+function createSession(id: string, userId: string): void {
+  const now = new Date().toISOString();
+  db.createUserSession({
+    id,
+    user_id: userId,
+    ip_address: null,
+    user_agent: null,
+    created_at: now,
+    expires_at: '2099-01-01T00:00:00.000Z',
+    last_active_at: now,
+  });
+}
+
 function as(id: string) {
   process.env.HAPPYCLAW_TEST_USER_ID = id;
 }
@@ -102,6 +117,7 @@ async function enrol(id: string, nowStep = totpStep()) {
   as(id);
   const setup = await (await post('/api/auth/2fa/setup', {})).json();
   const enable = await post('/api/auth/2fa/enable', {
+    password: PASSWORD,
     code: totpCode(setup.secret, nowStep),
   });
   expect(enable.status).toBe(200);
@@ -112,6 +128,12 @@ async function enrol(id: string, nowStep = totpStep()) {
   };
 }
 
+async function challengeFor(username: string): Promise<string> {
+  const login = await post('/api/auth/login', { username, password: PASSWORD });
+  expect(login.status).toBe(200);
+  return (await login.json()).challenge;
+}
+
 beforeAll(() => {
   fs.mkdirSync(path.join(dataDir, 'db'), { recursive: true });
   fs.mkdirSync(path.join(dataDir, 'groups'), { recursive: true });
@@ -119,6 +141,9 @@ beforeAll(() => {
   createUser('owner', 'admin');
   createUser('alice', 'member');
   createUser('bob', 'member');
+  createUser('carol', 'member');
+  createUser('dave', 'member');
+  createUser('erin', 'member');
 });
 
 beforeEach(() => {
@@ -139,13 +164,18 @@ describe('two-factor login', () => {
     expect(setup.otpauth_uri).toMatch(/^otpauth:\/\/totp\/HappyClaw%3Aalice\?/);
     expect(setup.qr_data_url).toMatch(/^data:image\/png;base64,/);
 
-    const wrong = await post('/api/auth/2fa/enable', { code: '000000' });
+    const wrong = await post('/api/auth/2fa/enable', {
+      password: PASSWORD,
+      code: '000000',
+    });
     expect(wrong.status).toBe(400);
+    expect((await wrong.json()).code).toBe('MFA_INVALID');
     expect((await (await app.request('/api/auth/2fa')).json()).enabled).toBe(
       false,
     );
 
     const ok = await post('/api/auth/2fa/enable', {
+      password: PASSWORD,
       code: totpCode(setup.secret, totpStep()),
     });
     const body = await ok.json();
@@ -156,7 +186,47 @@ describe('two-factor login', () => {
       recovery_codes_remaining: 10,
     });
     // A second setup while on is refused.
-    expect((await post('/api/auth/2fa/setup', {})).status).toBe(409);
+    const again = await post('/api/auth/2fa/setup', {});
+    expect(again.status).toBe(409);
+    expect((await again.json()).code).toBe('MFA_ALREADY_ENABLED');
+  });
+
+  test('turning it on takes the password and ends the other sessions', async () => {
+    as('carol');
+    createSession('test-session', 'carol');
+    createSession('carol-phone', 'carol');
+    const setup = await (await post('/api/auth/2fa/setup', {})).json();
+    const code = totpCode(setup.secret, totpStep());
+
+    const noPassword = await post('/api/auth/2fa/enable', { code });
+    expect(noPassword.status).toBe(400);
+    expect((await noPassword.json()).code).toBe('INVALID_REQUEST');
+    const wrongPassword = await post('/api/auth/2fa/enable', {
+      password: 'not-the-password',
+      code,
+    });
+    expect(wrongPassword.status).toBe(400);
+    expect((await wrongPassword.json()).code).toBe(
+      'CURRENT_PASSWORD_INCORRECT',
+    );
+    expect((await (await app.request('/api/auth/2fa')).json()).enabled).toBe(
+      false,
+    );
+    expect(db.getUserSessions('carol')).toHaveLength(2);
+
+    const ok = await post('/api/auth/2fa/enable', {
+      password: PASSWORD,
+      code,
+    });
+    expect(ok.status).toBe(200);
+    expect((await ok.json()).sessions_revoked).toBe(1);
+    expect(db.getUserSessions('carol').map((s) => s.id)).toEqual([
+      'test-session',
+    ]);
+    expect(
+      db.queryAuthAuditLogs({ event_type: 'mfa_enabled', username: 'carol' })
+        .logs[0]?.details,
+    ).toMatchObject({ sessions_revoked: 1 });
   });
 
   test('a correct password earns a challenge, not a session', async () => {
@@ -188,11 +258,8 @@ describe('two-factor login', () => {
     expect(
       (await post('/api/auth/login/2fa', { challenge, code: '000000' })).status,
     ).toBe(400);
-    const again = await (
-      await post('/api/auth/login', { username: 'bob', password: PASSWORD })
-    ).json();
     const replay = await post('/api/auth/login/2fa', {
-      challenge: again.challenge,
+      challenge: await challengeFor('bob'),
       code: totpCode(secret, totpStep()),
     });
     expect(replay.status).toBe(400);
@@ -203,20 +270,14 @@ describe('two-factor login', () => {
     db.restoreUser('bob');
     db.updateUserFields('bob', { status: 'active' });
     const { recovery } = await enrol('bob');
-    const login = async () =>
-      (
-        await (
-          await post('/api/auth/login', { username: 'bob', password: PASSWORD })
-        ).json()
-      ).challenge as string;
 
     const first = await post('/api/auth/login/2fa', {
-      challenge: await login(),
+      challenge: await challengeFor('bob'),
       code: recovery[0].toUpperCase(),
     });
     expect(first.status).toBe(200);
     const second = await post('/api/auth/login/2fa', {
-      challenge: await login(),
+      challenge: await challengeFor('bob'),
       code: recovery[0],
     });
     expect(second.status).toBe(400);
@@ -227,25 +288,84 @@ describe('two-factor login', () => {
     ).toBe(9);
   });
 
-  test('a challenge allows five wrong codes', async () => {
-    const challenge = (
-      await (
-        await post('/api/auth/login', { username: 'alice', password: PASSWORD })
-      ).json()
-    ).challenge;
-    for (let i = 0; i < 4; i += 1) {
-      resetLoginAttemptsForTest();
-      await post('/api/auth/login/2fa', { challenge, code: '000000' });
+  test('recovery codes are stored with a salt of their own', async () => {
+    const conn = new Database(path.join(dataDir, 'db', 'messages.db'), {
+      readonly: true,
+    });
+    try {
+      const rows = conn
+        .prepare(
+          'SELECT salt, code_hash FROM user_recovery_codes WHERE user_id = ?',
+        )
+        .all('bob') as Array<{ salt: string; code_hash: string }>;
+      expect(rows).toHaveLength(10);
+      expect(new Set(rows.map((row) => row.salt)).size).toBe(10);
+      for (const row of rows) expect(row.salt).toMatch(/^[0-9a-f]{32}$/);
+    } finally {
+      conn.close();
     }
-    resetLoginAttemptsForTest();
-    expect(
-      (await post('/api/auth/login/2fa', { challenge, code: '000000' })).status,
-    ).toBe(400);
+  });
+
+  test('a challenge allows five wrong codes, and they count as failed logins', async () => {
+    const challenge = await challengeFor('alice');
+    for (let i = 0; i < 5; i += 1) {
+      const wrong = await post('/api/auth/login/2fa', {
+        challenge,
+        code: '000000',
+      });
+      expect(wrong.status).toBe(400);
+    }
     const after = await post('/api/auth/login/2fa', {
       challenge,
       code: '000000',
     });
     expect((await after.json()).code).toBe('MFA_EXPIRED');
+    // Five wrong codes lock the password step too.
+    const login = await post('/api/auth/login', {
+      username: 'alice',
+      password: PASSWORD,
+    });
+    expect(login.status).toBe(429);
+  });
+
+  test('knowing the password does not reset the code guesses', async () => {
+    const first = await challengeFor('alice');
+    for (let i = 0; i < 4; i += 1) {
+      await post('/api/auth/login/2fa', { challenge: first, code: '000000' });
+    }
+    // A fresh challenge must not wipe the four failures.
+    const second = await challengeFor('alice');
+    expect(
+      (await post('/api/auth/login/2fa', { challenge: second, code: '000000' }))
+        .status,
+    ).toBe(400);
+    expect(
+      (await post('/api/auth/login', { username: 'alice', password: PASSWORD }))
+        .status,
+    ).toBe(429);
+  });
+
+  test('a right second step clears the failures', async () => {
+    const { secret } = await enrol('dave', totpStep() - 1);
+    const challenge = await challengeFor('dave');
+    for (let i = 0; i < 3; i += 1) {
+      await post('/api/auth/login/2fa', { challenge, code: '000000' });
+    }
+    const ok = await post('/api/auth/login/2fa', {
+      challenge,
+      code: totpCode(secret, totpStep()),
+    });
+    expect(ok.status).toBe(200);
+    for (let i = 0; i < 4; i += 1) {
+      await post('/api/auth/login', {
+        username: 'dave',
+        password: 'nope-1234',
+      });
+    }
+    expect(
+      (await post('/api/auth/login', { username: 'dave', password: PASSWORD }))
+        .status,
+    ).toBe(200);
   });
 
   test('turning it off needs the password and a current code', async () => {
@@ -255,14 +375,73 @@ describe('two-factor login', () => {
       code: '000000',
     });
     expect(noPassword.status).toBe(400);
+    expect((await noPassword.json()).code).toBe('CURRENT_PASSWORD_INCORRECT');
     const noCode = await post('/api/auth/2fa/disable', {
       password: PASSWORD,
       code: '000000',
     });
     expect(noCode.status).toBe(400);
+    expect((await noCode.json()).code).toBe('MFA_INVALID');
     expect((await (await app.request('/api/auth/2fa')).json()).enabled).toBe(
       true,
     );
+    as('erin');
+    const off = await post('/api/auth/2fa/disable', {
+      password: PASSWORD,
+      code: '000000',
+    });
+    expect(off.status).toBe(409);
+    expect((await off.json()).code).toBe('MFA_NOT_ENABLED');
+  });
+
+  test('wrong passwords to turn it off count as failed logins', async () => {
+    as('alice');
+    for (let i = 0; i < 5; i += 1) {
+      const wrong = await post('/api/auth/2fa/disable', {
+        password: `wrong-password-${i}`,
+        code: '000000',
+      });
+      expect((await wrong.json()).code).toBe('CURRENT_PASSWORD_INCORRECT');
+    }
+    const limited = await post('/api/auth/2fa/disable', {
+      password: PASSWORD,
+      code: '000000',
+    });
+    expect(limited.status).toBe(429);
+    expect((await limited.json()).code).toBe('TOO_MANY_ATTEMPTS');
+  });
+
+  test('a lost sealing key is an explicit error, and recovery codes still work', async () => {
+    const { recovery } = await enrol('erin', totpStep() - 1);
+    // Sealed under some other key: what a replaced claude-provider.key reads.
+    const conn = new Database(path.join(dataDir, 'db', 'messages.db'));
+    try {
+      conn
+        .prepare("UPDATE user_totp SET secret_enc = ? WHERE user_id = 'erin'")
+        .run('v1:AAAAAAAAAAAAAAAA:AAAAAAAAAAAAAAAAAAAAAA==:AAAAAAAA');
+    } finally {
+      conn.close();
+    }
+    const challenge = await challengeFor('erin');
+    const totp = await post('/api/auth/login/2fa', {
+      challenge,
+      code: '123456',
+    });
+    expect(totp.status).toBe(500);
+    expect((await totp.json()).code).toBe('MFA_SECRET_UNREADABLE');
+    // The challenge survives, and a recovery code needs no key.
+    const ok = await post('/api/auth/login/2fa', {
+      challenge,
+      code: recovery[0],
+    });
+    expect(ok.status).toBe(200);
+
+    as('erin');
+    const regenerate = await post('/api/auth/2fa/recovery-codes', {
+      code: '123456',
+    });
+    expect(regenerate.status).toBe(500);
+    expect((await regenerate.json()).code).toBe('MFA_SECRET_UNREADABLE');
   });
 
   test('an admin resets a member, not their own', async () => {

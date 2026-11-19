@@ -5,8 +5,10 @@
  * db.ts binds this module to its connection; no other module touches these
  * tables directly. The TOTP secret is stored sealed (see sealSecret); a row
  * whose enabled_at is NULL is an enrolment awaiting its first code. Recovery
- * codes are stored only as SHA-256 hashes: they carry 50 random bits and the
- * login rate limit applies, so a slow hash adds nothing.
+ * codes are stored only as salted SHA-256 hashes, each with its own random
+ * salt: they carry 50 random bits and the login rate limit applies, so a slow
+ * hash adds nothing. They need no key, so they still work when the sealing
+ * key is lost and the authenticator can no longer be checked.
  */
 import crypto from 'node:crypto';
 
@@ -61,11 +63,14 @@ export function initAuthFactorStore(db: SqliteDatabase | null): void {
       created_at TEXT NOT NULL
     );
     CREATE TABLE IF NOT EXISTS user_recovery_codes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id TEXT NOT NULL,
+      salt TEXT NOT NULL,
       code_hash TEXT NOT NULL,
-      used_at TEXT,
-      PRIMARY KEY (user_id, code_hash)
+      used_at TEXT
     );
+    CREATE INDEX IF NOT EXISTS idx_user_recovery_codes_user
+      ON user_recovery_codes(user_id);
     CREATE TABLE IF NOT EXISTS webauthn_credentials (
       id TEXT PRIMARY KEY,
       user_id TEXT NOT NULL,
@@ -82,9 +87,17 @@ export function initAuthFactorStore(db: SqliteDatabase | null): void {
   `);
 }
 
-export function hashRecoveryCode(code: string): string {
-  const normalized = code.toLowerCase().replace(/[^a-z0-9]/g, '');
-  return crypto.createHash('sha256').update(normalized).digest('hex');
+/** Case and separators do not matter: `ABCDE-FGHIJ` is `abcdefghij`. */
+function normalizeRecoveryCode(code: string): string {
+  return code.toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+function hashRecoveryCode(salt: Buffer, code: string): Buffer {
+  return crypto
+    .createHash('sha256')
+    .update(salt)
+    .update(normalizeRecoveryCode(code))
+    .digest();
 }
 
 export function getUserTotp(userId: string): UserTotpRow | undefined {
@@ -148,24 +161,49 @@ export function replaceRecoveryCodes(userId: string, codes: string[]): void {
   requireDatabase().transaction(() => {
     stmt('DELETE FROM user_recovery_codes WHERE user_id = ?').run(userId);
     for (const code of codes) {
+      const salt = crypto.randomBytes(16);
       stmt(
-        'INSERT INTO user_recovery_codes (user_id, code_hash) VALUES (?, ?)',
-      ).run(userId, hashRecoveryCode(code));
+        'INSERT INTO user_recovery_codes (user_id, salt, code_hash) VALUES (?, ?, ?)',
+      ).run(
+        userId,
+        salt.toString('hex'),
+        hashRecoveryCode(salt, code).toString('hex'),
+      );
     }
   })();
 }
 
-/** Spend a recovery code; false when it is unknown or already used. */
+/**
+ * Spend a recovery code; false when it is unknown or already used. Every
+ * unused code is compared, in constant time, whatever matches.
+ */
 export function consumeRecoveryCode(
   userId: string,
   code: string,
   now = new Date().toISOString(),
 ): boolean {
-  const result = stmt(
-    `UPDATE user_recovery_codes SET used_at = ?
-     WHERE user_id = ? AND code_hash = ? AND used_at IS NULL`,
-  ).run(now, userId, hashRecoveryCode(code));
-  return result.changes > 0;
+  return requireDatabase().transaction(() => {
+    const rows = stmt(
+      'SELECT id, salt, code_hash FROM user_recovery_codes WHERE user_id = ? AND used_at IS NULL',
+    ).all(userId) as Array<{ id: number; salt: string; code_hash: string }>;
+    let matched: number | null = null;
+    for (const row of rows) {
+      const expected = Buffer.from(row.code_hash, 'hex');
+      const actual = hashRecoveryCode(Buffer.from(row.salt, 'hex'), code);
+      if (
+        expected.length === actual.length &&
+        crypto.timingSafeEqual(expected, actual)
+      ) {
+        matched = row.id;
+      }
+    }
+    if (matched === null) return false;
+    return (
+      stmt(
+        'UPDATE user_recovery_codes SET used_at = ? WHERE id = ? AND used_at IS NULL',
+      ).run(now, matched).changes > 0
+    );
+  })();
 }
 
 export function remainingRecoveryCodes(userId: string): number {

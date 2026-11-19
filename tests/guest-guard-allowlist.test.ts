@@ -77,6 +77,17 @@ describe('guest route allowlist', () => {
     ['GET', '/api/billing/me'],
     ['GET', '/api/agent-profiles'],
     ['GET', '/api/guests'],
+    // Second factors and passkeys belong to a full account.
+    ['GET', '/api/auth/2fa'],
+    ['POST', '/api/auth/2fa/setup'],
+    ['POST', '/api/auth/2fa/enable'],
+    ['POST', '/api/auth/2fa/disable'],
+    ['POST', '/api/auth/2fa/recovery-codes'],
+    ['GET', '/api/auth/passkeys'],
+    ['POST', '/api/auth/passkeys/options'],
+    ['POST', '/api/auth/passkeys'],
+    ['PATCH', '/api/auth/passkeys/c1'],
+    ['POST', '/api/auth/passkeys/c1/delete'],
     // Web Push belongs to a full account.
     ['GET', '/api/push/vapid-public-key'],
     ['GET', '/api/push/status'],

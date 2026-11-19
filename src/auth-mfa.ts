@@ -17,6 +17,7 @@ import {
   savePendingTotp,
 } from './auth-factor-store.js';
 import { openSecret, sealSecret } from './channel-account-secrets.js';
+import { logger } from './logger.js';
 import {
   base32Encode,
   generateTotpSecret,
@@ -106,6 +107,30 @@ export function resetMfaChallengesForTest(): void {
 
 // --- Second factors -----------------------------------------------------
 
+/**
+ * The stored authenticator secret cannot be opened: the sealing key
+ * (data/config/claude-provider.key) was lost or replaced since enrolment.
+ * Recovery codes do not depend on it and still work.
+ */
+export class TotpSecretUnreadableError extends Error {
+  constructor() {
+    super('The authenticator secret cannot be read');
+    this.name = 'TotpSecretUnreadableError';
+  }
+}
+
+function readTotpSecret(userId: string, sealed: string): string {
+  try {
+    return openSecret(sealed);
+  } catch (err) {
+    logger.error(
+      { err, userId },
+      'Cannot open the TOTP secret; the sealing key (data/config/claude-provider.key) may have changed',
+    );
+    throw new TotpSecretUnreadableError();
+  }
+}
+
 /** Ten codes of ten base32 characters (50 random bits each), `xxxxx-xxxxx`. */
 export function generateRecoveryCodes(): string[] {
   return Array.from({ length: RECOVERY_CODE_COUNT }, () => {
@@ -118,7 +143,8 @@ export type SecondFactorMethod = 'totp' | 'recovery_code';
 
 /**
  * Check a TOTP code (six digits) or a recovery code and spend it. A TOTP
- * step is accepted once; a recovery code once.
+ * step is accepted once; a recovery code once. Throws
+ * TotpSecretUnreadableError for a TOTP code when the secret cannot be read.
  */
 export function verifySecondFactor(
   userId: string,
@@ -129,7 +155,7 @@ export function verifySecondFactor(
   if (!row?.enabled_at) return null;
   const trimmed = code.trim();
   if (/^\d{3}\s?\d{3}$/.test(trimmed)) {
-    const step = verifyTotp(openSecret(row.secret_enc), trimmed, {
+    const step = verifyTotp(readTotpSecret(userId, row.secret_enc), trimmed, {
       nowMs: options.nowMs,
       lastUsedStep: row.last_used_step,
     });
@@ -183,7 +209,9 @@ export function confirmTotpEnrolment(
 ): string[] | null {
   const row = getUserTotp(userId);
   if (!row || row.enabled_at) return null;
-  const step = verifyTotp(openSecret(row.secret_enc), code, { nowMs });
+  const step = verifyTotp(readTotpSecret(userId, row.secret_enc), code, {
+    nowMs,
+  });
   if (step === null) return null;
   const codes = generateRecoveryCodes();
   return enableTotp(userId, step, codes) ? codes : null;

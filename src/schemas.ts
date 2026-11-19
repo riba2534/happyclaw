@@ -920,6 +920,9 @@ export const TwoFactorDisableSchema = z.object({
   code: SecondFactorCodeSchema,
 });
 
+/** Turning two-factor on: the password and the first authenticator code. */
+export const TwoFactorEnableSchema = TwoFactorDisableSchema;
+
 export const ChangePasswordSchema = z.object({
   current_password: z.string().min(1),
   new_password: z.string().min(8).max(128),
