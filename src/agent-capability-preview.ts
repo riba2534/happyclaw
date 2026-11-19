@@ -32,8 +32,8 @@ import {
   HOST_CLAUDE_SETTINGS_FILES,
 } from './claude-context-resolver.js';
 import {
-  availableSubagentTools,
-  resolveSubagentLaunch,
+  isUnavailableSubagentTool,
+  resolveSubagentLaunchWithoutConnection,
   subagentPolicyModels,
   type SubagentDefaultSource,
   type SubagentLaunch,
@@ -132,22 +132,12 @@ function previewSubagents(
   run: SubagentRunPreview | null | undefined,
 ): { section: AgentCapabilityPreview['subagents']; notes: string[] } {
   if (!policy) return { section: null, notes: [] };
-  // Without a connection no model name applies; the rest still does.
-  const launch =
-    run?.launch ??
-    resolveSubagentLaunch({
-      policy,
-      onAgentConnection: false,
-      models: [],
-      takesEffort: () => true,
-    });
+  const launch = run?.launch ?? resolveSubagentLaunchWithoutConnection(policy);
   const notes: string[] = [];
   const unavailable = [
     ...new Set(
       policy.definitions.flatMap((definition) =>
-        (definition.tools ?? []).filter(
-          (tool) => availableSubagentTools([tool]).length === 0,
-        ),
+        (definition.tools ?? []).filter(isUnavailableSubagentTool),
       ),
     ),
   ];

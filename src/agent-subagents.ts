@@ -107,11 +107,14 @@ function toolRuleName(rule: string): string {
   return open === -1 ? rule : rule.slice(0, open);
 }
 
+/** Whether a tool rule names a tool no session has. */
+export function isUnavailableSubagentTool(tool: string): boolean {
+  return SUBAGENT_UNAVAILABLE_TOOLS.includes(toolRuleName(tool));
+}
+
 /** A sub-agent's tools without those no session has. */
 export function availableSubagentTools(tools: readonly string[]): string[] {
-  return tools.filter(
-    (tool) => !SUBAGENT_UNAVAILABLE_TOOLS.includes(toolRuleName(tool)),
-  );
+  return tools.filter((tool) => !isUnavailableSubagentTool(tool));
 }
 
 function normalizeDefinition(raw: unknown): AgentSubagentDefinition | null {
@@ -302,6 +305,22 @@ export function resolveSubagentLaunch(
     }
   }
   return result;
+}
+
+/**
+ * A policy for a launch without a connection (the Workspace's own
+ * environment): no model name applies, the definitions and the cap still
+ * do, and an effort goes as picked, like the Agent's own there.
+ */
+export function resolveSubagentLaunchWithoutConnection(
+  policy: AgentSubagentPolicy | undefined,
+): SubagentLaunch {
+  return resolveSubagentLaunch({
+    policy,
+    onAgentConnection: false,
+    models: [],
+    takesEffort: () => true,
+  });
 }
 
 /** Who chose the model a launch's sub-agents run on by default. */

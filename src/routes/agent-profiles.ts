@@ -104,7 +104,12 @@ import {
   getRunContextSnapshot,
   hashRuntimePolicy,
 } from '../run-context-snapshot.js';
-import { getProviders, providerHasCredentials } from '../runtime-config.js';
+import {
+  getProviderById,
+  getProviders,
+  providerHasCredentials,
+  type UnifiedProvider,
+} from '../runtime-config.js';
 import { splitOneMillionSuffix } from '../model-providers.js';
 import {
   listConnectionModels,
@@ -285,16 +290,21 @@ function agentModelRejection(
   };
 }
 
+function connectionOf(
+  modelConfigId: string | null | undefined,
+): UnifiedProvider | undefined {
+  return modelConfigId
+    ? (getProviderById(modelConfigId) ?? undefined)
+    : undefined;
+}
+
 /**
  * Whether the connection offers `model` to a sub-agent: one of its models,
  * never on a ChatGPT subscription (every sub-agent runs the turn's model).
  */
 function offersSubagentModel(
-  modelConfigId: string | null | undefined,
+  provider: UnifiedProvider | undefined,
 ): (model: string) => boolean {
-  const provider = modelConfigId
-    ? getProviders().find((item) => item.id === modelConfigId)
-    : undefined;
   if (!provider || provider.codexOAuthCredentials) return () => false;
   const offered = new Set(listConnectionModels(provider).map((e) => e.id));
   return (model) => offered.has(splitOneMillionSuffix(model).model);
@@ -311,9 +321,7 @@ function subagentModelRejection(
 ): { error: string; code: 'SUBAGENT_MODEL_NOT_IN_CONNECTION' } | null {
   const models = subagentPolicyModels(policy.subagents);
   if (models.length === 0) return null;
-  const provider = modelConfigId
-    ? getProviders().find((item) => item.id === modelConfigId)
-    : undefined;
+  const provider = connectionOf(modelConfigId);
   if (!provider) {
     return {
       error: '为子代理指定模型前，需要先为智能体选择模型连接',
@@ -326,7 +334,7 @@ function subagentModelRejection(
       code: 'SUBAGENT_MODEL_NOT_IN_CONNECTION',
     };
   }
-  const offered = offersSubagentModel(modelConfigId);
+  const offered = offersSubagentModel(provider);
   const missing = models.filter((model) => !offered(model));
   return missing.length === 0
     ? null
@@ -566,7 +574,7 @@ agentProfileRoutes.post('/:id/duplicate', authMiddleware, async (c) => {
       // connection when the source runs; the copy saves them that way.
       const policy = withoutSubagentModels(
         withRunnableEffort(granted, source.model_config_id, source.model),
-        offersSubagentModel(source.model_config_id),
+        offersSubagentModel(connectionOf(source.model_config_id)),
       );
       const rejection = newProfileRejection(user, {
         runtimePolicy: policy,

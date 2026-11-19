@@ -114,6 +114,7 @@ import {
 import {
   launchSubagentDefault,
   resolveSubagentLaunch,
+  resolveSubagentLaunchWithoutConnection,
   subagentLaunchModels,
   subagentPolicyModels,
   type SubagentLaunch,
@@ -2041,17 +2042,11 @@ export function prepareLaunchInput(
     input,
     selection ?? leaveSessionConnection(input.groupFolder, input.agentId),
   );
-  // Without a connection (the Workspace's own environment) no model of the
-  // Agent's connection applies; the definitions and the cap still do, and
-  // an effort goes as picked, like the Agent's own there.
   const subagents = selection
     ? (selection.subagents ?? {})
-    : resolveSubagentLaunch({
-        policy: input.agentProfile?.runtimePolicy?.subagents,
-        onAgentConnection: false,
-        models: [],
-        takesEffort: () => true,
-      });
+    : resolveSubagentLaunchWithoutConnection(
+        input.agentProfile?.runtimePolicy?.subagents,
+      );
   const { thinking: _thinking, subagents: _subagents, ...rest } = switched;
   return {
     ...rest,
