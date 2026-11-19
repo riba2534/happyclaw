@@ -42,16 +42,17 @@ export const PROVIDER_REQUEST_REJECTED_USER_NOTICE =
  * large for the model.
  */
 export const PROVIDER_CONTEXT_OVERFLOW_USER_NOTICE =
-  '⚠️ 这次请求超过了模型的上下文上限，自动压缩之后仍然放不下（多半是这条输入或附件太大）。请缩短后重新发送，或发送 /fresh 开一个新窗口。';
+  '⚠️ 这次请求超过了模型的上下文上限，自动压缩之后仍然放不下。多半是这条输入或附件太大，请缩短后重新发送，或发送 /fresh 开一个新窗口；如果每次都这样，请检查工作区的 CLAUDE.md、Skills 和 MCP 是否过大。';
 
 const UPSTREAM_EXCERPT_MAX_CHARS = 240;
 
 /**
  * The upstream's own words about a failure as a notice may show them: the
- * message of a JSON error body if there is one, on one line, with addresses
- * and anything shaped like a key or token blanked, cut to a few hundred
- * characters. The notice also reaches IM groups, so it carries no more of
- * the upstream's answer than a user needs to act on.
+ * message of a JSON error body if there is one, on one line, with addresses,
+ * prefixed keys (`sk-…`), long hex strings and JWTs blanked, cut to a few
+ * hundred characters. Field names and model paths stay: they are what the
+ * user has to act on. The notice also reaches IM groups, so it carries no
+ * more of the upstream's answer than that.
  */
 export function upstreamErrorExcerpt(
   text: string | null | undefined,
@@ -75,23 +76,44 @@ export function upstreamErrorExcerpt(
     .replace(/\s+/g, ' ')
     .replace(/[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g, '[已隐藏]')
     .replace(/\b(?:sk|pk|rk|ak)-[\w-]{8,}/gi, '[已隐藏]')
-    .replace(/\b[A-Za-z0-9_]{32,}\b|[A-Za-z0-9+/]{40,}={0,2}/g, '[已隐藏]')
+    .replace(/\beyJ[\w-]+\.[\w-]+\.[\w-]+/g, '[已隐藏]')
+    .replace(/\b[0-9a-f]{32,}\b/gi, '[已隐藏]')
     .trim();
   if (!excerpt) return undefined;
-  return excerpt.length > UPSTREAM_EXCERPT_MAX_CHARS
-    ? `${excerpt.slice(0, UPSTREAM_EXCERPT_MAX_CHARS).trimEnd()}…`
+  const chars = Array.from(excerpt);
+  return chars.length > UPSTREAM_EXCERPT_MAX_CHARS
+    ? `${chars.slice(0, UPSTREAM_EXCERPT_MAX_CHARS).join('').trimEnd()}…`
     : excerpt;
 }
 
-/** Context overflow in the upstream's words, as Claude Code passes them on. */
-const CONTEXT_OVERFLOW_TEXT =
-  /prompt is too long|context (?:length|window)|maximum (?:context|prompt) length|exceeds? the maximum number of tokens|input is too long|too many (?:input )?tokens/i;
+/**
+ * Context overflow in the upstream's words, as Claude Code passes them on.
+ * Kept in step with the Runner's isContextOverflowText
+ * (container/agent-runner/src/provider-error-text.ts); a shared table of
+ * wordings tests both.
+ */
+export function isContextOverflowText(
+  text: string | null | undefined,
+): boolean {
+  return CONTEXT_OVERFLOW_PATTERNS.some((pattern) => pattern.test(text ?? ''));
+}
+
+const CONTEXT_OVERFLOW_PATTERNS: readonly RegExp[] = [
+  /prompt is too long/i,
+  /maximum (?:context|prompt) length/i,
+  /context[_ ]length[_ ]exceeded/i,
+  /context window.*exceeded/i,
+  /context.*too large/i,
+  /exceeds.*token limit/i,
+  /exceeds? the maximum number of tokens/i,
+  /input is too long/i,
+  /too many (?:input )?tokens/i,
+];
 
 function withUpstreamExcerpt(
   notice: string,
-  text: string | null | undefined,
+  excerpt: string | undefined,
 ): string {
-  const excerpt = upstreamErrorExcerpt(text);
   return excerpt ? `${notice}\n上游返回：${excerpt}` : notice;
 }
 
@@ -132,18 +154,22 @@ export function resolveTerminalProviderFailureNotice(
 ): string | undefined {
   const failureClass = resolveProviderFailureClass(output);
   const text = output.providerErrorText;
+  const excerpt = upstreamErrorExcerpt(text);
   if (failureClass === 'config') {
-    if (text && CONTEXT_OVERFLOW_TEXT.test(text)) {
-      return withUpstreamExcerpt(PROVIDER_CONTEXT_OVERFLOW_USER_NOTICE, text);
+    if (isContextOverflowText(text)) {
+      return withUpstreamExcerpt(
+        PROVIDER_CONTEXT_OVERFLOW_USER_NOTICE,
+        excerpt,
+      );
     }
-    return upstreamErrorExcerpt(text)
-      ? withUpstreamExcerpt(PROVIDER_REQUEST_REJECTED_USER_NOTICE, text)
+    return excerpt
+      ? withUpstreamExcerpt(PROVIDER_REQUEST_REJECTED_USER_NOTICE, excerpt)
       : PROVIDER_MODEL_CONFIG_USER_NOTICE;
   }
   if (failureClass !== 'transient') return undefined;
   return output.providerLivenessTimeout
     ? PROVIDER_LIVENESS_TIMEOUT_USER_NOTICE
-    : withUpstreamExcerpt(PROVIDER_TRANSIENT_FAILURE_USER_NOTICE, text);
+    : withUpstreamExcerpt(PROVIDER_TRANSIENT_FAILURE_USER_NOTICE, excerpt);
 }
 
 /**
@@ -158,7 +184,10 @@ export function accountFailureNotice(output: {
 }): string {
   return (
     output.providerFailureNotice ||
-    withUpstreamExcerpt(PROVIDER_FAILURE_USER_NOTICE, output.providerErrorText)
+    withUpstreamExcerpt(
+      PROVIDER_FAILURE_USER_NOTICE,
+      upstreamErrorExcerpt(output.providerErrorText),
+    )
   );
 }
 

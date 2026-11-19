@@ -137,6 +137,7 @@ import { defaultToolSearchEnv, pinToolSearch } from './tool-search.js';
 import { pinMaxOutputTokens } from './max-output-pin.js';
 import {
   assistantMessageText,
+  isContextOverflowText,
   providerErrorText,
 } from './provider-error-text.js';
 import {
@@ -1027,20 +1028,6 @@ function normalizeHomeFlags(input: ContainerInput): {
 /** Agent Builder is a host decision for each session; absent means off. */
 function resolveAgentBuilderEnabled(input: ContainerInput): boolean {
   return input.agentBuilderEnabled === true;
-}
-
-/**
- * 检测是否为上下文溢出错误
- */
-function isContextOverflowError(msg: string): boolean {
-  const patterns: RegExp[] = [
-    /prompt is too long/i,
-    /maximum context length/i,
-    /context.*too large/i,
-    /exceeds.*token limit/i,
-    /context window.*exceeded/i,
-  ];
-  return patterns.some((pattern) => pattern.test(msg));
 }
 
 /**
@@ -4116,7 +4103,7 @@ async function runQueryAttempt(
         }
 
         // SDK 将某些 API 错误包装为 subtype=success 的 result（不抛异常）
-        if (textResult && isContextOverflowError(textResult)) {
+        if (textResult && isContextOverflowText(textResult)) {
           log(
             `Context overflow detected in result: ${textResult.slice(0, 100)}`,
           );
@@ -4467,7 +4454,7 @@ async function runQueryAttempt(
     }
 
     // 检测上下文溢出错误
-    if (isContextOverflowError(errorMessage)) {
+    if (isContextOverflowText(errorMessage)) {
       log(`Context overflow detected: ${errorMessage}`);
       // ── 发射已累积的部分回复，避免用户已看到的流式内容丢失 ──
       const partialText = processor.getFullText();
@@ -4905,7 +4892,9 @@ async function main(): Promise<void> {
   // Query loop: run query -> wait for IPC message -> run new query -> repeat
   let resumeAt: string | undefined;
   let overflowRetryCount = 0;
-  const MAX_OVERFLOW_RETRIES = 3;
+  // Claude Code has compacted and asked again before an overflow gets here,
+  // so one more attempt only covers a passing failure of that compaction.
+  const MAX_OVERFLOW_RETRIES = 2;
   let consecutiveCompactions = 0;
   const MAX_CONSECUTIVE_COMPACTIONS = 3;
   // 暂存的会话历史上下文：当 auto-continue 阶段发生 sessionResumeFailed 时，

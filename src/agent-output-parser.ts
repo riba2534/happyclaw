@@ -53,6 +53,7 @@ export type ProviderFailureCarryover = Pick<
   | 'providerRateLimitScope'
   | 'providerRateLimitModel'
   | 'providerRateLimitResetsAt'
+  | 'providerErrorText'
 >;
 
 export interface StdoutParserState {
@@ -149,6 +150,10 @@ function captureProviderFailureCarryover(
   }
   if (output.providerRateLimitResetsAt !== undefined) {
     carry.providerRateLimitResetsAt = output.providerRateLimitResetsAt;
+  }
+  // The terminal notice quotes it, and is resolved again on the close output.
+  if (output.providerErrorText) {
+    carry.providerErrorText = output.providerErrorText;
   }
   return carry;
 }

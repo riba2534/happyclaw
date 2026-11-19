@@ -217,6 +217,13 @@ describe('provider model fallback lifecycle', () => {
     expect(
       upstreamErrorStatus('API Error: Request rejected (429) · usage limit'),
     ).toBe(429);
+    expect(upstreamErrorStatus('API Error (claude-x): 400 bad')).toBe(400);
+    expect(
+      upstreamErrorStatus('API Error: Connection error (cause) (400)'),
+    ).toBe(400);
+    expect(upstreamErrorStatus('API Error: 128000 is too many')).toBe(
+      undefined,
+    );
     expect(upstreamErrorStatus('Prompt is too long')).toBeUndefined();
     expect(upstreamErrorStatus(undefined)).toBeUndefined();
   });

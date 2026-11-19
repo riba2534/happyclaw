@@ -39,3 +39,26 @@ export function assistantMessageText(message: unknown): string | undefined {
   );
   return texts.length > 0 ? texts.join('\n') : undefined;
 }
+
+/**
+ * Context overflow in the upstream's words. Kept in step with the host's
+ * isContextOverflowText (src/provider-failure.ts); a shared table of
+ * wordings tests both.
+ */
+export function isContextOverflowText(
+  text: string | null | undefined,
+): boolean {
+  return CONTEXT_OVERFLOW_PATTERNS.some((pattern) => pattern.test(text ?? ''));
+}
+
+const CONTEXT_OVERFLOW_PATTERNS: readonly RegExp[] = [
+  /prompt is too long/i,
+  /maximum (?:context|prompt) length/i,
+  /context[_ ]length[_ ]exceeded/i,
+  /context window.*exceeded/i,
+  /context.*too large/i,
+  /exceeds.*token limit/i,
+  /exceeds? the maximum number of tokens/i,
+  /input is too long/i,
+  /too many (?:input )?tokens/i,
+];

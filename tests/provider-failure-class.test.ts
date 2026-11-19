@@ -3,6 +3,7 @@ import { describe, expect, test } from 'vitest';
 
 import {
   accountFailureNotice,
+  isContextOverflowText,
   PROVIDER_CONTEXT_OVERFLOW_USER_NOTICE,
   PROVIDER_FAILURE_USER_NOTICE,
   PROVIDER_LIVENESS_TIMEOUT_USER_NOTICE,
@@ -13,6 +14,7 @@ import {
   resolveTerminalProviderFailureNotice,
   upstreamErrorExcerpt,
 } from '../src/provider-failure.js';
+import { isContextOverflowText as runnerIsContextOverflowText } from '../container/agent-runner/src/provider-error-text.js';
 
 const hostRunner = readFileSync('src/container-runner.ts', 'utf8');
 const hostIndex = readFileSync('src/index.ts', 'utf8');
@@ -255,6 +257,34 @@ describe('upstream error excerpt', () => {
     );
   });
 
+  test('keeps what the user acts on: field names and model paths', () => {
+    expect(
+      upstreamErrorExcerpt(
+        'API Error: 404 Publisher Model `projects/my-proj/locations/us-east5/publishers/anthropic/models/claude-opus-4-5` was not found',
+      ),
+    ).toBe(
+      '404 Publisher Model `projects/my-proj/locations/us-east5/publishers/anthropic/models/claude-opus-4-5` was not found',
+    );
+    expect(
+      upstreamErrorExcerpt(
+        'API Error: 400 context_management.edits.0: clear_thinking_20251015_requires_thinking unsupported',
+      ),
+    ).toBe(
+      '400 context_management.edits.0: clear_thinking_20251015_requires_thinking unsupported',
+    );
+    expect(
+      upstreamErrorExcerpt(
+        'API Error: 401 bad token eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2lnbmF0dXJl',
+      ),
+    ).toBe('401 bad token [已隐藏]');
+  });
+
+  test('never cuts a character in half', () => {
+    const excerpt = upstreamErrorExcerpt(`API Error: 400 ${'😀'.repeat(300)}`);
+    expect(excerpt).toBe(`400 ${'😀'.repeat(236)}…`);
+    expect(excerpt?.isWellFormed()).toBe(true);
+  });
+
   test('keeps one short line', () => {
     const excerpt = upstreamErrorExcerpt(
       `API Error: 400 ${'word '.repeat(200)}`,
@@ -266,5 +296,35 @@ describe('upstream error excerpt', () => {
     );
     expect(upstreamErrorExcerpt('   ')).toBeUndefined();
     expect(upstreamErrorExcerpt(undefined)).toBeUndefined();
+  });
+});
+
+describe('context overflow wording', () => {
+  // One table for the Runner's and the host's matcher, so they cannot drift.
+  const overflow = [
+    "Prompt is too long · the provider said: This model's maximum context length is 131072 tokens.",
+    'prompt is too long: 1050000 tokens > 1000000 maximum',
+    "This model's maximum prompt length is 131072 but the request contains 190011 tokens.",
+    'context_length_exceeded: Input tokens exceed the configured limit',
+    'The context window was exceeded',
+    'Request context too large for model',
+    'Input exceeds the token limit of 131072',
+    'The input token count (190011) exceeds the maximum number of tokens allowed (131072).',
+    'Input is too long for requested model.',
+    'Too many input tokens',
+  ];
+  const other = [
+    'API Error: 400 model X does not support the 1M context window',
+    'API Error: 400 tools.defer_loading: deferred tools are not loaded in place',
+    'API Error: 400 Invalid value for temperature: must be between 0 and 1.',
+    'API Error: 529 Overloaded',
+  ];
+  test.each(overflow)('overflow: %s', (text) => {
+    expect(isContextOverflowText(text)).toBe(true);
+    expect(runnerIsContextOverflowText(text)).toBe(true);
+  });
+  test.each(other)('not overflow: %s', (text) => {
+    expect(isContextOverflowText(text)).toBe(false);
+    expect(runnerIsContextOverflowText(text)).toBe(false);
   });
 });

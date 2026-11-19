@@ -224,15 +224,18 @@ const REJECTED_REQUEST_STATUSES = new Set([400, 404, 413, 422]);
 
 /**
  * The upstream's HTTP status in Claude Code's error text (`API Error: 400 …`,
- * `API Error: Request rejected (429) · …`), if it names one.
+ * `API Error: Request rejected (429) · …`), if it names one: right after the
+ * colon, or as a parenthesised 4xx/5xx near the start.
  */
 export function upstreamErrorStatus(
   errorText: string | null | undefined,
 ): number | undefined {
-  const match = /^\s*API Error:\s*(?:(\d{3})\b|[^\n(]*\((\d{3})\))/.exec(
-    errorText ?? '',
-  );
-  const status = Number(match?.[1] ?? match?.[2]);
+  const head = (errorText ?? '').slice(0, 160);
+  if (!/^\s*API Error\b/.test(head)) return undefined;
+  const match =
+    /^\s*API Error(?:\s*\([^)\n]*\))?:\s*(\d{3})\b/.exec(head) ??
+    /\(([45]\d{2})\)/.exec(head);
+  const status = Number(match?.[1]);
   return Number.isInteger(status) ? status : undefined;
 }
 

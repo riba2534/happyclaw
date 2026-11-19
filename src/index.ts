@@ -12777,7 +12777,7 @@ async function processAgentConversation(
         'context-overflow',
         'context_overflow',
         PROVIDER_CONTEXT_OVERFLOW_USER_NOTICE,
-        message,
+        PROVIDER_CONTEXT_OVERFLOW_USER_NOTICE,
       );
       return false;
     }
