@@ -34,8 +34,34 @@ export const MAX_SUBAGENT_DEFINITIONS = 20;
 export const MAX_SUBAGENT_DESCRIPTION_CHARS = 1000;
 export const MAX_SUBAGENT_PROMPT_CHARS = 20000;
 export const MAX_SUBAGENT_TOOLS = 100;
-/** The CLI's own default (CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS). */
+export const MAX_SUBAGENT_TOOL_CHARS = 200;
+/** The highest cap an Agent may set (CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS). */
 export const MAX_CONCURRENT_SUBAGENTS = 20;
+
+/**
+ * A tool rule of a sub-agent: a tool name (`Read`, `mcp__github__get_issue`,
+ * `mcp__github__*`), optionally with its argument in parentheses
+ * (`Bash(git log:*)`), which may hold spaces. Commas and line breaks
+ * separate rules where they are typed, so a rule holds neither.
+ */
+export const SUBAGENT_TOOL_RE = /^[A-Za-z][\w.*-]*(?:\([^,\r\n\0]*\))?$/;
+
+/**
+ * Built-in tools the Runner removes from every session
+ * (RUNNER_DISALLOWED_BUILTIN_TOOLS in the Runner's builtin-tool-policy.ts):
+ * they depend on a Claude Code process that outlives the turn or wait for
+ * an approval no one gives. A sub-agent that lists one does not get it.
+ */
+export const SUBAGENT_UNAVAILABLE_TOOLS: readonly string[] = [
+  'CronCreate',
+  'CronDelete',
+  'CronList',
+  'ScheduleWakeup',
+  'EnterWorktree',
+  'ExitWorktree',
+  'EnterPlanMode',
+  'ExitPlanMode',
+];
 
 /** Built-in agent types a definition must not shadow. */
 export const RESERVED_SUBAGENT_NAMES: ReadonlySet<string> = new Set([
@@ -64,9 +90,28 @@ function normalizeTools(value: unknown): string[] | null {
   for (const item of value) {
     if (typeof item !== 'string') continue;
     const tool = item.trim();
-    if (tool && !tools.includes(tool)) tools.push(tool);
+    if (
+      tool.length <= MAX_SUBAGENT_TOOL_CHARS &&
+      SUBAGENT_TOOL_RE.test(tool) &&
+      !tools.includes(tool)
+    ) {
+      tools.push(tool);
+    }
   }
   return tools.slice(0, MAX_SUBAGENT_TOOLS);
+}
+
+/** The tool a rule names: `Bash` for `Bash(git log:*)`. */
+function toolRuleName(rule: string): string {
+  const open = rule.indexOf('(');
+  return open === -1 ? rule : rule.slice(0, open);
+}
+
+/** A sub-agent's tools without those no session has. */
+export function availableSubagentTools(tools: readonly string[]): string[] {
+  return tools.filter(
+    (tool) => !SUBAGENT_UNAVAILABLE_TOOLS.includes(toolRuleName(tool)),
+  );
 }
 
 function normalizeDefinition(raw: unknown): AgentSubagentDefinition | null {
@@ -130,6 +175,44 @@ export function normalizeSubagentPolicy(
     : policy;
 }
 
+/**
+ * The part of a policy that is the Agent's identity: the custom sub-agents,
+ * whose descriptions the Agent tool lists to the model, as Skills and MCP
+ * are listed. The cap and the default sub-agent model only change how a
+ * Runner starts: saving them restarts the Runner, as any policy change does,
+ * and keeps the SDK session. Undefined without custom sub-agents, so an
+ * Agent without them keeps the identity it had before.
+ */
+export function subagentIdentity(
+  policy: AgentSubagentPolicy | undefined,
+): Pick<AgentSubagentPolicy, 'definitions'> | undefined {
+  return policy && policy.definitions.length > 0
+    ? { definitions: policy.definitions }
+    : undefined;
+}
+
+/**
+ * The policy without the model names it holds, which belong to a connection
+ * of this instance: for an export or an import, or a copy whose connection
+ * no longer offers them. `keep` says which names stay. Undefined when
+ * nothing else is set.
+ */
+export function subagentPolicyWithoutModels(
+  policy: AgentSubagentPolicy | undefined,
+  keep: (model: string) => boolean = () => false,
+): AgentSubagentPolicy | undefined {
+  if (!policy) return undefined;
+  const kept = (model: string | null) => (model && keep(model) ? model : null);
+  return normalizeSubagentPolicy({
+    ...policy,
+    model: kept(policy.model),
+    definitions: policy.definitions.map((definition) => ({
+      ...definition,
+      model: kept(definition.model),
+    })),
+  });
+}
+
 /** The models a policy names, for checking them against a connection. */
 export function subagentPolicyModels(
   policy: AgentSubagentPolicy | undefined,
@@ -165,21 +248,20 @@ export interface SubagentLaunchInput {
   onAgentConnection: boolean;
   /** The models of the turn's connection; empty when it has no list. */
   models: readonly ProviderModelEntry[];
-  /** The efforts a model takes, or null when it takes none. */
-  effortsOf: (modelId: string) => readonly string[] | null;
   /**
-   * The efforts of the model an inheriting definition runs on: the default
-   * sub-agent model (this policy's, else the connection's role), else the
-   * turn's model.
+   * Whether a definition's effort goes to the model it runs on: its own (a
+   * model id of the connection), or null for the one it inherits (the
+   * default sub-agent model, else the turn's).
    */
-  inheritedEfforts: readonly string[] | null;
+  takesEffort: (model: string | null, effort: SubagentEffortLevel) => boolean;
 }
 
 /**
  * Resolve a policy for one launch. Names of the Agent's connection apply only
  * on that connection and only while it still offers them; otherwise the
  * definition inherits and the connection's role decides the default. An
- * effort is sent only to a model that takes it, as for the main model.
+ * effort goes only where `takesEffort` says the model takes it, and a
+ * definition's tools leave out those no session has.
  */
 export function resolveSubagentLaunch(
   input: SubagentLaunchInput,
@@ -190,12 +272,6 @@ export function resolveSubagentLaunch(
     id && input.onAgentConnection
       ? findModelEntry(input.models, id)
       : undefined;
-  const launchName = (id: string | null): string | undefined => {
-    const entry = entryOf(id);
-    return entry
-      ? launchModelName(entry.id, windowOf(input.models, entry.id))
-      : undefined;
-  };
   const result: SubagentLaunch = {};
   const defaultEntry = entryOf(policy.model);
   if (defaultEntry) result.defaultModel = defaultEntry.id;
@@ -205,22 +281,77 @@ export function resolveSubagentLaunch(
   if (policy.definitions.length > 0) {
     result.agents = {};
     for (const definition of policy.definitions) {
-      const model = launchName(definition.model);
-      const efforts = model
-        ? input.effortsOf(definition.model!)
-        : input.inheritedEfforts;
+      const entry = entryOf(definition.model);
+      const model = entry
+        ? launchModelName(entry.id, windowOf(input.models, entry.id))
+        : undefined;
       const effort =
-        definition.effort && efforts?.includes(definition.effort)
+        definition.effort &&
+        input.takesEffort(entry?.id ?? null, definition.effort)
           ? definition.effort
           : undefined;
       result.agents[definition.name] = {
         description: definition.description,
         prompt: definition.prompt,
-        ...(definition.tools ? { tools: definition.tools } : {}),
+        ...(definition.tools
+          ? { tools: availableSubagentTools(definition.tools) }
+          : {}),
         ...(model ? { model } : {}),
         ...(effort ? { effort } : {}),
       };
     }
   }
   return result;
+}
+
+/** Who chose the model a launch's sub-agents run on by default. */
+export type SubagentDefaultSource =
+  /** The Agent's default sub-agent model. */
+  | 'agent'
+  /** The connection's 「后台与子代理」 role. */
+  | 'connection'
+  /** Nothing chose one: the turn's model. */
+  | 'turn'
+  /** Nothing chose one on the official endpoint: Claude Code decides. */
+  | 'claude_code';
+
+/**
+ * The model the sub-agents of a launch on a connection run on when they name
+ * none (CLAUDE_CODE_SUBAGENT_MODEL as buildClaudeEnvLines writes it): the
+ * Agent's default (`agentDefault`, already resolved for the connection),
+ * else on a third-party endpoint the connection's role, else the turn's
+ * model. A ChatGPT subscription runs every tier on the turn's model; the
+ * official endpoint is given only the Agent's.
+ */
+export function launchSubagentDefault(
+  connection: {
+    anthropicBaseUrl: string;
+    codexOAuthCredentials?: unknown;
+    roles?: { subagent?: string };
+  },
+  agentDefault: string | undefined,
+  turnModel: string,
+): { model: string | null; source: SubagentDefaultSource } {
+  if (connection.codexOAuthCredentials) {
+    return { model: turnModel || null, source: 'turn' };
+  }
+  if (agentDefault) return { model: agentDefault, source: 'agent' };
+  if (!connection.anthropicBaseUrl) {
+    return { model: null, source: 'claude_code' };
+  }
+  if (connection.roles?.subagent) {
+    return { model: connection.roles.subagent, source: 'connection' };
+  }
+  return { model: turnModel || null, source: 'turn' };
+}
+
+/**
+ * The models a launch's custom sub-agents name; their declared reply limits
+ * count toward CLAUDE_CODE_MAX_OUTPUT_TOKENS like the roles'.
+ */
+export function subagentLaunchModels(launch: SubagentLaunch): string[] {
+  const models = Object.values(launch.agents ?? {})
+    .map((agent) => agent.model)
+    .filter((model): model is string => !!model);
+  return [...new Set(models)];
 }

@@ -11,6 +11,7 @@ import {
   buildClaudeEnvLines,
   buildContainerEnvLines,
   clearInheritedClaudeProviderEnv,
+  derivedMaxOutputTokens,
   hasExplicitWorkspaceClaudeAuth,
   mergeClaudeEnvConfig,
   type ClaudeProviderConfig,
@@ -504,23 +505,81 @@ describe('buildClaudeEnvLines', () => {
   });
 });
 
-describe('official endpoint sub-agent model', () => {
-  test('only an explicit sub-agent model is sent', () => {
+describe('an Agent’s sub-agent models', () => {
+  const envOf = (lines: string[]) =>
+    Object.fromEntries(
+      lines.map((line) => {
+        const separator = line.indexOf('=');
+        return [line.slice(0, separator), line.slice(separator + 1)];
+      }),
+    );
+
+  test('the official endpoint is given only the Agent’s own', () => {
     const official = config({
       anthropicBaseUrl: '',
       anthropicApiKey: 'key',
       anthropicModel: 'claude-opus-5-5',
+      // A connection role, as a legacy env migration may leave: not sent.
+      roles: { subagent: 'claude-sonnet-5-5' },
     });
     expect(
-      buildClaudeEnvLines(official, NO_CUSTOM_ENV).some((line) =>
-        line.startsWith('CLAUDE_CODE_SUBAGENT_MODEL='),
-      ),
-    ).toBe(false);
+      envOf(buildClaudeEnvLines(official, NO_CUSTOM_ENV)),
+    ).not.toHaveProperty('CLAUDE_CODE_SUBAGENT_MODEL');
     expect(
       buildClaudeEnvLines(
-        { ...official, roles: { subagent: 'claude-haiku-5-5' } },
+        { ...official, subagentModel: 'claude-haiku-5-5' },
         NO_CUSTOM_ENV,
       ),
     ).toContain('CLAUDE_CODE_SUBAGENT_MODEL=claude-haiku-5-5');
+  });
+
+  test('on a third-party endpoint the Agent’s default replaces the role', () => {
+    const relay = config({
+      anthropicModel: 'big',
+      models: [{ id: 'big' }, { id: 'role' }, { id: 'mine' }],
+      roles: { subagent: 'role' },
+    });
+    expect(
+      envOf(buildClaudeEnvLines(relay, NO_CUSTOM_ENV))
+        .CLAUDE_CODE_SUBAGENT_MODEL,
+    ).toBe('role');
+    expect(
+      envOf(
+        buildClaudeEnvLines({ ...relay, subagentModel: 'mine' }, NO_CUSTOM_ENV),
+      ).CLAUDE_CODE_SUBAGENT_MODEL,
+    ).toBe('mine');
+  });
+
+  test('their declared reply limits count toward the launch’s', () => {
+    const relay = config({
+      anthropicModel: 'big',
+      models: [
+        { id: 'big', maxOutputTokens: 128_000 },
+        { id: 'mid', maxOutputTokens: 64_000 },
+        { id: 'low', maxOutputTokens: 48_000 },
+        { id: 'silent' },
+      ],
+    });
+    const limit = (patch: Partial<ClaudeProviderConfig>) => ({
+      derived: derivedMaxOutputTokens({ ...relay, ...patch }, {}),
+      env: envOf(buildClaudeEnvLines({ ...relay, ...patch }, NO_CUSTOM_ENV))
+        .CLAUDE_CODE_MAX_OUTPUT_TOKENS,
+    });
+    expect(limit({})).toEqual({ derived: 128_000, env: '128000' });
+    // A custom sub-agent's model.
+    expect(limit({ subagentModels: ['mid'] })).toEqual({
+      derived: 64_000,
+      env: '64000',
+    });
+    // The Agent's default sub-agent model.
+    expect(limit({ subagentModel: 'low' })).toEqual({
+      derived: 48_000,
+      env: '48000',
+    });
+    // One that declares none: nothing is written.
+    expect(limit({ subagentModels: ['mid', 'silent'] })).toEqual({
+      derived: null,
+      env: undefined,
+    });
   });
 });

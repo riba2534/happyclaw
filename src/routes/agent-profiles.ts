@@ -30,7 +30,10 @@ import {
 } from '../agent-profile-generator.js';
 import { logger } from '../logger.js';
 import { DATA_DIR } from '../config.js';
-import { buildAgentCapabilityPreview } from '../agent-capability-preview.js';
+import {
+  buildAgentCapabilityPreview,
+  type SubagentRunPreview,
+} from '../agent-capability-preview.js';
 import {
   avatarUploadBodyLimit,
   AVATAR_MAX_FILE_BYTES,
@@ -67,14 +70,19 @@ import {
   hostGrantsOf,
   parseAgentProfileExport,
   stripHostGrants,
+  withoutSubagentModels,
 } from '../agent-profile-transfer.js';
 import {
   bindingFromMainProfile,
+  resolveConnectionSubagents,
   resolveModelBinding,
   summarizeModelBinding,
 } from '../container-runner.js';
 import { resolveAgentSdkEffort } from '../agent-effort.js';
-import { subagentPolicyModels } from '../agent-subagents.js';
+import {
+  launchSubagentDefault,
+  subagentPolicyModels,
+} from '../agent-subagents.js';
 import {
   SYSTEM_CAPABILITY_LOCK_KEY,
   userCapabilityLockKey,
@@ -278,6 +286,21 @@ function agentModelRejection(
 }
 
 /**
+ * Whether the connection offers `model` to a sub-agent: one of its models,
+ * never on a ChatGPT subscription (every sub-agent runs the turn's model).
+ */
+function offersSubagentModel(
+  modelConfigId: string | null | undefined,
+): (model: string) => boolean {
+  const provider = modelConfigId
+    ? getProviders().find((item) => item.id === modelConfigId)
+    : undefined;
+  if (!provider || provider.codexOAuthCredentials) return () => false;
+  const offered = new Set(listConnectionModels(provider).map((e) => e.id));
+  return (model) => offered.has(splitOneMillionSuffix(model).model);
+}
+
+/**
  * Why a sub-agent policy cannot belong to an Agent on `modelConfigId`, or
  * null: every model it names must be offered by that connection, since a
  * sub-agent runs on the same endpoint as the Agent.
@@ -303,10 +326,8 @@ function subagentModelRejection(
       code: 'SUBAGENT_MODEL_NOT_IN_CONNECTION',
     };
   }
-  const offered = new Set(listConnectionModels(provider).map((e) => e.id));
-  const missing = models.filter(
-    (model) => !offered.has(splitOneMillionSuffix(model).model),
-  );
+  const offered = offersSubagentModel(modelConfigId);
+  const missing = models.filter((model) => !offered(model));
   return missing.length === 0
     ? null
     : {
@@ -541,10 +562,11 @@ agentProfileRoutes.post('/:id/duplicate', authMiddleware, async (c) => {
         source.runtime_policy,
         user.role === 'admin',
       );
-      const policy = withRunnableEffort(
-        granted,
-        source.model_config_id,
-        source.model,
+      // Sub-agent models the connection no longer offers already follow the
+      // connection when the source runs; the copy saves them that way.
+      const policy = withoutSubagentModels(
+        withRunnableEffort(granted, source.model_config_id, source.model),
+        offersSubagentModel(source.model_config_id),
       );
       const rejection = newProfileRejection(user, {
         runtimePolicy: policy,
@@ -597,8 +619,12 @@ agentProfileRoutes.post('/import', authMiddleware, async (c) => {
   }
   const { agent } = parsed;
   const name = parsedBody.data.name ?? agent.name;
+  // An imported Agent has no connection yet, so sub-agent models named in
+  // the file (by an older or hand-edited export) cannot apply.
   const imported = stripHostGrants(
-    normalizeAgentProfileRuntimePolicy(agent.runtime_policy),
+    withoutSubagentModels(
+      normalizeAgentProfileRuntimePolicy(agent.runtime_policy),
+    ),
     user.role === 'admin',
   );
   return withCapabilityScopeLocks(
@@ -717,14 +743,51 @@ function resolveAgentModelResolution(
     resolveAgentSdkEffort(profile.runtime_policy),
   );
   return {
-    source: summary.source,
-    model_config_id: summary.modelConfigId,
-    model_config_name: summary.provider?.name ?? null,
-    model: summary.model,
-    effort: summary.effort,
-    // The binding that decides names a connection that is gone or has no
-    // credential: runs fail until it is chosen again.
-    connection_missing: summary.connectionMissing,
+    resolution: {
+      source: summary.source,
+      model_config_id: summary.modelConfigId,
+      model_config_name: summary.provider?.name ?? null,
+      model: summary.model,
+      effort: summary.effort,
+      // The binding that decides names a connection that is gone or has no
+      // credential: runs fail until it is chosen again.
+      connection_missing: summary.connectionMissing,
+    },
+    subagentRun: previewSubagentRun(profile, summary, folder),
+  };
+}
+
+/**
+ * The sub-agents a run of this Agent on the resolved connection gets
+ * (resolveConnectionSubagents, as a launch calls it), or null without a
+ * connection or sub-agent settings.
+ */
+function previewSubagentRun(
+  profile: Pick<AgentProfile, 'model_config_id' | 'runtime_policy'>,
+  summary: Pick<ReturnType<typeof summarizeModelBinding>, 'provider' | 'model'>,
+  groupFolder: string,
+): SubagentRunPreview | null {
+  const policy = profile.runtime_policy.subagents;
+  const { provider } = summary;
+  if (!policy || !provider) return null;
+  const onAgentConnection =
+    !!profile.model_config_id && profile.model_config_id === provider.id;
+  const turnModel = summary.model ?? '';
+  const launch = resolveConnectionSubagents(
+    policy,
+    provider,
+    onAgentConnection,
+    turnModel,
+    { groupFolder, warn: false },
+  );
+  return {
+    onAgentConnection,
+    launch,
+    defaultModel: launchSubagentDefault(
+      provider,
+      launch.defaultModel,
+      turnModel,
+    ),
   };
 }
 
@@ -841,22 +904,24 @@ agentProfileRoutes.post(
       workspace = { jid: workspaceJid, group };
     }
 
+    const modelResolution = resolveAgentModelResolution(
+      {
+        ...modelBinding,
+        owner_user_id: existing.owner_user_id,
+        runtime_policy: previewRuntimePolicy,
+      },
+      workspace?.group,
+    );
     const preview = buildAgentCapabilityPreview({
       profile: previewProfile,
       workspace,
       ownerRole: user.role === 'admin' ? 'admin' : 'member',
+      subagentRun: modelResolution.subagentRun,
     });
     const runContext = workspace ? getRunContextSnapshot(workspace.jid) : null;
     return c.json({
       preview,
-      model_resolution: resolveAgentModelResolution(
-        {
-          ...modelBinding,
-          owner_user_id: existing.owner_user_id,
-          runtime_policy: previewRuntimePolicy,
-        },
-        workspace?.group,
-      ),
+      model_resolution: modelResolution.resolution,
       run_context: runContext,
       run_context_status: classifyRunContextSnapshot(runContext, {
         agentProfile: {
@@ -1067,15 +1132,23 @@ agentProfileRoutes.patch('/:id', authMiddleware, async (c) => {
         ) {
           return c.json({ error: 'host skills require an admin role' }, 403);
         }
-        // Checked against the connection the Agent will be on after this
-        // save, so moving to another connection cannot strand them.
-        const subagentRejection = subagentModelRejection(
-          parsed.data.model_config_id === undefined
-            ? existing.model_config_id
-            : parsed.data.model_config_id,
-          effectiveRuntimePolicy,
-        );
-        if (subagentRejection) return c.json(subagentRejection, 400);
+        // Checked when this request touches the sub-agents or the
+        // connection, against the connection the Agent will be on after this
+        // save, so moving to another connection cannot strand them. A model
+        // the connection dropped since does not block other edits: it
+        // already follows the connection at runtime.
+        if (
+          parsed.data.runtime_policy?.subagents !== undefined ||
+          parsed.data.model_config_id !== undefined
+        ) {
+          const subagentRejection = subagentModelRejection(
+            parsed.data.model_config_id === undefined
+              ? existing.model_config_id
+              : parsed.data.model_config_id,
+            effectiveRuntimePolicy,
+          );
+          if (subagentRejection) return c.json(subagentRejection, 400);
+        }
         if (hasEmptyCustomHostSkillSelection(effectiveRuntimePolicy)) {
           return c.json(
             { error: 'Custom host skills require at least one selected skill' },

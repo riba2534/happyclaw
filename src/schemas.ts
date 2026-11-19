@@ -7,10 +7,12 @@ import {
   MAX_SUBAGENT_DEFINITIONS,
   MAX_SUBAGENT_DESCRIPTION_CHARS,
   MAX_SUBAGENT_PROMPT_CHARS,
+  MAX_SUBAGENT_TOOL_CHARS,
   MAX_SUBAGENT_TOOLS,
   RESERVED_SUBAGENT_NAMES,
   SUBAGENT_EFFORT_LEVELS,
   SUBAGENT_NAME_RE,
+  SUBAGENT_TOOL_RE,
 } from './agent-subagents.js';
 import { ALL_PERMISSIONS } from './permissions.js';
 import type { Permission } from './types.js';
@@ -415,7 +417,17 @@ const AgentSubagentDefinitionSchema = z
     description: z.string().trim().min(1).max(MAX_SUBAGENT_DESCRIPTION_CHARS),
     prompt: z.string().trim().min(1).max(MAX_SUBAGENT_PROMPT_CHARS),
     tools: z
-      .array(z.string().trim().min(1).max(200))
+      .array(
+        z
+          .string()
+          .trim()
+          .min(1)
+          .max(MAX_SUBAGENT_TOOL_CHARS)
+          .regex(
+            SUBAGENT_TOOL_RE,
+            '工具须为工具名，可带括号里的参数（如 Bash(git log:*)），不能含逗号或换行',
+          ),
+      )
       .max(MAX_SUBAGENT_TOOLS)
       .nullable()
       .optional(),

@@ -369,6 +369,20 @@ export interface AgentCapabilityPreview {
     entries: EffectiveCapabilityEntry[];
     conflicts: string[];
   };
+  /** The Agent's sub-agents as a run gets them; null without settings. */
+  subagents?: {
+    maxConcurrent: number | null;
+    /** null when Claude Code or the Workspace's environment decides. */
+    defaultModel: string | null;
+    /** null without a connection. */
+    defaultModelSource: 'agent' | 'connection' | 'turn' | 'claude_code' | null;
+    definitions: Array<{
+      name: string;
+      tools: string[] | null;
+      model: string | null;
+      effort: SubagentEffortLevel | null;
+    }>;
+  } | null;
   notes: string[];
 }
 

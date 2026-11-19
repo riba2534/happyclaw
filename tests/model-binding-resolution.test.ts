@@ -78,6 +78,7 @@ vi.mock('../src/runtime-config.js', async () => {
 
 const db = await import('../src/db.ts');
 const runner = await import('../src/container-runner.ts');
+const { logger } = await import('../src/logger.js');
 
 function provider(id: string, patch: Partial<MockProvider> = {}): MockProvider {
   return {
@@ -358,40 +359,52 @@ describe('launch effort', () => {
 });
 
 describe('sub-agent launch', () => {
+  const definition = (patch: Record<string, unknown>) => ({
+    name: 'reviewer',
+    description: 'Reviews diffs',
+    prompt: 'Review.',
+    tools: null,
+    model: null,
+    effort: null,
+    ...patch,
+  });
   const policy = {
     model: 'A-flash',
     max_concurrent: 4,
-    definitions: [
-      {
-        name: 'reviewer',
-        description: 'Reviews diffs',
-        prompt: 'Review.',
-        tools: null,
-        model: 'A-pro',
-        effort: null,
-      },
-    ],
+    definitions: [definition({ model: 'A-pro' })],
   };
+  const select = (subagents: unknown, modelConfigId: string | null = 'A') =>
+    runner.trySelectPoolProvider(
+      'grp',
+      null,
+      modelConfigId,
+      null,
+      undefined,
+      subagents as never,
+    )!;
 
   beforeEach(() => {
+    vi.mocked(logger.warn).mockClear();
     mocks.providers = [
       provider('A', {
-        models: [{ id: 'A-model' }, { id: 'A-flash' }, { id: 'A-pro' }],
+        models: [
+          { id: 'A-model' },
+          { id: 'A-flash' },
+          { id: 'A-pro' },
+          { id: 'A-known', efforts: ['low', 'high'] },
+          { id: 'A-none', efforts: [] },
+          { id: 'A-mystery' },
+        ],
       }),
       provider('B'),
     ];
   });
 
   test('on the Agent’s connection its models drive the sub-agents', () => {
-    const selection = runner.trySelectPoolProvider(
-      'grp',
-      null,
-      'A',
-      null,
-      undefined,
-      policy,
-    )!;
-    expect(selection.resolved.config.roles?.subagent).toBe('A-flash');
+    const selection = select(policy);
+    expect(selection.resolved.config.subagentModel).toBe('A-flash');
+    // The custom sub-agents' models ride along for the reply limit.
+    expect(selection.resolved.config.subagentModels).toEqual(['A-pro']);
     expect(selection.subagents).toEqual({
       defaultModel: 'A-flash',
       maxConcurrent: 4,
@@ -408,22 +421,115 @@ describe('sub-agent launch', () => {
       selection,
     );
     expect(input.subagents?.agents?.reviewer.model).toBe('A-pro');
+    expect(logger.warn).not.toHaveBeenCalled();
   });
 
   test('a session pick of another connection drops the Agent’s models', () => {
     db.setSessionModelSelection('grp', null, 'B', 'member');
-    const selection = runner.trySelectPoolProvider(
-      'grp',
-      null,
-      'A',
-      null,
-      undefined,
-      policy,
-    )!;
+    const selection = select(policy);
     expect(selection.profileId).toBe('B');
-    expect(selection.resolved.config.roles?.subagent).toBeUndefined();
+    expect(selection.resolved.config.subagentModel).toBeUndefined();
+    expect(selection.resolved.config.subagentModels).toBeUndefined();
     expect(selection.subagents?.defaultModel).toBeUndefined();
     expect(selection.subagents?.maxConcurrent).toBe(4);
     expect(selection.subagents?.agents?.reviewer.model).toBeUndefined();
+  });
+
+  test('a model the connection dropped follows it, with a warning', () => {
+    const selection = select({
+      model: 'A-gone',
+      max_concurrent: null,
+      definitions: [definition({ model: 'A-also-gone' })],
+    });
+    expect(selection.resolved.config.subagentModel).toBeUndefined();
+    expect(selection.subagents?.agents?.reviewer.model).toBeUndefined();
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        providerId: 'A',
+        models: ['A-gone', 'A-also-gone'],
+      }),
+      expect.stringContaining('sub-agent model is no longer offered'),
+    );
+  });
+
+  test('an effort goes to a sub-agent’s model as it would to the main one', () => {
+    const selection = select({
+      model: 'A-known',
+      max_concurrent: null,
+      definitions: [
+        definition({ name: 'known-hit', model: 'A-known', effort: 'high' }),
+        definition({ name: 'known-miss', model: 'A-known', effort: 'max' }),
+        // Declared to take none: none goes.
+        definition({ name: 'takes-none', model: 'A-none', effort: 'high' }),
+        // Nothing known about it: sent as picked.
+        definition({ name: 'unknown', model: 'A-mystery', effort: 'xhigh' }),
+        // Runs the default sub-agent model, which takes `low`.
+        definition({ name: 'inherits', effort: 'low' }),
+        definition({ name: 'inherits-miss', effort: 'max' }),
+      ],
+    });
+    const efforts = Object.fromEntries(
+      Object.entries(selection.subagents?.agents ?? {}).map(([name, agent]) => [
+        name,
+        agent.effort,
+      ]),
+    );
+    expect(efforts).toEqual({
+      'known-hit': 'high',
+      'known-miss': undefined,
+      'takes-none': undefined,
+      unknown: 'xhigh',
+      inherits: 'low',
+      'inherits-miss': undefined,
+    });
+  });
+
+  test('an Agent without sub-agent settings launches as before', () => {
+    const selection = select(undefined);
+    expect(selection).not.toHaveProperty('subagents');
+    expect(selection.resolved.config).not.toHaveProperty('subagentModel');
+    expect(selection.resolved.config).not.toHaveProperty('subagentModels');
+    const input = runner.prepareLaunchInput(
+      {
+        prompt: '',
+        groupFolder: 'grp',
+        chatJid: 'web:grp',
+        // Left from an earlier launch: replaced, never inherited.
+        subagents: { maxConcurrent: 2 },
+      } as never,
+      selection,
+    );
+    expect(input).not.toHaveProperty('subagents');
+  });
+
+  test('without a connection the definitions and the cap still go', () => {
+    const input = runner.prepareLaunchInput(
+      {
+        prompt: '',
+        groupFolder: 'grp',
+        chatJid: 'web:grp',
+        agentProfile: {
+          runtimePolicy: {
+            subagents: {
+              ...policy,
+              definitions: [definition({ model: 'A-pro', effort: 'high' })],
+            },
+          },
+        },
+      } as never,
+      null,
+    );
+    expect(input.subagents).toEqual({
+      maxConcurrent: 4,
+      agents: {
+        // No model of the Agent's connection applies; the effort goes as
+        // the Agent's own would there.
+        reviewer: {
+          description: 'Reviews diffs',
+          prompt: 'Review.',
+          effort: 'high',
+        },
+      },
+    });
   });
 });

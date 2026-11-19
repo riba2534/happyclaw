@@ -1,5 +1,6 @@
 import type { z } from 'zod';
 
+import { subagentPolicyWithoutModels } from './agent-subagents.js';
 import { parseManagedMcpReference } from './mcp-utils.js';
 import { AgentProfileExportAgentSchema } from './schemas.js';
 import type { AgentProfile, AgentProfileRuntimePolicy } from './types.js';
@@ -27,9 +28,44 @@ function portableMcpReferences(ids: string[]): string[] {
 }
 
 /**
+ * The policy with its sub-agent model names cleared but those `keep`
+ * accepts: the names belong to one connection of this instance, so an
+ * exported, imported or copied Agent's sub-agents follow the connection it
+ * ends up on instead. Sub-agent settings left with nothing are dropped.
+ */
+export function withoutSubagentModels(
+  policy: AgentProfileRuntimePolicy,
+  keep?: (model: string) => boolean,
+): AgentProfileRuntimePolicy {
+  const { subagents: current, ...rest } = policy;
+  const subagents = subagentPolicyWithoutModels(current, keep);
+  return subagents ? { ...rest, subagents } : rest;
+}
+
+/**
+ * The sub-agents as a file carries them: the custom sub-agents and the cap,
+ * without the model names (the binding does not leave the instance either).
+ */
+function portableSubagents(
+  policy: AgentProfileRuntimePolicy,
+): Pick<NonNullable<AgentProfileExportAgent['runtime_policy']>, 'subagents'> {
+  const subagents = withoutSubagentModels(policy).subagents;
+  if (!subagents) return {};
+  return {
+    subagents: {
+      max_concurrent: subagents.max_concurrent,
+      definitions: subagents.definitions.map(
+        ({ model: _model, ...definition }) => definition,
+      ),
+    },
+  };
+}
+
+/**
  * An Agent as a self-contained file: identity, prompts and the capability
- * policy with Skills and MCP referenced by name. The model binding, uploaded
- * avatar, Workspaces and channels belong to this instance and stay behind.
+ * policy with Skills and MCP referenced by name, and its custom sub-agents.
+ * The model binding (sub-agent models included), uploaded avatar,
+ * Workspaces and channels belong to this instance and stay behind.
  */
 export function buildAgentProfileExport(
   profile: AgentProfile,
@@ -66,6 +102,7 @@ export function buildAgentProfileExport(
           mode: policy.mcp.mode,
           ids: portableMcpReferences(policy.mcp.ids),
         },
+        ...portableSubagents(policy),
       },
     },
   };

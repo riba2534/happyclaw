@@ -138,7 +138,10 @@ import {
   type LegacyMainSessionMigrationReport,
 } from './legacy-main-session-migration.js';
 import { LEGACY_MAIN_SESSION_KEY_PREFIX } from './legacy-main-session-checks.js';
-import { normalizeSubagentPolicy } from './agent-subagents.js';
+import {
+  normalizeSubagentPolicy,
+  subagentIdentity,
+} from './agent-subagents.js';
 import { keyPrefixRange } from './sql-key-prefix.js';
 import {
   clearAgentSessionHistoryReinjections,
@@ -6277,6 +6280,7 @@ export function computeAgentProfileIdentityHash(
     runtimePolicy?: Record<string, unknown>;
     name?: string;
   } = { prompts };
+  const subagents = subagentIdentity(normalizedPolicy.subagents);
   const identityPolicy = {
     ...(normalizedPolicy.reasoning.effort === 'inherit'
       ? {}
@@ -6284,9 +6288,7 @@ export function computeAgentProfileIdentityHash(
     context: { source: normalizedPolicy.context.source },
     skills: normalizedPolicy.skills,
     mcp: normalizedPolicy.mcp,
-    ...(normalizedPolicy.subagents
-      ? { subagents: normalizedPolicy.subagents }
-      : {}),
+    ...(subagents ? { subagents } : {}),
   };
   const defaultIdentityPolicy = {
     context: { source: DEFAULT_AGENT_PROFILE_RUNTIME_POLICY.context.source },

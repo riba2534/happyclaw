@@ -105,12 +105,14 @@ import {
   effectiveProviderModels,
   findModelEntry,
   launchModelName,
-  splitOneMillionSuffix,
   windowOf,
   type ModelEffort,
 } from './model-providers.js';
 import {
+  launchSubagentDefault,
   resolveSubagentLaunch,
+  subagentLaunchModels,
+  subagentPolicyModels,
   type SubagentLaunch,
 } from './agent-subagents.js';
 import { recordUsageEventConnection } from './runtime-state-store.js';
@@ -123,7 +125,6 @@ import {
 import {
   chatGptDefaultModel,
   chatGptLaunchModel,
-  listConnectionModels,
   resolveAgentLaunchModel,
   resolveLaunchReasoning,
   resolveSessionLaunchOverrides,
@@ -1859,31 +1860,30 @@ export function trySelectPoolProvider(
     getSystemSettings().fallbackModel,
     provider,
   );
-  const subagents = resolveLaunchSubagents(
+  const subagents = resolveConnectionSubagents(
     subagentPolicy,
     provider,
     !!modelConfigId && modelConfigId === provider.id,
     launch.model ?? provider.anthropicModel,
+    { groupFolder, agentId },
   );
+  const subagentModels = subagentLaunchModels(subagents);
   return withSessionModel(
     {
       profileId: provider.id,
       ...(Object.keys(subagents).length > 0 ? { subagents } : {}),
       resolved: {
-        // The fallback rides along so its reply limit counts too, and the
-        // Agent's default sub-agent model takes the connection's role.
+        // The fallback and the sub-agents' models ride along so their reply
+        // limits count too; the Agent's default sub-agent model takes the
+        // connection's role.
         config: {
           ...resolved.config,
           ...(launch.model ? { anthropicModel: launch.model } : {}),
           ...(fallbackModel ? { fallbackModel } : {}),
           ...(subagents.defaultModel
-            ? {
-                roles: {
-                  ...resolved.config.roles,
-                  subagent: subagents.defaultModel,
-                },
-              }
+            ? { subagentModel: subagents.defaultModel }
             : {}),
+          ...(subagentModels.length > 0 ? { subagentModels } : {}),
         },
         customEnv: resolved.customEnv,
         ...(launch.effort ? { launchEffort: launch.effort } : {}),
@@ -1907,35 +1907,61 @@ export function trySelectPoolProvider(
 }
 
 /**
- * The Agent's sub-agents on this connection. Names of the Agent's connection
- * apply only there; a ChatGPT subscription runs every tier on the turn's
- * model, so none apply on it. Efforts go only to models that take them.
+ * The Agent's sub-agents on a launch on `provider`. Names of the Agent's
+ * connection apply only there, and only while it offers them: a name it
+ * dropped is logged and the sub-agent inherits, as a dropped Agent model
+ * does. A ChatGPT subscription runs every tier on the turn's model, so no
+ * name or effort applies on it. An effort goes to the model a sub-agent runs
+ * on as the main model's would (resolveLaunchReasoning): a model declared to
+ * take none gets none, one nothing is known about gets it as picked.
  */
-function resolveLaunchSubagents(
+export function resolveConnectionSubagents(
   policy: AgentSubagentPolicy | undefined,
   provider: UnifiedProvider,
   onAgentConnection: boolean,
   turnModel: string,
+  context: { groupFolder: string; agentId?: string | null; warn?: boolean },
 ): SubagentLaunch {
   if (!policy) return {};
-  const choices = provider.codexOAuthCredentials
-    ? []
-    : listConnectionModels(provider);
-  const effortsOf = (id: string): string[] | null => {
-    const choice = choices.find(
-      (entry) => entry.id === splitOneMillionSuffix(id).model,
+  const chatGpt = !!provider.codexOAuthCredentials;
+  const models = providerModels(provider);
+  const appliesHere = onAgentConnection && !chatGpt && models.length > 0;
+  if (appliesHere && context.warn !== false) {
+    const gone = subagentPolicyModels(policy).filter(
+      (model) => !findModelEntry(models, model),
     );
-    return choice && choice.efforts.length > 0 ? choice.efforts : null;
-  };
-  const appliesHere = onAgentConnection && choices.length > 0;
-  const inheritedModel =
-    (appliesHere && policy.model) || provider.roles?.subagent || turnModel;
+    if (gone.length > 0) {
+      logger.warn(
+        {
+          groupFolder: context.groupFolder,
+          agentId: context.agentId || null,
+          providerId: provider.id,
+          models: gone,
+        },
+        'Agent sub-agent model is no longer offered by its configuration; the sub-agent follows the configuration',
+      );
+    }
+  }
+  const agentDefault =
+    appliesHere && policy.model
+      ? findModelEntry(models, policy.model)?.id
+      : undefined;
+  // A definition without a model runs the default sub-agent model, else the
+  // turn's (Claude Code's own choice only covers its built-in agents).
+  const inherited =
+    launchSubagentDefault(provider, agentDefault, turnModel).model ?? turnModel;
   return resolveSubagentLaunch({
     policy,
     onAgentConnection: appliesHere,
-    models: providerModels(provider),
-    effortsOf,
-    inheritedEfforts: inheritedModel ? effortsOf(inheritedModel) : null,
+    models,
+    takesEffort: (model, effort) => {
+      const runs = model ?? inherited;
+      return (
+        !chatGpt &&
+        !!runs &&
+        resolveLaunchReasoning(provider, runs, [effort]).effort === effort
+      );
+    },
   });
 }
 
@@ -1988,9 +2014,10 @@ export function leaveSessionConnection(
 }
 
 /**
- * The input a launch starts with: a connection switch, its effort and
- * whether its model thinks. A thinking flag the caller's input still carries
- * from an earlier launch is replaced, never inherited.
+ * The input a launch starts with: a connection switch, its effort, whether
+ * its model thinks and the Agent's sub-agents. A thinking flag or sub-agents
+ * the caller's input still carries from an earlier launch are replaced,
+ * never inherited.
  */
 export function prepareLaunchInput(
   input: ContainerInput,
@@ -2001,16 +2028,16 @@ export function prepareLaunchInput(
     selection ?? leaveSessionConnection(input.groupFolder, input.agentId),
   );
   // Without a connection (the Workspace's own environment) no model of the
-  // Agent's connection applies; the definitions and the cap still do.
-  const subagents =
-    selection?.subagents ??
-    resolveSubagentLaunch({
-      policy: input.agentProfile?.runtimePolicy?.subagents,
-      onAgentConnection: false,
-      models: [],
-      effortsOf: () => null,
-      inheritedEfforts: null,
-    });
+  // Agent's connection applies; the definitions and the cap still do, and
+  // an effort goes as picked, like the Agent's own there.
+  const subagents = selection
+    ? (selection.subagents ?? {})
+    : resolveSubagentLaunch({
+        policy: input.agentProfile?.runtimePolicy?.subagents,
+        onAgentConnection: false,
+        models: [],
+        takesEffort: () => true,
+      });
   const { thinking: _thinking, subagents: _subagents, ...rest } = switched;
   return {
     ...rest,

@@ -836,16 +836,26 @@ Skills 不再随有效上下文来源隐式继承。
 
 `runtime_policy.subagents`（可选，整体保存，`null` 清除）是智能体的子代理设置：
 `model`（默认子代理模型）、`max_concurrent`（1–20，写成
-`CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS`，未设置时用 CLI 默认 20）、`definitions`（最多
-20 个自定义子代理，每个有 `name`、`description`、`prompt`、`tools`（`null` 为全部）、
-`model`、`effort`，经 SDK `options.agents` 注入）。名称为 2–48 位小写字母、数字或连字符，
-不能与内置子代理重名。子代理与主 Agent 在同一个 Claude Code 进程里运行，只能用智能体
-所绑连接里的模型：保存时逐一校验，不在其中、智能体没有绑定连接，或连接是 ChatGPT 订阅时
-返回 400 与 `code: SUBAGENT_MODEL_NOT_IN_CONNECTION`；把智能体换到别的连接时同样校验。
-运行时，会话手选了别的连接或该模型已被移出列表，这些模型名不生效：默认子代理模型回到
-连接的 `roles.subagent`，定义改为继承。推理等级只下发给支持该档位的模型。CLI 里定义的
-`model` 优先于 `CLAUDE_CODE_SUBAGENT_MODEL`。改动随 `runtime_policy` 一起停相关 Runner、
-开新 SDK 会话。
+`CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS`，未设置时不写，沿用 Claude Code 自己的上限；达到
+上限后 Claude Code 拒绝再派出子代理）、`definitions`（最多 20 个自定义子代理，每个有
+`name`、`description`、`prompt`、`tools`（`null` 为全部）、`model`、`effort`，经 SDK
+`options.agents` 注入）。名称为 2–48 位小写字母、数字或连字符，不能与内置子代理重名。
+`tools` 的每一项是一条工具规则：工具名，可带括号里的参数（如 `Bash(git log:*)`），不能含
+逗号或换行，否则 400；`CronCreate` 等 Runner 默认禁用的会话级工具运行时不提供。子代理与
+主 Agent 在同一个 Claude Code 进程里运行，只能用智能体所绑连接里的模型：创建时，以及
+PATCH 带 `runtime_policy.subagents` 或 `model_config_id` 时逐一校验，不在其中、智能体没有
+绑定连接，或连接是 ChatGPT 订阅时返回 400 与 `code: SUBAGENT_MODEL_NOT_IN_CONNECTION`；
+连接后来移除了某个模型时，只改名称、提示词等其他字段不受影响。`duplicate` 清掉连接已不
+提供的模型名；导出带 `definitions`（不含 `model`）与 `max_concurrent`，不带模型名，导入时
+清掉文件里的模型名。运行时，会话手选了别的连接或该模型已被移出列表（记告警），这些模型名
+不生效：默认子代理模型回到连接的 `roles.subagent`（官方连接不写，由 Claude Code 决定），
+定义改为继承。推理等级与主模型规则相同：声明不支持的不传，未知的原样传。自定义子代理和
+默认子代理模型声明的最大输出参与 `CLAUDE_CODE_MAX_OUTPUT_TOKENS` 的派生。团队路由会话
+不注入自定义子代理。CLI 里定义的 `model` 优先于 `CLAUDE_CODE_SUBAGENT_MODEL`。改动随
+`runtime_policy` 一起停相关 Runner；只有自定义子代理的改动开新 SDK 会话，只改上限或默认
+子代理模型保留会话。`effective-capabilities` 的 `preview.subagents` 给出一次未手选模型的
+运行实际得到的上限、默认子代理模型及其来源（`agent`、`connection`、`turn`、`claude_code`，
+没有连接时为 `null`）和每个自定义子代理的工具、模型与推理等级；没有子代理设置时为 `null`。
 
 `duplicate` 新建「<名称> 副本」（重名时为「副本 2」「副本 3」…），复制四段 Prompt、
 `prompt_mode`、`runtime_policy`、模型绑定、头像 Emoji/背景色与上传的头像文件（复制为
@@ -860,8 +870,9 @@ Runner 停止期间，用一个事务把该智能体的全部工作区迁到目�
 
 `export` 返回 `{format: "happyclaw-agent", version: 1, exported_at, agent}`，`agent`
 含名称、头像 Emoji/背景色、四段 Prompt、`prompt_mode` 与 `runtime_policy`；Skills 用
-目录名、MCP 用 `system:`/`user:` 前缀名引用，不含模型配置、上传头像、宿主机路径或
-凭据。`import` 接受 `{data, name?, drop_missing?, confirm_host_grants?}`：格式或
+目录名、MCP 用 `system:`/`user:` 前缀名引用；有自定义子代理或上限时带
+`runtime_policy.subagents`（`max_concurrent` 与不含 `model` 的 `definitions`）。不含模型
+配置（子代理模型名也不含）、上传头像、宿主机路径或凭据。`import` 接受 `{data, name?, drop_missing?, confirm_host_grants?}`：格式或
 版本不对返回 400
 （`INVALID_AGENT_EXPORT`、`UNSUPPORTED_AGENT_EXPORT_VERSION`）；引用了本账号没有的
 Skills/MCP 时返回 409 `AGENT_IMPORT_MISSING_REFERENCES` 与 `missing`，带

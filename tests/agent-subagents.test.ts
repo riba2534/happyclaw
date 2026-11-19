@@ -4,11 +4,17 @@ import path from 'path';
 import { afterAll, describe, expect, test, vi } from 'vitest';
 
 import {
+  SUBAGENT_UNAVAILABLE_TOOLS,
+  availableSubagentTools,
+  launchSubagentDefault,
   normalizeSubagentPolicy,
   resolveSubagentLaunch,
+  subagentLaunchModels,
   subagentPolicyModels,
+  subagentPolicyWithoutModels,
 } from '../src/agent-subagents.js';
 import { AgentProfileRuntimePolicySchema } from '../src/schemas.js';
+import { RUNNER_DISALLOWED_BUILTIN_TOOLS } from '../container/agent-runner/src/builtin-tool-policy.js';
 
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'happyclaw-subagents-'));
 vi.mock('../src/config.js', async () => {
@@ -71,6 +77,27 @@ describe('normalizeSubagentPolicy', () => {
     expect(policy?.definitions[1]).toMatchObject({ effort: null, tools: null });
   });
 
+  test('keeps tool rules with arguments and drops ones that cannot be rules', () => {
+    const policy = normalizeSubagentPolicy({
+      definitions: [
+        {
+          ...reviewer,
+          tools: [
+            'Bash(git log:*)',
+            'mcp__github__*',
+            'Read, Grep',
+            'two words',
+            'Bash(git log:*)',
+          ],
+        },
+      ],
+    });
+    expect(policy?.definitions[0].tools).toEqual([
+      'Bash(git log:*)',
+      'mcp__github__*',
+    ]);
+  });
+
   test('lists the models it names once', () => {
     expect(
       subagentPolicyModels(
@@ -81,9 +108,10 @@ describe('normalizeSubagentPolicy', () => {
 });
 
 describe('schema', () => {
+  const parse = (subagents: unknown) =>
+    AgentProfileRuntimePolicySchema.safeParse({ subagents }).success;
+
   test('rejects a reserved or repeated name, accepts null to clear', () => {
-    const parse = (subagents: unknown) =>
-      AgentProfileRuntimePolicySchema.safeParse({ subagents }).success;
     expect(parse({ definitions: [reviewer] })).toBe(true);
     expect(parse(null)).toBe(true);
     expect(
@@ -92,15 +120,38 @@ describe('schema', () => {
     expect(parse({ definitions: [reviewer, reviewer] })).toBe(false);
     expect(parse({ max_concurrent: 0 })).toBe(false);
   });
+
+  test('a tool is one rule: a name, optionally with its argument', () => {
+    const withTools = (tools: string[]) =>
+      parse({ definitions: [{ ...reviewer, tools }] });
+    expect(
+      withTools([
+        'Read',
+        'Bash(git log:*)',
+        'Bash(npm run test:*)',
+        'WebFetch(domain:example.com)',
+        'mcp__my-server__get_issue',
+        'mcp__github__*',
+      ]),
+    ).toBe(true);
+    expect(withTools(['Read, Grep'])).toBe(false);
+    expect(withTools(['Read\nGrep'])).toBe(false);
+    expect(withTools(['two words'])).toBe(false);
+    expect(withTools(['Bash(unclosed'])).toBe(false);
+  });
 });
 
 describe('resolveSubagentLaunch', () => {
   const models = [{ id: 'pro', contextWindow: 1_000_000 }, { id: 'flash' }];
-  const efforts: Record<string, string[]> = { pro: ['low', 'high'], flash: [] };
+  const efforts: Record<string, string[]> = {
+    pro: ['low', 'high'],
+    flash: [],
+    inherited: ['low', 'high'],
+  };
   const base = {
     models,
-    effortsOf: (id: string) => (efforts[id]?.length ? efforts[id] : null),
-    inheritedEfforts: ['low', 'high'],
+    takesEffort: (model: string | null, effort: string) =>
+      efforts[model ?? 'inherited'].includes(effort),
   };
   const policy = normalizeSubagentPolicy({
     model: 'flash',
@@ -141,6 +192,7 @@ describe('resolveSubagentLaunch', () => {
         effort: 'low',
       },
     });
+    expect(subagentLaunchModels(launch)).toEqual(['flash', 'pro[1m]']);
   });
 
   test('on another connection the names drop and the definitions inherit', () => {
@@ -153,6 +205,7 @@ describe('resolveSubagentLaunch', () => {
     expect(launch.maxConcurrent).toBe(3);
     expect(launch.agents?.deep.model).toBeUndefined();
     expect(launch.agents?.deep.effort).toBe('high');
+    expect(subagentLaunchModels(launch)).toEqual([]);
   });
 
   test('a model the connection no longer offers inherits', () => {
@@ -164,6 +217,109 @@ describe('resolveSubagentLaunch', () => {
     });
     expect(launch.defaultModel).toBeUndefined();
     expect(launch.agents?.['code-reviewer'].model).toBeUndefined();
+  });
+
+  test('a sub-agent does not get the tools no session has', () => {
+    const launch = resolveSubagentLaunch({
+      ...base,
+      onAgentConnection: false,
+      policy: normalizeSubagentPolicy({
+        definitions: [
+          {
+            ...reviewer,
+            tools: [
+              'Read',
+              'CronCreate',
+              'ScheduleWakeup',
+              'EnterPlanMode',
+              'ExitWorktree',
+              'Bash(git log:*)',
+            ],
+          },
+        ],
+      }),
+    });
+    expect(launch.agents?.['code-reviewer'].tools).toEqual([
+      'Read',
+      'Bash(git log:*)',
+    ]);
+    expect(availableSubagentTools(['CronList(x)', 'Cron'])).toEqual(['Cron']);
+  });
+
+  test('the host leaves out exactly the tools the Runner disables', () => {
+    expect([...SUBAGENT_UNAVAILABLE_TOOLS].sort()).toEqual(
+      [...RUNNER_DISALLOWED_BUILTIN_TOOLS].sort(),
+    );
+  });
+});
+
+describe('launchSubagentDefault', () => {
+  const thirdParty = {
+    anthropicBaseUrl: 'https://relay.example',
+    roles: { subagent: 'role-model' },
+  };
+
+  test('the Agent’s default, else the connection role, else the turn', () => {
+    expect(launchSubagentDefault(thirdParty, 'mine', 'turn')).toEqual({
+      model: 'mine',
+      source: 'agent',
+    });
+    expect(launchSubagentDefault(thirdParty, undefined, 'turn')).toEqual({
+      model: 'role-model',
+      source: 'connection',
+    });
+    expect(
+      launchSubagentDefault(
+        { anthropicBaseUrl: 'https://relay.example' },
+        undefined,
+        'turn',
+      ),
+    ).toEqual({ model: 'turn', source: 'turn' });
+  });
+
+  test('the official endpoint takes only the Agent’s; ChatGPT only the turn', () => {
+    expect(
+      launchSubagentDefault(
+        { anthropicBaseUrl: '', roles: { subagent: 'role-model' } },
+        undefined,
+        'claude-opus-5-5',
+      ),
+    ).toEqual({ model: null, source: 'claude_code' });
+    expect(
+      launchSubagentDefault(
+        { ...thirdParty, codexOAuthCredentials: {} },
+        'mine',
+        'gpt-6.1-sol',
+      ),
+    ).toEqual({ model: 'gpt-6.1-sol', source: 'turn' });
+  });
+});
+
+describe('subagentPolicyWithoutModels', () => {
+  const policy = normalizeSubagentPolicy({
+    model: 'flash',
+    max_concurrent: 4,
+    definitions: [reviewer, { ...reviewer, name: 'deep', model: 'pro' }],
+  });
+
+  test('clears every name, keeping the definitions and the cap', () => {
+    expect(subagentPolicyWithoutModels(policy)).toEqual({
+      model: null,
+      max_concurrent: 4,
+      definitions: policy!.definitions.map((definition) => ({
+        ...definition,
+        model: null,
+      })),
+    });
+  });
+
+  test('keeps the names `keep` accepts; nothing left is absent', () => {
+    const kept = subagentPolicyWithoutModels(policy, (id) => id === 'pro');
+    expect(kept?.model).toBeNull();
+    expect(kept?.definitions.map((item) => item.model)).toEqual([null, 'pro']);
+    expect(
+      subagentPolicyWithoutModels(normalizeSubagentPolicy({ model: 'flash' })),
+    ).toBeUndefined();
   });
 });
 
@@ -188,22 +344,28 @@ describe('runtime policy storage', () => {
     ).toBeUndefined();
   });
 
-  test('the identity hash changes with sub-agents and not without them', () => {
-    const prompts = normalizeAgentProfilePrompts({ identity_prompt: 'x' });
+  const prompts = normalizeAgentProfilePrompts({ identity_prompt: 'x' });
+  const hashOf = (subagents: unknown) =>
+    db.computeAgentProfileIdentityHash(
+      prompts,
+      db.normalizeAgentProfileRuntimePolicy({ subagents } as never),
+    );
+
+  test('the identity hash changes with custom sub-agents and not without them', () => {
     const plain = db.computeAgentProfileIdentityHash(prompts, current);
+    expect(hashOf(null)).toBe(plain);
+    expect(hashOf({ definitions: [reviewer] })).not.toBe(plain);
     expect(
-      db.computeAgentProfileIdentityHash(prompts, {
-        ...current,
-        subagents: null,
-      } as never),
-    ).toBe(plain);
+      hashOf({ definitions: [{ ...reviewer, prompt: 'Review harder.' }] }),
+    ).not.toBe(hashOf({ definitions: [reviewer] }));
+  });
+
+  test('the cap and the default model restart the Runner, not the session', () => {
+    const plain = db.computeAgentProfileIdentityHash(prompts, current);
+    expect(hashOf({ max_concurrent: 3 })).toBe(plain);
+    expect(hashOf({ model: 'flash', max_concurrent: 3 })).toBe(plain);
     expect(
-      db.computeAgentProfileIdentityHash(
-        prompts,
-        db.normalizeAgentProfileRuntimePolicy({
-          subagents: { definitions: [reviewer] },
-        }),
-      ),
-    ).not.toBe(plain);
+      hashOf({ model: 'pro', max_concurrent: 5, definitions: [reviewer] }),
+    ).toBe(hashOf({ definitions: [reviewer] }));
   });
 });
