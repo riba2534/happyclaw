@@ -319,8 +319,15 @@ Web UI 约定：
   值：大于 0 时把这一 query 记为扣住，卡死检测不做 CPU 探测，IPC 债务上限和空闲规则一律
   defer（`background_tasks`），每个 query 只记一条 info 日志。中断、provider 失败、模型
   回退重试、上下文溢出等结束 SDK query 的输出也解除扣住；解除时仍欠的 IPC 债务从解除时刻
-  重新计时。扣住期间完全没有输出时，宿主在静默满 min(`CONTAINER_TIMEOUT`, `IDLE_TIMEOUT`)
-  后关闭 Runner，`CONTAINER_TIMEOUT` 看门狗随后兜底。
+  重新计时。扣住期间子代理等网络或跑长命令时可能完全没有输出，Runner 于是按宿主经
+  `ContainerInput.hostIdleCloseMs` 传入的空闲关闭时长（min(`CONTAINER_TIMEOUT`,
+  `IDLE_TIMEOUT`)，看门狗不会更短）的三分之一、最长 5 分钟发一次保活控制帧
+  `backgroundHoldKeepalive`，没有存活的后台任务时暂停。宿主收到它只重置空闲关闭计时（帧本身
+  已重置进程看门狗），不算 Runner 活动，不进回合轨迹、Web、卡片或任何渠道。扣住从它的第一条
+  result 算起最多 2 小时（`BACKGROUND_HOLD_MAX_MS`，保活同一上限；不再扣住的 result 结束
+  这次扣住，之后再扣住重新计时）：超过后卡死检测按原规则和原有计时判定，扣住期间注入且仍欠着
+  的输入立即撞 IPC 债务上限；保活也停了，静默的 Runner 照常被空闲关闭和看门狗收掉。旧宿主
+  不传空闲关闭时长，Runner 就不发保活。
 - 一轮成功结束、最后一次模型响应只有思考而没有正文（静默停止）时，Claude Code 会先在
   轮内自行补问一次；仍无正文时 Runner 在同一 SDK 流里再要一次答复，每条输入最多一次。
   主动模式、已有后续输入排队、后台任务未结清时不续写。
@@ -811,7 +818,7 @@ Web 持久设置 > 环境变量 > 代码默认值
 | `CONTAINER_IMAGE`                    | `riba2534/happyclaw-agent:latest` | GitHub Actions 发布的 Runner 镜像                                     |
 | `CONTAINER_TIMEOUT`                  | `1800000`                         | Runner 无输出看门狗                                                   |
 | `IDLE_TIMEOUT`                       | `1800000`                         | 暖 Runner 空闲时间                                                    |
-| `STUCK_RUNNER_FORCE_RESTART_MINUTES` | `10`                              | IPC 债务强制恢复上限（4–120 分钟）；扣住结果等后台工作时不适用        |
+| `STUCK_RUNNER_FORCE_RESTART_MINUTES` | `10`                              | IPC 债务强制恢复上限（4–120 分钟）；后台工作扣住结果的前 2 小时不适用 |
 | `MAX_CONCURRENT_CONTAINERS`          | `20`                              | Docker 并发                                                           |
 | `CONTAINER_MEMORY_LIMIT`             | 不限制                            | 单个容器内存上限，须带单位，同设 swap                                 |
 | `MAX_FILE_SIZE_MB`                   | `50`                              | Web/IM 入站文件上限                                                   |
