@@ -111,6 +111,7 @@ Agent Profile（身份、四段 Prompt、能力策略）
 | `src/automation-scheduler.ts`      | 自动化的到期触发、前置检查、错过与重启恢复             |
 | `src/automation-service.ts`        | 自动化的校验、权限，REST 与 Agent 工具共用             |
 | `src/memory-service.ts`            | Workspace Memory 召回、目录、提议与审计                |
+| `src/workspace-owner-identity.ts`  | 工作区主人本人的判定：Web 用户 id、IM 可信身份         |
 | `src/team-gate.ts`                 | 团队模式入站：订阅键、名单与 @ 判定、准入表            |
 | `src/work-item-service.ts`         | 工作项的路由、生命周期、回复门控，REST 与 IPC 共用     |
 | `src/work-item-runtime.ts`         | 团队输入注入各 lane、团队回复经 Outbox 投递            |
@@ -461,6 +462,11 @@ preset 的身份和默认风格，只低于平台的安全、权限、工具和�
 - Workspace Memory 只有整批输入都来自工作区主人的互动轮次才直接写入；群成员轮次与自动化
   运行的写入存为 `proposed`，在记忆页确认后才参与召回。每轮按用户本人正文的词项召回
   相关条目（`workspace_memory_recall_fts`），全部条目的标题目录随每轮笔记增量注入。
+- 「工作区主人亲自发起」按每条输入的发送者判定（`src/workspace-owner-identity.ts`），记忆直写、
+  `install_skill`、自动化、派发、`session_list` 与 Owner Profile 共用：Web 输入是主人的用户 id；
+  IM 输入的来源聊天是主人自己的注册，发送者是主人在同一渠道账号下由宿主记录的可信身份
+  （`configured`、`trusted_direct`、`auto_feishu`）。与聊天登记的 folder、绑定到哪个工作区无关，
+  别的渠道账号下相同的 IM id 不算。
 - 禁用、删除或缺失的精确选择能力必须让配置失败，不得静默替换。
 - Prompt 或能力身份变化后必须失效旧的暖 Runner。
 

@@ -41,6 +41,29 @@ function webInput(sender: string, extra: Partial<Input> = {}): Input {
   };
 }
 
+/** The owner's own Telegram direct chat, paired, bound to main-1. */
+const OWNER_DM = 'telegram:111#account:tg-a';
+
+// Discovery and pairing register chats under the account's default workspace
+// (Home); binding one to a session of mt-ws never moves that folder.
+const registrations: Record<string, Record<string, unknown>> = {
+  'web:mt-ws': { folder: FOLDER, created_by: OWNER },
+  [OWNER_DM]: {
+    folder: 'home-owner',
+    created_by: OWNER,
+    channel_account_id: 'tg-a',
+    owner_im_id: '111',
+    owner_claim_source: 'trusted_direct',
+    target_agent_id: 'main-1',
+  },
+  'telegram:-1001#account:tg-a': {
+    folder: 'home-owner',
+    created_by: OWNER,
+    channel_account_id: 'tg-a',
+    target_agent_id: 'main-1',
+  },
+};
+
 /** index.ts's ownerTurnOf over a real turn registry. */
 function host(inputs: Record<string, Input>) {
   const registry = new AgentBuilderTurnRegistry();
@@ -50,9 +73,16 @@ function host(inputs: Record<string, Input>) {
     skillMutationTurnRejection,
     getAgentBuilderInputMessage: (_chatJid: string, messageId: string) =>
       inputs[messageId] ?? null,
-    registeredGroups: {},
-    getRegisteredGroup: () => undefined,
-    getJidsByFolder: () => ['web:mt-ws'],
+    registeredGroups: registrations,
+    getRegisteredGroup: (jid: string) => registrations[jid],
+    getJidsByFolder: (folder: string) =>
+      Object.keys(registrations).filter(
+        (jid) => registrations[jid].folder === folder,
+      ),
+    getGroupsByOwner: (userId: string) =>
+      Object.entries(registrations)
+        .filter(([, row]) => row.created_by === userId)
+        .map(([jid, row]) => ({ jid, ...row })),
     getChannelType,
   };
   const harness = createRuntimeSourceHarness(globals);
@@ -98,6 +128,31 @@ describe('the owner turn of a delegation tool (ownerTurnOf)', () => {
     expect(ownerTurnOf('turn-gone')).toBeNull();
     // A workspace without an owner has no owner turn.
     expect(ownerTurnOf('turn-1', '')).toBeNull();
+  });
+
+  test("the owner's paired direct chat bound to this session is the owner's turn", () => {
+    const im = (
+      sender: string,
+      sourceJid: string,
+      extra: Partial<Input> = {},
+    ) => webInput(sender, { source_jid: sourceJid, ...extra });
+    const { registry, scope, batch, ownerTurnOf } = host({
+      dm: im('tg:111', OWNER_DM),
+      member: im('tg:999', 'telegram:-1001#account:tg-a'),
+      owner_in_group: im('tg:111', 'telegram:-1001#account:tg-a'),
+      report: im('tg:111', OWNER_DM, { source_kind: 'work_item_input' }),
+    });
+    registry.startBatch(scope, batch(['dm'], 'turn-1'));
+    expect(ownerTurnOf('turn-1')).toEqual({
+      input: { chatJid: LANE, messageId: 'dm' },
+    });
+    registry.startBatch(scope, batch(['owner_in_group'], 'turn-2'));
+    expect(ownerTurnOf('turn-2')).not.toBeNull();
+    // A group member, or a report the host composed, is not.
+    for (const id of ['member', 'report']) {
+      registry.startBatch(scope, batch([id], 'turn-3'));
+      expect(ownerTurnOf('turn-3')).toBeNull();
+    }
   });
 
   test('any input not typed by the owner refuses, as for install_skill', () => {

@@ -224,10 +224,18 @@ Agent Runtime 的 Workspace Memory MCP 还叠加执行上下文策略：
 | 自动化运行的轮次                            | 允许 | 只能创建/修改/忘记 `proposed` 条目 |
 | Spawn/Task 会话、SDK Task Sub-Agent         | 允许 | 拒绝                               |
 
-owner 输入的判定在宿主：Web 输入的 sender 等于 owner 用户 id；IM 输入的发送者 IM id
-必须等于该工作区注册中由宿主记录的 owner（claim source 为 `configured`、
-`trusted_direct` 或 `auto_feishu`）。写入一律要求 Runner 的 HMAC 写能力；proposed
-只有 owner 在 Web 确认后才生效。Sub-Agent 的只读限制由 PreToolUse hook 与主进程
+owner 输入的判定在宿主（`src/workspace-owner-identity.ts`）：Web 输入的 sender 等于
+owner 用户 id；IM 输入的来源聊天必须是工作区主人（`created_by`）自己的注册，发送者 IM id
+必须等于主人在**同一渠道账号**下任一聊天注册中由宿主记录的 owner（claim source 为
+`configured`、`trusted_direct` 或 `auto_feishu`）。也就是「发送者是工作区主人自己的可信 IM
+身份」，与聊天登记的 folder、绑定到哪个工作区的会话无关：主人自己的配对私聊绑到非 Home 工作区
+的会话时，在那里同样是主人。不同渠道账号下相同的 IM id 不算同一人（飞书 open_id 按应用区分）；
+其他用户的注册与身份永远不算；群成员按自己的 sender 判定，不因所在的群而成为主人。自动化运行、
+`work_item_input` 等宿主合成的输入永远不算主人亲自发起。`install_skill`、自动化的 owner 轮次、
+`work_delegate` 与 `session_list` 的主人轮次、HappyClaw Owner Profile 用同一判定。
+
+写入一律要求 Runner 的 HMAC 写能力；proposed 只有 owner 在 Web 确认后才生效。
+Sub-Agent 的只读限制由 PreToolUse hook 与主进程
 IPC broker 共同执行，不能由模型参数扩大权限。
 
 ### 4.6 HappyClaw Owner Profile

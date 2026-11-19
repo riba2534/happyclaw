@@ -21,19 +21,64 @@ const WEB_JID = `web:${FOLDER}`;
 
 const groups: Record<string, Record<string, string>> = {
   [GROUP_JID]: {
+    folder: FOLDER,
     created_by: OWNER,
     owner_im_id: 'ou_owner',
     owner_claim_source: 'configured',
   },
-  [WEB_JID]: { created_by: OWNER },
+  [WEB_JID]: { folder: FOLDER, created_by: OWNER },
+  // A second workspace. Discovery and pairing register every chat under the
+  // account's default workspace (Home); binding one to a session of ws-b only
+  // sets target_agent_id, so these rows keep the Home folder.
+  'web:ws-b': { folder: 'ws-b', created_by: OWNER },
+  'telegram:111#account:tg-a': {
+    folder: FOLDER,
+    created_by: OWNER,
+    channel_account_id: 'tg-a',
+    owner_im_id: '111',
+    owner_claim_source: 'trusted_direct',
+    target_agent_id: 'session-b',
+  },
+  'telegram:-1001#account:tg-a': {
+    folder: FOLDER,
+    created_by: OWNER,
+    channel_account_id: 'tg-a',
+    target_agent_id: 'session-b',
+  },
+  // The owner's second bot, with no owner recorded on it.
+  'telegram:-1002#account:tg-b': {
+    folder: FOLDER,
+    created_by: OWNER,
+    channel_account_id: 'tg-b',
+    target_agent_id: 'session-b',
+  },
+  // Another user's paired direct chat.
+  'telegram:222#account:tg-x': {
+    folder: 'home-user-2',
+    created_by: 'user-2',
+    channel_account_id: 'tg-x',
+    owner_im_id: '222',
+    owner_claim_source: 'trusted_direct',
+  },
+};
+
+const lookup = {
+  getGroup: (jid: string) => groups[jid],
+  getGroupsByOwner: (userId: string) =>
+    Object.entries(groups)
+      .filter(([, row]) => row.created_by === userId)
+      .map(([jid, row]) => ({ jid, ...row })),
 };
 
 function check(
   messages: Record<string, AgentBuilderPersistedInput>,
-  options: { agentId?: string | null } = {},
+  options: { agentId?: string | null; folder?: string } = {},
 ) {
   const registry = new AgentBuilderTurnRegistry();
-  const scope = agentBuilderTurnScope(FOLDER, options.agentId ?? null);
+  const scope = agentBuilderTurnScope(
+    options.folder ?? FOLDER,
+    options.agentId ?? null,
+  );
   const ids = Object.keys(messages);
   if (ids.length > 0) {
     registry.startBatch(
@@ -48,13 +93,10 @@ function check(
   }
   return skillMutationTurnRejection({
     registry,
-    sourceFolder: FOLDER,
     turnScope: scope,
     ownerUserId: OWNER,
     loadPersistedInput: (_chatJid, messageId) => messages[messageId] ?? null,
-    getGroup: (jid) => groups[jid.split('#')[0]],
-    getFolderJids: () => [GROUP_JID, WEB_JID],
-    getChannelType: (jid) => (jid.startsWith('feishu:') ? 'feishu' : null),
+    ...lookup,
   });
 }
 
@@ -123,6 +165,38 @@ describe('install_skill / uninstall_skill only from the owner’s own turn', () 
     ).toBe('interactive');
   });
 
+  test('the owner’s own direct chat bound to a session of another workspace may install', () => {
+    const inWsB = { folder: 'ws-b', agentId: 'session-b' };
+    const dm = 'telegram:111#account:tg-a';
+    expect(check({ m1: input('tg:111', dm) }, inWsB)).toBeNull();
+    // The owner speaking in a group of the same bot, bound there too.
+    expect(
+      check({ m1: input('tg:111', 'telegram:-1001#account:tg-a') }, inWsB),
+    ).toBeNull();
+    // A member of that group is not the owner.
+    expect(
+      check({ m1: input('tg:999', 'telegram:-1001#account:tg-a') }, inWsB),
+    ).toBe(SKILL_MUTATION_NON_OWNER_REJECTION);
+    // The same IM id under the owner's other bot is not the owner.
+    expect(
+      check({ m1: input('tg:111', 'telegram:-1002#account:tg-b') }, inWsB),
+    ).toBe(SKILL_MUTATION_NON_OWNER_REJECTION);
+    // Another user's paired direct chat never is.
+    expect(
+      check({ m1: input('tg:222', 'telegram:222#account:tg-x') }, inWsB),
+    ).toBe(SKILL_MUTATION_NON_OWNER_REJECTION);
+    // A host-composed input carrying the owner's own sender and chat neither.
+    for (const extra of [
+      { source_kind: 'work_item_input' },
+      { source_kind: 'automation_prompt', automation_run_id: 'run-1' },
+      { is_from_me: 1 },
+    ]) {
+      expect(check({ m1: input('tg:111', dm, extra) }, inWsB)).toBe(
+        SKILL_MUTATION_NON_OWNER_REJECTION,
+      );
+    }
+  });
+
   test('an owner claimed only by /owner_mention is not trusted', () => {
     groups['feishu:oc_claimed'] = {
       created_by: OWNER,
@@ -164,16 +238,9 @@ describe('install_skill / uninstall_skill only from the owner’s own turn', () 
           },
         ]);
         const load = () => message;
-        const lookup = {
-          getGroup: (jid: string) => groups[jid.split('#')[0]],
-          getFolderJids: () => [chat, WEB_JID],
-          getChannelType: (jid: string) =>
-            jid.startsWith('feishu:') ? 'feishu' : null,
-        };
         const skillAllowed =
           skillMutationTurnRejection({
             registry,
-            sourceFolder: FOLDER,
             turnScope: scope,
             ownerUserId: OWNER,
             loadPersistedInput: load,
@@ -181,9 +248,8 @@ describe('install_skill / uninstall_skill only from the owner’s own turn', () 
           }) === null;
         const memoryWrites = isWorkspaceMemoryOwnerTurn({
           ownerUserId: OWNER,
-          workspaceJids: lookup.getFolderJids(),
-          channelType: lookup.getChannelType,
           registration: lookup.getGroup,
+          ownerRegistrations: () => lookup.getGroupsByOwner(OWNER),
           requireActiveOwnerTurn: (isOwnerInput) =>
             registry.requireOwnerHumanTurn(scope, load, isOwnerInput),
         });

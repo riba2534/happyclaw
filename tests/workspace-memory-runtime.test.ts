@@ -28,7 +28,6 @@ import {
   buildWorkspaceMemoryUpdateInput,
   isWorkspaceMemoryOwnerTurn,
   workspaceMemoryWriteRejection,
-  workspaceOwnerImIds,
 } from '../src/workspace-memory-ipc.js';
 
 const roots: string[] = [];
@@ -837,14 +836,10 @@ describe('Workspace Memory runtime boundary', () => {
     };
     const lookup = {
       ownerUserId: 'owner-1',
-      workspaceJids: Object.keys(registrations),
-      channelType: (jid: string) => jid.split(':')[0],
       registration: (jid: string) => registrations[jid],
+      ownerRegistrations: () =>
+        Object.entries(registrations).map(([jid, row]) => ({ jid, ...row })),
     };
-    // A first claim any member can make never vouches for the owner.
-    expect(workspaceOwnerImIds({ ...lookup, provider: 'feishu' })).toEqual([
-      'ou_owner',
-    ]);
     const turnOf =
       (...inputs: Array<{ sender: string; source_jid: string }>) =>
       (isOwnerInput: (input: never) => boolean) => {

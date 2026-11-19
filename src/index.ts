@@ -275,8 +275,8 @@ import {
   isWorkspaceMemoryMutation,
   isWorkspaceMemoryOwnerTurn,
   workspaceMemoryWriteRejection,
-  workspaceOwnerImIds,
 } from './workspace-memory-ipc.js';
+import { isWorkspaceOwnerInput } from './workspace-owner-identity.js';
 import {
   grantWorkspaceMemoryTurnToCurrentRunner,
   verifyAndConsumeWorkspaceMemoryMutation,
@@ -434,7 +434,6 @@ import {
   getAgentBuilderRuntimeRejection,
   isAgentBuilderOwnerInput,
   isAutomationTurnInput,
-  isOwnerProfileOwnerInput,
   ownerImIdFromDirectConversationJid,
   ownerImIdFromPersistedSender,
   resolveTrustedDirectOwnerUpgrade,
@@ -9167,19 +9166,16 @@ function settleDelegatedWorkerTurn(
  * install_skill rule), or null when it is.
  */
 function ownerTurnRejection(
-  sourceGroup: string,
   turnScope: string,
   ownerUserId: string,
 ): string | null {
   return skillMutationTurnRejection({
     registry: activeAgentBuilderTurns,
-    sourceFolder: sourceGroup,
     turnScope,
     ownerUserId,
     loadPersistedInput: getAgentBuilderInputMessage,
     getGroup: (jid) => registeredGroups[jid] ?? getRegisteredGroup(jid),
-    getFolderJids: getJidsByFolder,
-    getChannelType,
+    getGroupsByOwner,
   });
 }
 
@@ -9196,7 +9192,6 @@ function refuseSkillMutationFromNonOwnerTurn(request: {
   resultFilePath: string;
 }): boolean {
   const rejection = ownerTurnRejection(
-    request.sourceGroup,
     agentBuilderTurnScope(request.sourceGroup, request.ipcAgentId),
     request.ownerUserId,
   );
@@ -9362,7 +9357,7 @@ function resolveIpcAutomationActor(
     turns: deliveredTurns,
     loadInput: getAgentBuilderInputMessage,
     isOwnerTurn: () =>
-      !!ownerUserId && !ownerTurnRejection(sourceGroup, turnScope, ownerUserId),
+      !!ownerUserId && !ownerTurnRejection(turnScope, ownerUserId),
   });
 }
 
@@ -9384,7 +9379,7 @@ function ownerTurnOf(
   const ownerUserId = sourceGroupEntry?.created_by;
   if (!ownerUserId) return null;
   const turnScope = agentBuilderTurnScope(sourceGroup, ipcAgentId);
-  if (ownerTurnRejection(sourceGroup, turnScope, ownerUserId)) return null;
+  if (ownerTurnRejection(turnScope, ownerUserId)) return null;
   if (!inputTurnId) return { input: null };
   const answered = activeAgentBuilderTurns
     .deliveredTurnsThrough(turnScope, inputTurnId)
@@ -9544,17 +9539,15 @@ async function processTaskIpc(
         : activeAgentBuilderTurns.requireExactActiveOwnerHumanTurn.bind(
             activeAgentBuilderTurns,
           );
-    // The owner's IM identity is anchored across Home registrations, not the
-    // single source row: Home chats registered before owner capture (legacy
-    // topic groups with a NULL owner_im_id) must still authorize the owner.
-    const resolveHomeOwnerImIds = (provider: string): string[] =>
-      workspaceOwnerImIds({
-        provider,
-        ownerUserId: user.id,
-        workspaceJids: getJidsByFolder(sourceGroup),
-        channelType: getChannelType,
-        registration: (jid) => registeredGroups[jid] ?? getRegisteredGroup(jid),
-      });
+    // The owner's IM identity is anchored across the owner's registrations,
+    // not the single source row: chats registered before owner capture
+    // (legacy topic groups with a NULL owner_im_id) still authorize the owner.
+    const ownerIdentity = {
+      ownerUserId: user.id,
+      registration: (jid: string) =>
+        registeredGroups[jid] ?? getRegisteredGroup(jid),
+      ownerRegistrations: () => getGroupsByOwner(user.id),
+    };
     let activeTurn: ReturnType<typeof resolveOwnerTurn>;
     try {
       activeTurn = resolveOwnerTurn(
@@ -9562,12 +9555,7 @@ async function processTaskIpc(
         data.inputTurnId,
         getAgentBuilderInputMessage,
         (persistedInput) =>
-          isOwnerProfileOwnerInput(
-            persistedInput,
-            user.id,
-            (jid) => registeredGroups[jid] ?? getRegisteredGroup(jid),
-            resolveHomeOwnerImIds,
-          ),
+          isWorkspaceOwnerInput(persistedInput, ownerIdentity),
       );
     } catch (error) {
       // Turn-authorization misses are expected policy outcomes (queued
@@ -9902,10 +9890,9 @@ async function processTaskIpc(
           hostTurnKind === 'interactive' &&
           isWorkspaceMemoryOwnerTurn({
             ownerUserId: actor.id,
-            workspaceJids: siblingJids,
-            channelType: getChannelType,
             registration: (jid) =>
               registeredGroups[jid] ?? getRegisteredGroup(jid),
+            ownerRegistrations: () => getGroupsByOwner(actor.id),
             requireActiveOwnerTurn: (isOwnerInput) =>
               activeAgentBuilderTurns.requireExactActiveOwnerHumanTurn(
                 agentBuilderTurnScope(sourceGroup, ipcAgentId),
