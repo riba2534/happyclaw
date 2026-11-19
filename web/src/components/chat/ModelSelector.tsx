@@ -7,7 +7,6 @@ import {
   type KeyboardEvent,
   type ReactNode,
 } from 'react';
-import { DeepSeekPriceBadge } from './DeepSeekPriceBadge';
 import { useNavigate } from 'react-router-dom';
 import {
   Brain,
@@ -1110,7 +1109,6 @@ export function ModelSelector({
           onPick={pickEffort}
         />
       )}
-      {!unusable && <DeepSeekPriceBadge model={inUse.model ?? null} />}
     </>
   );
 }
