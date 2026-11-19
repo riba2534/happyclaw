@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
-import { Copy, Loader2, ShieldCheck } from 'lucide-react';
+import { Copy, ExternalLink, Loader2, ShieldCheck } from 'lucide-react';
 import { toast } from 'sonner';
 
 import { Badge } from '@/components/ui/badge';
@@ -13,9 +13,11 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
+import { PasswordInput } from '@/components/common/PasswordInput';
 import { api } from '../../api/client';
+import { authErrorMessage } from '../../lib/auth-errors';
+import { copyToClipboard } from '../../utils/clipboard';
 import { SettingsGroup, SettingsRow, SettingsSection } from './SettingsLayout';
-import { getErrorMessage } from './types';
 
 interface TwoFactorStatus {
   enabled: boolean;
@@ -30,27 +32,19 @@ interface Enrolment {
 
 type Flow = 'enable' | 'recovery' | 'disable';
 
-const CODE_ERRORS: Record<string, string> = {
-  'Invalid verification code': '验证码不正确',
-  'Current password is incorrect': '密码不正确',
-};
-
-function codeError(error: unknown, fallback: string): string {
-  const message = getErrorMessage(error, fallback);
-  return CODE_ERRORS[message] ?? message;
-}
-
 /** One-time code field: digits keyboard, autofill from the authenticator. */
-function CodeInput({
+export function CodeInput({
   id,
   value,
   onChange,
   allowRecovery = false,
+  autoFocus = false,
 }: {
   id: string;
   value: string;
   onChange: (value: string) => void;
   allowRecovery?: boolean;
+  autoFocus?: boolean;
 }) {
   return (
     <Input
@@ -59,17 +53,23 @@ function CodeInput({
       value={value}
       onChange={(event) => onChange(event.target.value)}
       placeholder={allowRecovery ? '6 位验证码或恢复码' : '6 位验证码'}
+      aria-label={allowRecovery ? '验证码或恢复码' : '验证码'}
       inputMode={allowRecovery ? 'text' : 'numeric'}
       autoComplete="one-time-code"
       maxLength={allowRecovery ? 32 : 6}
-      autoFocus
+      autoFocus={autoFocus}
       className="tracking-widest"
     />
   );
 }
 
+function copy(text: string, done: string) {
+  void copyToClipboard(text)
+    .then(() => toast.success(done))
+    .catch(() => toast.error('复制失败，请手动选择复制'));
+}
+
 function RecoveryCodes({ codes }: { codes: string[] }) {
-  const text = codes.join('\n');
   return (
     <div className="space-y-3">
       <p className="text-body text-muted-foreground">
@@ -84,16 +84,47 @@ function RecoveryCodes({ codes }: { codes: string[] }) {
         type="button"
         variant="outline"
         size="sm"
-        onClick={() =>
-          void navigator.clipboard
-            .writeText(text)
-            .then(() => toast.success('恢复码已复制'))
-            .catch(() => toast.error('复制失败，请手动选择复制'))
-        }
+        onClick={() => copy(codes.join('\n'), '恢复码已复制')}
       >
         <Copy className="size-3.5" />
         复制全部
       </Button>
+    </div>
+  );
+}
+
+/** The QR code, a link the phone's authenticator opens, and the key. */
+function EnrolmentKey({ enrolment }: { enrolment: Enrolment }) {
+  return (
+    <div className="flex flex-col items-center gap-2">
+      <img
+        src={enrolment.qr_data_url}
+        alt="二次验证二维码"
+        className="size-44 rounded-lg bg-white p-1"
+      />
+      <Button type="button" variant="link" size="sm" asChild>
+        <a href={enrolment.otpauth_uri}>
+          <ExternalLink className="size-3.5" />
+          在本机的验证器 App 中打开
+        </a>
+      </Button>
+      <p className="text-caption text-muted-foreground">
+        无法扫码时手动输入密钥：
+      </p>
+      <div className="flex max-w-full items-center gap-1">
+        <code className="min-w-0 font-mono text-caption break-all select-all">
+          {enrolment.secret}
+        </code>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          onClick={() => copy(enrolment.secret, '密钥已复制')}
+        >
+          <Copy className="size-3.5" />
+          复制
+        </Button>
+      </div>
     </div>
   );
 }
@@ -132,7 +163,7 @@ export function TwoFactorSection() {
     try {
       setEnrolment(await api.post<Enrolment>('/api/auth/2fa/setup', {}));
     } catch (err) {
-      setError(getErrorMessage(err, '无法开始设置'));
+      setError(authErrorMessage(err, '无法开始设置'));
     }
   };
 
@@ -154,17 +185,26 @@ export function TwoFactorSection() {
         close();
         return;
       }
-      const path =
-        flow === 'enable'
-          ? '/api/auth/2fa/enable'
-          : '/api/auth/2fa/recovery-codes';
-      const result = await api.post<{ recovery_codes: string[] }>(path, {
-        code,
-      });
+      if (flow === 'enable') {
+        const result = await api.post<{
+          recovery_codes: string[];
+          sessions_revoked?: number;
+        }>('/api/auth/2fa/enable', { password, code });
+        setCodes(result.recovery_codes);
+        toast.success(
+          result.sessions_revoked
+            ? `二次验证已开启，其他 ${result.sessions_revoked} 个设备已退出登录`
+            : '二次验证已开启',
+        );
+        return;
+      }
+      const result = await api.post<{ recovery_codes: string[] }>(
+        '/api/auth/2fa/recovery-codes',
+        { code },
+      );
       setCodes(result.recovery_codes);
-      if (flow === 'enable') toast.success('二次验证已开启');
     } catch (err) {
-      setError(codeError(err, '操作失败'));
+      setError(authErrorMessage(err, '操作失败'));
     } finally {
       setBusy(false);
     }
@@ -176,6 +216,7 @@ export function TwoFactorSection() {
       : flow === 'recovery'
         ? '重新生成恢复码'
         : '关闭二次验证';
+  const needsPassword = flow === 'enable' || flow === 'disable';
 
   return (
     <SettingsSection
@@ -229,7 +270,12 @@ export function TwoFactorSection() {
       </SettingsGroup>
 
       <Dialog open={flow !== null} onOpenChange={(next) => !next && close()}>
-        <DialogContent className="sm:max-w-md" autoFocusOnPhone>
+        {/* Only the single-field form may raise the phone keyboard on open:
+            the others would cover the QR code or the field to fill first. */}
+        <DialogContent
+          className="sm:max-w-md"
+          autoFocusOnPhone={flow === 'recovery'}
+        >
           <form onSubmit={submit} className="grid gap-4">
             <DialogHeader>
               <DialogTitle>{codes ? '保存恢复码' : title}</DialogTitle>
@@ -237,10 +283,10 @@ export function TwoFactorSection() {
                 {codes
                   ? '下次换手机或丢失手机时会用到。'
                   : flow === 'enable'
-                    ? '用验证器 App 扫描二维码，再输入它显示的 6 位验证码。'
+                    ? '用验证器 App 扫描二维码，再输入当前密码和它显示的 6 位验证码。开启后，其他设备上的登录会退出。'
                     : flow === 'recovery'
                       ? '旧的恢复码会全部作废。输入验证器 App 上的验证码。'
-                      : '输入密码和验证码（或一个恢复码）。'}
+                      : '输入当前密码和验证码（或一个恢复码）。'}
               </DialogDescription>
             </DialogHeader>
 
@@ -256,19 +302,7 @@ export function TwoFactorSection() {
               <>
                 {flow === 'enable' &&
                   (enrolment ? (
-                    <div className="flex flex-col items-center gap-2">
-                      <img
-                        src={enrolment.qr_data_url}
-                        alt="二次验证二维码"
-                        className="size-44 rounded-lg bg-white p-1"
-                      />
-                      <p className="text-caption text-muted-foreground">
-                        无法扫码时手动输入密钥：
-                      </p>
-                      <code className="font-mono text-caption break-all select-all">
-                        {enrolment.secret}
-                      </code>
-                    </div>
+                    <EnrolmentKey enrolment={enrolment} />
                   ) : (
                     !error && (
                       <div className="flex justify-center py-6">
@@ -276,14 +310,15 @@ export function TwoFactorSection() {
                       </div>
                     )
                   ))}
-                {flow === 'disable' && (
-                  <Input
-                    type="password"
+                {needsPassword && (
+                  <PasswordInput
+                    id="two-factor-password"
                     value={password}
                     onChange={(event) => setPassword(event.target.value)}
                     placeholder="当前密码"
                     aria-label="当前密码"
                     autoComplete="current-password"
+                    autoFocus
                   />
                 )}
                 <CodeInput
@@ -291,6 +326,7 @@ export function TwoFactorSection() {
                   value={code}
                   onChange={setCode}
                   allowRecovery={flow === 'disable'}
+                  autoFocus={!needsPassword}
                 />
               </>
             )}
@@ -311,7 +347,7 @@ export function TwoFactorSection() {
                     disabled={
                       busy ||
                       code.trim().length < 6 ||
-                      (flow === 'disable' && !password) ||
+                      (needsPassword && !password) ||
                       (flow === 'enable' && !enrolment)
                     }
                   >

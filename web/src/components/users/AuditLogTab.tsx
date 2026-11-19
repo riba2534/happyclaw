@@ -36,6 +36,7 @@ const EVENT_TYPE_LABELS: Record<string, string> = {
   mfa_recovery_codes_regenerated: '重新生成恢复码',
   passkey_added: '添加通行密钥',
   passkey_removed: '删除通行密钥',
+  passkeys_revoked: '撤销通行密钥',
   session_revoked: '撤销会话',
   user_created: '创建用户',
   user_updated: '更新用户',

@@ -1,10 +1,11 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Loader2, Globe, Sparkles, KeyRound } from 'lucide-react';
 import { useAuthStore } from '../stores/auth';
 import { LogoLoading } from '../components/common/LogoLoading';
 import { api } from '../api/client';
-import { apiErrorBody, extractErrorMessage } from '../utils/error';
+import { extractErrorMessage } from '../utils/error';
+import { authErrorCode, authErrorMessage } from '../lib/auth-errors';
 import { Input } from '@/components/ui/input';
 import { PasswordInput } from '@/components/common/PasswordInput';
 import { Button } from '@/components/ui/button';
@@ -19,14 +20,11 @@ interface RegisterStatus {
 
 type Tab = 'login' | 'register';
 
-function passkeyError(err: unknown): string {
-  const code = apiErrorBody(err)?.code;
-  if (code === 'PASSKEY_INVALID') return '这个通行密钥未登记在本站，或已被删除';
-  if (code === 'PASSKEY_NOT_ALLOWED') {
-    return '当前地址未允许使用通行密钥，请联系管理员';
-  }
-  return extractErrorMessage(err) || '通行密钥登录失败';
-}
+/**
+ * A login challenge lives five minutes on the server; the autofill wait is
+ * started again before that, so a passkey picked later still verifies.
+ */
+const AUTOFILL_REFRESH_MS = 4 * 60 * 1000;
 
 export function LoginPage() {
   const [searchParams] = useSearchParams();
@@ -64,6 +62,13 @@ export function LoginPage() {
   // Two-factor step: the challenge a correct password earned, and the code.
   const [mfaChallenge, setMfaChallenge] = useState<string | null>(null);
   const [mfaCode, setMfaCode] = useState('');
+  // Recovery codes are letters and digits; the numeric keyboard cannot type
+  // them, so they get their own mode.
+  const [useRecoveryCode, setUseRecoveryCode] = useState(false);
+  // Bumped to start a new passkey autofill wait.
+  const [autofillRound, setAutofillRound] = useState(0);
+  // A ceremony started by the button: autofill must not cancel it.
+  const passkeyButtonActive = useRef(false);
 
   // Register fields
   const [regUsername, setRegUsername] = useState('');
@@ -116,6 +121,7 @@ export function LoginPage() {
       if (pending) {
         setMfaChallenge(pending.mfaChallenge);
         setMfaCode('');
+        setUseRecoveryCode(false);
         return;
       }
       enterApp();
@@ -127,36 +133,58 @@ export function LoginPage() {
   };
 
   // Offer saved passkeys in the username field's suggestions (conditional
-  // UI) while the password form shows; the button below aborts this wait.
+  // UI) while the password form shows; the button below takes over from
+  // this wait, which starts again when the button's ceremony ends. Nobody
+  // asked for it, so its failures stay silent, except a passkey the user
+  // picked and the server refused.
   useEffect(() => {
     if (!passkeysUsable || tab !== 'login' || mfaChallenge) return;
     let cancelled = false;
+    let cancelCeremony: (() => void) | null = null;
+    const refresh = window.setTimeout(() => {
+      if (!passkeyButtonActive.current) setAutofillRound((n) => n + 1);
+    }, AUTOFILL_REFRESH_MS);
     void (async () => {
-      const { browserSupportsWebAuthnAutofill } =
+      const { browserSupportsWebAuthnAutofill, WebAuthnAbortService } =
         await import('@simplewebauthn/browser');
+      cancelCeremony = () => WebAuthnAbortService.cancelCeremony();
       if (cancelled || !(await browserSupportsWebAuthnAutofill())) return;
+      if (cancelled) return;
       try {
         if (await loginWithPasskey({ autofill: true })) enterApp();
       } catch (err) {
-        if (!cancelled) setError(passkeyError(err));
+        if (cancelled) return;
+        const code = authErrorCode(err);
+        if (code === 'PASSKEY_INVALID' || code === 'PASSKEY_EXPIRED') {
+          setError(authErrorMessage(err, '通行密钥登录失败'));
+          setAutofillRound((n) => n + 1);
+        }
       }
     })();
     return () => {
       cancelled = true;
+      window.clearTimeout(refresh);
+      if (!passkeyButtonActive.current) cancelCeremony?.();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [passkeysUsable, tab, mfaChallenge]);
+  }, [passkeysUsable, tab, mfaChallenge, autofillRound]);
 
   const handlePasskey = async () => {
     setError('');
     setLoading(true);
+    passkeyButtonActive.current = true;
+    let signedIn = false;
     try {
-      if (await loginWithPasskey()) enterApp();
+      signedIn = await loginWithPasskey();
     } catch (err) {
-      setError(passkeyError(err));
+      setError(authErrorMessage(err, '通行密钥登录失败'));
     } finally {
+      passkeyButtonActive.current = false;
       setLoading(false);
     }
+    if (signedIn) enterApp();
+    // Starting it cancelled the autofill wait: offer the suggestions again.
+    else setAutofillRound((n) => n + 1);
   };
 
   const enterApp = () => {
@@ -173,15 +201,12 @@ export function LoginPage() {
       await loginSecondFactor(mfaChallenge, mfaCode);
       enterApp();
     } catch (err) {
-      const code = apiErrorBody(err)?.code;
-      if (code === 'MFA_EXPIRED') {
-        setMfaChallenge(null);
-        setError('验证已过期或尝试次数过多，请重新输入密码');
-      } else if (code === 'MFA_INVALID') {
-        setError('验证码不正确');
-      } else {
-        setError(extractErrorMessage(err) || '验证失败');
-      }
+      if (authErrorCode(err) === 'MFA_EXPIRED') setMfaChallenge(null);
+      setError(
+        authErrorCode(err) === 'MFA_INVALID' && useRecoveryCode
+          ? '恢复码不正确或已用过'
+          : authErrorMessage(err, '验证失败'),
+      );
     } finally {
       setLoading(false);
     }
@@ -298,27 +323,46 @@ export function LoginPage() {
               <form onSubmit={handleSecondFactor} className="mt-6 space-y-4">
                 <div className="space-y-1.5">
                   <Label htmlFor="login-mfa-code" className="text-label">
-                    验证码
+                    {useRecoveryCode ? '恢复码' : '验证码'}
                   </Label>
                   <Input
+                    // A new field per mode, so the keyboard switches too.
+                    key={useRecoveryCode ? 'recovery' : 'totp'}
                     id="login-mfa-code"
                     variant="code"
                     value={mfaCode}
                     onChange={(e) => setMfaCode(e.target.value)}
-                    placeholder="6 位验证码或恢复码"
-                    inputMode="numeric"
-                    autoComplete="one-time-code"
+                    placeholder={useRecoveryCode ? 'xxxxx-xxxxx' : '6 位验证码'}
+                    inputMode={useRecoveryCode ? 'text' : 'numeric'}
+                    autoComplete={useRecoveryCode ? 'off' : 'one-time-code'}
+                    maxLength={useRecoveryCode ? 32 : 7}
                     required
                     autoFocus
                     className="h-9 tracking-widest"
                   />
                   <p className="text-caption text-muted-foreground">
-                    打开验证器 App 查看验证码；手机丢失时可输入一个恢复码。
+                    {useRecoveryCode
+                      ? '输入保存的恢复码之一，每个只能用一次。'
+                      : '打开验证器 App 查看 6 位验证码。'}
                   </p>
                 </div>
                 <Button type="submit" disabled={loading} className="h-9 w-full">
                   {loading && <Loader2 className="animate-spin" />}
                   验证
+                </Button>
+                <Button
+                  type="button"
+                  variant="link"
+                  onClick={() => {
+                    setUseRecoveryCode((current) => !current);
+                    setMfaCode('');
+                    setError('');
+                  }}
+                  className="h-auto w-full p-0"
+                >
+                  {useRecoveryCode
+                    ? '使用验证器 App 的验证码'
+                    : '手机不在身边？使用恢复码'}
                 </Button>
                 <Button
                   type="button"

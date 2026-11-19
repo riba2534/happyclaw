@@ -47,6 +47,8 @@ export interface UserPublic {
   guest_owner_username?: string | null;
   /** Two-factor authentication is on; only present in the admin users list. */
   two_factor_enabled?: boolean;
+  /** How many passkeys the user has; only present in the admin users list. */
+  passkey_count?: number;
 }
 
 export interface AppearanceConfig {

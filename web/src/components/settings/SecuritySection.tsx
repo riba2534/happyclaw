@@ -9,6 +9,7 @@ import { ListGroup, ListRow } from '@/components/common/ListRow';
 import { PasswordInput } from '@/components/common/PasswordInput';
 import { confirmDialog } from '@/stores/confirm';
 import { api } from '../../api/client';
+import { authErrorMessage } from '../../lib/auth-errors';
 import { useAuthStore } from '../../stores/auth';
 import { SettingsGroup, SettingsRow, SettingsSection } from './SettingsLayout';
 import { SettingsFormFooter } from './SettingsFormControls';
@@ -111,7 +112,7 @@ export function SecuritySection() {
       toast.success('密码已修改，其他设备的登录会话已撤销');
       void loadSessions();
     } catch (error) {
-      toast.error(getErrorMessage(error, '修改密码失败'));
+      toast.error(authErrorMessage(error, '修改密码失败'));
     } finally {
       setChangingPassword(false);
     }

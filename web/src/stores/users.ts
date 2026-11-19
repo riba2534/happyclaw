@@ -95,6 +95,7 @@ interface UsersState {
   deleteUser: (id: string) => Promise<void>;
   revokeUserSessions: (id: string) => Promise<void>;
   resetUserTwoFactor: (id: string) => Promise<void>;
+  revokeUserPasskeys: (id: string) => Promise<void>;
   fetchInvites: () => Promise<void>;
   createInvite: (data: {
     role?: 'admin' | 'member';
@@ -203,6 +204,10 @@ export const useUsersStore = create<UsersState>((set) => ({
 
   resetUserTwoFactor: async (id) => {
     await api.delete(`/api/admin/users/${id}/2fa`);
+  },
+
+  revokeUserPasskeys: async (id) => {
+    await api.delete(`/api/admin/users/${id}/passkeys`);
   },
 
   fetchInvites: async () => {
