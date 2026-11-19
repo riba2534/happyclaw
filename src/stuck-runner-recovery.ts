@@ -23,8 +23,13 @@ export interface StuckRecoveryCandidate {
   runnerPid: number | null;
   /** Absolute debt clock used to reject a later query's fresh IPC work. */
   ipcOwedSinceAt: number | null;
-  /** Age of the oldest IPC input still owed by the current logical query. */
+  /** Age of the oldest IPC input still owed by the current logical query;
+   * null for an `ipc_injected` candidate whose opening input the model has
+   * answered, which only the idle rule can restart. */
   ipcOwedMs: number | null;
+  /** The query in flight holds its result for unsettled background work;
+   * see GroupQueue.markRunnerBackgroundHold. */
+  backgroundTasksHeld: boolean;
 }
 
 export type StuckRecoveryDecision =
@@ -34,7 +39,11 @@ export type StuckRecoveryDecision =
     }
   | {
       action: 'defer';
-      reason: 'container_grace' | 'cpu_active' | 'cpu_unknown';
+      reason:
+        | 'background_tasks'
+        | 'container_grace'
+        | 'cpu_active'
+        | 'cpu_unknown';
     };
 
 export type HostProcessTableReader = () => Promise<string>;
@@ -138,12 +147,25 @@ export async function resolveRunnerCpuActivity(
  * an absolute debt age that ordinary output cannot refresh. Before that
  * ceiling, container work is conservatively preserved because host `ps`
  * cannot observe CPU inside Docker; host probe failures are likewise deferred.
+ *
+ * A query holding its result for unsettled background work is deferred: the
+ * Runner sends no completion receipt until that work settles, so its IPC debt
+ * cannot be paid, and a sub-agent waiting on the network shows neither output
+ * nor CPU. Restarting would kill it. Such a runner is bounded instead by
+ * silence: with no output for min(CONTAINER_TIMEOUT, IDLE_TIMEOUT) the host
+ * closes it, and the CONTAINER_TIMEOUT watchdog follows; the main agent,
+ * which keeps answering input while held, is left to the same bounds. The IPC
+ * ceiling resumes, from the moment the hold ends, for input still owed.
  */
 export function decideStuckRunnerRecovery(
   candidate: StuckRecoveryCandidate,
   cpuActivity: RunnerCpuActivity,
   forceRestartMs: number,
 ): StuckRecoveryDecision {
+  if (candidate.backgroundTasksHeld) {
+    return { action: 'defer', reason: 'background_tasks' };
+  }
+
   if (
     candidate.reason === 'ipc_injected' &&
     candidate.ipcOwedMs !== null &&

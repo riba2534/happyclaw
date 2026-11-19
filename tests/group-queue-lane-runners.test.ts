@@ -250,7 +250,7 @@ describe('a runner that serves no conversation input', () => {
 });
 
 describe('restarting a lane', () => {
-  test('runs the lane queued turn and asks the host to start the lane', async () => {
+  test('runs the lane queued turn in place of another lane start', async () => {
     const starts: string[] = [];
     queue.setLaneStarter((jid) => starts.push(jid));
     exitOnClose();
@@ -264,10 +264,39 @@ describe('restarting a lane', () => {
     await settle();
     expect(running.ran()).toBe(true);
     expect(queued.ran()).toBe(true);
-    expect(starts).toEqual([LANE]);
+    // The queued turn reads the lane's input; a lane start would only wait
+    // behind the runner it leaves warm.
+    expect(starts).toEqual([]);
+    expect(queue.getStatus().groups).toMatchObject([
+      { jid: LANE, active: true, pendingTasks: 0 },
+    ]);
     // The queued turn started after the teardown, so the restart never
     // mistook it for the runner it was stopping.
     expect(queue.hasActiveRunnerForMessage(LANE)).toBe(true);
+  });
+
+  test('asks the host to start the lane when nothing is queued', async () => {
+    const starts: string[] = [];
+    queue.setLaneStarter((jid) => starts.push(jid));
+    exitOnClose();
+    startRunner(LANE, 'agent-conversation');
+    await settle();
+
+    await queue.restartGroup(LANE);
+    expect(starts).toEqual([LANE]);
+  });
+
+  test('a queued terminal warm-up does not stand in for the lane start', async () => {
+    const starts: string[] = [];
+    queue.setLaneStarter((jid) => starts.push(jid));
+    exitOnClose();
+    startRunner(LANE, 'agent-conversation');
+    await settle();
+    startRunner(LANE, 'terminal-warmup', { acceptsInput: false });
+    await settle();
+
+    await queue.restartGroup(LANE);
+    expect(starts).toEqual([LANE]);
   });
 
   test('without a lane starter the restart still tears the runner down', async () => {
