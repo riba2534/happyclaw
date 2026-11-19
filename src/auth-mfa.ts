@@ -38,12 +38,28 @@ const TOTP_ISSUER = 'HappyClaw';
 // token bound to one user, valid for five minutes and five code attempts,
 // spent by the first correct code. It lives in memory: a restart only asks
 // for the password again.
+//
+// It is also bound to the credentials it was earned with: a password change
+// (by the user, an admin or the reset script), turning 2FA off or an admin
+// reset (even followed by a new enrolment) makes it stale, and so does the
+// account being disabled or deleted (see mfaChallengeIsCurrent).
 
 interface MfaChallenge {
   userId: string;
   username: string;
   expiresAt: number;
   attempts: number;
+  /** Digest of the password hash and the 2FA enrolment it was earned with. */
+  credentials: string;
+}
+
+function credentialStamp(userId: string, passwordHash: string): string {
+  return crypto
+    .createHash('sha256')
+    .update(passwordHash)
+    .update('\0')
+    .update(getUserTotp(userId)?.enabled_at ?? '')
+    .digest('base64url');
 }
 
 const challenges = new Map<string, MfaChallenge>();
@@ -60,19 +76,42 @@ function pruneChallenges(now: number): void {
 }
 
 export function createMfaChallenge(
-  userId: string,
+  user: { id: string; password_hash: string },
   username: string,
   now = Date.now(),
 ): string {
   pruneChallenges(now);
   const token = crypto.randomBytes(32).toString('base64url');
   challenges.set(token, {
-    userId,
+    userId: user.id,
     username,
     expiresAt: now + CHALLENGE_TTL_MS,
     attempts: 0,
+    credentials: credentialStamp(user.id, user.password_hash),
   });
   return token;
+}
+
+/**
+ * Whether a challenge still stands for `user` as stored now: active, same
+ * password, same 2FA enrolment.
+ */
+export function mfaChallengeIsCurrent(
+  challenge: Readonly<MfaChallenge>,
+  user: { id: string; status: string; password_hash: string },
+): boolean {
+  return (
+    user.id === challenge.userId &&
+    user.status === 'active' &&
+    credentialStamp(user.id, user.password_hash) === challenge.credentials
+  );
+}
+
+/** End every pending challenge of a user (disabled or deleted). */
+export function dropMfaChallengesForUser(userId: string): void {
+  for (const [token, challenge] of challenges) {
+    if (challenge.userId === userId) challenges.delete(token);
+  }
 }
 
 /** The live challenge for a token, or undefined (unknown, expired, spent). */

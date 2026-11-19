@@ -39,8 +39,11 @@ const CHALLENGE_MAX_ENTRIES = 10_000;
  * Live login challenges one client (IPv4 address or IPv6 /64) may hold.
  * Anyone can ask for login options; past this a client's own oldest goes,
  * so one client cannot push everyone else's out of the shared store.
+ * Clients whose address tells nothing apart (loopback, as behind a reverse
+ * proxy on the same host without TRUST_PROXY) share one such bucket.
  */
 export const LOGIN_CHALLENGES_PER_CLIENT = 50;
+const UNKNOWN_CLIENT = 'unknown';
 export const MAX_PASSKEYS_PER_USER = 20;
 /**
  * Named explicitly: the library's default probes the runtime for ML-DSA,
@@ -107,62 +110,81 @@ export function resolvePasskeyOrigin(
 // --- Challenges ---------------------------------------------------------
 //
 // One challenge per ceremony, kept server-side: single use, five minutes,
-// bound to the purpose, the origin and (for registration) the user.
+// bound to the origin and (for registration) the user. Registration takes a
+// signed-in, re-authenticated user while login options are open to anyone,
+// so the two are stored apart: no flood of logins can push out a
+// registration in progress.
 
 interface PendingChallenge {
-  purpose: 'register' | 'login';
+  /** The user registering; null for a login. */
   userId: string | null;
   origin: string;
   rpId: string;
   expiresAt: number;
-  /** The requesting client's bucket for a login challenge, if known. */
+  /** The requesting client's bucket, for a login challenge. */
   client: string | null;
 }
 
 type ExpectedChallenge = Omit<PendingChallenge, 'expiresAt' | 'client'>;
 
-const challenges = new Map<string, PendingChallenge>();
+const registrationChallenges = new Map<string, PendingChallenge>();
+const loginChallenges = new Map<string, PendingChallenge>();
 
-function rememberChallenge(challenge: string, pending: PendingChallenge) {
+function rememberChallenge(
+  store: Map<string, PendingChallenge>,
+  challenge: string,
+  pending: PendingChallenge,
+) {
   const now = Date.now();
   // Insertion order is age order.
   const sameClient: string[] = [];
-  for (const [key, value] of challenges) {
-    if (value.expiresAt <= now) challenges.delete(key);
+  for (const [key, value] of store) {
+    if (value.expiresAt <= now) store.delete(key);
     else if (pending.client && value.client === pending.client) {
       sameClient.push(key);
     }
   }
   while (sameClient.length >= LOGIN_CHALLENGES_PER_CLIENT) {
-    challenges.delete(sameClient.shift()!);
+    store.delete(sameClient.shift()!);
   }
-  for (const key of challenges.keys()) {
-    if (challenges.size < CHALLENGE_MAX_ENTRIES) break;
-    challenges.delete(key);
+  for (const key of store.keys()) {
+    if (store.size < CHALLENGE_MAX_ENTRIES) break;
+    store.delete(key);
   }
-  challenges.set(challenge, pending);
+  store.set(challenge, pending);
 }
 
 /** Spend a challenge if it matches; any lookup, matching or not, spends it. */
 function takeChallenge(
+  store: Map<string, PendingChallenge>,
   challenge: string,
   expected: ExpectedChallenge,
 ): boolean {
-  const pending = challenges.get(challenge);
-  challenges.delete(challenge);
+  const pending = store.get(challenge);
+  store.delete(challenge);
   return (
     !!pending &&
     pending.expiresAt > Date.now() &&
-    pending.purpose === expected.purpose &&
     pending.userId === expected.userId &&
     pending.origin === expected.origin &&
     pending.rpId === expected.rpId
   );
 }
 
+/**
+ * Forget a user's pending registrations (their passkeys were revoked): a
+ * ceremony started before cannot finish after.
+ */
+export function dropPasskeyRegistrationChallenges(userId: string): void {
+  for (const [key, value] of registrationChallenges) {
+    if (value.userId === userId) registrationChallenges.delete(key);
+  }
+}
+
 /** Test-only. */
 export function resetPasskeyChallengesForTest(): void {
-  challenges.clear();
+  registrationChallenges.clear();
+  loginChallenges.clear();
 }
 
 function newChallenge(): string {
@@ -209,8 +231,7 @@ export async function passkeyRegistrationOptions(
     },
     supportedAlgorithmIDs: SUPPORTED_ALGORITHM_IDS,
   });
-  rememberChallenge(options.challenge, {
-    purpose: 'register',
+  rememberChallenge(registrationChallenges, options.challenge, {
     userId: user.id,
     origin: where.origin,
     rpId: where.rpId,
@@ -231,8 +252,7 @@ export async function registerPasskey(
     verification = await verifyRegistrationResponse({
       response,
       expectedChallenge: (challenge) =>
-        takeChallenge(challenge, {
-          purpose: 'register',
+        takeChallenge(registrationChallenges, challenge, {
           userId,
           origin: where.origin,
           rpId: where.rpId,
@@ -269,7 +289,8 @@ export async function registerPasskey(
 /**
  * Options for a username-less login (discoverable credentials). `client` is
  * the requester's rate-limit bucket (see ipBucketKey), or null when the
- * address cannot tell clients apart.
+ * address cannot tell clients apart; those share one bucket, under the same
+ * cap.
  */
 export async function passkeyLoginOptions(
   where: PasskeyOrigin,
@@ -281,13 +302,12 @@ export async function passkeyLoginOptions(
     challenge,
     userVerification: 'required',
   });
-  rememberChallenge(options.challenge, {
-    purpose: 'login',
+  rememberChallenge(loginChallenges, options.challenge, {
     userId: null,
     origin: where.origin,
     rpId: where.rpId,
     expiresAt: Date.now() + CHALLENGE_TTL_MS,
-    client,
+    client: client ?? UNKNOWN_CLIENT,
   });
   return options;
 }
@@ -307,9 +327,9 @@ export async function verifyPasskeyLogin(
   response: AuthenticationResponseJSON,
 ): Promise<PasskeyLoginResult> {
   const challenge = challengeOf(response);
-  const pending = challenge ? challenges.get(challenge) : undefined;
+  const pending = challenge ? loginChallenges.get(challenge) : undefined;
   if (!challenge || !pending || pending.expiresAt <= Date.now()) {
-    if (challenge) challenges.delete(challenge);
+    if (challenge) loginChallenges.delete(challenge);
     return { problem: 'expired' };
   }
   const row = getPasskey(response.id);
@@ -320,7 +340,7 @@ export async function verifyPasskeyLogin(
     row.rp_id !== where.rpId ||
     userHandleOf(response) !== row.user_id
   ) {
-    challenges.delete(challenge);
+    loginChallenges.delete(challenge);
     return { problem: 'invalid' };
   }
   let verification;
@@ -328,8 +348,7 @@ export async function verifyPasskeyLogin(
     verification = await verifyAuthenticationResponse({
       response,
       expectedChallenge: (value) =>
-        takeChallenge(value, {
-          purpose: 'login',
+        takeChallenge(loginChallenges, value, {
           userId: null,
           origin: where.origin,
           rpId: where.rpId,

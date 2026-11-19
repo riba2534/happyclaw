@@ -555,6 +555,7 @@ export function UserListTab({
       />
       <ResetPasswordDialog
         user={passwordUser}
+        isSelf={!!passwordUser && passwordUser.id === currentUser?.id}
         onOpenChange={(open) => {
           if (!open) setPasswordUser(null);
         }}

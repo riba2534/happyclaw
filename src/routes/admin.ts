@@ -1,5 +1,6 @@
 import fs from 'fs';
-import { removeTwoFactor } from '../auth-mfa.js';
+import { dropMfaChallengesForUser, removeTwoFactor } from '../auth-mfa.js';
+import { dropPasskeyRegistrationChallenges } from '../passkeys.js';
 import {
   countPasskeys,
   deletePasskeysForUser,
@@ -19,7 +20,11 @@ import {
   AdminPatchUserSchema,
   InviteCreateSchema,
 } from '../schemas.js';
-import { isUsernameConflictError, toUserPublic } from './auth.js';
+import {
+  checkCurrentPassword,
+  isUsernameConflictError,
+  toUserPublic,
+} from './auth.js';
 import type {
   AuthUser,
   Permission,
@@ -450,6 +455,20 @@ adminRoutes.patch(
         400,
       );
     }
+    // One's own password takes the current one, as in Settings: a stolen
+    // session must not reset it and then pass the password re-check that
+    // adding a passkey asks for. Counted like a login attempt.
+    if (
+      validation.data.password !== undefined &&
+      id === (c.get('user') as AuthUser).id
+    ) {
+      const denied = await checkCurrentPassword(
+        c,
+        c.get('user') as AuthUser,
+        validation.data.current_password ?? '',
+      );
+      if (denied) return denied;
+    }
 
     return withCapabilityScopeLocks(
       [SYSTEM_CAPABILITY_LOCK_KEY, userCapabilityLockKey(id)],
@@ -650,6 +669,7 @@ adminRoutes.patch(
             postCommitActions.push(() => {
               invalidateUserSessions(id);
               deleteUserSessionsByUserId(id);
+              dropMfaChallengesForUser(id);
               revokeGuestSessionsForOwner(id);
               if (target.role === 'guest') {
                 deleteGuestWorkspaceGrantsForGuest(id);
@@ -671,6 +691,8 @@ adminRoutes.patch(
             postCommitActions.push(() => {
               invalidateUserSessions(id);
               deleteUserSessionsByUserId(id);
+              // A pending 2FA login must not survive being re-enabled.
+              dropMfaChallengesForUser(id);
               revokeGuestSessionsForOwner(id);
               void imManager
                 .disconnectAllUserChannels(id)
@@ -955,6 +977,7 @@ adminRoutes.delete(
     // 与 PATCH status='deleted' 路径对齐：清缓存 + 断 IM 连接，否则前端调
     // DELETE 之后 sessionCache 仍是 active 状态、IM bot 持续响应群消息直到重启。
     invalidateUserSessions(id);
+    dropMfaChallengesForUser(id);
     revokeGuestSessionsForOwner(id);
     void imManager.disconnectAllUserChannels(id).catch(() => undefined);
 
@@ -1129,6 +1152,8 @@ adminRoutes.delete(
     });
     if (denial) return denial;
     const removed = deletePasskeysForUser(id);
+    // A registration started before must not add one back.
+    dropPasskeyRegistrationChallenges(id);
     if (removed > 0) {
       logAuthEvent({
         event_type: 'passkeys_revoked',

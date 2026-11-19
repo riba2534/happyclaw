@@ -144,6 +144,10 @@ beforeAll(() => {
   createUser('carol', 'member');
   createUser('dave', 'member');
   createUser('erin', 'member');
+  for (const id of ['frank', 'gina', 'hank', 'ivan', 'judy', 'kate', 'liam']) {
+    createUser(id, 'member');
+  }
+  createUser('mona', 'admin');
 });
 
 beforeEach(() => {
@@ -470,5 +474,161 @@ describe('two-factor login', () => {
     expect((await (await app.request('/api/auth/2fa')).json()).enabled).toBe(
       false,
     );
+  });
+});
+
+describe('follow-up hardening', () => {
+  test('wrong first codes when turning it on count as failed logins', async () => {
+    as('frank');
+    await post('/api/auth/2fa/setup', {});
+    for (let i = 0; i < 5; i += 1) {
+      const wrong = await post('/api/auth/2fa/enable', {
+        password: PASSWORD,
+        code: '000000',
+      });
+      expect((await wrong.json()).code).toBe('MFA_INVALID');
+    }
+    const limited = await post('/api/auth/2fa/enable', {
+      password: PASSWORD,
+      code: '000000',
+    });
+    expect(limited.status).toBe(429);
+    expect((await limited.json()).code).toBe('TOO_MANY_ATTEMPTS');
+  });
+
+  test("a signed-in user's right code does not clear earlier failed logins", async () => {
+    const { secret } = await enrol('gina', totpStep() - 1);
+    for (let i = 0; i < 4; i += 1) {
+      await post('/api/auth/login', { username: 'gina', password: 'nope-123' });
+    }
+    as('gina');
+    const regenerated = await post('/api/auth/2fa/recovery-codes', {
+      code: totpCode(secret, totpStep()),
+    });
+    expect(regenerated.status).toBe(200);
+    await post('/api/auth/login', { username: 'gina', password: 'nope-123' });
+    expect(
+      (await post('/api/auth/login', { username: 'gina', password: PASSWORD }))
+        .status,
+    ).toBe(429);
+  });
+
+  describe('a pending login challenge goes stale', () => {
+    const expectStale = async (challenge: string, code = '123456') => {
+      const response = await post('/api/auth/login/2fa', { challenge, code });
+      expect(response.status).toBe(400);
+      expect((await response.json()).code).toBe('MFA_EXPIRED');
+    };
+
+    test('when the password changes (an admin, or the reset script)', async () => {
+      const { secret } = await enrol('hank', totpStep() - 1);
+      const byAdmin = await challengeFor('hank');
+      const byScript = await challengeFor('hank');
+      as('owner');
+      const reset = await app.request('/api/admin/users/hank', {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ password: 'hank-new-password-1' }),
+      });
+      expect(reset.status).toBe(200);
+      await expectStale(byAdmin, totpCode(secret, totpStep()));
+      // Out of process, as `npm run reset:admin` writes it.
+      db.updateUserFields('hank', {
+        password_hash: bcrypt.hashSync(PASSWORD, 4),
+      });
+      await expectStale(byScript, totpCode(secret, totpStep()));
+    });
+
+    test('when the user changes their own password', async () => {
+      const { secret } = await enrol('ivan', totpStep() - 1);
+      const challenge = await challengeFor('ivan');
+      as('ivan');
+      const changed = await app.request('/api/auth/password', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          current_password: PASSWORD,
+          new_password: 'ivan-new-password-1',
+        }),
+      });
+      expect(changed.status).toBe(200);
+      await expectStale(challenge, totpCode(secret, totpStep()));
+    });
+
+    test('when 2FA is turned off, or reset and set up again', async () => {
+      const { secret } = await enrol('judy', totpStep() - 1);
+      const beforeOff = await challengeFor('judy');
+      as('judy');
+      const off = await post('/api/auth/2fa/disable', {
+        password: PASSWORD,
+        code: totpCode(secret, totpStep()),
+      });
+      expect(off.status).toBe(200);
+      await expectStale(beforeOff);
+
+      const again = await enrol('judy', totpStep() - 1);
+      const beforeReset = await challengeFor('judy');
+      as('owner');
+      await app.request('/api/admin/users/judy/2fa', { method: 'DELETE' });
+      const renewed = await enrol('judy', totpStep() - 1);
+      await expectStale(beforeReset, totpCode(renewed.secret, totpStep()));
+      expect(again.secret).not.toBe(renewed.secret);
+    });
+
+    test('when the account is disabled, even if enabled again', async () => {
+      const { secret } = await enrol('kate', totpStep() - 1);
+      const challenge = await challengeFor('kate');
+      as('owner');
+      for (const status of ['disabled', 'active']) {
+        const res = await app.request('/api/admin/users/kate', {
+          method: 'PATCH',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ status }),
+        });
+        expect(res.status).toBe(200);
+      }
+      await expectStale(challenge, totpCode(secret, totpStep()));
+    });
+
+    test('when the account is deleted', async () => {
+      const { secret } = await enrol('liam', totpStep() - 1);
+      const challenge = await challengeFor('liam');
+      as('owner');
+      const res = await app.request('/api/admin/users/liam', {
+        method: 'DELETE',
+      });
+      expect(res.status).toBe(200);
+      await expectStale(challenge, totpCode(secret, totpStep()));
+    });
+  });
+
+  test('an admin changing their own password in user management gives the current one', async () => {
+    as('mona');
+    const change = (body: Record<string, string>) =>
+      app.request('/api/admin/users/mona', {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ password: 'mona-new-password-1', ...body }),
+      });
+    const missing = await change({});
+    expect(missing.status).toBe(400);
+    expect((await missing.json()).code).toBe('CURRENT_PASSWORD_INCORRECT');
+    for (let i = 0; i < 4; i += 1) {
+      const wrong = await change({ current_password: `wrong-${i}` });
+      expect((await wrong.json()).code).toBe('CURRENT_PASSWORD_INCORRECT');
+    }
+    const limited = await change({ current_password: PASSWORD });
+    expect(limited.status).toBe(429);
+    resetLoginAttemptsForTest();
+    const ok = await change({ current_password: PASSWORD });
+    expect(ok.status).toBe(200);
+    expect(
+      (
+        await post('/api/auth/login', {
+          username: 'mona',
+          password: 'mona-new-password-1',
+        })
+      ).status,
+    ).toBe(200);
   });
 });

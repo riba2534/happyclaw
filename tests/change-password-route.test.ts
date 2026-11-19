@@ -146,6 +146,26 @@ describe('PUT /api/auth/password', () => {
     resetLoginAttemptsForTest();
   });
 
+  test('a right current password does not clear earlier failed logins', async () => {
+    const cookie = cookieFrom(await login(ADMIN_PASSWORD));
+    const ip = '198.51.100.78';
+    const loginFrom = (password: string) =>
+      send('POST', '/api/auth/login', {
+        ip,
+        body: { username: 'admin', password },
+      });
+    for (let i = 0; i < 4; i += 1) await loginFrom(`wrong-${i}-12345`);
+    const recheck = await send('PUT', '/api/auth/password', {
+      cookie,
+      ip,
+      body: { current_password: ADMIN_PASSWORD, new_password: ADMIN_PASSWORD },
+    });
+    expect(await recheck.json()).toMatchObject({ code: 'PASSWORD_UNCHANGED' });
+    await loginFrom('wrong-4-12345');
+    expect((await loginFrom(ADMIN_PASSWORD)).status).toBe(429);
+    resetLoginAttemptsForTest();
+  });
+
   test('a change takes effect at once: the new password logs in, the old does not', async () => {
     const cookie = cookieFrom(await login(ADMIN_PASSWORD));
     const changed = await send('PUT', '/api/auth/password', {

@@ -32,6 +32,7 @@ import {
   confirmTotpEnrolment,
   createMfaChallenge,
   failMfaChallenge,
+  mfaChallengeIsCurrent,
   peekMfaChallenge,
   regenerateRecoveryCodes,
   removeTwoFactor,
@@ -409,10 +410,10 @@ authRoutes.post('/login', authJsonBodyLimit, async (c) => {
     // The password was right: refund this attempt but keep earlier failures
     // (the second step's success clears them), then ask for the second
     // factor. No session yet; each code attempt is counted on its own.
-    settleLoginAttempt(username, ip, 'first_factor');
+    settleLoginAttempt(username, ip, 'verified');
     return c.json({
       mfa_required: true,
-      challenge: createMfaChallenge(user.id, username),
+      challenge: createMfaChallenge(user, username),
     });
   }
 
@@ -433,7 +434,11 @@ authRoutes.post('/login/2fa', authJsonBodyLimit, async (c) => {
   const ip = getClientIp(c);
   const ua = c.req.header('user-agent') || null;
   const challenge = peekMfaChallenge(token);
-  if (!challenge) {
+  const user = challenge ? getUserById(challenge.userId) : undefined;
+  // Gone, or stale: the password or the 2FA enrolment changed since, or the
+  // account was disabled or deleted.
+  if (!challenge || !user || !mfaChallengeIsCurrent(challenge, user)) {
+    spendMfaChallenge(token);
     return c.json(
       { error: 'Verification expired, log in again', code: 'MFA_EXPIRED' },
       400,
@@ -456,20 +461,16 @@ authRoutes.post('/login/2fa', authJsonBodyLimit, async (c) => {
       429,
     );
   }
-  const user = getUserById(challenge.userId);
   let method: ReturnType<typeof verifySecondFactor> = null;
   try {
-    method =
-      user && user.status === 'active'
-        ? verifySecondFactor(user.id, code)
-        : null;
+    method = verifySecondFactor(user.id, code);
   } catch (err) {
     if (!(err instanceof TotpSecretUnreadableError)) throw err;
     // Not evaluated: the challenge stays, so a recovery code can follow.
     settleLoginAttempt(username, ip, 'not_evaluated');
     return totpSecretUnreadableResponse(c);
   }
-  if (!user || !method) {
+  if (!method) {
     failMfaChallenge(token);
     logAuthEvent({
       event_type: 'login_failed',
@@ -1017,15 +1018,14 @@ function reserveAccountAttempt(
 }
 
 /**
- * Check the signed-in user's current password; a response when refused.
- * With `secondFactorFollows` a right password does not clear earlier
- * failures (see settleLoginAttempt): the code checked next does.
+ * Check the signed-in user's current password; a response when refused. A
+ * right one only refunds its attempt: a re-check is no login, so it does not
+ * clear earlier failures (see settleLoginAttempt).
  */
 export async function checkCurrentPassword(
   c: Context<{ Variables: Variables }>,
   user: AuthUser,
   password: string,
-  { secondFactorFollows = false }: { secondFactorFollows?: boolean } = {},
 ): Promise<Response | null> {
   const fullUser = getUserById(user.id);
   if (!fullUser) return c.json({ error: 'User not found' }, 404);
@@ -1046,11 +1046,7 @@ export async function checkCurrentPassword(
       400,
     );
   }
-  settleLoginAttempt(
-    username,
-    ip,
-    secondFactorFollows ? 'first_factor' : 'success',
-  );
+  settleLoginAttempt(username, ip, 'verified');
   return null;
 }
 
@@ -1073,7 +1069,7 @@ function checkAccountCode(
     return totpSecretUnreadableResponse(c);
   }
   if (!method) return c.json(MFA_INVALID, 400);
-  settleLoginAttempt(username, ip, 'success');
+  settleLoginAttempt(username, ip, 'verified');
   return null;
 }
 
@@ -1088,11 +1084,8 @@ export async function reauthenticate(
   password: string,
   code: string | undefined,
 ): Promise<Response | null> {
-  const totpOn = isTotpEnabled(user.id);
-  const denied = await checkCurrentPassword(c, user, password, {
-    secondFactorFollows: totpOn,
-  });
-  if (denied || !totpOn) return denied;
+  const denied = await checkCurrentPassword(c, user, password);
+  if (denied || !isTotpEnabled(user.id)) return denied;
   if (!code) {
     return c.json(
       { error: 'A verification code is required', code: 'MFA_REQUIRED' },
@@ -1154,14 +1147,19 @@ authRoutes.post('/2fa/enable', authMiddleware, authJsonBodyLimit, async (c) => {
   if (isTotpEnabled(user.id)) return c.json(MFA_ALREADY_ON, 409);
   const denied = await checkCurrentPassword(c, user, validation.data.password);
   if (denied) return denied;
+  // The first code is counted like any other.
+  const attempt = reserveAccountAttempt(c, user);
+  if (attempt instanceof Response) return attempt;
   let codes: string[] | null;
   try {
     codes = confirmTotpEnrolment(user.id, validation.data.code);
   } catch (err) {
     if (!(err instanceof TotpSecretUnreadableError)) throw err;
+    settleLoginAttempt(attempt.username, attempt.ip, 'not_evaluated');
     return totpSecretUnreadableResponse(c);
   }
   if (!codes) return c.json(MFA_INVALID, 400);
+  settleLoginAttempt(attempt.username, attempt.ip, 'verified');
   const sessionsRevoked = revokeOtherSessions(user.id, c.get('sessionId'));
   logAuthEvent({
     event_type: 'mfa_enabled',
@@ -1192,7 +1190,6 @@ authRoutes.post(
       c,
       user,
       validation.data.password,
-      { secondFactorFollows: true },
     );
     if (wrongPassword) return wrongPassword;
     const denied = checkAccountCode(c, user, validation.data.code, true);
