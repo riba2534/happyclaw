@@ -580,4 +580,38 @@ describe('sub-agents in the preview', () => {
       '本次运行不在智能体自己的模型连接上',
     );
   });
+
+  test('a sub-agent left with no tool is shown as not offered', () => {
+    const preview = buildAgentCapabilityPreview({
+      profile: profileWith({
+        model: null,
+        max_concurrent: null,
+        definitions: [
+          { ...definition, model: 'fast', tools: ['EnterPlanMode'] },
+          { ...definition, name: 'reader', model: 'fast', tools: ['Read'] },
+        ],
+      }),
+      subagentRun: {
+        onAgentConnection: true,
+        launch: {
+          agents: {
+            reader: {
+              description: 'Reviews diffs',
+              prompt: 'Review.',
+              tools: ['Read'],
+              model: 'fast',
+            },
+          },
+        },
+        defaultModel: { model: 'role', source: 'connection' },
+      },
+    });
+    expect(preview.subagents?.definitions.map((item) => item.name)).toEqual([
+      'reader',
+    ]);
+    const notes = preview.notes.join('\n');
+    expect(notes).toContain('子代理 reviewer 没有任何可用的工具');
+    // Left out for its tools, not for a model the connection dropped.
+    expect(notes).not.toContain('已不在智能体的模型连接中');
+  });
 });

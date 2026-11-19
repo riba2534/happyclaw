@@ -117,6 +117,30 @@ export function availableSubagentTools(tools: readonly string[]): string[] {
   return tools.filter((tool) => !isUnavailableSubagentTool(tool));
 }
 
+/**
+ * Whether a sub-agent names its tools and none of them is one a session
+ * has: it would run with no tools at all (`tools: []`) and nothing would
+ * say so. Such a sub-agent is refused on save and left out of a launch,
+ * never run with no tools or with every tool. `null` (every tool of the
+ * main Agent) is not this.
+ */
+export function hasNoAvailableTools(
+  definition: Pick<AgentSubagentDefinition, 'tools'>,
+): boolean {
+  return (
+    !!definition.tools && availableSubagentTools(definition.tools).length === 0
+  );
+}
+
+/** The names of a policy's sub-agents that have no tool to run with. */
+export function toollessSubagents(
+  policy: AgentSubagentPolicy | undefined,
+): string[] {
+  return (policy?.definitions ?? [])
+    .filter(hasNoAvailableTools)
+    .map((definition) => definition.name);
+}
+
 function normalizeDefinition(raw: unknown): AgentSubagentDefinition | null {
   if (!raw || typeof raw !== 'object') return null;
   const record = raw as Record<string, unknown>;
@@ -264,7 +288,8 @@ export interface SubagentLaunchInput {
  * on that connection and only while it still offers them; otherwise the
  * definition inherits and the connection's role decides the default. An
  * effort goes only where `takesEffort` says the model takes it, and a
- * definition's tools leave out those no session has.
+ * definition's tools leave out those no session has. A definition left with
+ * no tool (hasNoAvailableTools) is not launched; callers log it.
  */
 export function resolveSubagentLaunch(
   input: SubagentLaunchInput,
@@ -281,9 +306,12 @@ export function resolveSubagentLaunch(
   if (policy.max_concurrent !== null) {
     result.maxConcurrent = policy.max_concurrent;
   }
-  if (policy.definitions.length > 0) {
+  const definitions = policy.definitions.filter(
+    (definition) => !hasNoAvailableTools(definition),
+  );
+  if (definitions.length > 0) {
     result.agents = {};
-    for (const definition of policy.definitions) {
+    for (const definition of definitions) {
       const entry = entryOf(definition.model);
       const model = entry
         ? launchModelName(entry.id, windowOf(input.models, entry.id))

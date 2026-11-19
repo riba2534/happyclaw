@@ -117,6 +117,7 @@ import {
   resolveSubagentLaunchWithoutConnection,
   subagentLaunchModels,
   subagentPolicyModels,
+  toollessSubagents,
   type SubagentLaunch,
 } from './agent-subagents.js';
 import { recordUsageEventConnection } from './runtime-state-store.js';
@@ -1922,6 +1923,27 @@ export function trySelectPoolProvider(
 }
 
 /**
+ * Log the sub-agents a launch leaves out because none of their tools is one
+ * a session has (saved before such a list was refused, or the tools a
+ * session lacks changed since).
+ */
+function warnToollessSubagents(
+  policy: AgentSubagentPolicy | undefined,
+  context: { groupFolder: string; agentId?: string | null },
+): void {
+  const toolless = toollessSubagents(policy);
+  if (toolless.length === 0) return;
+  logger.warn(
+    {
+      groupFolder: context.groupFolder,
+      agentId: context.agentId || null,
+      subagents: toolless,
+    },
+    'Agent sub-agent has no tool a session offers; it is left out of the launch',
+  );
+}
+
+/**
  * The Agent's sub-agents on a launch on `provider`. Names of the Agent's
  * connection apply only there, and only while it offers them: a name it
  * dropped is logged and the sub-agent inherits, as a dropped Agent model
@@ -1938,6 +1960,7 @@ export function resolveConnectionSubagents(
   context: { groupFolder: string; agentId?: string | null; warn?: boolean },
 ): SubagentLaunch {
   if (!policy) return {};
+  if (context.warn !== false) warnToollessSubagents(policy, context);
   const chatGpt = !!provider.codexOAuthCredentials;
   const models = providerModels(provider);
   const appliesHere = onAgentConnection && !chatGpt && models.length > 0;
@@ -2042,11 +2065,11 @@ export function prepareLaunchInput(
     input,
     selection ?? leaveSessionConnection(input.groupFolder, input.agentId),
   );
+  const policy = input.agentProfile?.runtimePolicy?.subagents;
+  if (!selection) warnToollessSubagents(policy, input);
   const subagents = selection
     ? (selection.subagents ?? {})
-    : resolveSubagentLaunchWithoutConnection(
-        input.agentProfile?.runtimePolicy?.subagents,
-      );
+    : resolveSubagentLaunchWithoutConnection(policy);
   const { thinking: _thinking, subagents: _subagents, ...rest } = switched;
   return {
     ...rest,

@@ -55,8 +55,24 @@ const EFFORTS: SubagentEffortLevel[] = [
 /** As the server checks a tool rule (SUBAGENT_TOOL_RE in agent-subagents.ts). */
 const TOOL_RE = /^[A-Za-z][\w.*-]*(?:\([^,\r\n\0]*\))?$/;
 const MAX_TOOL_CHARS = 200;
+/** Tools no session has (SUBAGENT_UNAVAILABLE_TOOLS in agent-subagents.ts). */
+const UNAVAILABLE_TOOLS: readonly string[] = [
+  'CronCreate',
+  'CronDelete',
+  'CronList',
+  'ScheduleWakeup',
+  'EnterWorktree',
+  'ExitWorktree',
+  'EnterPlanMode',
+  'ExitPlanMode',
+];
 /** Select items cannot hold '' or null. */
 const INHERIT = '__inherit__';
+
+/** The typed rules naming a tool no session has; they are not provided. */
+export function unavailableSubagentTools(tools: string[]): string[] {
+  return tools.filter((tool) => UNAVAILABLE_TOOLS.includes(tool.split('(')[0]));
+}
 
 /**
  * The tool rules typed into the field: one per line or comma-separated, so a
@@ -360,7 +376,8 @@ function ModelSelect({
   );
 }
 
-function definitionError(
+/** Why the server would refuse a sub-agent, said before it is saved. */
+export function subagentDefinitionError(
   definition: AgentSubagentDefinition,
   takenNames: string[],
 ): string | null {
@@ -374,6 +391,14 @@ function definitionError(
   const tool = invalidSubagentTool(definition.tools ?? []);
   if (tool) {
     return `工具「${tool}」格式不对：应为工具名，可带括号里的参数，如 Bash(git log:*)`;
+  }
+  // The server refuses a list that leaves the sub-agent no tool at all.
+  if (
+    definition.tools &&
+    unavailableSubagentTools(definition.tools).length ===
+      definition.tools.length
+  ) {
+    return '所列工具在 HappyClaw 中都不可用，子代理将没有任何工具；请列出可用的工具，或留空使用主 Agent 的全部工具';
   }
   return null;
 }
@@ -416,6 +441,7 @@ function SubagentDialog({
   // A saved level the model does not list stays visible as what is saved.
   const unlistedEffort =
     draft?.effort && !efforts.includes(draft.effort) ? draft.effort : null;
+  const droppedTools = unavailableSubagentTools(parseSubagentTools(toolsText));
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
@@ -428,7 +454,7 @@ function SubagentDialog({
       prompt: draft.prompt.trim(),
       tools: tools.length > 0 ? tools : null,
     };
-    const invalid = definitionError(next, takenNames);
+    const invalid = subagentDefinitionError(next, takenNames);
     if (invalid) {
       setError(invalid);
       return;
@@ -493,7 +519,18 @@ function SubagentDialog({
             <SettingsField
               label="可用工具"
               htmlFor="subagent-tools"
-              description="每行一个，或用逗号分隔，例如 Read、Grep、Bash(git log:*)；留空表示和主 Agent 一样"
+              description={
+                <>
+                  每行一个，或用逗号分隔，例如 Read、Grep、Bash(git
+                  log:*)；留空表示和主 Agent 一样
+                  {droppedTools.length > 0 && (
+                    <span className="mt-1 block text-warning">
+                      {droppedTools.join('、')} 在 HappyClaw
+                      中不可用，运行时不会提供给子代理。
+                    </span>
+                  )}
+                </>
+              }
             >
               <Textarea
                 id="subagent-tools"

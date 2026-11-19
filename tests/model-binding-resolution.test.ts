@@ -484,6 +484,38 @@ describe('sub-agent launch', () => {
     });
   });
 
+  test('a sub-agent left with no tool is left out of the launch, with a warning', () => {
+    const toolless = {
+      model: null,
+      max_concurrent: null,
+      definitions: [
+        definition({ name: 'planner', tools: ['EnterPlanMode'] }),
+        definition({ name: 'reader', tools: ['Read'] }),
+      ],
+    };
+    const warned = () =>
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({ subagents: ['planner'] }),
+        expect.stringContaining('left out of the launch'),
+      );
+    const selection = select(toolless);
+    expect(Object.keys(selection.subagents?.agents ?? {})).toEqual(['reader']);
+    warned();
+    // Without a connection too.
+    vi.mocked(logger.warn).mockClear();
+    const input = runner.prepareLaunchInput(
+      {
+        prompt: '',
+        groupFolder: 'grp',
+        chatJid: 'web:grp',
+        agentProfile: { runtimePolicy: { subagents: toolless } },
+      } as never,
+      null,
+    );
+    expect(Object.keys(input.subagents?.agents ?? {})).toEqual(['reader']);
+    warned();
+  });
+
   test('an Agent without sub-agent settings launches as before', () => {
     const selection = select(undefined);
     expect(selection).not.toHaveProperty('subagents');
