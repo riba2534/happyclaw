@@ -136,6 +136,11 @@ import { webFetchPreflightSettings } from './web-fetch-preflight.js';
 import { defaultToolSearchEnv, pinToolSearch } from './tool-search.js';
 import { pinMaxOutputTokens } from './max-output-pin.js';
 import {
+  pinSubagentConcurrency,
+  sdkSubagentDefinitions,
+  subagentConcurrencyEnv,
+} from './subagent-launch.js';
+import {
   assistantMessageText,
   isContextOverflowText,
   providerErrorText,
@@ -3001,32 +3006,28 @@ async function runQueryAttempt(
       CLAUDE_PROVIDER_RUNTIME.endpointKind,
       containerInput.toolSearch,
     ),
+    ...subagentConcurrencyEnv(containerInput.subagents),
   };
   // The bound connection outranks every settings file the CLI reads (the
   // admin's, the workspace's project and local ones), in host and container
   // mode alike.
   const flagSettings: Record<string, unknown> = {
-    ...pinMaxOutputTokens(
-      pinToolSearch(
-        pinBoundProviderSettings({
-          ...process.env,
-          ...claudeRuntimeEnv,
-        }),
-        containerInput.toolSearch,
+    ...pinSubagentConcurrency(
+      pinMaxOutputTokens(
+        pinToolSearch(
+          pinBoundProviderSettings({
+            ...process.env,
+            ...claudeRuntimeEnv,
+          }),
+          containerInput.toolSearch,
+        ),
+        containerInput.maxOutputTokens,
       ),
-      containerInput.maxOutputTokens,
+      containerInput.subagents,
     ),
     ...webFetchPreflightSettings(containerInput.webFetchPreflightPolicy),
   };
-  // The Agent's cap goes in flag settings too, so a settings file the CLI
-  // reads cannot raise it; unset, the CLI's own default stays.
-  const subagentCap = containerInput.subagents?.maxConcurrent;
-  if (subagentCap) {
-    const cap = String(subagentCap);
-    claudeRuntimeEnv.CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS = cap;
-    const pinned = flagSettings.env as Record<string, string> | undefined;
-    flagSettings.env = { ...pinned, CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS: cap };
-  }
+  const subagentDefinitions = sdkSubagentDefinitions(containerInput);
   const claudeMdExcludes = resolveHostClaudeMdExcludes({
     executionMode: contextAuditBase.executionMode,
     runtimePolicy: containerInput.agentProfile?.runtimePolicy,
@@ -3162,9 +3163,7 @@ async function runQueryAttempt(
       disallowedTools: effectiveDisallowedTools,
       thinking: runThinking,
       ...(agentEffort ? { effort: agentEffort } : {}),
-      ...(containerInput.subagents?.agents
-        ? { agents: containerInput.subagents.agents }
-        : {}),
+      ...(subagentDefinitions ? { agents: subagentDefinitions } : {}),
       permissionMode: 'bypassPermissions' as const,
       allowDangerouslySkipPermissions: true,
       // Registers AskUserQuestion, which the CLI omits without a handler.

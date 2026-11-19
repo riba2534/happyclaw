@@ -63,10 +63,20 @@ describe('Agent effort runtime contracts', () => {
         /resolveAgentSdkEffort\(input\.agentProfile\?\.runtimePolicy\),\s*input\.agentProfile\?\.runtimePolicy\?\.subagents,/g,
       ),
     ).toHaveLength(2);
+    // What the runner does with them is tested in
+    // agent-runner-subagent-launch.test.ts; here, that it does it.
     const runner = read('container/agent-runner/src/index.ts');
-    expect(runner).toContain('{ agents: containerInput.subagents.agents }');
     expect(runner).toContain(
-      'claudeRuntimeEnv.CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS = cap;',
+      'const subagentDefinitions = sdkSubagentDefinitions(containerInput);',
+    );
+    expect(runner).toContain(
+      '...(subagentDefinitions ? { agents: subagentDefinitions } : {}),',
+    );
+    expect(runner).toContain(
+      '...subagentConcurrencyEnv(containerInput.subagents),',
+    );
+    expect(runner).toMatch(
+      /pinSubagentConcurrency\(\s*pinMaxOutputTokens\([\s\S]*?\),\s*containerInput\.subagents,\s*\)/,
     );
   });
 });
