@@ -228,24 +228,23 @@ export function parseAssistantUsage(
   };
 }
 
-/** Keep provisional fields independently. Only an explicit terminal field can lower one. */
+/**
+ * Keep provisional fields independently. Only an explicit terminal field can
+ * lower an input field; output only grows, so the estimate snapshot's
+ * placeholder output never replaces the ended snapshot's real count.
+ */
 export function mergeCodexAssistantUsage(
   previous: CollectedAssistantUsage | undefined,
   current: CollectedAssistantUsage,
 ): CollectedAssistantUsage {
   if (!previous) return current;
   const best = current.total > previous.total ? current : previous;
+  const tokens = {} as TokenSnapshot;
+  for (const field of TOKEN_FIELDS)
+    tokens[field] = Math.max(current[field], previous[field]);
   return {
     ...best,
-    inputTokens: Math.max(current.inputTokens, previous.inputTokens),
-    cacheReadInputTokens: Math.max(
-      current.cacheReadInputTokens,
-      previous.cacheReadInputTokens,
-    ),
-    cacheCreationInputTokens: Math.max(
-      current.cacheCreationInputTokens,
-      previous.cacheCreationInputTokens,
-    ),
+    ...tokens,
     agentId: best.agentId ?? current.agentId ?? previous.agentId,
     stopped: current.stopped || previous.stopped,
     finalInputTokens: {
@@ -487,6 +486,13 @@ export class AssistantUsageCollector {
   /**
    * Keep a shared upper bound on what the SDK may already have billed.
    * Do not claim a child ID until we actually settle its own usage.
+   *
+   * A child with stream events never shares a residual. This relies on its
+   * message_delta with a stop_reason arriving before the result that counts
+   * it (Claude Code adds the call to modelUsage while handling that event),
+   * so the child settles as `final` and the reconciler covers it as pending
+   * usage. A delta arriving after that result would bill the child twice:
+   * once in the result's residual, once when it settles.
    */
   recordChildResidual(residual: TokenSnapshot): void {
     const children = new Set(
@@ -538,6 +544,10 @@ export class AssistantUsageCollector {
       transcriptHit?.stopped === true ||
       (this.options.codex === true && entry.stopped === true);
     // The parent result can precede a child's terminal data. Keep its ID pending.
+    // At query-end a still-unfinished Codex child is deliberately left
+    // unsettled and dropped with the collector: once Claude Code counts it,
+    // the growth of a later cumulative result (through the resume baseline)
+    // bills it as residual usage instead.
     if (child && boundary !== 'interrupt' && !completed) return undefined;
     const merged = maxTokens(
       entry,

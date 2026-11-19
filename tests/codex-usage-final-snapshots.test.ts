@@ -160,7 +160,11 @@ describe('Codex final input snapshots', () => {
     collector.ingest(
       assistant('message', { input_tokens: 12, output_tokens: 3 }, true),
     );
-    expect(collector.drain('s')?.tokens.inputTokens).toBe(12);
+    // Output only grows: the larger estimate snapshot's placeholder must not win.
+    expect(collector.drain('s')?.tokens).toMatchObject({
+      inputTokens: 12,
+      outputTokens: 3,
+    });
   });
 
   test.each([
@@ -303,7 +307,7 @@ describe('Codex final input snapshots', () => {
             {
               input_tokens: 1_302,
               cache_read_input_tokens: 27_776,
-              output_tokens: 9,
+              output_tokens: 669,
             },
             true,
           ),
@@ -317,8 +321,11 @@ describe('Codex final input snapshots', () => {
         agent_id: 'side',
       });
       const loader = createTranscriptUsageLoader(() => main, { codex });
-      expect(collector.drain('s', loader)?.tokens.inputTokens).toBe(
-        codex ? 1_302 : 38_249,
+      // In Codex mode the ended line's output survives the larger estimate line.
+      expect(collector.drain('s', loader)?.tokens).toMatchObject(
+        codex
+          ? { inputTokens: 1_302, outputTokens: 669 }
+          : { inputTokens: 38_249 },
       );
     },
   );
