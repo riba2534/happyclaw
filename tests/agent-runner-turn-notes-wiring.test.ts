@@ -11,7 +11,8 @@ import { createRuntimeSourceHarness } from './helpers/runtime-source.js';
 
 /**
  * The Runner's result path, run from index.ts with a real TurnNoteLedger:
- * a turn's notes count as sent only when its result completes the input.
+ * a turn's notes count as sent only when its result completes the input;
+ * and a result held for background work keeps the host's timers off.
  */
 const anchor = resolveAgentTurnAnchor(
   {
@@ -30,9 +31,13 @@ const sources: TurnNoteSources = {
   anchor,
 };
 
-function resultPath(turnNotes: TurnNoteLedger) {
+function resultPath(
+  turnNotes: TurnNoteLedger,
+  backgroundHoldKeepalive = { hold: vi.fn(), release: vi.fn() },
+) {
   const globals: Record<string, unknown> = {
     turnNotes,
+    backgroundHoldKeepalive,
     clearBackgroundProtocolDebtWatchdog: vi.fn(),
     compactionAwaitingCompletion: false,
     silentStopContinues: 0,
@@ -102,6 +107,29 @@ describe('turn notes on the Runner result path', () => {
     );
     ledger.beginQuery('s1', 'a2');
     expect(ledger.stage('u2', sources).anchor).toBeUndefined();
+  });
+
+  test('a held result keeps the host timers off until a result holds nothing', () => {
+    const keepalive = { hold: vi.fn(), release: vi.fn() };
+    const publish = resultPath(new TurnNoteLedger(), keepalive);
+    const result = (pendingBgTasks: number, completed: boolean) =>
+      publish(
+        {
+          finalText: 'text',
+          suspectTruncated: false,
+          pendingBgTasks,
+        },
+        completed,
+      );
+
+    result(2, false);
+    result(1, false);
+    expect(keepalive.hold).toHaveBeenCalledTimes(2);
+    expect(keepalive.release).not.toHaveBeenCalled();
+
+    result(0, true);
+    expect(keepalive.release).toHaveBeenCalledTimes(1);
+    expect(keepalive.hold).toHaveBeenCalledTimes(2);
   });
 
   test('the compaction hook restores the turn being continued, not a queued one', async () => {

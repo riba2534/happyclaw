@@ -4,6 +4,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
+  BackgroundHoldKeepalive,
+  backgroundHoldKeepaliveIntervalMs,
   BackgroundProtocolDebtWatchdog,
   BackgroundTaskDrainTracker,
   DurableInputTurnCompletion,
@@ -350,5 +352,118 @@ describe('StreamEventProcessor background protocol integration', () => {
     expect(processor.getPendingSdkTaskCount()).toBe(0);
     expect(processor.getBlockingBackgroundCompletionDebtCount()).toBe(1);
     expect(processor.observeBackgroundResult()).toBe(false);
+  });
+});
+
+describe('BackgroundHoldKeepalive', () => {
+  const MINUTE = 60_000;
+
+  function keepalive(options: { pending?: () => number; maxMs?: number } = {}) {
+    let ticks = 0;
+    const keeper = new BackgroundHoldKeepalive({
+      intervalMs: MINUTE,
+      maxMs: options.maxMs ?? 10 * MINUTE,
+      pendingCount: options.pending ?? (() => 1),
+      onTick: () => ticks++,
+    });
+    return { keeper, ticks: () => ticks };
+  }
+
+  function withFakeTimers(run: () => void): void {
+    vi.useFakeTimers();
+    try {
+      run();
+    } finally {
+      vi.useRealTimers();
+    }
+  }
+
+  test('ticks while a result is held and the work is live', () => {
+    withFakeTimers(() => {
+      const run = keepalive();
+      run.keeper.hold();
+      run.keeper.hold();
+      vi.advanceTimersByTime(3 * MINUTE);
+      expect(run.ticks()).toBe(3);
+
+      run.keeper.release();
+      vi.advanceTimersByTime(3 * MINUTE);
+      expect(run.ticks()).toBe(3);
+      expect(run.keeper.running).toBe(false);
+    });
+  });
+
+  test('stops at the bound, and later held results of the hold do not restart it', () => {
+    withFakeTimers(() => {
+      const run = keepalive({ maxMs: 5 * MINUTE });
+      run.keeper.hold();
+      vi.advanceTimersByTime(4 * MINUTE);
+      // An answer to input injected meanwhile is a held result too.
+      run.keeper.hold();
+      vi.advanceTimersByTime(10 * MINUTE);
+      expect(run.ticks()).toBe(4);
+      expect(run.keeper.running).toBe(false);
+
+      run.keeper.hold();
+      vi.advanceTimersByTime(10 * MINUTE);
+      expect(run.ticks()).toBe(4);
+    });
+  });
+
+  test('a hold that ends and comes back counts from its own start', () => {
+    withFakeTimers(() => {
+      const run = keepalive({ maxMs: 5 * MINUTE });
+      run.keeper.hold();
+      vi.advanceTimersByTime(4 * MINUTE);
+      // A result that holds nothing ends the hold.
+      run.keeper.release();
+      run.keeper.hold();
+      vi.advanceTimersByTime(10 * MINUTE);
+      expect(run.ticks()).toBe(4 + 4);
+    });
+  });
+
+  test('ticks pause once no work is live, without ending the hold', () => {
+    withFakeTimers(() => {
+      let pending = 1;
+      const run = keepalive({ pending: () => pending, maxMs: 5 * MINUTE });
+      run.keeper.hold();
+      vi.advanceTimersByTime(2 * MINUTE);
+      pending = 0;
+      vi.advanceTimersByTime(MINUTE);
+      expect(run.keeper.running).toBe(false);
+
+      // New work before any result reports the hold over: still the same
+      // hold, with the bound counted from its first result.
+      pending = 1;
+      run.keeper.hold();
+      vi.advanceTimersByTime(10 * MINUTE);
+      expect(run.ticks()).toBe(2 + 1);
+    });
+  });
+
+  test('an older host, which sent no idle close, gets no keepalive', () => {
+    withFakeTimers(() => {
+      let ticks = 0;
+      const keeper = new BackgroundHoldKeepalive({
+        intervalMs: backgroundHoldKeepaliveIntervalMs(undefined),
+        maxMs: 10 * MINUTE,
+        pendingCount: () => 1,
+        onTick: () => ticks++,
+      });
+      keeper.hold();
+      vi.advanceTimersByTime(10 * MINUTE);
+      expect(ticks).toBe(0);
+      expect(keeper.running).toBe(false);
+    });
+  });
+
+  test("the interval is a third of the host's idle close, at most five minutes", () => {
+    // The 30-minute default, and the 60-second minimum of the settings.
+    expect(backgroundHoldKeepaliveIntervalMs(30 * MINUTE)).toBe(5 * MINUTE);
+    expect(backgroundHoldKeepaliveIntervalMs(9 * MINUTE)).toBe(3 * MINUTE);
+    expect(backgroundHoldKeepaliveIntervalMs(MINUTE)).toBe(20_000);
+    expect(backgroundHoldKeepaliveIntervalMs(undefined)).toBeNull();
+    expect(backgroundHoldKeepaliveIntervalMs(0)).toBeNull();
   });
 });

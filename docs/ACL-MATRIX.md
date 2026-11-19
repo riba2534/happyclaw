@@ -42,6 +42,9 @@
 | `/api/auth/status`                   | GET  | 无                     |
 | `/api/auth/setup`                    | POST | 仅用户表为空           |
 | `/api/auth/login`                    | POST | 登录限流               |
+| `/api/auth/login/2fa`                | POST | 有效 challenge、限流   |
+| `/api/auth/passkey/login/options`    | POST | 页面来源可用           |
+| `/api/auth/passkey/login`            | POST | 有效 challenge、签名   |
 | `/api/auth/register/status`          | GET  | 无                     |
 | `/api/auth/register`                 | POST | 注册策略、邀请码、限流 |
 | `/api/auth/avatars/:filename`        | GET  | 仅允许受管头像路径     |
@@ -61,18 +64,20 @@ token（Runner/查询退出即吊销），并拒绝带 `Forwarded`、`X-Forwarde
 
 以下资源以登录用户 ID 为作用域，不接受客户端指定其他 owner：
 
-| 路由族                                              | 权限                                          |
-| --------------------------------------------------- | --------------------------------------------- |
-| `/api/auth/me`、profile、password、sessions、avatar | Login，仅本人                                 |
-| `/api/agent-profiles/*`                             | Login，仅本人 Agent                           |
-| `/api/channel-accounts/*`                           | Login，仅本人渠道账号                         |
-| `/api/skills/*`                                     | Login，仅本人用户 Skills                      |
-| 用户级 `/api/mcp-servers/*`                         | Login，仅本人配置                             |
-| Workspace Memory v2                                 | Login + Workspace owner ACL，见 4.5           |
-| HappyClaw Owner Profile                             | Home actual owner + runtime exact-turn gate   |
-| `/api/usage/*`                                      | Login；普通用户只见本人，管理视图再按角色过滤 |
-| `/api/billing/my/*`                                 | Login，仅本人                                 |
-| `/api/push/*`                                       | Login，仅本人订阅；访客 403                   |
+| 路由族                                              | 权限                                                                              |
+| --------------------------------------------------- | --------------------------------------------------------------------------------- |
+| `/api/auth/me`、profile、password、sessions、avatar | Login，仅本人                                                                     |
+| `/api/auth/2fa/*`                                   | Login，仅本人；访客 403；开启、关闭需当前密码                                     |
+| `/api/auth/passkeys*`                               | Login，仅本人；访客 403；添加需当前密码（开了二次验证还要验证码），删除需当前密码 |
+| `/api/agent-profiles/*`                             | Login，仅本人 Agent                                                               |
+| `/api/channel-accounts/*`                           | Login，仅本人渠道账号                                                             |
+| `/api/skills/*`                                     | Login，仅本人用户 Skills                                                          |
+| 用户级 `/api/mcp-servers/*`                         | Login，仅本人配置                                                                 |
+| Workspace Memory v2                                 | Login + Workspace owner ACL，见 4.5                                               |
+| HappyClaw Owner Profile                             | Home actual owner + runtime exact-turn gate                                       |
+| `/api/usage/*`                                      | Login；普通用户只见本人，管理视图再按角色过滤                                     |
+| `/api/billing/my/*`                                 | Login，仅本人                                                                     |
+| `/api/push/*`                                       | Login，仅本人订阅；访客 403                                                       |
 
 产品级 Agent 删除前必须先迁移其工作区（`migrate-and-delete` 一次性迁移并归档，
 目标也必须是本人的 active Agent）。复制、导入不授予宿主机资源：非 admin 得到的
@@ -224,10 +229,21 @@ Agent Runtime 的 Workspace Memory MCP 还叠加执行上下文策略：
 | 自动化运行的轮次                            | 允许 | 只能创建/修改/忘记 `proposed` 条目 |
 | Spawn/Task 会话、SDK Task Sub-Agent         | 允许 | 拒绝                               |
 
-owner 输入的判定在宿主：Web 输入的 sender 等于 owner 用户 id；IM 输入的发送者 IM id
-必须等于该工作区注册中由宿主记录的 owner（claim source 为 `configured`、
-`trusted_direct` 或 `auto_feishu`）。写入一律要求 Runner 的 HMAC 写能力；proposed
-只有 owner 在 Web 确认后才生效。Sub-Agent 的只读限制由 PreToolUse hook 与主进程
+owner 输入的判定在宿主（`src/workspace-owner-identity.ts`）：Web 输入的 sender 等于
+owner 用户 id；IM 输入的来源聊天必须是工作区主人（`created_by`）自己的注册，发送者 IM id
+必须等于主人**登记在 Home 工作区或当前工作区**的聊天注册中由宿主记录的 owner（claim source 为
+`configured`、`trusted_direct` 或 `auto_feishu`）。也就是「发送者是工作区主人自己的可信 IM
+身份」，与聊天绑定到哪个工作区的会话无关：发现和配对把聊天登记在账号的默认工作区（未设置时为
+Home），绑定只改目标会话，所以主人自己的配对私聊绑到非 Home 工作区的会话时，在那里同样是主人。
+账号默认工作区设为 W 时登记在 W 的身份只在 W 算主人，不在 Home 和其他工作区算。比较按
+provider、跨主人的各个渠道账号进行：sender 由平台给出、不可伪造，飞书 open_id、QQ openid 这类
+按应用区分的 id 跨应用不会撞值；企业微信 userid、钉钉 staffId/senderId 只在一个企业或应用内
+唯一，只在同一渠道账号内比较；不同 provider 的相同值不算同一人；其他用户的注册与身份永远不算；群成员按自己的 sender 判定，不因所在的群而成为主人。自动化运行、
+`work_item_input` 等宿主合成的输入永远不算主人亲自发起。`install_skill`、自动化的 owner 轮次、
+`work_delegate` 与 `session_list` 的主人轮次、HappyClaw Owner Profile 用同一判定。
+
+写入一律要求 Runner 的 HMAC 写能力；proposed 只有 owner 在 Web 确认后才生效。
+Sub-Agent 的只读限制由 PreToolUse hook 与主进程
 IPC broker 共同执行，不能由模型参数扩大权限。
 
 ### 4.6 HappyClaw Owner Profile
@@ -302,21 +318,23 @@ admin。admin 没有跨 owner bypass，不存在与无权限都返回 404。
 
 ## 6. 系统和管理权限
 
-| 路由族/操作                                       | 权限                                               |
-| ------------------------------------------------- | -------------------------------------------------- |
-| Provider、系统容量、Host 集成、注册策略、系统外观 | `manage_system_config`                             |
-| Plugin Catalog 手动扫描                           | admin / `manage_system_config` 路径中的 admin 检查 |
-| 系统 MCP 写入                                     | admin                                              |
-| 用户创建、禁用、恢复、角色与权限                  | `manage_users`                                     |
-| 邀请码                                            | `manage_invites`                                   |
-| 审计日志和导出                                    | `view_audit_log`                                   |
-| `/api/billing/admin/*`                            | `manage_billing`                                   |
-| `/api/docker/pull`、运行监控管理                  | `manage_system_config`                             |
-| `/api/status/channel-outbox/*` 人工裁决           | `manage_system_config`                             |
-| 系统外观读写（`GET/PUT /api/config/appearance`）  | `manage_system_config`                             |
-| 品牌资源上传/删除（图标、横幅头像文件写入）       | admin（`adminRoleMiddleware`）                     |
-| 存储源（`/api/config/storage-sources*`）          | admin（`adminRoleMiddleware`）；密码只写不读       |
-| `POST /api/groups/:jid/reset-owner`               | admin break-glass，同时仍验证目标资源              |
+| 路由族/操作                                             | 权限                                                |
+| ------------------------------------------------------- | --------------------------------------------------- |
+| Provider、系统容量、Host 集成、注册策略、系统外观       | `manage_system_config`                              |
+| Plugin Catalog 手动扫描                                 | admin / `manage_system_config` 路径中的 admin 检查  |
+| 系统 MCP 写入                                           | admin                                               |
+| 用户创建、禁用、恢复、角色与权限                        | `manage_users`                                      |
+| 重置他人二次验证 `DELETE /api/admin/users/:id/2fa`      | `manage_users`，不能是自己，admin 只能由 admin 重置 |
+| 撤销他人通行密钥 `DELETE /api/admin/users/:id/passkeys` | `manage_users`，不能是自己，admin 只能由 admin 撤销 |
+| 邀请码                                                  | `manage_invites`                                    |
+| 审计日志和导出                                          | `view_audit_log`                                    |
+| `/api/billing/admin/*`                                  | `manage_billing`                                    |
+| `/api/docker/pull`、运行监控管理                        | `manage_system_config`                              |
+| `/api/status/channel-outbox/*` 人工裁决                 | `manage_system_config`                              |
+| 系统外观读写（`GET/PUT /api/config/appearance`）        | `manage_system_config`                              |
+| 品牌资源上传/删除（图标、横幅头像文件写入）             | admin（`adminRoleMiddleware`）                      |
+| 存储源（`/api/config/storage-sources*`）                | admin（`adminRoleMiddleware`）；密码只写不读        |
+| `POST /api/groups/:jid/reset-owner`                     | admin break-glass，同时仍验证目标资源               |
 
 系统 MCP 默认仅 admin 可用；只有显式设置为 shared 后，普通成员的 Agent 才能进入
 有效能力清单。API 不回传 Secret 明文。
@@ -364,6 +382,10 @@ admin。admin 没有跨 owner bypass，不存在与无权限都返回 404。
 Owner Claim：
 
 - 可信的 1:1 私聊可以从第一条持久化人类消息学习 owner。
+- 配对（`/pair`）或绑定后学习到的私聊发送者在机器人里等同主人本人：IM 命令可以 `/list`
+  主人的全部工作区，`/bind` 到其中任意一个（包括宿主机工作区）。配对登记在 Home，所以配对私聊
+  的发送者在主人任意工作区里都按主人轮次判定（见 4.5）。配对页和渠道引导提示只给主人自己的
+  账号配对。
 - 未认领群聊不会让“第一个发命令的人”自动成为 owner。
 - 群聊用 `/owner_mention` 显式认领。
 - `/release_owner` 清除 owner 与 allowlist，并把 legacy `owner_mentioned` 降级。
@@ -390,6 +412,10 @@ Owner Claim：
 | `/steer <消息>`、`/break`（全部 IM 渠道）      | 群聊必须有渠道结构证明的真实 @Bot，并通过当前 audience/激活策略；不要求 owner |
 | 飞书 `/clear`、`/fresh [备注]`（运行时控制）   | 群聊必须结构化真实 @Bot 且为 IM Owner（与斜杠 `/clear`、`/fresh` 同一边界）   |
 | MCP `fresh_window`                             | 当前会话 Agent 可调用；不走斜杠 owner gate                                    |
+
+私聊里 `/list`、`/recall` 不受限、私聊发送者可以通过 owner-required 命令，是因为配对或绑定后
+私聊的对方就是主人本人；把别人的私聊配对或绑定进来，等于把这些权限（包括 `/bind` 到宿主机
+工作区）交给对方。
 
 飞书群聊中由 `handleCommand()` 处理的通用斜杠命令同样必须结构化真实 @Bot，并通过 audience
 检查；它们不受激活闸门（`activation_mode`、`when_mentioned`、`disabled`）约束，
@@ -488,7 +514,7 @@ Agent MCP 调用没有 Cookie，但必须携带由主进程创建的运行上下
   `Guest accounts are read-only`，新路由默认拒绝。每次访客请求都重新读取 owner
   状态，owner 被禁用/删除或 `allowMemberGuests` 关闭（member owner）后立即 403，
   登录也失败；owner 被禁用/删除时同时注销其访客的会话。
-- 放行清单：Public 登录相关接口、`GET /api/auth/me`、`POST /api/auth/logout`、
+- 放行清单：Public 登录相关接口（含 `POST /api/auth/login/2fa`、`POST /api/auth/passkey/login[/options]`）、`GET /api/auth/me`、`POST /api/auth/logout`、
   `PUT /api/auth/password`、`GET/DELETE /api/auth/sessions[/:id]`；
   `GET /api/groups`、`GET /api/groups/:jid/{messages,agents,sessions}`、消息附件原图、
   `GET /api/groups/:jid/turn-traces/:turnId`、`GET /api/follow-ups`、

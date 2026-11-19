@@ -38,7 +38,10 @@ import { isSingleUserHost } from './deployment-mode.js';
 export const SINGLE_USER_HOST_CONTAINER_REFUSAL =
   '单人宿主机模式不运行 Docker 工作区；请把工作区改为宿主机模式或切回多人模式。';
 import { logger } from './logger.js';
-import { isCodexGatewayBaseUrl } from './codex-gateway/resolve-gateway-url.js';
+import {
+  isCodexGatewayBaseUrl,
+  resolveCodexUsageAccountingMode,
+} from './codex-gateway/resolve-gateway-url.js';
 import {
   CodexGatewayRunnerLease,
   applyCodexGatewayNoProxy,
@@ -64,6 +67,7 @@ import {
   derivedMaxOutputTokens,
   getProviderById,
   getProviders,
+  providerModels,
   providerHasCredentials,
   providerToolSearchEnabled,
   getSystemSettings,
@@ -107,6 +111,15 @@ import {
   windowOf,
   type ModelEffort,
 } from './model-providers.js';
+import {
+  launchSubagentDefault,
+  resolveSubagentLaunch,
+  resolveSubagentLaunchWithoutConnection,
+  subagentLaunchModels,
+  subagentPolicyModels,
+  toollessSubagents,
+  type SubagentLaunch,
+} from './agent-subagents.js';
 import { recordUsageEventConnection } from './runtime-state-store.js';
 import {
   normalizeUsageLimitResetAt,
@@ -184,6 +197,7 @@ import { RegisteredGroup } from './types.js';
 import type {
   AgentProfile,
   AgentProfileRuntimePolicy,
+  AgentSubagentPolicy,
   ChannelTurnContext,
   InteractionMode,
 } from './types.js';
@@ -229,7 +243,10 @@ import {
   type FeishuCliRuntimeBinding,
 } from './feishu-cli-runtime.js';
 import { assertValidWorkspaceFolderName } from './workspace-folder.js';
-import { resolveRunnerLivenessTimeouts } from './runner-liveness.js';
+import {
+  resolveRunnerLivenessTimeouts,
+  type RunnerLivenessTimeouts,
+} from './runner-liveness.js';
 import {
   applyLaunchEffortEnv,
   resolveAgentSdkEffort,
@@ -680,6 +697,8 @@ function ensureSettingsJson(
 export interface ContainerInput {
   prompt: string;
   sessionId?: string;
+  /** Host-derived accounting semantics for the selected Codex gateway only. */
+  usageAccountingMode?: 'codex';
   /**
    * The effort the host resolved for this launch: Claude Code runs at it, and
    * null means none is sent at all, not even the Agent's own effort as the
@@ -688,6 +707,11 @@ export interface ContainerInput {
    * the Agent's effort then goes as before.
    */
   launchEffort?: string | null;
+  /**
+   * The Agent's sub-agents resolved for this launch's connection
+   * (agent-subagents.ts): SDK definitions and the concurrency cap.
+   */
+  subagents?: SubagentLaunch;
   /** Exact GroupQueue query attempt for Web stream fencing. */
   queryRunId?: string;
   groupFolder: string;
@@ -713,6 +737,12 @@ export interface ContainerInput {
    * HappyClaw derived none, which leaves the key to the settings.
    */
   maxOutputTokens?: number;
+  /**
+   * The shortest silence the host tolerates before it closes the runner: the
+   * idle close of resolveRunnerLivenessTimeouts (the process watchdog is never
+   * shorter). The Runner paces its background-hold keepalive by it.
+   */
+  hostIdleCloseMs?: number;
   /** Source JID of the latest message that triggered this run (e.g. `discord:123…`).
    * Used by per-channel MCP tools (discord_*, etc.) to identify the current
    * incoming chat. Undefined when chatJid already encodes the IM source. */
@@ -1821,6 +1851,7 @@ export function trySelectPoolProvider(
   modelConfigId?: string | null,
   agentModel?: string | null,
   agentEffort?: SdkAgentEffort,
+  subagentPolicy?: AgentSubagentPolicy,
 ): PoolProviderSelection | null {
   const binding = resolveModelBinding(
     { modelConfigId, model: agentModel },
@@ -1845,15 +1876,30 @@ export function trySelectPoolProvider(
     getSystemSettings().fallbackModel,
     provider,
   );
+  const subagents = resolveConnectionSubagents(
+    subagentPolicy,
+    provider,
+    !!modelConfigId && modelConfigId === provider.id,
+    launch.model ?? provider.anthropicModel,
+    { groupFolder, agentId },
+  );
+  const subagentModels = subagentLaunchModels(subagents);
   return withSessionModel(
     {
       profileId: provider.id,
+      ...(Object.keys(subagents).length > 0 ? { subagents } : {}),
       resolved: {
-        // The fallback rides along so its reply limit counts too.
+        // The fallback and the sub-agents' models ride along so their reply
+        // limits count too; the Agent's default sub-agent model takes the
+        // connection's role.
         config: {
           ...resolved.config,
           ...(launch.model ? { anthropicModel: launch.model } : {}),
           ...(fallbackModel ? { fallbackModel } : {}),
+          ...(subagents.defaultModel
+            ? { subagentModel: subagents.defaultModel }
+            : {}),
+          ...(subagentModels.length > 0 ? { subagentModels } : {}),
         },
         customEnv: resolved.customEnv,
         ...(launch.effort ? { launchEffort: launch.effort } : {}),
@@ -1874,6 +1920,87 @@ export function trySelectPoolProvider(
     groupFolder,
     agentId,
   );
+}
+
+/**
+ * Log the sub-agents a launch leaves out because none of their tools is one
+ * a session has (saved before such a list was refused, or the tools a
+ * session lacks changed since).
+ */
+function warnToollessSubagents(
+  policy: AgentSubagentPolicy | undefined,
+  context: { groupFolder: string; agentId?: string | null },
+): void {
+  const toolless = toollessSubagents(policy);
+  if (toolless.length === 0) return;
+  logger.warn(
+    {
+      groupFolder: context.groupFolder,
+      agentId: context.agentId || null,
+      subagents: toolless,
+    },
+    'Agent sub-agent has no tool a session offers; it is left out of the launch',
+  );
+}
+
+/**
+ * The Agent's sub-agents on a launch on `provider`. Names of the Agent's
+ * connection apply only there, and only while it offers them: a name it
+ * dropped is logged and the sub-agent inherits, as a dropped Agent model
+ * does. A ChatGPT subscription runs every tier on the turn's model, so no
+ * name or effort applies on it. An effort goes to the model a sub-agent runs
+ * on as the main model's would (resolveLaunchReasoning): a model declared to
+ * take none gets none, one nothing is known about gets it as picked.
+ */
+export function resolveConnectionSubagents(
+  policy: AgentSubagentPolicy | undefined,
+  provider: UnifiedProvider,
+  onAgentConnection: boolean,
+  turnModel: string,
+  context: { groupFolder: string; agentId?: string | null; warn?: boolean },
+): SubagentLaunch {
+  if (!policy) return {};
+  if (context.warn !== false) warnToollessSubagents(policy, context);
+  const chatGpt = !!provider.codexOAuthCredentials;
+  const models = providerModels(provider);
+  const appliesHere = onAgentConnection && !chatGpt && models.length > 0;
+  if (appliesHere && context.warn !== false) {
+    const gone = subagentPolicyModels(policy).filter(
+      (model) => !findModelEntry(models, model),
+    );
+    if (gone.length > 0) {
+      logger.warn(
+        {
+          groupFolder: context.groupFolder,
+          agentId: context.agentId || null,
+          providerId: provider.id,
+          models: gone,
+        },
+        'Agent sub-agent model is no longer offered by its configuration; the sub-agent follows the configuration',
+      );
+    }
+  }
+  const agentDefault =
+    appliesHere && policy.model
+      ? findModelEntry(models, policy.model)?.id
+      : undefined;
+  // A definition without a model runs the default sub-agent model, else the
+  // turn's (Claude Code's own choice only covers its built-in agents).
+  const inherited =
+    launchSubagentDefault(provider, agentDefault, turnModel).model ?? turnModel;
+  return resolveSubagentLaunch({
+    policy,
+    onAgentConnection: appliesHere,
+    models,
+    takesEffort: (model, effort) => {
+      const runs = model ?? inherited;
+      return (
+        !chatGpt &&
+        !!runs &&
+        resolveLaunchReasoning(provider, runs, [effort]).effort === effort
+      );
+    },
+  });
 }
 
 export interface PoolProviderSelection {
@@ -1900,6 +2027,8 @@ export interface PoolProviderSelection {
   launchEffort?: string | null;
   /** ContainerInput.thinking for this launch. */
   thinkingDisabled?: true;
+  /** ContainerInput.subagents for this launch. */
+  subagents?: SubagentLaunch;
 }
 
 /**
@@ -1923,9 +2052,10 @@ export function leaveSessionConnection(
 }
 
 /**
- * The input a launch starts with: a connection switch, its effort and
- * whether its model thinks. A thinking flag the caller's input still carries
- * from an earlier launch is replaced, never inherited.
+ * The input a launch starts with: a connection switch, its effort, whether
+ * its model thinks and the Agent's sub-agents. A thinking flag or sub-agents
+ * the caller's input still carries from an earlier launch are replaced,
+ * never inherited.
  */
 export function prepareLaunchInput(
   input: ContainerInput,
@@ -1935,9 +2065,15 @@ export function prepareLaunchInput(
     input,
     selection ?? leaveSessionConnection(input.groupFolder, input.agentId),
   );
-  const { thinking: _thinking, ...rest } = switched;
+  const policy = input.agentProfile?.runtimePolicy?.subagents;
+  if (!selection) warnToollessSubagents(policy, input);
+  const subagents = selection
+    ? (selection.subagents ?? {})
+    : resolveSubagentLaunchWithoutConnection(policy);
+  const { thinking: _thinking, subagents: _subagents, ...rest } = switched;
   return {
     ...rest,
+    ...(Object.keys(subagents).length > 0 ? { subagents } : {}),
     ...(selection?.launchEffort !== undefined
       ? { launchEffort: selection.launchEffort }
       : {}),
@@ -2160,6 +2296,7 @@ interface PreparedVolumeMounts {
   dockerOauthLaunch: OAuthLaunchSnapshot | null;
   /** Selected provider routes through the ChatGPT/Codex 订阅网关; docker run needs host.docker.internal. */
   usesCodexGateway: boolean;
+  usageAccountingMode?: 'codex';
   /** Selected provider endpoint was rewritten from host loopback to host.docker.internal. */
   providerNeedsHostGateway: boolean;
 }
@@ -2651,6 +2788,10 @@ function prepareVolumeMounts(
     hostPlugins: pluginSkills,
     dockerOauthLaunch,
     usesCodexGateway,
+    usageAccountingMode: resolveCodexUsageAccountingMode(
+      rawGlobalConfig.anthropicBaseUrl,
+      effectiveContainerOverride.anthropicBaseUrl,
+    ),
     providerNeedsHostGateway,
   };
 }
@@ -3276,6 +3417,7 @@ export async function runContainerAgent(
     input.agentProfile?.modelConfigId,
     input.agentProfile?.model,
     resolveAgentSdkEffort(input.agentProfile?.runtimePolicy),
+    input.agentProfile?.runtimePolicy?.subagents,
   );
   const selectedProfileId = poolResult?.profileId ?? null;
   const selectedProviderQuotaEpoch = selectedProfileId
@@ -3427,10 +3569,13 @@ export async function runContainerAgent(
         );
         container.kill();
       });
+      const liveness = runnerLivenessFor(group);
       // Derive a new input with docker-runtime plugins injected; never mutate
       // the caller's `input` object (queue/log/retry paths reuse the same ref).
       const dockerInput: ContainerInput = {
         ...input,
+        usageAccountingMode: preparedLaunch.usageAccountingMode,
+        hostIdleCloseMs: liveness.idleCloseMs,
         webFetchPreflightPolicy:
           resolveProviderWebFetchPreflightPolicy(selectedProfileId),
         toolSearch: resolveProviderToolSearch(selectedProfileId),
@@ -3451,12 +3596,7 @@ export async function runContainerAgent(
       container.stdin.end();
 
       let timedOut = false;
-      const systemSettings = getSystemSettings();
-      const timeoutMs = resolveRunnerLivenessTimeouts({
-        executionTimeoutMs:
-          group.containerConfig?.timeout || systemSettings.containerTimeout,
-        idleTimeoutMs: systemSettings.idleTimeout,
-      }).watchdogMs;
+      const timeoutMs = liveness.watchdogMs;
 
       const killOnTimeout = () => {
         timedOut = true;
@@ -4363,6 +4503,7 @@ export async function runHostAgent(
     input.agentProfile?.modelConfigId,
     input.agentProfile?.model,
     resolveAgentSdkEffort(input.agentProfile?.runtimePolicy),
+    input.agentProfile?.runtimePolicy?.subagents,
   );
   const hostSelectedProfileId = hostPoolResult?.profileId ?? null;
   const hostProviderQuotaEpoch = hostSelectedProfileId
@@ -4733,8 +4874,16 @@ export async function runHostAgent(
       // prepareHostPlugins mirrors the docker path's pre-spawn materialize so
       // a freshly-enabled v2 user (no runtime/ on disk yet) doesn't see 0
       // plugins.
+      const liveness = runnerLivenessFor(group);
       const hostInput: ContainerInput = {
         ...input,
+        usageAccountingMode: resolveCodexUsageAccountingMode(
+          rawGlobalConfig.anthropicBaseUrl,
+          hostSelectedProfileId
+            ? undefined
+            : containerOverride.anthropicBaseUrl,
+        ),
+        hostIdleCloseMs: liveness.idleCloseMs,
         webFetchPreflightPolicy: resolveProviderWebFetchPreflightPolicy(
           hostSelectedProfileId,
         ),
@@ -4759,12 +4908,7 @@ export async function runHostAgent(
 
       // 9. 超时管理
       let timedOut = false;
-      const systemSettings = getSystemSettings();
-      const timeoutMs = resolveRunnerLivenessTimeouts({
-        executionTimeoutMs:
-          group.containerConfig?.timeout || systemSettings.containerTimeout,
-        idleTimeoutMs: systemSettings.idleTimeout,
-      }).watchdogMs;
+      const timeoutMs = liveness.watchdogMs;
 
       let killTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -5051,6 +5195,22 @@ export async function runHostAgent(
 
 /** A concrete agent runner (Docker or host) — both share this signature. */
 export type AgentRunner = typeof runContainerAgent | typeof runHostAgent;
+
+/**
+ * The idle close and process watchdog of a runner launched for `group`. The
+ * host's idle close and the idle close the Runner is told
+ * (`ContainerInput.hostIdleCloseMs`) both come from here, for the same group.
+ */
+export function runnerLivenessFor(
+  group: Pick<RegisteredGroup, 'containerConfig'>,
+): RunnerLivenessTimeouts {
+  const systemSettings = getSystemSettings();
+  return resolveRunnerLivenessTimeouts({
+    executionTimeoutMs:
+      group.containerConfig?.timeout || systemSettings.containerTimeout,
+    idleTimeoutMs: systemSettings.idleTimeout,
+  });
+}
 
 /**
  * Model-tier fallback lives inside agent-runner, and provider failover for a

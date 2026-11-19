@@ -4,7 +4,7 @@ import fs from 'fs';
 import { readFile } from 'fs/promises';
 import path from 'path';
 import crypto from 'crypto';
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import type { Variables } from '../web-context.js';
 import {
@@ -19,10 +19,29 @@ import {
 } from '../http-upload-policy.js';
 import {
   LoginSchema,
+  LoginSecondFactorSchema,
   RegisterSchema,
   ProfileUpdateSchema,
   ChangePasswordSchema,
+  TwoFactorCodeSchema,
+  TwoFactorDisableSchema,
+  TwoFactorEnableSchema,
 } from '../schemas.js';
+import { isTotpEnabled } from '../auth-factor-store.js';
+import {
+  confirmTotpEnrolment,
+  createMfaChallenge,
+  failMfaChallenge,
+  mfaChallengeIsCurrent,
+  peekMfaChallenge,
+  regenerateRecoveryCodes,
+  removeTwoFactor,
+  spendMfaChallenge,
+  startTotpEnrolment,
+  TotpSecretUnreadableError,
+  twoFactorStatus,
+  verifySecondFactor,
+} from '../auth-mfa.js';
 import {
   getUserByUsername,
   getUserById,
@@ -95,6 +114,47 @@ const authJsonBodyLimit = bodyLimit({
   maxSize: 64 * 1024,
   onError: (c) => c.json({ error: 'Payload too large' }, 413),
 });
+
+export const INVALID_REQUEST = {
+  error: 'Invalid request',
+  code: 'INVALID_REQUEST',
+};
+const MFA_INVALID = { error: 'Invalid verification code', code: 'MFA_INVALID' };
+
+/**
+ * Check and count a login attempt in one synchronous step, under the
+ * system's login rate limit (see reserveLoginAttempt).
+ */
+function reserveAttempt(username: string, ip: string) {
+  const { maxLoginAttempts, loginLockoutMinutes } = getSystemSettings();
+  return reserveLoginAttempt(
+    username,
+    ip,
+    maxLoginAttempts,
+    loginLockoutMinutes,
+  );
+}
+
+/**
+ * The 429 of a reserved attempt that hit the limit, for the login steps and
+ * the re-checks alike: `code` lets the Web client say it in the user's
+ * words, `Retry-After` says when to try again.
+ */
+function tooManyAttemptsResponse(
+  c: Context<{ Variables: Variables }>,
+  retryAfterSeconds: number | undefined,
+  what = 'attempts',
+): Response {
+  if (retryAfterSeconds) c.header('Retry-After', String(retryAfterSeconds));
+  return c.json(
+    {
+      error: `Too many ${what}. Try again in ${retryAfterSeconds}s`,
+      code: 'TOO_MANY_ATTEMPTS',
+      retry_after_seconds: retryAfterSeconds,
+    },
+    429,
+  );
+}
 
 // --- Helper Functions ---
 
@@ -296,13 +356,7 @@ authRoutes.post('/login', authJsonBodyLimit, async (c) => {
 
   // Rate limiting: check and count in one synchronous step, before the
   // awaited compare, so concurrent attempts cannot all pass the check.
-  const { maxLoginAttempts, loginLockoutMinutes } = getSystemSettings();
-  const rateCheck = reserveLoginAttempt(
-    username,
-    ip,
-    maxLoginAttempts,
-    loginLockoutMinutes,
-  );
+  const rateCheck = reserveAttempt(username, ip);
   if (!rateCheck.allowed) {
     logAuthEvent({
       event_type: 'login_failed',
@@ -311,11 +365,10 @@ authRoutes.post('/login', authJsonBodyLimit, async (c) => {
       user_agent: ua,
       details: { reason: 'rate_limited' },
     });
-    return c.json(
-      {
-        error: `Too many login attempts. Try again in ${rateCheck.retryAfterSeconds}s`,
-      },
-      429,
+    return tooManyAttemptsResponse(
+      c,
+      rateCheck.retryAfterSeconds,
+      'login attempts',
     );
   }
 
@@ -373,6 +426,96 @@ authRoutes.post('/login', authJsonBodyLimit, async (c) => {
     return c.json({ error: 'Invalid credentials' }, 401);
   }
 
+  if (isTotpEnabled(user.id)) {
+    // The password was right: refund this attempt but keep earlier failures
+    // (the second step's success clears them), then ask for the second
+    // factor. No session yet; each code attempt is counted on its own.
+    settleLoginAttempt(username, ip, 'verified');
+    return c.json({
+      mfa_required: true,
+      challenge: createMfaChallenge(user, username),
+    });
+  }
+
+  settleLoginAttempt(username, ip, 'success');
+  return issueLoginSession(c, user, username, ip, ua);
+});
+
+/**
+ * The second step of a 2FA login: the challenge from /login and a TOTP code
+ * or a recovery code. Wrong codes count against the same login rate limit
+ * as wrong passwords, and a challenge allows five.
+ */
+authRoutes.post('/login/2fa', authJsonBodyLimit, async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  const validation = LoginSecondFactorSchema.safeParse(body);
+  if (!validation.success) return c.json(MFA_INVALID, 400);
+  const { challenge: token, code } = validation.data;
+  const ip = getClientIp(c);
+  const ua = c.req.header('user-agent') || null;
+  const challenge = peekMfaChallenge(token);
+  const user = challenge ? getUserById(challenge.userId) : undefined;
+  // Gone, or stale: the password or the 2FA enrolment changed since, or the
+  // account was disabled or deleted.
+  if (!challenge || !user || !mfaChallengeIsCurrent(challenge, user)) {
+    spendMfaChallenge(token);
+    return c.json(
+      { error: 'Verification expired, log in again', code: 'MFA_EXPIRED' },
+      400,
+    );
+  }
+  const { username } = challenge;
+  const rateCheck = reserveAttempt(username, ip);
+  if (!rateCheck.allowed) {
+    logAuthEvent({
+      event_type: 'login_failed',
+      username,
+      ip_address: ip,
+      user_agent: ua,
+      details: { reason: 'rate_limited', step: 'second_factor' },
+    });
+    return tooManyAttemptsResponse(
+      c,
+      rateCheck.retryAfterSeconds,
+      'login attempts',
+    );
+  }
+  let method: ReturnType<typeof verifySecondFactor> = null;
+  try {
+    method = verifySecondFactor(user.id, code);
+  } catch (err) {
+    if (!(err instanceof TotpSecretUnreadableError)) throw err;
+    // Not evaluated: the challenge stays, so a recovery code can follow.
+    settleLoginAttempt(username, ip, 'not_evaluated');
+    return totpSecretUnreadableResponse(c);
+  }
+  if (!method) {
+    failMfaChallenge(token);
+    logAuthEvent({
+      event_type: 'login_failed',
+      username,
+      ip_address: ip,
+      user_agent: ua,
+      details: { reason: 'mfa_invalid' },
+    });
+    return c.json(MFA_INVALID, 400);
+  }
+  spendMfaChallenge(token);
+  settleLoginAttempt(username, ip, 'success');
+  return issueLoginSession(c, user, username, ip, ua, {
+    second_factor: method,
+  });
+});
+
+/** Create the session of a completed login and answer with the user. */
+export function issueLoginSession(
+  c: Context<{ Variables: Variables }>,
+  user: User,
+  username: string,
+  ip: string,
+  ua: string | null,
+  details?: Record<string, unknown>,
+): Response {
   // Success — create session
   const token = generateSessionToken();
   const now = new Date().toISOString();
@@ -386,7 +529,6 @@ authRoutes.post('/login', authJsonBodyLimit, async (c) => {
     last_active_at: now,
   });
 
-  settleLoginAttempt(username, ip, 'success');
   updateUserFields(user.id, { last_login_at: now });
 
   // Ensure user has a home group (backfill for existing users). Guests are
@@ -408,6 +550,7 @@ authRoutes.post('/login', authJsonBodyLimit, async (c) => {
     username,
     ip_address: ip,
     user_agent: ua,
+    ...(details ? { details } : {}),
   });
   const updatedUser = getUserById(user.id) ?? user;
   const setupStatus =
@@ -426,7 +569,7 @@ authRoutes.post('/login', authJsonBodyLimit, async (c) => {
       }),
     },
   );
-});
+}
 
 authRoutes.get('/register/status', (c) => {
   // Before initial admin setup, force users through /setup first.
@@ -773,23 +916,24 @@ authRoutes.put('/password', authMiddleware, async (c) => {
   const validation = ChangePasswordSchema.safeParse(body);
   if (!validation.success) {
     return c.json(
-      { error: 'Invalid request', details: validation.error.format() },
+      {
+        error: '请填写当前密码，新密码 8–128 位',
+        details: validation.error.format(),
+      },
       400,
     );
   }
 
   const user = c.get('user') as AuthUser;
-  const fullUser = getUserById(user.id);
-  if (!fullUser) return c.json({ error: 'User not found' }, 404);
-
-  const match = await verifyPassword(
+  const denied = await checkCurrentPassword(
+    c,
+    user,
     validation.data.current_password,
-    fullUser.password_hash,
   );
-  if (!match) return c.json({ error: 'Current password is incorrect' }, 401);
+  if (denied) return denied;
   if (validation.data.current_password === validation.data.new_password) {
     return c.json(
-      { error: 'New password must be different from current password' },
+      { error: '新密码不能与当前密码相同', code: 'PASSWORD_UNCHANGED' },
       400,
     );
   }
@@ -838,6 +982,258 @@ authRoutes.put('/password', authMiddleware, async (c) => {
     },
   );
 });
+
+// --- Re-authentication of a signed-in user ---
+//
+// Changing the password, the second factor or the passkeys asks again for
+// what a stolen session lacks: the password and, for the second factor, a
+// code. Each check is counted like a login attempt under the account's
+// username, so a session cannot be used to guess either. Refusals are 400,
+// not 401: the Web client treats any 401 as a signed-out session, so a
+// mistyped password looked like being signed out.
+
+function totpSecretUnreadableResponse(
+  c: Context<{ Variables: Variables }>,
+): Response {
+  return c.json(
+    {
+      error:
+        'The authenticator cannot be checked: the server key changed. Use a recovery code, or ask an administrator to reset two-factor authentication',
+      code: 'MFA_SECRET_UNREADABLE',
+    },
+    500,
+  );
+}
+
+/**
+ * Reserve an attempt of the signed-in user, counted under the account's
+ * username; the 429 when the limit is reached.
+ */
+function reserveAccountAttempt(
+  c: Context<{ Variables: Variables }>,
+  user: AuthUser,
+): { username: string; ip: string } | Response {
+  const username = user.username.toLowerCase();
+  const ip = getClientIp(c);
+  const rateCheck = reserveAttempt(username, ip);
+  if (!rateCheck.allowed) {
+    return tooManyAttemptsResponse(c, rateCheck.retryAfterSeconds);
+  }
+  return { username, ip };
+}
+
+/**
+ * Check the signed-in user's current password; a response when refused. A
+ * right one only refunds its attempt: a re-check is no login, so it does not
+ * clear earlier failures (see settleLoginAttempt).
+ */
+export async function checkCurrentPassword(
+  c: Context<{ Variables: Variables }>,
+  user: AuthUser,
+  password: string,
+): Promise<Response | null> {
+  const fullUser = getUserById(user.id);
+  if (!fullUser) return c.json({ error: 'User not found' }, 404);
+  const attempt = reserveAccountAttempt(c, user);
+  if (attempt instanceof Response) return attempt;
+  const { username, ip } = attempt;
+  let match: boolean;
+  try {
+    match = await verifyPassword(password, fullUser.password_hash);
+  } catch (err) {
+    // Not evaluated (password hashing overloaded): refund the attempt.
+    settleLoginAttempt(username, ip, 'not_evaluated');
+    throw err;
+  }
+  if (!match) {
+    return c.json(
+      { error: '当前密码不正确', code: 'CURRENT_PASSWORD_INCORRECT' },
+      400,
+    );
+  }
+  settleLoginAttempt(username, ip, 'verified');
+  return null;
+}
+
+/** Check a code of the signed-in user; a response when refused. */
+function checkAccountCode(
+  c: Context<{ Variables: Variables }>,
+  user: AuthUser,
+  code: string,
+  allowRecoveryCode: boolean,
+): Response | null {
+  const attempt = reserveAccountAttempt(c, user);
+  if (attempt instanceof Response) return attempt;
+  const { username, ip } = attempt;
+  let method: ReturnType<typeof verifySecondFactor>;
+  try {
+    method = verifySecondFactor(user.id, code, { allowRecoveryCode });
+  } catch (err) {
+    if (!(err instanceof TotpSecretUnreadableError)) throw err;
+    settleLoginAttempt(username, ip, 'not_evaluated');
+    return totpSecretUnreadableResponse(c);
+  }
+  if (!method) return c.json(MFA_INVALID, 400);
+  settleLoginAttempt(username, ip, 'verified');
+  return null;
+}
+
+/**
+ * The password and, with two-factor authentication on, a code (or a
+ * recovery code): what adding a passkey takes, as a passkey stands in for
+ * both at login.
+ */
+export async function reauthenticate(
+  c: Context<{ Variables: Variables }>,
+  user: AuthUser,
+  password: string,
+  code: string | undefined,
+): Promise<Response | null> {
+  const denied = await checkCurrentPassword(c, user, password);
+  if (denied || !isTotpEnabled(user.id)) return denied;
+  if (!code) {
+    return c.json(
+      { error: 'A verification code is required', code: 'MFA_REQUIRED' },
+      400,
+    );
+  }
+  return checkAccountCode(c, user, code, true);
+}
+
+/** End every session of the user but the current one; returns how many. */
+function revokeOtherSessions(userId: string, currentSessionId: string): number {
+  let revoked = 0;
+  for (const session of getUserSessions(userId)) {
+    if (session.id === currentSessionId) continue;
+    deleteUserSession(session.id);
+    invalidateSessionCache(session.id);
+    revoked += 1;
+  }
+  return revoked;
+}
+
+// --- Two-factor authentication (TOTP) ---
+//
+// Guests are read-only accounts their owner manages; they get no second
+// factor (none of these routes is on the guest allowlist).
+
+const MFA_ALREADY_ON = {
+  error: 'Two-factor authentication is already on',
+  code: 'MFA_ALREADY_ENABLED',
+};
+const MFA_OFF = {
+  error: 'Two-factor authentication is off',
+  code: 'MFA_NOT_ENABLED',
+};
+
+authRoutes.get('/2fa', authMiddleware, (c) => {
+  const user = c.get('user') as AuthUser;
+  return c.json(twoFactorStatus(user.id));
+});
+
+authRoutes.post('/2fa/setup', authMiddleware, async (c) => {
+  const user = c.get('user') as AuthUser;
+  const enrolment = await startTotpEnrolment(user.id, user.username);
+  if (!enrolment) return c.json(MFA_ALREADY_ON, 409);
+  return c.json(enrolment);
+});
+
+/**
+ * Turning it on takes the password as well as the first code: a session
+ * alone must not be able to bind someone else's authenticator and lock the
+ * owner out. Every other session of the account ends.
+ */
+authRoutes.post('/2fa/enable', authMiddleware, authJsonBodyLimit, async (c) => {
+  const user = c.get('user') as AuthUser;
+  const validation = TwoFactorEnableSchema.safeParse(
+    await c.req.json().catch(() => ({})),
+  );
+  if (!validation.success) return c.json(INVALID_REQUEST, 400);
+  if (isTotpEnabled(user.id)) return c.json(MFA_ALREADY_ON, 409);
+  const denied = await checkCurrentPassword(c, user, validation.data.password);
+  if (denied) return denied;
+  // The first code is counted like any other.
+  const attempt = reserveAccountAttempt(c, user);
+  if (attempt instanceof Response) return attempt;
+  let codes: string[] | null;
+  try {
+    codes = confirmTotpEnrolment(user.id, validation.data.code);
+  } catch (err) {
+    if (!(err instanceof TotpSecretUnreadableError)) throw err;
+    settleLoginAttempt(attempt.username, attempt.ip, 'not_evaluated');
+    return totpSecretUnreadableResponse(c);
+  }
+  if (!codes) return c.json(MFA_INVALID, 400);
+  settleLoginAttempt(attempt.username, attempt.ip, 'verified');
+  const sessionsRevoked = revokeOtherSessions(user.id, c.get('sessionId'));
+  logAuthEvent({
+    event_type: 'mfa_enabled',
+    username: user.username,
+    ip_address: getClientIp(c),
+    user_agent: c.req.header('user-agent') || null,
+    details: { sessions_revoked: sessionsRevoked },
+  });
+  return c.json({
+    success: true,
+    recovery_codes: codes,
+    sessions_revoked: sessionsRevoked,
+  });
+});
+
+authRoutes.post(
+  '/2fa/disable',
+  authMiddleware,
+  authJsonBodyLimit,
+  async (c) => {
+    const user = c.get('user') as AuthUser;
+    const validation = TwoFactorDisableSchema.safeParse(
+      await c.req.json().catch(() => ({})),
+    );
+    if (!validation.success) return c.json(INVALID_REQUEST, 400);
+    if (!isTotpEnabled(user.id)) return c.json(MFA_OFF, 409);
+    const wrongPassword = await checkCurrentPassword(
+      c,
+      user,
+      validation.data.password,
+    );
+    if (wrongPassword) return wrongPassword;
+    const denied = checkAccountCode(c, user, validation.data.code, true);
+    if (denied) return denied;
+    removeTwoFactor(user.id);
+    logAuthEvent({
+      event_type: 'mfa_disabled',
+      username: user.username,
+      ip_address: getClientIp(c),
+      user_agent: c.req.header('user-agent') || null,
+    });
+    return c.json({ success: true });
+  },
+);
+
+authRoutes.post(
+  '/2fa/recovery-codes',
+  authMiddleware,
+  authJsonBodyLimit,
+  async (c) => {
+    const user = c.get('user') as AuthUser;
+    const validation = TwoFactorCodeSchema.safeParse(
+      await c.req.json().catch(() => ({})),
+    );
+    if (!validation.success) return c.json(INVALID_REQUEST, 400);
+    if (!isTotpEnabled(user.id)) return c.json(MFA_OFF, 409);
+    // An authenticator code only: a recovery code cannot mint new ones.
+    const denied = checkAccountCode(c, user, validation.data.code, false);
+    if (denied) return denied;
+    const codes = regenerateRecoveryCodes(user.id);
+    logAuthEvent({
+      event_type: 'mfa_recovery_codes_regenerated',
+      username: user.username,
+      ip_address: getClientIp(c),
+      user_agent: c.req.header('user-agent') || null,
+    });
+    return c.json({ success: true, recovery_codes: codes });
+  },
+);
 
 authRoutes.get('/sessions', authMiddleware, (c) => {
   const user = c.get('user') as AuthUser;

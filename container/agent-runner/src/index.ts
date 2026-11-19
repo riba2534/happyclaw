@@ -136,6 +136,11 @@ import { webFetchPreflightSettings } from './web-fetch-preflight.js';
 import { defaultToolSearchEnv, pinToolSearch } from './tool-search.js';
 import { pinMaxOutputTokens } from './max-output-pin.js';
 import {
+  pinSubagentConcurrency,
+  sdkSubagentDefinitions,
+  subagentConcurrencyEnv,
+} from './subagent-launch.js';
+import {
   assistantMessageText,
   isContextOverflowText,
   providerErrorText,
@@ -176,6 +181,7 @@ import {
 import {
   AssistantUsageCollector,
   type AssistantUsageBatch,
+  type UsageFlushBoundary,
 } from './assistant-usage.js';
 import { createTranscriptUsageLoader } from './transcript-usage.js';
 import {
@@ -208,6 +214,8 @@ import {
 } from './agent-turn-contract.js';
 import { prepareMessageStreamText } from './message-stream-text.js';
 import {
+  BackgroundHoldKeepalive,
+  backgroundHoldKeepaliveIntervalMs,
   BackgroundProtocolDebtWatchdog,
   DurableInputTurnCompletion,
   isMergedBackgroundCompletionPlaceholder,
@@ -956,6 +964,9 @@ const SDK_COMPACTION_RESPONSE_TIMEOUT_MS = 10 * 60_000;
 const SDK_PROVIDER_FAILURE_EXIT_GRACE_MS = 250;
 const BACKGROUND_PROTOCOL_DEBT_TIMEOUT_MS = 15_000;
 const BACKGROUND_PROTOCOL_FAILURE_EXIT_GRACE_MS = 1_000;
+// See BackgroundHoldKeepalive. The host's stuck recovery defers a held result
+// for the same bound (BACKGROUND_HOLD_MAX_MS in src/stuck-runner-recovery.ts).
+const BACKGROUND_HOLD_KEEPALIVE_MAX_MS = 2 * 60 * 60_000;
 
 function writeOutput(output: ContainerOutput): void {
   let correlatedOutput: ContainerOutput = activeOutputInputTurnId
@@ -2270,7 +2281,10 @@ async function runQueryAttempt(
       ? readUsageBaseline(resolveTranscriptDir(), sessionId, logWarn)
       : null,
   });
-  const assistantUsageCollector = new AssistantUsageCollector();
+  const usageOptions = {
+    codex: containerInput.usageAccountingMode === 'codex',
+  };
+  const assistantUsageCollector = new AssistantUsageCollector(usageOptions);
   // Live assistant snapshots carry message_start's placeholder output count;
   // the main and sidechain transcripts carry the CLI-merged final usage. The
   // loader reads only appended bytes, so every flushed message consults it.
@@ -2278,26 +2292,44 @@ async function runQueryAttempt(
     const activeSessionId = newSessionId || sessionId;
     if (!activeSessionId) return undefined;
     return path.join(resolveTranscriptDir(), `${activeSessionId}.jsonl`);
-  });
+  }, usageOptions);
   const emitResultUsage = (
     resultMessage: Record<string, unknown>,
     fallbackEventId: string,
+    boundary: UsageFlushBoundary = resultMessage.type === 'result'
+      ? 'result'
+      : 'interrupt',
   ): void => {
     const activeSessionId = newSessionId || sessionId;
+    // The settled usage replaces the live totals; later calls answer the
+    // next input.
+    assistantUsageCollector.resetUsageProgress();
     const assistantBatches: AssistantUsageBatch[] = [];
-    for (;;) {
-      const batch = assistantUsageCollector.drain(
-        activeSessionId,
-        transcriptUsageLoader,
-      );
-      if (!batch) break;
+    const recordBatch = (batch: AssistantUsageBatch) => {
       assistantBatches.push(batch);
       usageReconciler.recordAccounted(batch.tokens.modelUsage, {
         final: batch.final,
         completed: batch.completed,
       });
-    }
+    };
     const isResult = resultMessage.type === 'result';
+    const codexCumulative =
+      usageOptions.codex &&
+      isResult &&
+      Object.keys(resultMessage.modelUsage ?? {}).length > 0;
+    const lateChildren = codexCumulative
+      ? assistantUsageCollector.childrenWithResiduals()
+      : undefined;
+    for (;;) {
+      const batch = assistantUsageCollector.drain(
+        activeSessionId,
+        transcriptUsageLoader,
+        boundary,
+        lateChildren,
+      );
+      if (!batch) break;
+      recordBatch(batch);
+    }
     const reconciled = isResult
       ? usageReconciler.applyResult({
           usage: resultMessage.usage as SdkResultUsage | undefined,
@@ -2308,6 +2340,21 @@ async function runQueryAttempt(
           fallbackModelKey: queryModelRuntime.usageModelKey,
         })
       : { costUSD: 0 };
+    if (codexCumulative) {
+      // A late child may already be in an earlier result. Use this result's
+      // unassigned growth first, then its earlier possible coverage. Only
+      // uncovered tokens enter the reconciler's pending usage for later results.
+      const remaining = reconciled.residual && { ...reconciled.residual };
+      if (lateChildren) {
+        for (const batch of assistantUsageCollector.settleCumulativeChildren(
+          lateChildren,
+          transcriptUsageLoader,
+          remaining,
+        ))
+          recordBatch(batch);
+      }
+      if (remaining) assistantUsageCollector.recordChildResidual(remaining);
+    }
     if (
       activeSessionId &&
       (isResult || assistantBatches.length > 0) &&
@@ -2358,6 +2405,8 @@ async function runQueryAttempt(
         ...reconciled.residual,
       });
     }
+    const lastEvent = events.at(-1);
+    if (lastEvent) assistantUsageCollector.foldCarriedGeneration(lastEvent);
     events.forEach((event, index) => {
       // Result cost/duration/turn count describe the whole SDK result, so
       // attach them only to the final event instead of multiplying them.
@@ -2706,6 +2755,16 @@ async function runQueryAttempt(
     }
   };
 
+  const backgroundHoldKeepalive = new BackgroundHoldKeepalive({
+    intervalMs: backgroundHoldKeepaliveIntervalMs(
+      containerInput.hostIdleCloseMs,
+    ),
+    maxMs: BACKGROUND_HOLD_KEEPALIVE_MAX_MS,
+    pendingCount: () => processor.getBlockingPendingSdkTaskCount(),
+    onTick: () =>
+      emit({ status: 'stream', result: null, backgroundHoldKeepalive: true }),
+  });
+
   const armBackgroundProtocolDebtWatchdog = (
     blockingDebtCount: number,
   ): void => {
@@ -2803,6 +2862,9 @@ async function runQueryAttempt(
       inputTurnCompleted,
       ipcDeliveryTracker.hasPendingTurns,
     );
+    // The host books the hold from this same result.
+    if (candidate.pendingBgTasks > 0) backgroundHoldKeepalive.hold();
+    else backgroundHoldKeepalive.release();
     emit({
       status: 'success',
       // Proactive SDK text is control-plane only; user-visible speech must
@@ -3001,23 +3063,28 @@ async function runQueryAttempt(
       CLAUDE_PROVIDER_RUNTIME.endpointKind,
       containerInput.toolSearch,
     ),
+    ...subagentConcurrencyEnv(containerInput.subagents),
   };
   // The bound connection outranks every settings file the CLI reads (the
   // admin's, the workspace's project and local ones), in host and container
   // mode alike.
   const flagSettings: Record<string, unknown> = {
-    ...pinMaxOutputTokens(
-      pinToolSearch(
-        pinBoundProviderSettings({
-          ...process.env,
-          ...claudeRuntimeEnv,
-        }),
-        containerInput.toolSearch,
+    ...pinSubagentConcurrency(
+      pinMaxOutputTokens(
+        pinToolSearch(
+          pinBoundProviderSettings({
+            ...process.env,
+            ...claudeRuntimeEnv,
+          }),
+          containerInput.toolSearch,
+        ),
+        containerInput.maxOutputTokens,
       ),
-      containerInput.maxOutputTokens,
+      containerInput.subagents,
     ),
     ...webFetchPreflightSettings(containerInput.webFetchPreflightPolicy),
   };
+  const subagentDefinitions = sdkSubagentDefinitions(containerInput);
   const claudeMdExcludes = resolveHostClaudeMdExcludes({
     executionMode: contextAuditBase.executionMode,
     runtimePolicy: containerInput.agentProfile?.runtimePolicy,
@@ -3153,6 +3220,7 @@ async function runQueryAttempt(
       disallowedTools: effectiveDisallowedTools,
       thinking: runThinking,
       ...(agentEffort ? { effort: agentEffort } : {}),
+      ...(subagentDefinitions ? { agents: subagentDefinitions } : {}),
       permissionMode: 'bypassPermissions' as const,
       allowDangerouslySkipPermissions: true,
       // Registers AskUserQuestion, which the CLI omits without a handler.
@@ -3559,6 +3627,16 @@ async function runQueryAttempt(
         assistantUsageCollector.observeStreamEvent(
           message as unknown as Record<string, unknown>,
         );
+        // A call just finished: the live totals for the run status bar.
+        // Display only; the ledger settles at the result.
+        const usageProgress = assistantUsageCollector.takeUsageProgress();
+        if (usageProgress && !suppressOutputAfterInterrupt) {
+          emit({
+            status: 'stream',
+            result: null,
+            streamEvent: { eventType: 'usage_progress', usageProgress },
+          });
+        }
         if (!suppressOutputAfterInterrupt) {
           visibleOutputStarted = true;
         }
@@ -4594,6 +4672,7 @@ async function runQueryAttempt(
     if (cacheLine) logInfo(cacheLine);
     firstResponseWatchdog?.clear();
     clearBackgroundProtocolDebtWatchdog();
+    backgroundHoldKeepalive.release();
     backgroundResultGate.dispose();
     pendingBackgroundResult = undefined;
     // IPC watcher 清理：覆盖 try 块内的正常出口、catch 抛出，以及 try 内所有 early-return
@@ -4602,6 +4681,14 @@ async function runQueryAttempt(
     // 定时器，以及旧 watcher 抢先 drain 本应进入新 query 的 IPC 消息。
     ipcPolling = false;
     ipcQueryWatcher.close();
+    // A child's final stream event or sidechain may follow the last result.
+    if (usageOptions.codex) {
+      try {
+        emitResultUsage({}, '', 'query-end');
+      } catch (err) {
+        logWarn(`Failed to flush final Codex child usage: ${String(err)}`);
+      }
+    }
     cliSecretFiles?.dispose();
   }
 }

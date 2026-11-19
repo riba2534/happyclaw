@@ -492,6 +492,13 @@ export function supportsChannelPairing(provider: ChannelProvider): boolean {
   return providerDefinition(provider)?.supportsPairing ?? false;
 }
 
+/**
+ * A paired direct chat's sender is recorded as the account owner: in the bot
+ * they are you, on every workspace (docs/ACL-MATRIX.md, Owner Claim).
+ */
+export const PAIRING_OWNER_RISK_NOTE =
+  '用私聊配对后，对方在机器人里等同于你本人，可以查看和切换到你的全部工作区（包括宿主机工作区）。只给你自己的账号配对。';
+
 export type WhatsAppStatusEvent = Partial<ChannelOnboardingState> & {
   status?: ChannelOnboardingState['status'];
 };

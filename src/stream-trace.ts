@@ -60,6 +60,8 @@ const NON_TRACE_EVENT_TYPES: ReadonlySet<string> = new Set([
   'thinking_start',
   'thinking_end',
   'usage',
+  // Live owner-only totals, one per API call; the `usage` event settles them.
+  'usage_progress',
   'init',
   'context_audit',
 ]);

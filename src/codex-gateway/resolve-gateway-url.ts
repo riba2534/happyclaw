@@ -28,3 +28,13 @@ export function resolveCodexGatewayBaseUrl(
 export function isCodexGatewayBaseUrl(anthropicBaseUrl: string): boolean {
   return anthropicBaseUrl === CODEX_GATEWAY_BASE_URL_PLACEHOLDER;
 }
+
+/** Use the selected endpoint, including a workspace's explicit override. */
+export function resolveCodexUsageAccountingMode(
+  anthropicBaseUrl: string,
+  overrideBaseUrl?: string,
+): 'codex' | undefined {
+  return isCodexGatewayBaseUrl(overrideBaseUrl || anthropicBaseUrl)
+    ? 'codex'
+    : undefined;
+}

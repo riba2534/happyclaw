@@ -460,3 +460,158 @@ describe('buildAgentCapabilityPreview', () => {
     );
   });
 });
+
+describe('sub-agents in the preview', () => {
+  const profileWith = (subagents?: unknown) => ({
+    id: 'subagent-profile',
+    owner_user_id: 'owner',
+    name: 'Sub-agents',
+    identity_prompt: '',
+    soul_prompt: '',
+    agents_prompt: '',
+    tools_prompt: '',
+    prompt_mode: 'append' as const,
+    include_claude_preset: true,
+    avatar_emoji: null,
+    avatar_color: null,
+    avatar_url: null,
+    identity_hash: 'hash',
+    version: 1,
+    is_default: false,
+    status: 'active' as const,
+    created_at: '',
+    updated_at: '',
+    runtime_policy: {
+      context: {
+        source: 'managed' as const,
+        auto_compact_window: 0,
+        auto_compact_percentage: 0,
+      },
+      skills: { mode: 'disabled' as const, ids: [] },
+      mcp: { mode: 'disabled' as const, ids: [] },
+      ...(subagents ? { subagents: subagents as never } : {}),
+    },
+  });
+  const definition = {
+    name: 'reviewer',
+    description: 'Reviews diffs',
+    prompt: 'Review.',
+    tools: ['Read', 'CronCreate', 'Bash(git log:*)'],
+    model: 'fast',
+    effort: 'high' as const,
+  };
+  const policy = {
+    model: 'fast',
+    max_concurrent: 3,
+    definitions: [definition, { ...definition, name: 'stale', model: 'gone' }],
+  };
+
+  test('an Agent without sub-agent settings previews as before', () => {
+    const preview = buildAgentCapabilityPreview({ profile: profileWith() });
+    expect(preview.subagents).toBeNull();
+    expect(preview.notes.join('\n')).not.toContain('子代理');
+  });
+
+  test('shows what a run on the Agent’s connection gives its sub-agents', () => {
+    const preview = buildAgentCapabilityPreview({
+      profile: profileWith(policy),
+      subagentRun: {
+        onAgentConnection: true,
+        launch: {
+          defaultModel: 'fast',
+          maxConcurrent: 3,
+          agents: {
+            reviewer: {
+              description: 'Reviews diffs',
+              prompt: 'Review.',
+              tools: ['Read', 'Bash(git log:*)'],
+              model: 'fast',
+              effort: 'high',
+            },
+            stale: {
+              description: 'Reviews diffs',
+              prompt: 'Review.',
+              tools: ['Read', 'Bash(git log:*)'],
+            },
+          },
+        },
+        defaultModel: { model: 'fast', source: 'agent' },
+      },
+    });
+    expect(preview.subagents).toEqual({
+      maxConcurrent: 3,
+      defaultModel: 'fast',
+      defaultModelSource: 'agent',
+      definitions: [
+        {
+          name: 'reviewer',
+          tools: ['Read', 'Bash(git log:*)'],
+          model: 'fast',
+          effort: 'high',
+        },
+        {
+          name: 'stale',
+          tools: ['Read', 'Bash(git log:*)'],
+          model: null,
+          effort: null,
+        },
+      ],
+    });
+    const notes = preview.notes.join('\n');
+    expect(notes).toContain('CronCreate');
+    expect(notes).toContain('子代理模型 gone 已不在智能体的模型连接中');
+    expect(notes).toContain('会话手动选择其他模型连接时');
+  });
+
+  test('without a connection no model name applies; the rest still does', () => {
+    const preview = buildAgentCapabilityPreview({
+      profile: profileWith(policy),
+    });
+    expect(preview.subagents).toMatchObject({
+      maxConcurrent: 3,
+      defaultModel: null,
+      defaultModelSource: null,
+      definitions: [
+        { name: 'reviewer', model: null, effort: 'high' },
+        { name: 'stale', model: null, effort: 'high' },
+      ],
+    });
+    expect(preview.notes.join('\n')).toContain(
+      '本次运行不在智能体自己的模型连接上',
+    );
+  });
+
+  test('a sub-agent left with no tool is shown as not offered', () => {
+    const preview = buildAgentCapabilityPreview({
+      profile: profileWith({
+        model: null,
+        max_concurrent: null,
+        definitions: [
+          { ...definition, model: 'fast', tools: ['EnterPlanMode'] },
+          { ...definition, name: 'reader', model: 'fast', tools: ['Read'] },
+        ],
+      }),
+      subagentRun: {
+        onAgentConnection: true,
+        launch: {
+          agents: {
+            reader: {
+              description: 'Reviews diffs',
+              prompt: 'Review.',
+              tools: ['Read'],
+              model: 'fast',
+            },
+          },
+        },
+        defaultModel: { model: 'role', source: 'connection' },
+      },
+    });
+    expect(preview.subagents?.definitions.map((item) => item.name)).toEqual([
+      'reader',
+    ]);
+    const notes = preview.notes.join('\n');
+    expect(notes).toContain('子代理 reviewer 没有任何可用的工具');
+    // Left out for its tools, not for a model the connection dropped.
+    expect(notes).not.toContain('已不在智能体的模型连接中');
+  });
+});

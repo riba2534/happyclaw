@@ -45,6 +45,10 @@ export interface UserPublic {
   guest_owner_id?: string | null;
   /** Owner username, only present in the admin users list. */
   guest_owner_username?: string | null;
+  /** Two-factor authentication is on; only present in the admin users list. */
+  two_factor_enabled?: boolean;
+  /** How many passkeys the user has; only present in the admin users list. */
+  passkey_count?: number;
 }
 
 export interface AppearanceConfig {
@@ -103,7 +107,21 @@ interface AuthState {
   /** Applies a deployment mode switched in settings. */
   setDeploymentMode: (mode: DeploymentMode) => void;
   checking: boolean;
-  login: (username: string, password: string) => Promise<void>;
+  /**
+   * Log in with a password. With two-factor authentication on, nothing is
+   * signed in yet: the returned challenge goes to loginSecondFactor.
+   */
+  login: (
+    username: string,
+    password: string,
+  ) => Promise<{ mfaChallenge: string } | null>;
+  loginSecondFactor: (challenge: string, code: string) => Promise<void>;
+  /**
+   * Log in with a passkey. `autofill` waits on the browser's passkey
+   * suggestions in the username field instead of opening a prompt; it
+   * resolves false when that wait is cancelled.
+   */
+  loginWithPasskey: (options?: { autofill?: boolean }) => Promise<boolean>;
   register: (data: {
     username: string;
     password: string;
@@ -163,6 +181,36 @@ function discardPrewarms(): void {
   holder.__groupsPrewarm = undefined;
 }
 
+/**
+ * Drop everything that belongs to the signed-in user before another one
+ * signs in on this browser, or after this one signs out.
+ */
+async function discardUserScopedState(): Promise<void> {
+  resetUserScopedStores();
+  discardPrewarms();
+  await clearMessageSnapshotCache();
+}
+
+interface LoginResponse {
+  success: boolean;
+  user: UserPublic;
+  setupStatus?: SetupStatus;
+  appearance?: AppearanceConfig;
+}
+
+// Public pages never run checkAuth, so `checking` may still hold its
+// initial true; the signed-in shell must not wait on it.
+function signedInState(data: LoginResponse) {
+  return {
+    authenticated: true,
+    user: data.user,
+    setupStatus: data.setupStatus ?? null,
+    appearance: data.appearance ?? null,
+    initialized: true,
+    checking: false,
+  };
+}
+
 export const useAuthStore = create<AuthState>((set, get) => ({
   authenticated: false,
   user: null,
@@ -178,32 +226,57 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   login: async (username: string, password: string) => {
     // Message snapshots are user-scoped application data. Clear them before
     // switching users on a shared browser.
-    resetUserScopedStores();
-    discardPrewarms();
-    await clearMessageSnapshotCache();
-    const data = await api.post<{
-      success: boolean;
-      user: UserPublic;
-      setupStatus?: SetupStatus;
-      appearance?: AppearanceConfig;
-    }>('/api/auth/login', { username, password });
-    // Public pages never run checkAuth, so `checking` may still hold its
-    // initial true; the signed-in shell must not wait on it.
-    set({
-      authenticated: true,
-      user: data.user,
-      setupStatus: data.setupStatus ?? null,
-      appearance: data.appearance ?? null,
-      initialized: true,
-      checking: false,
+    await discardUserScopedState();
+    const data = await api.post<
+      | LoginResponse
+      | { mfa_required: true; challenge: string; user?: undefined }
+    >('/api/auth/login', { username, password });
+    if (!data.user) return { mfaChallenge: data.challenge };
+    set(signedInState(data));
+    return null;
+  },
+
+  loginSecondFactor: async (challenge: string, code: string) => {
+    const data = await api.post<LoginResponse>('/api/auth/login/2fa', {
+      challenge,
+      code,
     });
+    set(signedInState(data));
+  },
+
+  loginWithPasskey: async ({ autofill = false } = {}) => {
+    const { startAuthentication } = await import('@simplewebauthn/browser');
+    const optionsJSON = await api.post<
+      Parameters<typeof startAuthentication>[0]['optionsJSON']
+    >('/api/auth/passkey/login/options', {});
+    let response;
+    try {
+      response = await startAuthentication({
+        optionsJSON,
+        useBrowserAutofill: autofill,
+      });
+    } catch (err) {
+      // Cancelled by the user, or by a newer ceremony (the button aborts
+      // the autofill wait).
+      if (
+        err instanceof Error &&
+        /abort|NotAllowed/i.test(err.name + err.message)
+      ) {
+        return false;
+      }
+      throw err;
+    }
+    await discardUserScopedState();
+    const data = await api.post<LoginResponse>('/api/auth/passkey/login', {
+      response,
+    });
+    set(signedInState(data));
+    return true;
   },
 
   register: async (payload) => {
     // Same rationale as login: clear user-scoped message snapshots.
-    resetUserScopedStores();
-    discardPrewarms();
-    await clearMessageSnapshotCache();
+    await discardUserScopedState();
     const data = await api.post<{ success: boolean; user: UserPublic }>(
       '/api/auth/register',
       payload,
@@ -233,9 +306,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     wsManager.disconnect();
     // Clear AFTER server-side session invalidation so the next user on this
     // device cannot see this user's message snapshots.
-    resetUserScopedStores();
-    discardPrewarms();
-    await clearMessageSnapshotCache();
+    await discardUserScopedState();
     set({
       authenticated: false,
       user: null,

@@ -13,13 +13,15 @@ import path from 'node:path';
 
 import {
   parseAssistantUsage,
+  mergeCodexAssistantUsage,
   type CollectedAssistantUsage,
   type TranscriptUsageLoader,
 } from './assistant-usage.js';
 
 /**
  * Scans a transcript JSONL and returns final usage per assistant message ID
- * (largest snapshot wins, matching the live collector contract).
+ * (largest snapshot wins by default; Codex final input fields are retained
+ * independently of the size of a provisional snapshot).
  *
  * The CLI persists assistant messages with the final usage from
  * message_delta, while the live SDK messages carry message_start's
@@ -30,6 +32,7 @@ import {
  */
 export function loadTranscriptAssistantUsage(
   transcriptPath: string,
+  options: { codex?: boolean } = {},
 ): Map<string, CollectedAssistantUsage> {
   const result = new Map<string, CollectedAssistantUsage>();
   let raw: string;
@@ -39,7 +42,7 @@ export function loadTranscriptAssistantUsage(
     return result;
   }
   for (const line of raw.split('\n')) {
-    if (line) ingestTranscriptLine(line, result);
+    if (line) ingestTranscriptLine(line, result, options.codex);
   }
   return result;
 }
@@ -91,6 +94,7 @@ interface TranscriptScanState {
 function ingestTranscriptLine(
   line: string,
   usageById: Map<string, CollectedAssistantUsage>,
+  codex = false,
 ): void {
   // Cheap line-level prefilter before paying JSON.parse per line.
   if (!line.includes('"type":"assistant"') || !line.includes('"usage"')) {
@@ -103,9 +107,13 @@ function ingestTranscriptLine(
     return;
   }
   if (!parsed || typeof parsed !== 'object') return;
-  const usage = parseAssistantUsage(parsed as Record<string, unknown>);
+  const usage = parseAssistantUsage(parsed as Record<string, unknown>, codex);
   if (!usage) return;
   const previous = usageById.get(usage.id);
+  if (codex) {
+    usageById.set(usage.id, mergeCodexAssistantUsage(previous, usage));
+    return;
+  }
   // Any line with a stop_reason proves the call ended, whichever line
   // carries the largest snapshot.
   const stopped = usage.stopped || previous?.stopped;
@@ -122,6 +130,7 @@ function ingestTranscriptLine(
 function scanTranscript(
   transcriptPath: string,
   previous: TranscriptScanState | undefined,
+  codex = false,
 ): TranscriptScanState | undefined {
   let stat: Stats;
   try {
@@ -167,7 +176,7 @@ function scanTranscript(
   const lastNewline = buffer.lastIndexOf(10);
   const complete = buffer.subarray(0, lastNewline + 1).toString('utf8');
   for (const line of complete.split('\n')) {
-    if (line) ingestTranscriptLine(line, state.usage);
+    if (line) ingestTranscriptLine(line, state.usage, codex);
   }
   const tail = buffer.subarray(lastNewline + 1);
   state.remainder = Buffer.alloc(0);
@@ -179,7 +188,7 @@ function scanTranscript(
     } catch {
       tailComplete = false;
     }
-    if (tailComplete) ingestTranscriptLine(tailText, state.usage);
+    if (tailComplete) ingestTranscriptLine(tailText, state.usage, codex);
     else state.remainder = Buffer.from(tail);
   }
   state.offset += chunk.length;
@@ -194,6 +203,7 @@ function scanTranscript(
  */
 export function createTranscriptUsageLoader(
   resolveTranscriptPath: () => string | undefined,
+  options: { codex?: boolean } = {},
 ): TranscriptUsageLoader {
   const states = new Map<string, TranscriptScanState>();
   return (ids, agentId) => {
@@ -204,7 +214,11 @@ export function createTranscriptUsageLoader(
       ? resolveSidechainTranscriptPath(mainPath, agentId)
       : mainPath;
     if (!transcriptPath) return hits;
-    const state = scanTranscript(transcriptPath, states.get(transcriptPath));
+    const state = scanTranscript(
+      transcriptPath,
+      states.get(transcriptPath),
+      options.codex,
+    );
     if (!state) return hits;
     states.set(transcriptPath, state);
     for (const id of ids) {

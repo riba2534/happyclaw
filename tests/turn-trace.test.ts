@@ -128,6 +128,28 @@ describe('TurnTraceAccumulator', () => {
     expect(acc.isEmpty).toBe(false);
   });
 
+  test('live usage totals never become trace rows', () => {
+    const acc = new TurnTraceAccumulator(0);
+    for (let at = 10; at <= 30; at += 10) {
+      acc.observe(
+        ev('usage_progress', {
+          usageProgress: {
+            calls: at / 10,
+            inputTokens: 10,
+            cacheReadInputTokens: 990,
+            cacheCreationInputTokens: 0,
+            outputTokens: 100,
+            streamOutputTokens: 100,
+            streamMs: 2_000,
+          },
+        }),
+        at,
+      );
+    }
+    expect(acc.isEmpty).toBe(true);
+    expect(acc.toContent({ includeThinking: true })).toBeNull();
+  });
+
   test('a turn that did nothing worth keeping yields no content', () => {
     const acc = new TurnTraceAccumulator(0);
     acc.observe(ev('text_delta', { text: '你好' }), 10);

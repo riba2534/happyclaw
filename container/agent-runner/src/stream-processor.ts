@@ -30,6 +30,10 @@ import { BackgroundTaskDrainTracker } from './background-task-drain.js';
 // Bounds for the per-Task final-answer capture forwarded on task_notification.
 const SUB_AGENT_RESULT_MAX_CHARS = 16_000;
 const SUB_AGENT_RESULT_MAX_TASKS = 64;
+// Tasks whose foreground/background state is remembered for their
+// task_notification; past this the oldest is forgotten (and counts as
+// background).
+const TASK_BACKGROUND_STATE_MAX_TASKS = 256;
 
 // SDK 任务终态（task_updated.patch.status 语义下"不会再有后续信号"的状态）。
 // web/src/stores/chat.ts、src/web.ts、src/index.ts 各有等价映射——SDK 新增
@@ -249,7 +253,10 @@ export class StreamEventProcessor {
     { toolUseId: string; toolName: string }
   >();
 
-  // Background Task tool_use_ids (run_in_background: true)
+  // tool_use_ids whose task runs in the background: a Task/Agent call with
+  // run_in_background: true, or any call whose SDK task the CLI reports in
+  // the background (Agent calls run there by default). The tool_use_summary
+  // synthesis and the cleanup safety net take every other one for foreground.
   private readonly backgroundTaskToolUseIds = new Set<string>();
 
   // SDK internal task_id → API tool_use_id mapping.
@@ -290,6 +297,18 @@ export class StreamEventProcessor {
       launchedBySubAgent: boolean;
     }
   >();
+
+  // Whether each SDK task ran in the background, for task_notification's
+  // isBackground: the Web announces only background completions. Kept apart
+  // from pendingSdkTasks because a foreground sub-agent's terminal
+  // task_updated settles it there before its task_notification arrives.
+  // Written by task_started (foreground unless something says background),
+  // task_updated and background_tasks_changed; read and dropped by
+  // task_notification. A task never seen to start counts as background. A
+  // task that never notifies (a nested sub-agent ending with its parent, a
+  // watcher) stays until the oldest entries are dropped past
+  // TASK_BACKGROUND_STATE_MAX_TASKS.
+  private readonly taskRanInBackground = new Map<string, boolean>();
 
   // tool_use_ids issued inside a sub-agent (raw parent_tool_use_id != null).
   // A background task started by one of these tools reports its completion
@@ -1482,19 +1501,27 @@ export class StreamEventProcessor {
       if (message.task_id && !message.skip_transcript) {
         const subAgentOwned = this.isSubAgentOwnedTask(message);
         this.backgroundDrain.taskStarted(message.task_id, !subAgentOwned);
+        const taskType =
+          typeof message.task_type === 'string' ? message.task_type : undefined;
+        // A task started in the background joins the level before its
+        // task_started (Claude Code 2.1.328): keep what the level said.
+        const isBackgrounded =
+          this.pendingSdkTasks.get(message.task_id)?.isBackgrounded === true ||
+          message.is_backgrounded === true;
         this.pendingSdkTasks.set(message.task_id, {
           description: desc,
-          taskType:
-            typeof message.task_type === 'string'
-              ? message.task_type
-              : undefined,
-          isBackgrounded: false,
+          taskType,
+          isBackgrounded,
           launchedBySubAgent:
             subAgentOwned || typeof message.parent_task_id === 'string',
         });
+        if (isBackgrounded) {
+          this.markDrainBackgrounded(message.task_id, taskType);
+        }
         this.log(
           `[pending-tasks] +${message.task_id.slice(0, 12)} (${shorten(desc, 60)}) → ${this.pendingSdkTasks.size} pending`,
         );
+        this.recordStartedTaskBackground(message);
       }
       this.emitStreamEvent({
         eventType: 'task_start',
@@ -1553,13 +1580,12 @@ export class StreamEventProcessor {
         this.sdkTaskIdToToolUseId.get(message.task_id) || message.task_id;
       const patchStatus = message.patch?.status;
       const pending = this.pendingSdkTasks.get(message.task_id);
+      if (message.task_id && message.patch?.is_backgrounded === true) {
+        this.recordTaskBackground(message.task_id, true);
+      }
       if (pending && message.patch?.is_backgrounded === true) {
         pending.isBackgrounded = true;
-        if (pending.taskType === 'local_bash') {
-          this.backgroundDrain.markNonBlocking(message.task_id);
-        } else {
-          this.backgroundDrain.markBackground(message.task_id);
-        }
+        this.markDrainBackgrounded(message.task_id, pending.taskType);
       }
       if (patchStatus && SDK_TERMINAL_TASK_STATUSES.has(patchStatus)) {
         this.backgroundDrain.taskTerminal(message.task_id);
@@ -1613,6 +1639,7 @@ export class StreamEventProcessor {
       this.backgroundLevelTaskIds.clear();
       for (const task of tasks) {
         this.backgroundLevelTaskIds.add(task.task_id);
+        this.recordTaskBackground(task.task_id, true);
         const existing = this.pendingSdkTasks.get(task.task_id);
         const launchedBySubAgent = typeof task.parent_task_id === 'string';
         if (!existing) {
@@ -2448,11 +2475,14 @@ export class StreamEventProcessor {
     summary: string;
     output_file?: string;
     usage?: any;
+    skip_transcript?: boolean;
+    ambient?: boolean;
   }): void {
     if (this.isSubAgentOwnedTask(message)) {
       this.backgroundDrain.markNonBlocking(message.task_id);
     }
     this.backgroundDrain.taskNotification(message.task_id);
+    const isBackground = this.takeNotificationIsBackground(message);
     this.settlePendingSdkTask(
       message.task_id,
       `task_notification:${message.status}`,
@@ -2492,7 +2522,7 @@ export class StreamEventProcessor {
         outputFile: message.output_file,
         sdkTaskUsage: this.normalizeTaskUsage(message.usage),
         workflowRun: completedWorkflowRun,
-        isBackground: true,
+        isBackground,
         displayLevel: 'primary',
       },
     });
@@ -2518,6 +2548,58 @@ export class StreamEventProcessor {
     }
     // Clean up the mapping entry
     this.sdkTaskIdToToolUseId.delete(message.task_id);
+  }
+
+  /**
+   * The SDK also sends task_notification for foreground tasks (a Bash call
+   * that ran past the progress threshold, a blocking sub-agent); only a task
+   * that ran in the background is news to the reader. A task this process
+   * never saw start (e.g. from before a restart) counts as background. Tasks
+   * that are not activity (skip_transcript, ambient watchers) never are.
+   */
+  private takeNotificationIsBackground(message: {
+    task_id: string;
+    skip_transcript?: boolean;
+    ambient?: boolean;
+  }): boolean {
+    const ranInBackground = this.taskRanInBackground.get(message.task_id);
+    this.taskRanInBackground.delete(message.task_id);
+    if (message.skip_transcript === true || message.ambient === true) {
+      return false;
+    }
+    return ranInBackground !== false;
+  }
+
+  /**
+   * The CLI states is_backgrounded only for local_agent and local_bash; any
+   * other task started in the background joins the level before its
+   * task_started. A task with none of these signals (nor a Task/Agent call
+   * asking for run_in_background) starts in the foreground; a later level or
+   * task_updated moves it to the background.
+   */
+  private recordStartedTaskBackground(message: {
+    task_id: string;
+    tool_use_id?: string;
+    is_backgrounded?: boolean;
+  }): void {
+    this.recordTaskBackground(
+      message.task_id,
+      message.is_backgrounded === true ||
+        this.backgroundLevelTaskIds.has(message.task_id) ||
+        (!!message.tool_use_id &&
+          this.backgroundTaskToolUseIds.has(message.tool_use_id)),
+    );
+  }
+
+  private recordTaskBackground(taskId: string, inBackground: boolean): void {
+    this.taskRanInBackground.delete(taskId);
+    this.taskRanInBackground.set(taskId, inBackground);
+    const toolUseId = this.sdkTaskIdToToolUseId.get(taskId);
+    if (inBackground && toolUseId) this.backgroundTaskToolUseIds.add(toolUseId);
+    if (this.taskRanInBackground.size > TASK_BACKGROUND_STATE_MAX_TASKS) {
+      const oldest = this.taskRanInBackground.keys().next().value;
+      if (oldest !== undefined) this.taskRanInBackground.delete(oldest);
+    }
   }
 
   /**
@@ -2552,6 +2634,21 @@ export class StreamEventProcessor {
     this.log(
       `[pending-tasks] -${taskId.slice(0, 12)} (${reason}) → ${this.pendingSdkTasks.size} pending`,
     );
+  }
+
+  /**
+   * A backgrounded local_bash is a detached process that no longer holds the
+   * input; other background tasks owe the main Agent their completion.
+   */
+  private markDrainBackgrounded(
+    taskId: string,
+    taskType: string | undefined,
+  ): void {
+    if (taskType === 'local_bash') {
+      this.backgroundDrain.markNonBlocking(taskId);
+    } else {
+      this.backgroundDrain.markBackground(taskId);
+    }
   }
 
   /** 尚未 settle 的 SDK 任务数（异步 Agent / backgrounded Bash 等）。 */

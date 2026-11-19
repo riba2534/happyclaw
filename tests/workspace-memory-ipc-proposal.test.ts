@@ -6,6 +6,7 @@ import {
   AgentBuilderTurnRegistry,
   type AgentBuilderPersistedInput,
 } from '../src/agent-builder-turn-auth.js';
+import { getChannelType } from '../src/im-channel.js';
 import { WorkspaceMemoryServiceError } from '../src/memory-service.js';
 import {
   issueWorkspaceMemoryWriteCapability,
@@ -20,16 +21,59 @@ import {
 import { createRuntimeSourceHarness } from './helpers/runtime-source.js';
 
 const FOLDER = 'team';
+const HOME = 'home-owner';
 const OWNER = 'owner-1';
 const SESSION = 'team-session';
+const GROUP = 'feishu:oc_group#account:fs-a';
+const OWNER_DM = 'telegram:111#account:tg-a';
+const OTHER_BOT_GROUP = 'telegram:-1002#account:tg-b';
+const OTHER_USER_DM = 'telegram:222#account:tg-x';
 
+/**
+ * Real shapes: discovery and pairing register a chat under the account's
+ * default workspace (Home), and binding it to a session of `team` only sets
+ * target_agent_id. The IM rows never carry the `team` folder.
+ */
 const registrations: Record<string, Record<string, unknown>> = {
   'web:team': { folder: FOLDER, created_by: OWNER },
-  'feishu:oc_group': {
-    folder: FOLDER,
+  [`web:${HOME}`]: { folder: HOME, created_by: OWNER, is_home: true },
+  [GROUP]: {
+    folder: HOME,
     created_by: OWNER,
+    channel_account_id: 'fs-a',
     owner_im_id: 'ou_owner',
     owner_claim_source: 'auto_feishu',
+    target_agent_id: SESSION,
+  },
+  [OWNER_DM]: {
+    folder: HOME,
+    created_by: OWNER,
+    channel_account_id: 'tg-a',
+    owner_im_id: '111',
+    owner_claim_source: 'trusted_direct',
+    target_agent_id: SESSION,
+  },
+  [OTHER_BOT_GROUP]: {
+    folder: HOME,
+    created_by: OWNER,
+    channel_account_id: 'tg-b',
+    target_agent_id: SESSION,
+  },
+  // Registered to another workspace W (its account defaults to W), with an
+  // owner the owner typed in: that identity is the owner in W only.
+  'telegram:-2001#account:tg-a': {
+    folder: 'ws-w',
+    created_by: OWNER,
+    channel_account_id: 'tg-a',
+    owner_im_id: '555',
+    owner_claim_source: 'configured',
+  },
+  [OTHER_USER_DM]: {
+    folder: 'home-user-2',
+    created_by: 'user-2',
+    channel_account_id: 'tg-x',
+    owner_im_id: '222',
+    owner_claim_source: 'trusted_direct',
   },
 };
 
@@ -47,7 +91,8 @@ function host(inputs: Record<string, AgentBuilderPersistedInput>) {
   }));
   const activeAgentBuilderTurns = new AgentBuilderTurnRegistry();
   const globals: Record<string, unknown> = {
-    getUserHomeGroup: () => undefined,
+    getUserHomeGroup: (userId: string) =>
+      userId === OWNER ? { jid: `web:${HOME}`, folder: HOME } : undefined,
     resolveBroadcastFolder: () => FOLDER,
     registeredGroups: registrations,
     getRegisteredGroup: (jid: string) => registrations[jid],
@@ -56,9 +101,15 @@ function host(inputs: Record<string, AgentBuilderPersistedInput>) {
     canAccessGroup: vi.fn(),
     SAFE_REQUEST_ID_RE: /^[A-Za-z0-9_-]+$/,
     WorkspaceMemoryServiceError,
-    getJidsByFolder: () => Object.keys(registrations),
-    getChannelType: (jid: string) =>
-      jid.startsWith('feishu:') ? 'feishu' : null,
+    getJidsByFolder: (folder: string) =>
+      Object.keys(registrations).filter(
+        (jid) => registrations[jid].folder === folder,
+      ),
+    getGroupsByOwner: (userId: string) =>
+      Object.entries(registrations)
+        .filter(([, row]) => row.created_by === userId)
+        .map(([jid, row]) => ({ jid, ...row })),
+    getChannelType,
     activeAgentBuilderTurns,
     agentBuilderTurnScope,
     getAgentBuilderInputMessage: (_chatJid: string, messageId: string) =>
@@ -170,8 +221,8 @@ const automationInput = (runId: string): AgentBuilderPersistedInput => ({
 describe('what a Workspace Memory write becomes on the host', () => {
   test("the owner's own turn writes; a group member's turn proposes", async () => {
     const { create, start } = host({
-      'om-owner': human('ou_owner', 'feishu:oc_group'),
-      'om-member': human('ou_member', 'feishu:oc_group'),
+      'om-owner': human('ou_owner', GROUP),
+      'om-member': human('ou_member', GROUP),
       'web-owner': human(OWNER, 'web:team'),
     });
     start('web:team', 'web-owner');
@@ -179,16 +230,59 @@ describe('what a Workspace Memory write becomes on the host', () => {
       success: true,
       proposal: false,
     });
-    start('feishu:oc_group', 'om-owner');
+    start(GROUP, 'om-owner');
     expect(await create('om-owner')).toMatchObject({
       success: true,
       proposal: false,
     });
-    start('feishu:oc_group', 'om-member');
+    start(GROUP, 'om-member');
     expect(await create('om-member')).toMatchObject({
       success: true,
       proposal: true,
     });
+  });
+
+  test("the owner's paired direct chat writes in the workspace it is bound to", async () => {
+    // Registered under Home, bound to a session of `team`: the owner by who
+    // sent it, not by the folder the chat was registered to.
+    const { create, start } = host({
+      'dm-owner': human('tg:111', OWNER_DM),
+      'other-bot': human('tg:111', OTHER_BOT_GROUP),
+      'other-provider': human('111', GROUP),
+      'w-identity': human('tg:555', OTHER_BOT_GROUP),
+      'other-user': human('tg:222', OTHER_USER_DM),
+      composed: {
+        ...human('tg:111', OWNER_DM),
+        source_kind: 'work_item_input',
+      },
+    });
+    // The owner's direct chat, and the same Telegram id in a group of the
+    // owner's other Telegram bot, write directly.
+    for (const [turn, chat] of [
+      ['dm-owner', OWNER_DM],
+      ['other-bot', OTHER_BOT_GROUP],
+    ]) {
+      start(chat, turn);
+      expect(await create(turn)).toMatchObject({
+        success: true,
+        proposal: false,
+      });
+    }
+    // The same value on another provider, an identity registered to another
+    // workspace W, another user's chat, and an input the host composed all
+    // only propose.
+    for (const [turn, chat] of [
+      ['other-provider', GROUP],
+      ['w-identity', OTHER_BOT_GROUP],
+      ['other-user', OTHER_USER_DM],
+      ['composed', OWNER_DM],
+    ]) {
+      start(chat, turn);
+      expect(await create(turn)).toMatchObject({
+        success: true,
+        proposal: true,
+      });
+    }
   });
 
   test('an automation run proposes, and only with its signed capability', async () => {

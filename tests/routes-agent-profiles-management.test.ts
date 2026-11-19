@@ -422,6 +422,77 @@ describe('POST /:id/duplicate', () => {
     expect(again.profile.name).toBe('Researcher 副本 2');
   });
 
+  test('a sub-agent model the connection dropped follows the connection in the copy', async () => {
+    const provider = runtimeConfig.createProvider({
+      name: 'Sub-agent copy connection',
+      type: 'third_party',
+      anthropicBaseUrl: 'https://subagent-copy.example.test',
+      anthropicAuthToken: 'subagent-copy-token',
+      anthropicModel: 'sc-main',
+      models: [{ id: 'sc-main' }, { id: 'sc-fast' }],
+      enabled: true,
+    });
+    const definition = {
+      name: 'reviewer',
+      description: 'Reviews diffs',
+      prompt: 'Review.',
+      tools: null,
+      effort: null,
+    };
+    // Saved while the connection still offered `sc-gone`.
+    const source = db.createAgentProfile({
+      ownerUserId: MEMBER,
+      name: 'Sub-agent Copy Source',
+      modelConfigId: provider.id,
+      runtimePolicy: {
+        subagents: {
+          model: 'sc-gone',
+          max_concurrent: 2,
+          definitions: [
+            { ...definition, model: 'sc-fast' },
+            { ...definition, name: 'stale', model: 'sc-gone' },
+          ],
+        },
+      } as never,
+    });
+    const res = await call(`/${source.id}/duplicate`, { method: 'POST' });
+    expect(res.status).toBe(201);
+    expect((await res.json()).profile.runtime_policy.subagents).toEqual({
+      model: null,
+      max_concurrent: 2,
+      definitions: [
+        { ...definition, model: 'sc-fast' },
+        { ...definition, name: 'stale', model: null },
+      ],
+    });
+  });
+
+  test('a sub-agent saved with no tool it could run with is not copied', async () => {
+    // Saved before such lists were refused.
+    const source = db.createAgentProfile({
+      ownerUserId: MEMBER,
+      name: 'Toolless Copy Source',
+      runtimePolicy: {
+        subagents: {
+          definitions: [
+            {
+              name: 'planner',
+              description: 'Plans work',
+              prompt: 'Plan.',
+              tools: ['EnterPlanMode'],
+            },
+          ],
+        },
+      } as never,
+    });
+    const res = await call(`/${source.id}/duplicate`, { method: 'POST' });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({
+      code: 'SUBAGENT_NO_AVAILABLE_TOOLS',
+      subagents: ['planner'],
+    });
+  });
+
   test('drops host grants for a member, refuses the built-in, hides other owners', async () => {
     // Saved while the owner was an admin.
     const source = db.createAgentProfile({
@@ -666,6 +737,106 @@ describe('export and import', () => {
       context: { source: 'host_claude' },
       skills: { host: { mode: 'inherit', ids: [] } },
     });
+  });
+
+  test('custom sub-agents travel without the model names, which stay with the instance', async () => {
+    const provider = runtimeConfig.createProvider({
+      name: 'Sub-agent export connection',
+      type: 'third_party',
+      anthropicBaseUrl: 'https://subagent-export.example.test',
+      anthropicAuthToken: 'subagent-export-token',
+      anthropicModel: 'sx-main',
+      models: [{ id: 'sx-main' }, { id: 'sx-fast' }],
+      enabled: true,
+    });
+    const reviewer = {
+      name: 'reviewer',
+      description: 'Reviews diffs',
+      prompt: 'Review carefully.',
+      tools: ['Read', 'Bash(git log:*)'],
+      effort: 'high',
+    };
+    const profile = db.createAgentProfile({
+      ownerUserId: MEMBER,
+      name: 'Sub-agent Exporter',
+      modelConfigId: provider.id,
+      runtimePolicy: {
+        subagents: {
+          model: 'sx-fast',
+          max_concurrent: 3,
+          definitions: [{ ...reviewer, model: 'sx-fast' }],
+        },
+      } as never,
+    });
+    const document = await (await call(`/${profile.id}/export`)).json();
+    expect(document.agent.runtime_policy.subagents).toEqual({
+      max_concurrent: 3,
+      definitions: [reviewer],
+    });
+    expect(JSON.stringify(document)).not.toContain('sx-fast');
+
+    // A file that names models anyway (hand-edited, or from elsewhere):
+    // they cannot apply to an Agent without a connection, so they go.
+    const named = structuredClone(document);
+    named.agent.runtime_policy.subagents.model = 'sx-fast';
+    named.agent.runtime_policy.subagents.definitions[0].model = 'sx-fast';
+    const res = await call('/import', {
+      method: 'POST',
+      body: { data: named, name: 'Sub-agent Importer' },
+    });
+    expect(res.status).toBe(201);
+    const imported = (await res.json()).profile;
+    expect(imported.model_config_id).toBeNull();
+    expect(imported.runtime_policy.subagents).toEqual({
+      model: null,
+      max_concurrent: 3,
+      definitions: [{ ...reviewer, model: null }],
+    });
+
+    // Only a default model: nothing of it leaves.
+    const modelOnly = db.createAgentProfile({
+      ownerUserId: MEMBER,
+      name: 'Sub-agent Model Only',
+      modelConfigId: provider.id,
+      runtimePolicy: { subagents: { model: 'sx-fast' } } as never,
+    });
+    const bare = await (await call(`/${modelOnly.id}/export`)).json();
+    expect(bare.agent.runtime_policy).not.toHaveProperty('subagents');
+  });
+
+  test('a file whose sub-agent would have no tool is refused, saying which', async () => {
+    const res = await call('/import', {
+      method: 'POST',
+      body: {
+        data: {
+          format: 'happyclaw-agent',
+          version: 1,
+          agent: {
+            name: 'Toolless Import',
+            runtime_policy: {
+              subagents: {
+                definitions: [
+                  {
+                    name: 'planner',
+                    description: 'Plans work',
+                    prompt: 'Plan.',
+                    tools: ['EnterPlanMode', 'ExitPlanMode'],
+                  },
+                ],
+              },
+            },
+          },
+        },
+      },
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({
+      code: 'SUBAGENT_NO_AVAILABLE_TOOLS',
+      subagents: ['planner'],
+    });
+    expect(
+      db.findAgentProfileNameConflict(MEMBER, 'Toolless Import'),
+    ).toBeUndefined();
   });
 });
 

@@ -125,10 +125,10 @@ import {
   runContainerAgent,
   runHostAgent,
   runAgentWithModelFallback,
+  runnerLivenessFor,
   willClearSessionOnProviderSwitch,
   writeGroupsSnapshot,
 } from './container-runner.js';
-import { resolveRunnerLivenessTimeouts } from './runner-liveness.js';
 import {
   decideStuckRunnerRecovery,
   resolveRunnerCpuActivity,
@@ -275,8 +275,8 @@ import {
   isWorkspaceMemoryMutation,
   isWorkspaceMemoryOwnerTurn,
   workspaceMemoryWriteRejection,
-  workspaceOwnerImIds,
 } from './workspace-memory-ipc.js';
+import { isWorkspaceOwnerInput } from './workspace-owner-identity.js';
 import {
   grantWorkspaceMemoryTurnToCurrentRunner,
   verifyAndConsumeWorkspaceMemoryMutation,
@@ -434,7 +434,6 @@ import {
   getAgentBuilderRuntimeRejection,
   isAgentBuilderOwnerInput,
   isAutomationTurnInput,
-  isOwnerProfileOwnerInput,
   ownerImIdFromDirectConversationJid,
   ownerImIdFromPersistedSender,
   resolveTrustedDirectOwnerUpgrade,
@@ -1057,6 +1056,9 @@ export function feedStreamEventToCard(
       break;
     case 'usage':
       if (se.usage) session.patchUsageNote(se.usage);
+      break;
+    case 'usage_progress':
+      // The Web's live totals; a card shows the settled usage only.
       break;
     case 'permission_denied': {
       // A denied tool call is a real signal (the agent wanted to do something
@@ -7494,11 +7496,7 @@ async function runTerminalWarmup(sessionJid: string): Promise<void> {
   const isAdminHome = isHome && owner?.role === 'admin';
 
   let idleTimer: ReturnType<typeof setTimeout> | null = null;
-  const warmupIdleCloseMs = resolveRunnerLivenessTimeouts({
-    executionTimeoutMs:
-      group.containerConfig?.timeout ?? getSystemSettings().containerTimeout,
-    idleTimeoutMs: getSystemSettings().idleTimeout,
-  }).idleCloseMs;
+  const warmupIdleCloseMs = runnerLivenessFor(group).idleCloseMs;
   const resetIdleTimer = () => {
     if (idleTimer) clearTimeout(idleTimer);
     idleTimer = setTimeout(() => {
@@ -9178,8 +9176,8 @@ function ownerTurnRejection(
     ownerUserId,
     loadPersistedInput: getAgentBuilderInputMessage,
     getGroup: (jid) => registeredGroups[jid] ?? getRegisteredGroup(jid),
-    getFolderJids: getJidsByFolder,
-    getChannelType,
+    getGroupsByOwner,
+    getUserHomeGroup,
   });
 }
 
@@ -9544,17 +9542,18 @@ async function processTaskIpc(
         : activeAgentBuilderTurns.requireExactActiveOwnerHumanTurn.bind(
             activeAgentBuilderTurns,
           );
-    // The owner's IM identity is anchored across Home registrations, not the
-    // single source row: Home chats registered before owner capture (legacy
-    // topic groups with a NULL owner_im_id) must still authorize the owner.
-    const resolveHomeOwnerImIds = (provider: string): string[] =>
-      workspaceOwnerImIds({
-        provider,
-        ownerUserId: user.id,
-        workspaceJids: getJidsByFolder(sourceGroup),
-        channelType: getChannelType,
-        registration: (jid) => registeredGroups[jid] ?? getRegisteredGroup(jid),
-      });
+    // The owner's IM identity is anchored across the owner's Home
+    // registrations, not the single source row: chats registered before
+    // owner capture (legacy topic groups with a NULL owner_im_id) still
+    // authorize the owner.
+    const ownerIdentity = {
+      ownerUserId: user.id,
+      workspaceFolder: sourceGroup,
+      homeFolder: getUserHomeGroup(user.id)?.folder,
+      registration: (jid: string) =>
+        registeredGroups[jid] ?? getRegisteredGroup(jid),
+      ownerRegistrations: () => getGroupsByOwner(user.id),
+    };
     let activeTurn: ReturnType<typeof resolveOwnerTurn>;
     try {
       activeTurn = resolveOwnerTurn(
@@ -9562,12 +9561,7 @@ async function processTaskIpc(
         data.inputTurnId,
         getAgentBuilderInputMessage,
         (persistedInput) =>
-          isOwnerProfileOwnerInput(
-            persistedInput,
-            user.id,
-            (jid) => registeredGroups[jid] ?? getRegisteredGroup(jid),
-            resolveHomeOwnerImIds,
-          ),
+          isWorkspaceOwnerInput(persistedInput, ownerIdentity),
       );
     } catch (error) {
       // Turn-authorization misses are expected policy outcomes (queued
@@ -9902,10 +9896,11 @@ async function processTaskIpc(
           hostTurnKind === 'interactive' &&
           isWorkspaceMemoryOwnerTurn({
             ownerUserId: actor.id,
-            workspaceJids: siblingJids,
-            channelType: getChannelType,
+            workspaceFolder: sourceGroup,
+            homeFolder: getUserHomeGroup(actor.id)?.folder,
             registration: (jid) =>
               registeredGroups[jid] ?? getRegisteredGroup(jid),
+            ownerRegistrations: () => getGroupsByOwner(actor.id),
             requireActiveOwnerTurn: (isOwnerInput) =>
               activeAgentBuilderTurns.requireExactActiveOwnerHumanTurn(
                 agentBuilderTurnScope(sourceGroup, ipcAgentId),
@@ -12522,12 +12517,9 @@ async function processAgentConversation(
 
   // Track idle timer
   let idleTimer: ReturnType<typeof setTimeout> | null = null;
-  const agentRunnerIdleCloseMs = resolveRunnerLivenessTimeouts({
-    executionTimeoutMs:
-      effectiveGroup.containerConfig?.timeout ??
-      getSystemSettings().containerTimeout,
-    idleTimeoutMs: getSystemSettings().idleTimeout,
-  }).idleCloseMs;
+  // The idle close the Runner is told, which paces its keepalive while a
+  // result is held for background work: same function, same group.
+  const agentRunnerIdleCloseMs = runnerLivenessFor(effectiveGroup).idleCloseMs;
   const resetIdleTimer = () => {
     if (idleTimer) clearTimeout(idleTimer);
     idleTimer = setTimeout(() => {
@@ -12912,15 +12904,47 @@ async function processAgentConversation(
   };
 
   const handleAgentOutput = async (output: ContainerOutput) => {
+    // A Runner holding its result for background work says it is alive. Only
+    // the idle close starts over (the frame already reset the process
+    // watchdog): it is no output, so stuck recovery's activity clock, the
+    // turn trace, cards and Web never see it.
+    if (output.backgroundHoldKeepalive) {
+      resetIdleTimer();
+      return;
+    }
     // #547: warm-lifecycle bookkeeping — mark activity, and flag query-idle on
     // a substantive result / interruption so the runner can be kept warm.
     queue.markRunnerActivity(virtualJid);
     if (isProviderQuotaControlOutput(output)) return;
-    bindRunnerActiveIpcCoverage(virtualJid, output.activeIpcReceipts);
+    // Model output stamped with the query's id shows the CLI at work on the
+    // input that opened it over IPC: that input's debt stops aging toward
+    // the stuck-recovery ceiling.
+    queue.markRunnerServingQuery(virtualJid, output.streamEvent);
     const isInterruptStatus =
       output.status === 'stream' &&
       output.streamEvent?.eventType === 'status' &&
       output.streamEvent.statusText === 'interrupted';
+    // Stuck recovery defers while the Runner holds its result for unsettled
+    // background work. Only a result says so: publishResultCandidate always
+    // sets a numeric pendingBgTasks (0 once settled); notices such as
+    // compact_partial or an image rejection carry none and keep the hold. An
+    // output that ends the SDK query releases it, since that work stops with
+    // the query; a retried or next query reports its own. (A model-fallback
+    // retry's own control frame never reaches here; its notice does.)
+    if (
+      output.status === 'success' &&
+      typeof output.pendingBgTasks === 'number'
+    ) {
+      queue.markRunnerBackgroundHold(virtualJid, output.pendingBgTasks > 0);
+    } else if (
+      isInterruptStatus ||
+      output.providerFailure ||
+      output.sourceKind === 'provider_fallback_notice' ||
+      output.sourceKind === 'overflow_partial'
+    ) {
+      queue.markRunnerBackgroundHold(virtualJid, false);
+    }
+    bindRunnerActiveIpcCoverage(virtualJid, output.activeIpcReceipts);
     const isUsageEvent =
       output.status === 'stream' && output.streamEvent?.eventType === 'usage';
     const outputTurnId = output.turnId || output.streamEvent?.turnId;
@@ -14238,6 +14262,7 @@ async function processAgentConversation(
   };
 
   const wrappedOnOutput = async (output: ContainerOutput): Promise<void> => {
+    const outputQueryId = queue.getActiveQueryId(virtualJid);
     try {
       await handleAgentOutput(output);
     } catch (err) {
@@ -14259,6 +14284,17 @@ async function processAgentConversation(
         output.ipcReceipts,
         commitIpcDeliveryReceipts,
       );
+      // A continue the Runner runs on its own (compaction or truncation)
+      // reports its query idle before these receipts are acknowledged, and
+      // the queue keeps a query with unacknowledged IPC in flight. Ask again:
+      // the query ends unless other IPC still waits for it. Any other idle
+      // report has already ended its query.
+      if (output.queryIdle === true && outputQueryId) {
+        queue.markRunnerQueryIdle(virtualJid, {
+          preserveIpcDebt: true,
+          queryId: outputQueryId,
+        });
+      }
     }
   };
 
@@ -15194,13 +15230,46 @@ async function startRunnerSupervisor(): Promise<void> {
   }
 }
 
+/** Per lane, the held query whose background_tasks defer was logged at info. */
+const loggedBackgroundHoldQueries = new Map<string, string>();
+
 async function recoverStuckPendingGroups(): Promise<void> {
+  for (const [jid, queryId] of loggedBackgroundHoldQueries) {
+    if (queue.getActiveQueryId(jid) !== queryId) {
+      loggedBackgroundHoldQueries.delete(jid);
+    }
+  }
   const stuckGroups = queue.getStuckPendingGroups(
     STUCK_RUNNER_IDLE_MS,
     STUCK_RUNNER_FORCE_RESTART_MS,
   );
   for (const candidate of stuckGroups) {
     const pid = candidate.runnerPid ?? undefined;
+    // A held result defers whatever the CPU shows (decideStuckRunnerRecovery),
+    // so skip the probe. The hold can last up to BACKGROUND_HOLD_MAX_MS: log
+    // it at info once per query.
+    if (candidate.backgroundTasksHeld) {
+      const firstForQuery =
+        loggedBackgroundHoldQueries.get(candidate.jid) !== candidate.queryId;
+      if (candidate.queryId) {
+        loggedBackgroundHoldQueries.set(candidate.jid, candidate.queryId);
+      }
+      logger[firstForQuery ? 'info' : 'debug'](
+        {
+          chatJid: candidate.jid,
+          queryId: candidate.queryId,
+          idleMs: candidate.idleMs,
+          ipcOwedMs: candidate.ipcOwedMs,
+          backgroundHoldMs: candidate.backgroundHoldMs,
+          pid,
+          reason: candidate.reason,
+          runtime: candidate.runtime,
+          deferReason: 'background_tasks',
+        },
+        'Runner recovery deferred while background work holds the result',
+      );
+      continue;
+    }
     const cpuActivity = await resolveRunnerCpuActivity(candidate);
     const currentCandidate = queue.revalidateStuckRecoveryCandidate(
       candidate,
@@ -15221,7 +15290,8 @@ async function recoverStuckPendingGroups(): Promise<void> {
       );
       continue;
     }
-    const { jid, idleMs, reason, runtime, ipcOwedMs } = currentCandidate;
+    const { jid, idleMs, reason, runtime, ipcOwedMs, backgroundHoldMs } =
+      currentCandidate;
     const decision = decideStuckRunnerRecovery(
       currentCandidate,
       cpuActivity,
@@ -15233,6 +15303,7 @@ async function recoverStuckPendingGroups(): Promise<void> {
           chatJid: jid,
           idleMs,
           ipcOwedMs,
+          backgroundHoldMs,
           pid,
           reason,
           runtime,
@@ -15249,6 +15320,7 @@ async function recoverStuckPendingGroups(): Promise<void> {
         chatJid: jid,
         idleMs,
         ipcOwedMs,
+        backgroundHoldMs,
         reason,
         runtime,
         cpuActivity,

@@ -221,7 +221,10 @@ describe.each<Scheme>(['http', 'https'])(
         `/api/admin/users/${adminId}`,
         {
           cookie: adminCookie,
-          body: { password: 'admin-password-2' },
+          body: {
+            password: 'admin-password-2',
+            current_password: adminPassword,
+          },
         },
       );
 

@@ -36,10 +36,12 @@ const { passwordHashPoolForTest } =
 const { onPasswordHashBusy, PASSWORD_HASH_BUSY_MESSAGE } =
   await import('../src/password-hash-busy.js');
 const authRoutes = (await import('../src/routes/auth.js')).default;
+const passkeyRoutes = (await import('../src/routes/passkeys.js')).default;
 const adminRoutes = (await import('../src/routes/admin.js')).default;
 
 const app = new Hono()
   .route('/api/auth', authRoutes)
+  .route('/api/auth', passkeyRoutes)
   .route('/api/admin', adminRoutes);
 const ADMIN_PASSWORD = 'admin-password-1';
 
@@ -153,6 +155,14 @@ describe('password routes under a full hashing queue', () => {
           },
         }),
       );
+      await expectBusy(
+        await send('POST', '/api/auth/passkeys/cred-1/delete', {
+          cookie,
+          body: { password: ADMIN_PASSWORD },
+        }),
+      );
+      // Re-checking the current password is refunded the same way.
+      expect(loginAttemptStats().entries).toBe(0);
       await expectBusy(
         await send('POST', '/api/admin/users', {
           cookie,

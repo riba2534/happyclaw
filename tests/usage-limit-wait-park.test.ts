@@ -383,6 +383,8 @@ describe('a provider failure that waits parks the input', () => {
       agentUsageLimitWaitNote: null,
     });
     l.g.queue.markRunnerActivity = vi.fn();
+    l.g.queue.markRunnerBackgroundHold = vi.fn();
+    l.g.queue.markRunnerServingQuery = vi.fn();
     l.runtime.install('handleAgentOutput', 'processAgentConversation');
     return { ...l, emit: l.g.handleAgentOutput };
   }

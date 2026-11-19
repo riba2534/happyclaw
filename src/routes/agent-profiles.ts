@@ -30,7 +30,10 @@ import {
 } from '../agent-profile-generator.js';
 import { logger } from '../logger.js';
 import { DATA_DIR } from '../config.js';
-import { buildAgentCapabilityPreview } from '../agent-capability-preview.js';
+import {
+  buildAgentCapabilityPreview,
+  type SubagentRunPreview,
+} from '../agent-capability-preview.js';
 import {
   avatarUploadBodyLimit,
   AVATAR_MAX_FILE_BYTES,
@@ -67,13 +70,20 @@ import {
   hostGrantsOf,
   parseAgentProfileExport,
   stripHostGrants,
+  withoutSubagentModels,
 } from '../agent-profile-transfer.js';
 import {
   bindingFromMainProfile,
+  resolveConnectionSubagents,
   resolveModelBinding,
   summarizeModelBinding,
 } from '../container-runner.js';
 import { resolveAgentSdkEffort } from '../agent-effort.js';
+import {
+  launchSubagentDefault,
+  subagentPolicyModels,
+  toollessSubagents,
+} from '../agent-subagents.js';
 import {
   SYSTEM_CAPABILITY_LOCK_KEY,
   userCapabilityLockKey,
@@ -95,7 +105,12 @@ import {
   getRunContextSnapshot,
   hashRuntimePolicy,
 } from '../run-context-snapshot.js';
-import { getProviders, providerHasCredentials } from '../runtime-config.js';
+import {
+  getProviderById,
+  getProviders,
+  providerHasCredentials,
+  type UnifiedProvider,
+} from '../runtime-config.js';
 import { splitOneMillionSuffix } from '../model-providers.js';
 import {
   listConnectionModels,
@@ -165,6 +180,8 @@ agentProfileRoutes.get('/', authMiddleware, (c) => {
       model: provider.anthropicModel,
       usable: providerHasCredentials(provider),
       models: listConnectionModels(provider),
+      // A ChatGPT subscription runs sub-agents on the turn's model.
+      ...(provider.codexOAuthCredentials ? { chatgpt: true } : {}),
     })),
     // What an Agent without its own binding follows, for 「跟随主智能体」.
     inherited_model: {
@@ -274,6 +291,79 @@ function agentModelRejection(
   };
 }
 
+function connectionOf(
+  modelConfigId: string | null | undefined,
+): UnifiedProvider | undefined {
+  return modelConfigId
+    ? (getProviderById(modelConfigId) ?? undefined)
+    : undefined;
+}
+
+/**
+ * Whether the connection offers `model` to a sub-agent: one of its models,
+ * never on a ChatGPT subscription (every sub-agent runs the turn's model).
+ */
+function offersSubagentModel(
+  provider: UnifiedProvider | undefined,
+): (model: string) => boolean {
+  if (!provider || provider.codexOAuthCredentials) return () => false;
+  const offered = new Set(listConnectionModels(provider).map((e) => e.id));
+  return (model) => offered.has(splitOneMillionSuffix(model).model);
+}
+
+/**
+ * Why a sub-agent policy cannot belong to an Agent on `modelConfigId`, or
+ * null: every model it names must be offered by that connection, since a
+ * sub-agent runs on the same endpoint as the Agent.
+ */
+function subagentModelRejection(
+  modelConfigId: string | null | undefined,
+  policy: AgentProfileRuntimePolicy,
+): { error: string; code: 'SUBAGENT_MODEL_NOT_IN_CONNECTION' } | null {
+  const models = subagentPolicyModels(policy.subagents);
+  if (models.length === 0) return null;
+  const provider = connectionOf(modelConfigId);
+  if (!provider) {
+    return {
+      error: '为子代理指定模型前，需要先为智能体选择模型连接',
+      code: 'SUBAGENT_MODEL_NOT_IN_CONNECTION',
+    };
+  }
+  if (provider.codexOAuthCredentials) {
+    return {
+      error: 'ChatGPT 订阅连接的子代理固定使用本轮模型，不能单独指定子代理模型',
+      code: 'SUBAGENT_MODEL_NOT_IN_CONNECTION',
+    };
+  }
+  const offered = offersSubagentModel(provider);
+  const missing = models.filter((model) => !offered(model));
+  return missing.length === 0
+    ? null
+    : {
+        error: `子代理模型 ${missing.join('、')} 不在智能体所选模型连接中（子代理只能使用同一连接的模型）`,
+        code: 'SUBAGENT_MODEL_NOT_IN_CONNECTION',
+      };
+}
+
+/**
+ * Why a sub-agent policy cannot be saved for its tools, or null: a sub-agent
+ * whose list holds no tool a session has would run with none at all.
+ */
+function subagentToolsRejection(policy: AgentProfileRuntimePolicy): {
+  error: string;
+  code: 'SUBAGENT_NO_AVAILABLE_TOOLS';
+  subagents: string[];
+} | null {
+  const toolless = toollessSubagents(policy.subagents);
+  return toolless.length === 0
+    ? null
+    : {
+        error: `子代理 ${toolless.join('、')} 列出的工具在 HappyClaw 中都不可用（或列表为空），它将没有任何工具；请列出可用的工具，或不限定工具`,
+        code: 'SUBAGENT_NO_AVAILABLE_TOOLS',
+        subagents: toolless,
+      };
+}
+
 const AGENT_PROMPT_FIELD_LABELS: Record<string, string> = {
   identity_prompt: '身份定位（IDENTITY）',
   soul_prompt: '人格与表达（SOUL）',
@@ -375,6 +465,13 @@ function newProfileRejection(
     const rejection = agentModelRejection(input.modelConfigId, input.model);
     if (rejection) return { status: 400, body: rejection };
   }
+  const subagentRejection = subagentModelRejection(
+    input.modelConfigId,
+    input.runtimePolicy,
+  );
+  if (subagentRejection) return { status: 400, body: subagentRejection };
+  const toolsRejection = subagentToolsRejection(input.runtimePolicy);
+  if (toolsRejection) return { status: 400, body: toolsRejection };
   if (hasEmptyCustomHostSkillSelection(input.runtimePolicy)) {
     return {
       status: 400,
@@ -495,10 +592,11 @@ agentProfileRoutes.post('/:id/duplicate', authMiddleware, async (c) => {
         source.runtime_policy,
         user.role === 'admin',
       );
-      const policy = withRunnableEffort(
-        granted,
-        source.model_config_id,
-        source.model,
+      // Sub-agent models the connection no longer offers already follow the
+      // connection when the source runs; the copy saves them that way.
+      const policy = withoutSubagentModels(
+        withRunnableEffort(granted, source.model_config_id, source.model),
+        offersSubagentModel(connectionOf(source.model_config_id)),
       );
       const rejection = newProfileRejection(user, {
         runtimePolicy: policy,
@@ -551,8 +649,12 @@ agentProfileRoutes.post('/import', authMiddleware, async (c) => {
   }
   const { agent } = parsed;
   const name = parsedBody.data.name ?? agent.name;
+  // An imported Agent has no connection yet, so sub-agent models named in
+  // the file (by an older or hand-edited export) cannot apply.
   const imported = stripHostGrants(
-    normalizeAgentProfileRuntimePolicy(agent.runtime_policy),
+    withoutSubagentModels(
+      normalizeAgentProfileRuntimePolicy(agent.runtime_policy),
+    ),
     user.role === 'admin',
   );
   return withCapabilityScopeLocks(
@@ -671,14 +773,51 @@ function resolveAgentModelResolution(
     resolveAgentSdkEffort(profile.runtime_policy),
   );
   return {
-    source: summary.source,
-    model_config_id: summary.modelConfigId,
-    model_config_name: summary.provider?.name ?? null,
-    model: summary.model,
-    effort: summary.effort,
-    // The binding that decides names a connection that is gone or has no
-    // credential: runs fail until it is chosen again.
-    connection_missing: summary.connectionMissing,
+    resolution: {
+      source: summary.source,
+      model_config_id: summary.modelConfigId,
+      model_config_name: summary.provider?.name ?? null,
+      model: summary.model,
+      effort: summary.effort,
+      // The binding that decides names a connection that is gone or has no
+      // credential: runs fail until it is chosen again.
+      connection_missing: summary.connectionMissing,
+    },
+    subagentRun: previewSubagentRun(profile, summary, folder),
+  };
+}
+
+/**
+ * The sub-agents a run of this Agent on the resolved connection gets
+ * (resolveConnectionSubagents, as a launch calls it), or null without a
+ * connection or sub-agent settings.
+ */
+function previewSubagentRun(
+  profile: Pick<AgentProfile, 'model_config_id' | 'runtime_policy'>,
+  summary: Pick<ReturnType<typeof summarizeModelBinding>, 'provider' | 'model'>,
+  groupFolder: string,
+): SubagentRunPreview | null {
+  const policy = profile.runtime_policy.subagents;
+  const { provider } = summary;
+  if (!policy || !provider) return null;
+  const onAgentConnection =
+    !!profile.model_config_id && profile.model_config_id === provider.id;
+  const turnModel = summary.model ?? '';
+  const launch = resolveConnectionSubagents(
+    policy,
+    provider,
+    onAgentConnection,
+    turnModel,
+    { groupFolder, warn: false },
+  );
+  return {
+    onAgentConnection,
+    launch,
+    defaultModel: launchSubagentDefault(
+      provider,
+      launch.defaultModel,
+      turnModel,
+    ),
   };
 }
 
@@ -795,22 +934,24 @@ agentProfileRoutes.post(
       workspace = { jid: workspaceJid, group };
     }
 
+    const modelResolution = resolveAgentModelResolution(
+      {
+        ...modelBinding,
+        owner_user_id: existing.owner_user_id,
+        runtime_policy: previewRuntimePolicy,
+      },
+      workspace?.group,
+    );
     const preview = buildAgentCapabilityPreview({
       profile: previewProfile,
       workspace,
       ownerRole: user.role === 'admin' ? 'admin' : 'member',
+      subagentRun: modelResolution.subagentRun,
     });
     const runContext = workspace ? getRunContextSnapshot(workspace.jid) : null;
     return c.json({
       preview,
-      model_resolution: resolveAgentModelResolution(
-        {
-          ...modelBinding,
-          owner_user_id: existing.owner_user_id,
-          runtime_policy: previewRuntimePolicy,
-        },
-        workspace?.group,
-      ),
+      model_resolution: modelResolution.resolution,
       run_context: runContext,
       run_context_status: classifyRunContextSnapshot(runContext, {
         agentProfile: {
@@ -1020,6 +1161,27 @@ agentProfileRoutes.patch('/:id', authMiddleware, async (c) => {
           isUnauthorizedHostSkills(user, effectiveRuntimePolicy)
         ) {
           return c.json({ error: 'host skills require an admin role' }, 403);
+        }
+        // Checked when this request touches the sub-agents or the
+        // connection, against the connection the Agent will be on after this
+        // save, so moving to another connection cannot strand them. A model
+        // the connection dropped since does not block other edits: it
+        // already follows the connection at runtime.
+        if (
+          parsed.data.runtime_policy?.subagents !== undefined ||
+          parsed.data.model_config_id !== undefined
+        ) {
+          const subagentRejection = subagentModelRejection(
+            parsed.data.model_config_id === undefined
+              ? existing.model_config_id
+              : parsed.data.model_config_id,
+            effectiveRuntimePolicy,
+          );
+          if (subagentRejection) return c.json(subagentRejection, 400);
+        }
+        if (parsed.data.runtime_policy?.subagents !== undefined) {
+          const toolsRejection = subagentToolsRejection(effectiveRuntimePolicy);
+          if (toolsRejection) return c.json(toolsRejection, 400);
         }
         if (hasEmptyCustomHostSkillSelection(effectiveRuntimePolicy)) {
           return c.json(

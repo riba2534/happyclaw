@@ -211,6 +211,8 @@ export function normalizeChannelTurnContext(
 export interface ContainerInput {
   prompt: string;
   sessionId?: string;
+  /** Host-derived accounting semantics for the selected Codex gateway only. */
+  usageAccountingMode?: 'codex';
   /**
    * The effort the host resolved for this launch: Claude Code runs at it, and
    * null means none is sent at all, not even the Agent's own effort as the
@@ -219,6 +221,23 @@ export interface ContainerInput {
    * the Agent's effort then goes as before.
    */
   launchEffort?: string | null;
+  /**
+   * The Agent's sub-agents resolved by the host for this launch: SDK
+   * definitions (models already named for the connection) and the cap.
+   */
+  subagents?: {
+    maxConcurrent?: number;
+    agents?: Record<
+      string,
+      {
+        description: string;
+        prompt: string;
+        tools?: string[];
+        model?: string;
+        effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+      }
+    >;
+  };
   turnId?: string;
   /** Persisted message IDs already represented by the cold bootstrap prompt. */
   currentBatchMessageIds?: readonly string[];
@@ -246,6 +265,13 @@ export interface ContainerInput {
    * to the settings files and the environment.
    */
   maxOutputTokens?: number;
+  /**
+   * The shortest silence the host tolerates before it closes the runner: its
+   * idle close (the process watchdog is never shorter). While a result is held
+   * for background work the Runner sends keepalives well within it
+   * (BackgroundHoldKeepalive). Absent from an older host, which gets none.
+   */
+  hostIdleCloseMs?: number;
   /**
    * Team mode (团队模式): this session is a group's router or a work item's
    * worker. It picks the work tools, the team prompt section and the
@@ -469,6 +495,10 @@ export interface ContainerOutput {
    * >0 时主进程应把流式卡片保持在「后台任务运行中」而非定稿，后续 turn 的
    * 内容会继续追加到同一张卡。仅 sdk_final 类 result 携带。 */
   pendingBgTasks?: number;
+  /** Liveness only: a result is held for background work and the Runner is
+   * alive (BackgroundHoldKeepalive). The host starts its idle close over and
+   * does nothing else with it: no output, trace, card or Web frame. */
+  backgroundHoldKeepalive?: true;
   /** This SDK result durably completed the user-input turn associated with it.
    * False/absent for truncated, background-pending, interrupted, and error paths. */
   inputTurnCompleted?: boolean;

@@ -4,14 +4,17 @@ import { toast } from 'sonner';
 
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
 import { IconButton } from '@/components/common/IconButton';
 import { ListGroup, ListRow } from '@/components/common/ListRow';
+import { PasswordInput } from '@/components/common/PasswordInput';
 import { confirmDialog } from '@/stores/confirm';
 import { api } from '../../api/client';
+import { authErrorMessage } from '../../lib/auth-errors';
 import { useAuthStore } from '../../stores/auth';
 import { SettingsGroup, SettingsRow, SettingsSection } from './SettingsLayout';
 import { SettingsFormFooter } from './SettingsFormControls';
+import { PasskeySection } from './PasskeySection';
+import { TwoFactorSection } from './TwoFactorSection';
 import { getErrorMessage, type SessionInfo } from './types';
 
 const COLLAPSED_SESSION_COUNT = 10;
@@ -51,15 +54,18 @@ function describeUserAgent(userAgent: string | null): string {
 }
 
 export function SecuritySection() {
-  const { logout, changePassword } = useAuthStore();
+  const { logout, changePassword, user } = useAuthStore();
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
   const [changingPassword, setChangingPassword] = useState(false);
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [revokingId, setRevokingId] = useState<string | null>(null);
   const [showAllSessions, setShowAllSessions] = useState(false);
+  // Bumped when two-factor changes: adding a passkey may then need a code.
+  const [loginFactorsVersion, setLoginFactorsVersion] = useState(0);
 
   const loadSessions = useCallback(async () => {
     setLoading(true);
@@ -82,16 +88,33 @@ export function SecuritySection() {
     void loadSessions();
   }, [loadSessions]);
 
+  // Only flag a mismatch once the confirmation is as long as the new
+  // password, so it does not shout while the user is still typing.
+  const confirmMismatch =
+    confirmPassword.length >= newPassword.length &&
+    confirmPassword.length > 0 &&
+    confirmPassword !== newPassword;
+  const sameAsCurrent =
+    newPassword.length > 0 && newPassword === currentPassword;
+  const canChangePassword =
+    !changingPassword &&
+    !!currentPassword &&
+    newPassword.length >= 8 &&
+    !sameAsCurrent &&
+    confirmPassword === newPassword;
+
   const handleChangePassword = async () => {
+    if (!canChangePassword) return;
     setChangingPassword(true);
     try {
       await changePassword(currentPassword, newPassword);
       setCurrentPassword('');
       setNewPassword('');
+      setConfirmPassword('');
       toast.success('密码已修改，其他设备的登录会话已撤销');
       void loadSessions();
     } catch (error) {
-      toast.error(getErrorMessage(error, '修改密码失败'));
+      toast.error(authErrorMessage(error, '修改密码失败'));
     } finally {
       setChangingPassword(false);
     }
@@ -149,44 +172,87 @@ export function SecuritySection() {
             label="当前密码"
             htmlFor="current-password"
             control={
-              <Input
+              <PasswordInput
                 id="current-password"
-                type="password"
                 value={currentPassword}
                 onChange={(event) => setCurrentPassword(event.target.value)}
                 autoComplete="current-password"
-                className="sm:w-64"
+                containerClassName="sm:w-64"
               />
             }
           />
           <SettingsRow
             label="新密码"
             htmlFor="new-password"
+            description={
+              sameAsCurrent ? (
+                <span id="new-password-error" className="text-error">
+                  新密码不能与当前密码相同
+                </span>
+              ) : undefined
+            }
             control={
-              <Input
+              <PasswordInput
                 id="new-password"
-                type="password"
                 value={newPassword}
                 onChange={(event) => setNewPassword(event.target.value)}
                 placeholder="至少 8 位"
                 autoComplete="new-password"
-                className="sm:w-64"
+                aria-invalid={sameAsCurrent || undefined}
+                aria-describedby={
+                  sameAsCurrent ? 'new-password-error' : undefined
+                }
+                containerClassName="sm:w-64"
+              />
+            }
+          />
+          <SettingsRow
+            label="确认新密码"
+            htmlFor="confirm-new-password"
+            description={
+              confirmMismatch ? (
+                <span id="confirm-new-password-error" className="text-error">
+                  两次输入的新密码不一致
+                </span>
+              ) : undefined
+            }
+            control={
+              <PasswordInput
+                id="confirm-new-password"
+                value={confirmPassword}
+                onChange={(event) => setConfirmPassword(event.target.value)}
+                placeholder="再次输入新密码"
+                autoComplete="new-password"
+                aria-invalid={confirmMismatch || undefined}
+                aria-describedby={
+                  confirmMismatch ? 'confirm-new-password-error' : undefined
+                }
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' && !event.nativeEvent.isComposing) {
+                    void handleChangePassword();
+                  }
+                }}
+                containerClassName="sm:w-64"
               />
             }
           />
         </SettingsGroup>
         <SettingsFormFooter>
-          <Button
-            onClick={handleChangePassword}
-            disabled={
-              changingPassword || !currentPassword || newPassword.length < 8
-            }
-          >
+          <Button onClick={handleChangePassword} disabled={!canChangePassword}>
             {changingPassword && <Loader2 className="size-4 animate-spin" />}
             修改密码
           </Button>
         </SettingsFormFooter>
       </SettingsSection>
+
+      {user?.role !== 'guest' && (
+        <TwoFactorSection
+          onChanged={() => setLoginFactorsVersion((version) => version + 1)}
+        />
+      )}
+      {user?.role !== 'guest' && (
+        <PasskeySection factorsVersion={loginFactorsVersion} />
+      )}
 
       <SettingsSection
         title="登录设备"

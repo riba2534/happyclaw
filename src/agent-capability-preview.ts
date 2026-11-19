@@ -31,7 +31,20 @@ import {
   HOST_CLAUDE_NATIVE_FILES,
   HOST_CLAUDE_SETTINGS_FILES,
 } from './claude-context-resolver.js';
-import type { AgentProfile, RegisteredGroup } from './types.js';
+import {
+  isUnavailableSubagentTool,
+  resolveSubagentLaunchWithoutConnection,
+  subagentPolicyModels,
+  toollessSubagents,
+  type SubagentDefaultSource,
+  type SubagentLaunch,
+} from './agent-subagents.js';
+import type {
+  AgentProfile,
+  AgentSubagentPolicy,
+  RegisteredGroup,
+  SubagentEffortLevel,
+} from './types.js';
 
 export type CapabilityLayerSource =
   | 'builtin'
@@ -79,7 +92,108 @@ export interface AgentCapabilityPreview {
     entries: EffectiveCapabilityEntry[];
     conflicts: string[];
   };
+  /** The Agent's sub-agent settings as a run gets them; null without any. */
+  subagents: {
+    maxConcurrent: number | null;
+    /**
+     * The model sub-agents run on when they name none; null when Claude
+     * Code (official endpoint) or the Workspace's environment decides.
+     */
+    defaultModel: string | null;
+    /** Null without a connection (the Workspace's own environment). */
+    defaultModelSource: SubagentDefaultSource | null;
+    definitions: Array<{
+      name: string;
+      /** The tools it gets; null for every tool of the main Agent. */
+      tools: string[] | null;
+      /** Its own model; null when it runs the default. */
+      model: string | null;
+      /** The effort it is sent; null when none goes. */
+      effort: SubagentEffortLevel | null;
+    }>;
+  } | null;
   notes: string[];
+}
+
+/** What a run of the Agent without a session pick gives its sub-agents. */
+export interface SubagentRunPreview {
+  /** The run is on the Agent's own connection, where its model names apply. */
+  onAgentConnection: boolean;
+  launch: SubagentLaunch;
+  defaultModel: { model: string | null; source: SubagentDefaultSource };
+}
+
+/**
+ * The sub-agent part of a preview and what it should tell: tools no session
+ * has, model names the connection dropped, and that a session's own pick of
+ * another connection drops the Agent's model names.
+ */
+function previewSubagents(
+  policy: AgentSubagentPolicy | undefined,
+  run: SubagentRunPreview | null | undefined,
+): { section: AgentCapabilityPreview['subagents']; notes: string[] } {
+  if (!policy) return { section: null, notes: [] };
+  const launch = run?.launch ?? resolveSubagentLaunchWithoutConnection(policy);
+  const notes: string[] = [];
+  const unavailable = [
+    ...new Set(
+      policy.definitions.flatMap((definition) =>
+        (definition.tools ?? []).filter(isUnavailableSubagentTool),
+      ),
+    ),
+  ];
+  if (unavailable.length > 0) {
+    notes.push(
+      `子代理工具 ${unavailable.join('、')} 在 HappyClaw 中不可用（会话结束即失效或需要交互审批），运行时不会提供。`,
+    );
+  }
+  const toolless = toollessSubagents(policy);
+  if (toolless.length > 0) {
+    notes.push(
+      `子代理 ${toolless.join('、')} 没有任何可用的工具，运行时不会提供给主 Agent。`,
+    );
+  }
+  if (subagentPolicyModels(policy).length > 0) {
+    if (run?.onAgentConnection) {
+      const gone = [
+        ...(policy.model && !launch.defaultModel ? [policy.model] : []),
+        ...policy.definitions
+          .filter(
+            (definition) =>
+              definition.model &&
+              launch.agents?.[definition.name] &&
+              !launch.agents[definition.name].model,
+          )
+          .map((definition) => definition.model!),
+      ];
+      if (gone.length > 0) {
+        notes.push(
+          `子代理模型 ${[...new Set(gone)].join('、')} 已不在智能体的模型连接中，运行时改为跟随连接设置。`,
+        );
+      }
+    } else {
+      notes.push(
+        '本次运行不在智能体自己的模型连接上，子代理指定的模型不生效，改为跟随连接设置。',
+      );
+    }
+    notes.push(
+      '会话手动选择其他模型连接时，子代理指定的模型不适用：默认子代理模型改由该连接的「后台与子代理」设置决定，自定义子代理改用默认子代理模型。',
+    );
+  }
+  return {
+    section: {
+      maxConcurrent: launch.maxConcurrent ?? null,
+      defaultModel: run?.defaultModel.model ?? null,
+      defaultModelSource: run?.defaultModel.source ?? null,
+      definitions: Object.entries(launch.agents ?? {}).map(([name, agent]) => ({
+        name,
+        tools: agent.tools ?? null,
+        model: agent.model ?? null,
+        effort: agent.effort ?? null,
+      })),
+    },
+    notes,
+  };
 }
 
 function countEntries(root: string): number {
@@ -140,6 +254,8 @@ export function buildAgentCapabilityPreview(options: {
   profile: AgentProfile;
   workspace?: { jid: string; group: RegisteredGroup };
   ownerRole?: 'admin' | 'member';
+  /** The sub-agents on the connection a run resolves to; absent without one. */
+  subagentRun?: SubagentRunPreview | null;
 }): AgentCapabilityPreview {
   const { profile, workspace } = options;
   const policy = profile.runtime_policy;
@@ -316,6 +432,8 @@ export function buildAgentCapabilityPreview(options: {
       `有 ${restrictedSystemIds.size} 个系统 MCP 仅限管理员，普通成员智能体不会继承。`,
     );
   }
+  const subagents = previewSubagents(policy.subagents, options.subagentRun);
+  notes.push(...subagents.notes);
 
   return {
     workspace: workspace
@@ -362,6 +480,7 @@ export function buildAgentCapabilityPreview(options: {
       ...skills,
     },
     mcp: { mode: policy.mcp.mode, manifestHash: mcpManifest.hash, ...mcp },
+    subagents: subagents.section,
     notes,
   };
 }

@@ -1,4 +1,10 @@
 import fs from 'fs';
+import { dropMfaChallengesForUser, removeTwoFactor } from '../auth-mfa.js';
+import { dropPasskeyRegistrationChallenges } from '../passkeys.js';
+import {
+  deletePasskeysForUser,
+  loginFactorSummary,
+} from '../auth-factor-store.js';
 import path from 'path';
 import { Hono } from 'hono';
 import type { Variables } from '../web-context.js';
@@ -13,7 +19,11 @@ import {
   AdminPatchUserSchema,
   InviteCreateSchema,
 } from '../schemas.js';
-import { isUsernameConflictError, toUserPublic } from './auth.js';
+import {
+  checkCurrentPassword,
+  isUsernameConflictError,
+  toUserPublic,
+} from './auth.js';
 import type {
   AuthUser,
   Permission,
@@ -297,7 +307,14 @@ adminRoutes.get('/users', authMiddleware, usersManageMiddleware, (c) => {
     page: Number.isFinite(page) ? page : 1,
     pageSize: Number.isFinite(pageSize) ? pageSize : 50,
   });
-  return c.json(result);
+  const factors = loginFactorSummary(result.users.map((user) => user.id));
+  return c.json({
+    ...result,
+    users: result.users.map((user) => ({
+      ...user,
+      ...factors.get(user.id),
+    })),
+  });
 });
 
 // GET /api/admin/permission-templates - 获取权限模板
@@ -436,6 +453,20 @@ adminRoutes.patch(
         { error: 'Invalid request', details: validation.error.format() },
         400,
       );
+    }
+    // One's own password takes the current one, as in Settings: a stolen
+    // session must not reset it and then pass the password re-check that
+    // adding a passkey asks for. Counted like a login attempt.
+    if (
+      validation.data.password !== undefined &&
+      id === (c.get('user') as AuthUser).id
+    ) {
+      const denied = await checkCurrentPassword(
+        c,
+        c.get('user') as AuthUser,
+        validation.data.current_password ?? '',
+      );
+      if (denied) return denied;
     }
 
     return withCapabilityScopeLocks(
@@ -637,6 +668,7 @@ adminRoutes.patch(
             postCommitActions.push(() => {
               invalidateUserSessions(id);
               deleteUserSessionsByUserId(id);
+              dropMfaChallengesForUser(id);
               revokeGuestSessionsForOwner(id);
               if (target.role === 'guest') {
                 deleteGuestWorkspaceGrantsForGuest(id);
@@ -658,6 +690,8 @@ adminRoutes.patch(
             postCommitActions.push(() => {
               invalidateUserSessions(id);
               deleteUserSessionsByUserId(id);
+              // A pending 2FA login must not survive being re-enabled.
+              dropMfaChallengesForUser(id);
               revokeGuestSessionsForOwner(id);
               void imManager
                 .disconnectAllUserChannels(id)
@@ -942,6 +976,7 @@ adminRoutes.delete(
     // 与 PATCH status='deleted' 路径对齐：清缓存 + 断 IM 连接，否则前端调
     // DELETE 之后 sessionCache 仍是 active 状态、IM bot 持续响应群消息直到重启。
     invalidateUserSessions(id);
+    dropMfaChallengesForUser(id);
     revokeGuestSessionsForOwner(id);
     void imManager.disconnectAllUserChannels(id).catch(() => undefined);
 
@@ -1045,6 +1080,89 @@ adminRoutes.delete(
     });
 
     return c.json({ success: true });
+  },
+);
+
+/**
+ * Who may clear another user's login factors: someone with manage_users, not
+ * for themselves (that is done in Settings, with the password), and an
+ * admin's only by an admin.
+ */
+function loginFactorResetDenial(
+  c: any,
+  actor: AuthUser,
+  target: Parameters<typeof denyEscalationToTarget>[2] & { id: string },
+  what: { own: string; admin: string; action: string },
+): Response | null {
+  if (actor.id === target.id) return c.json({ error: what.own }, 400);
+  if (actor.role !== 'admin' && target.role === 'admin') {
+    return c.json({ error: what.admin }, 403);
+  }
+  return denyEscalationToTarget(c, actor, target, what.action);
+}
+
+// DELETE /api/admin/users/:id/2fa - 清除用户的二次验证（丢失验证器时的恢复路径）
+adminRoutes.delete(
+  '/users/:id/2fa',
+  authMiddleware,
+  usersManageMiddleware,
+  (c) => {
+    const id = c.req.param('id');
+    const target = getUserById(id);
+    if (!target) return c.json({ error: 'User not found' }, 404);
+    const actor = c.get('user') as AuthUser;
+    // One's own factor is turned off in Settings with a password and a code.
+    const denial = loginFactorResetDenial(c, actor, target, {
+      own: 'Turn off your own two-factor authentication in Settings',
+      admin: 'Forbidden: only admin can reset admin two-factor',
+      action: 'reset two-factor for',
+    });
+    if (denial) return denial;
+    const removed = removeTwoFactor(id);
+    if (removed) {
+      logAuthEvent({
+        event_type: 'mfa_reset',
+        username: target.username,
+        actor_username: actor.username,
+        ip_address: getClientIp(c),
+      });
+    }
+    return c.json({ success: true, removed });
+  },
+);
+
+// DELETE /api/admin/users/:id/passkeys - 撤销用户的全部通行密钥
+// A passkey stands in for the password and the second factor, and neither a
+// password change nor a 2FA reset removes it: this is the way to take back
+// passkeys that may be in the wrong hands.
+adminRoutes.delete(
+  '/users/:id/passkeys',
+  authMiddleware,
+  usersManageMiddleware,
+  (c) => {
+    const id = c.req.param('id');
+    const target = getUserById(id);
+    if (!target) return c.json({ error: 'User not found' }, 404);
+    const actor = c.get('user') as AuthUser;
+    const denial = loginFactorResetDenial(c, actor, target, {
+      own: 'Remove your own passkeys in Settings',
+      admin: 'Forbidden: only admin can revoke admin passkeys',
+      action: 'revoke passkeys of',
+    });
+    if (denial) return denial;
+    const removed = deletePasskeysForUser(id);
+    // A registration started before must not add one back.
+    dropPasskeyRegistrationChallenges(id);
+    if (removed > 0) {
+      logAuthEvent({
+        event_type: 'passkeys_revoked',
+        username: target.username,
+        actor_username: actor.username,
+        ip_address: getClientIp(c),
+        details: { removed },
+      });
+    }
+    return c.json({ success: true, removed });
   },
 );
 

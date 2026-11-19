@@ -1,11 +1,14 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { Loader2, Globe, Sparkles } from 'lucide-react';
+import { Loader2, Globe, Sparkles, KeyRound } from 'lucide-react';
 import { useAuthStore } from '../stores/auth';
 import { LogoLoading } from '../components/common/LogoLoading';
 import { api } from '../api/client';
 import { extractErrorMessage } from '../utils/error';
+import { authErrorCode, authErrorMessage } from '../lib/auth-errors';
+import { isIpHost } from '../lib/passkey-host';
 import { Input } from '@/components/ui/input';
+import { PasswordInput } from '@/components/common/PasswordInput';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { withBasePath } from '../utils/url';
@@ -17,6 +20,12 @@ interface RegisterStatus {
 }
 
 type Tab = 'login' | 'register';
+
+/**
+ * A login challenge lives five minutes on the server; the autofill wait is
+ * started again before that, so a passkey picked later still verifies.
+ */
+const AUTOFILL_REFRESH_MS = 4 * 60 * 1000;
 
 export function LoginPage() {
   const [searchParams] = useSearchParams();
@@ -30,6 +39,15 @@ export function LoginPage() {
   const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
   const login = useAuthStore((state) => state.login);
+  const loginSecondFactor = useAuthStore((state) => state.loginSecondFactor);
+  const loginWithPasskey = useAuthStore((state) => state.loginWithPasskey);
+  // Passkeys need a secure context (HTTPS or localhost), WebAuthn, and a
+  // domain: on an IP address the button could only fail.
+  const passkeysUsable =
+    typeof window !== 'undefined' &&
+    window.isSecureContext &&
+    typeof window.PublicKeyCredential === 'function' &&
+    !isIpHost(window.location.hostname);
   const register = useAuthStore((state) => state.register);
   const initialized = useAuthStore((state) => state.initialized);
   const checkStatus = useAuthStore((state) => state.checkStatus);
@@ -44,6 +62,16 @@ export function LoginPage() {
   // Login fields
   const [loginUsername, setLoginUsername] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
+  // Two-factor step: the challenge a correct password earned, and the code.
+  const [mfaChallenge, setMfaChallenge] = useState<string | null>(null);
+  const [mfaCode, setMfaCode] = useState('');
+  // Recovery codes are letters and digits; the numeric keyboard cannot type
+  // them, so they get their own mode.
+  const [useRecoveryCode, setUseRecoveryCode] = useState(false);
+  // Bumped to start a new passkey autofill wait.
+  const [autofillRound, setAutofillRound] = useState(0);
+  // A ceremony started by the button: autofill must not cancel it.
+  const passkeyButtonActive = useRef(false);
 
   // Register fields
   const [regUsername, setRegUsername] = useState('');
@@ -92,11 +120,96 @@ export function LoginPage() {
     setLoading(true);
 
     try {
-      await login(loginUsername, loginPassword);
-      const mustChange = useAuthStore.getState().user?.must_change_password;
-      navigate(mustChange ? '/settings' : '/chat');
+      const pending = await login(loginUsername, loginPassword);
+      if (pending) {
+        setMfaChallenge(pending.mfaChallenge);
+        setMfaCode('');
+        setUseRecoveryCode(false);
+        return;
+      }
+      enterApp();
     } catch (err) {
-      setError(extractErrorMessage(err) || '登录失败');
+      setError(authErrorMessage(err, '登录失败'));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Offer saved passkeys in the username field's suggestions (conditional
+  // UI) while the password form shows; the button below takes over from
+  // this wait, which starts again when the button's ceremony ends. Nobody
+  // asked for it, so its failures stay silent, except a passkey the user
+  // picked and the server refused.
+  useEffect(() => {
+    if (!passkeysUsable || tab !== 'login' || mfaChallenge) return;
+    let cancelled = false;
+    let cancelCeremony: (() => void) | null = null;
+    const refresh = window.setTimeout(() => {
+      if (!passkeyButtonActive.current) setAutofillRound((n) => n + 1);
+    }, AUTOFILL_REFRESH_MS);
+    void (async () => {
+      const { browserSupportsWebAuthnAutofill, WebAuthnAbortService } =
+        await import('@simplewebauthn/browser');
+      cancelCeremony = () => WebAuthnAbortService.cancelCeremony();
+      if (cancelled || !(await browserSupportsWebAuthnAutofill())) return;
+      if (cancelled) return;
+      try {
+        if (await loginWithPasskey({ autofill: true })) enterApp();
+      } catch (err) {
+        if (cancelled) return;
+        const code = authErrorCode(err);
+        if (code === 'PASSKEY_INVALID' || code === 'PASSKEY_EXPIRED') {
+          setError(authErrorMessage(err, '通行密钥登录失败'));
+          setAutofillRound((n) => n + 1);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+      window.clearTimeout(refresh);
+      if (!passkeyButtonActive.current) cancelCeremony?.();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [passkeysUsable, tab, mfaChallenge, autofillRound]);
+
+  const handlePasskey = async () => {
+    setError('');
+    setLoading(true);
+    passkeyButtonActive.current = true;
+    let signedIn = false;
+    try {
+      signedIn = await loginWithPasskey();
+    } catch (err) {
+      setError(authErrorMessage(err, '通行密钥登录失败'));
+    } finally {
+      passkeyButtonActive.current = false;
+      setLoading(false);
+    }
+    if (signedIn) enterApp();
+    // Starting it cancelled the autofill wait: offer the suggestions again.
+    else setAutofillRound((n) => n + 1);
+  };
+
+  const enterApp = () => {
+    const mustChange = useAuthStore.getState().user?.must_change_password;
+    navigate(mustChange ? '/settings' : '/chat');
+  };
+
+  const handleSecondFactor = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!mfaChallenge) return;
+    setError('');
+    setLoading(true);
+    try {
+      await loginSecondFactor(mfaChallenge, mfaCode);
+      enterApp();
+    } catch (err) {
+      if (authErrorCode(err) === 'MFA_EXPIRED') setMfaChallenge(null);
+      setError(
+        authErrorCode(err) === 'MFA_INVALID' && useRecoveryCode
+          ? '恢复码不正确或已用过'
+          : authErrorMessage(err, '验证失败'),
+      );
     } finally {
       setLoading(false);
     }
@@ -209,7 +322,66 @@ export function LoginPage() {
             )}
 
             {/* ── Login form ── */}
-            {tab === 'login' && (
+            {tab === 'login' && mfaChallenge && (
+              <form onSubmit={handleSecondFactor} className="mt-6 space-y-4">
+                <div className="space-y-1.5">
+                  <Label htmlFor="login-mfa-code" className="text-label">
+                    {useRecoveryCode ? '恢复码' : '验证码'}
+                  </Label>
+                  <Input
+                    // A new field per mode, so the keyboard switches too.
+                    key={useRecoveryCode ? 'recovery' : 'totp'}
+                    id="login-mfa-code"
+                    variant="code"
+                    value={mfaCode}
+                    onChange={(e) => setMfaCode(e.target.value)}
+                    placeholder={useRecoveryCode ? 'xxxxx-xxxxx' : '6 位验证码'}
+                    inputMode={useRecoveryCode ? 'text' : 'numeric'}
+                    autoComplete={useRecoveryCode ? 'off' : 'one-time-code'}
+                    maxLength={useRecoveryCode ? 32 : 7}
+                    required
+                    autoFocus
+                    className="h-9 tracking-widest"
+                  />
+                  <p className="text-caption text-muted-foreground">
+                    {useRecoveryCode
+                      ? '输入保存的恢复码之一，每个只能用一次。'
+                      : '打开验证器 App 查看 6 位验证码。'}
+                  </p>
+                </div>
+                <Button type="submit" disabled={loading} className="h-9 w-full">
+                  {loading && <Loader2 className="animate-spin" />}
+                  验证
+                </Button>
+                <Button
+                  type="button"
+                  variant="link"
+                  onClick={() => {
+                    setUseRecoveryCode((current) => !current);
+                    setMfaCode('');
+                    setError('');
+                  }}
+                  className="h-auto w-full p-0"
+                >
+                  {useRecoveryCode
+                    ? '使用验证器 App 的验证码'
+                    : '手机不在身边？使用恢复码'}
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  onClick={() => {
+                    setMfaChallenge(null);
+                    setError('');
+                  }}
+                  className="h-9 w-full"
+                >
+                  返回
+                </Button>
+              </form>
+            )}
+
+            {tab === 'login' && !mfaChallenge && (
               <>
                 <form onSubmit={handleLogin} className="mt-6 space-y-4">
                   <div className="space-y-1.5">
@@ -224,7 +396,7 @@ export function LoginPage() {
                       placeholder="请输入用户名"
                       required
                       autoFocus
-                      autoComplete="username"
+                      autoComplete="username webauthn"
                       className="h-9"
                     />
                   </div>
@@ -233,9 +405,8 @@ export function LoginPage() {
                     <Label htmlFor="login-password" className="text-label">
                       密码
                     </Label>
-                    <Input
+                    <PasswordInput
                       id="login-password"
-                      type="password"
                       value={loginPassword}
                       onChange={(e) => setLoginPassword(e.target.value)}
                       placeholder="请输入密码"
@@ -253,6 +424,18 @@ export function LoginPage() {
                     {loading && <Loader2 className="animate-spin" />}
                     {loading ? '登录中...' : '登录'}
                   </Button>
+                  {passkeysUsable && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      disabled={loading}
+                      onClick={() => void handlePasskey()}
+                      className="h-9 w-full"
+                    >
+                      <KeyRound />
+                      使用通行密钥登录
+                    </Button>
+                  )}
                 </form>
 
                 {regStatus.allowRegistration && !singleUserHost && (
@@ -333,9 +516,8 @@ export function LoginPage() {
                     <Label htmlFor="reg-password" className="text-label">
                       密码
                     </Label>
-                    <Input
+                    <PasswordInput
                       id="reg-password"
-                      type="password"
                       value={regPassword}
                       onChange={(e) => setRegPassword(e.target.value)}
                       placeholder="至少 8 位"

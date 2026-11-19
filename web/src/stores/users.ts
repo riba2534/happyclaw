@@ -86,6 +86,8 @@ interface UsersState {
       status?: 'active' | 'disabled' | 'deleted';
       display_name?: string;
       password?: string;
+      /** Needed with `password` when the user is the caller. */
+      current_password?: string;
       permissions?: Permission[];
       disable_reason?: string | null;
       notes?: string | null;
@@ -94,6 +96,8 @@ interface UsersState {
   restoreUser: (id: string) => Promise<void>;
   deleteUser: (id: string) => Promise<void>;
   revokeUserSessions: (id: string) => Promise<void>;
+  resetUserTwoFactor: (id: string) => Promise<void>;
+  revokeUserPasskeys: (id: string) => Promise<void>;
   fetchInvites: () => Promise<void>;
   createInvite: (data: {
     role?: 'admin' | 'member';
@@ -198,6 +202,14 @@ export const useUsersStore = create<UsersState>((set) => ({
 
   revokeUserSessions: async (id) => {
     await api.delete(`/api/admin/users/${id}/sessions`);
+  },
+
+  resetUserTwoFactor: async (id) => {
+    await api.delete(`/api/admin/users/${id}/2fa`);
+  },
+
+  revokeUserPasskeys: async (id) => {
+    await api.delete(`/api/admin/users/${id}/passkeys`);
   },
 
   fetchInvites: async () => {

@@ -299,7 +299,7 @@ export interface LoginRateLimitOptions {
  * request looks like behind a same-host reverse proxy without TRUST_PROXY —
  * bucketing that would lock the whole site out after a few dozen failures.
  */
-function ipBucketKey(ip: string): string | null {
+export function ipBucketKey(ip: string): string | null {
   const raw = boundedKeyPart(ip.trim().toLowerCase());
   if (!raw || raw === 'unknown') return null;
   const mapped = raw.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
@@ -471,13 +471,18 @@ export function reserveLoginAttempt(
 /**
  * Settle a reserved attempt. A failure keeps the counts. A success refunds
  * this attempt's per-IP and per-username increments (earlier failures stay
- * counted, as before) and clears the username+IP pair. An attempt that was
- * never evaluated (password hashing overloaded) refunds all three.
+ * counted, as before) and clears the username+IP pair; only a completed
+ * login is a success. An attempt that was never evaluated (password hashing
+ * overloaded) refunds all three, and so does a right credential that is no
+ * login (`verified`): a password that still owes a second factor, or a
+ * signed-in user's re-check of their password or code. Those must not clear
+ * the pair, or knowing the password (or holding a session) would reset the
+ * guesses the pair allows.
  */
 export function settleLoginAttempt(
   username: string,
   ip: string,
-  outcome: 'failure' | 'success' | 'not_evaluated',
+  outcome: 'failure' | 'success' | 'verified' | 'not_evaluated',
   options: LoginRateLimitOptions = {},
 ): void {
   if (outcome === 'failure') return;

@@ -11,6 +11,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
+import { PasswordInput } from '@/components/common/PasswordInput';
 import { Label } from '@/components/ui/label';
 import {
   Select,
@@ -22,6 +23,7 @@ import {
 import { SettingsField } from '@/components/settings/SettingsLayout';
 import type { Permission, UserPublic } from '../../stores/auth';
 import { useUsersStore, type PermissionTemplate } from '../../stores/users';
+import { authErrorMessage } from '../../lib/auth-errors';
 import { getErrorMessage, PERMISSION_LABELS, samePermissions } from './utils';
 
 type Role = 'admin' | 'member';
@@ -177,9 +179,8 @@ export function CreateUserDialog({
               />
             </SettingsField>
             <SettingsField label="密码" htmlFor="create-user-password">
-              <Input
+              <PasswordInput
                 id="create-user-password"
-                type="password"
                 value={newPassword}
                 onChange={(e) => setNewPassword(e.target.value)}
                 placeholder="密码（至少8位）"
@@ -441,9 +442,8 @@ export function EditUserDialog({
               )}
             </SettingsField>
             <SettingsField label="重置密码" htmlFor="edit-user-password">
-              <Input
+              <PasswordInput
                 id="edit-user-password"
-                type="password"
                 value={editPassword}
                 onChange={(e) => setEditPassword(e.target.value)}
                 placeholder="重置密码（可选）"
@@ -505,30 +505,39 @@ export function EditUserDialog({
 
 interface ResetPasswordDialogProps {
   user: UserPublic | null;
+  /** The signed-in user's own account: the current password is asked too. */
+  isSelf?: boolean;
   onOpenChange: (open: boolean) => void;
   onSaved: (message: string) => Promise<void>;
 }
 
 export function ResetPasswordDialog({
   user: target,
+  isSelf = false,
   onOpenChange,
   onSaved,
 }: ResetPasswordDialogProps) {
   const updateUser = useUsersStore((s) => s.updateUser);
   const user = useLastUser(target);
   const [value, setValue] = useState('');
+  const [current, setCurrent] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!target) return;
     setValue('');
+    setCurrent('');
     setError(null);
   }, [target]);
 
   const handleChangePassword = async (event?: FormEvent) => {
     event?.preventDefault();
     if (!user) return;
+    if (isSelf && !current) {
+      setError('请输入当前密码');
+      return;
+    }
     if (!value.trim()) {
       setError('请输入新密码');
       return;
@@ -536,12 +545,18 @@ export function ResetPasswordDialog({
     setLoading(true);
     setError(null);
     try {
-      await updateUser(user.id, { password: value });
+      await updateUser(
+        user.id,
+        isSelf
+          ? { password: value, current_password: current }
+          : { password: value },
+      );
       setValue('');
+      setCurrent('');
       onOpenChange(false);
       await onSaved(`已重置 ${user.display_name || user.username} 的密码`);
     } catch (err) {
-      setError(getErrorMessage(err, '密码修改失败'));
+      setError(authErrorMessage(err, '密码修改失败'));
     } finally {
       setLoading(false);
     }
@@ -549,8 +564,8 @@ export function ResetPasswordDialog({
 
   return (
     <Dialog open={!!target} onOpenChange={onOpenChange}>
-      {/* One field: the keyboard may come up with it. */}
-      <DialogContent className="sm:max-w-md" autoFocusOnPhone>
+      {/* One field (another's password): the keyboard may come up with it. */}
+      <DialogContent className="sm:max-w-md" autoFocusOnPhone={!isSelf}>
         <form onSubmit={handleChangePassword} className="grid gap-4">
           <DialogHeader>
             <DialogTitle>修改密码</DialogTitle>
@@ -563,14 +578,23 @@ export function ResetPasswordDialog({
 
           <FormError message={error} />
 
-          <Input
-            type="password"
+          {isSelf && (
+            <PasswordInput
+              value={current}
+              onChange={(e) => setCurrent(e.target.value)}
+              placeholder="当前密码"
+              aria-label="当前密码"
+              autoComplete="current-password"
+              autoFocus
+            />
+          )}
+          <PasswordInput
             value={value}
             onChange={(e) => setValue(e.target.value)}
             placeholder="输入新密码"
             aria-label="新密码"
             autoComplete="new-password"
-            autoFocus
+            autoFocus={!isSelf}
           />
 
           <DialogFooter>

@@ -20,6 +20,7 @@ import type {
   AgentEffortLevel,
   AgentProfile,
   AgentProfileRuntimePolicy,
+  AgentSubagentPolicy,
   InheritedModel,
   ConnectionModel,
   ModelConfigOption,
@@ -37,6 +38,10 @@ import {
 } from '@/utils/agent-runtime-policy';
 import { AgentControlRow, AgentSubheading } from './AgentSection';
 import { AgentSkillsPolicyEditor } from './AgentSkillsPolicyEditor';
+import {
+  AgentSubagentsEditor,
+  subagentPolicyWithoutModels,
+} from './AgentSubagentsEditor';
 import { PolicyResourcePicker } from './PolicyResourcePicker';
 
 /**
@@ -53,6 +58,8 @@ export interface AgentCapabilityFormValue {
   skills: SkillSourcePolicy;
   hostSkills: SkillSourcePolicy;
   mcp: SkillSourcePolicy;
+  /** null when the Agent sets nothing about sub-agents. */
+  subagents: AgentSubagentPolicy | null;
 }
 
 export function capabilityFormFromProfile(
@@ -72,13 +79,17 @@ export function capabilityFormFromProfile(
       mode: policy.mcp.mode,
       ids: normalizeMcpPolicyReferences(policy.mcp.ids),
     },
+    subagents: policy.subagents ?? null,
   };
 }
 
 /** The runtime-policy part of the form, as the server stores it. */
-export function capabilityFormPolicy(
-  value: AgentCapabilityFormValue,
-): Pick<AgentProfileRuntimePolicy, 'reasoning' | 'skills' | 'mcp'> {
+export function capabilityFormPolicy(value: AgentCapabilityFormValue): Pick<
+  AgentProfileRuntimePolicy,
+  'reasoning' | 'skills' | 'mcp'
+> & {
+  subagents: AgentSubagentPolicy | null;
+} {
   return {
     reasoning: { effort: value.effort },
     skills: {
@@ -87,6 +98,8 @@ export function capabilityFormPolicy(
       host: { mode: value.hostSkills.mode, ids: value.hostSkills.ids },
     },
     mcp: { mode: value.mcp.mode, ids: value.mcp.ids },
+    // Saved as one unit; null clears what was set.
+    subagents: value.subagents,
   };
 }
 
@@ -285,6 +298,11 @@ export function AgentCapabilityForm({
   ) =>
     update({
       ...binding,
+      // Sub-agent models belong to the connection; another one drops them.
+      subagents:
+        binding.modelConfigId === value.modelConfigId
+          ? value.subagents
+          : subagentPolicyWithoutModels(value.subagents),
       effort: keepSupportedEffort(
         value.effort,
         boundModelEntry(binding, modelConfigs, follow, inheritedModel),
@@ -300,6 +318,13 @@ export function AgentCapabilityForm({
       ? value.effort
       : null;
   const unset = !follow && value.modelConfigId === 'inherit';
+  // Only the Agent's own connection offers sub-agent models; a ChatGPT
+  // subscription runs every sub-agent on the turn's model.
+  const ownConnection = modelConfigs.find(
+    (config) => config.id === value.modelConfigId,
+  );
+  const subagentModels =
+    ownConnection && !ownConnection.chatgpt ? ownConnection.models : null;
 
   return (
     <div className="space-y-6">
@@ -488,6 +513,15 @@ export function AgentCapabilityForm({
             )}
           </div>
         </section>
+      </SettingsGroup>
+
+      <SettingsGroup>
+        <AgentSubagentsEditor
+          value={value.subagents}
+          onChange={(subagents) => update({ subagents })}
+          connectionModels={subagentModels}
+          labelPrefix={labelPrefix}
+        />
       </SettingsGroup>
     </div>
   );

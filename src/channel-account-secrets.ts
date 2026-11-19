@@ -127,3 +127,36 @@ export function deleteChannelAccountSecret(secretRef: string): void {
 export function hasChannelAccountSecret(secretRef: string): boolean {
   return fs.existsSync(refToPath(secretRef));
 }
+
+/**
+ * Seal a short secret for a database column with the same key as the
+ * channel account files (AES-256-GCM): `v1:<iv>:<tag>:<data>`, base64.
+ */
+export function sealSecret(plain: string): string {
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', getOrCreateKey(), iv);
+  const data = Buffer.concat([cipher.update(plain, 'utf8'), cipher.final()]);
+  return [
+    'v1',
+    iv.toString('base64'),
+    cipher.getAuthTag().toString('base64'),
+    data.toString('base64'),
+  ].join(':');
+}
+
+export function openSecret(sealed: string): string {
+  const [version, iv, tag, data] = sealed.split(':');
+  if (version !== 'v1' || !iv || !tag || data === undefined) {
+    throw new Error('Unsupported sealed secret');
+  }
+  const decipher = crypto.createDecipheriv(
+    'aes-256-gcm',
+    getOrCreateKey(),
+    Buffer.from(iv, 'base64'),
+  );
+  decipher.setAuthTag(Buffer.from(tag, 'base64'));
+  return Buffer.concat([
+    decipher.update(Buffer.from(data, 'base64')),
+    decipher.final(),
+  ]).toString('utf8');
+}

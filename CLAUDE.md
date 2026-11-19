@@ -111,6 +111,7 @@ Agent Profile（身份、四段 Prompt、能力策略）
 | `src/automation-scheduler.ts`      | 自动化的到期触发、前置检查、错过与重启恢复             |
 | `src/automation-service.ts`        | 自动化的校验、权限，REST 与 Agent 工具共用             |
 | `src/memory-service.ts`            | Workspace Memory 召回、目录、提议与审计                |
+| `src/workspace-owner-identity.ts`  | 工作区主人本人的判定：Web 用户 id、IM 可信身份         |
 | `src/team-gate.ts`                 | 团队模式入站：订阅键、名单与 @ 判定、准入表            |
 | `src/work-item-service.ts`         | 工作项的路由、生命周期、回复门控，REST 与 IPC 共用     |
 | `src/work-item-runtime.ts`         | 团队输入注入各 lane、团队回复经 Outbox 投递            |
@@ -297,6 +298,39 @@ Web UI 约定：
   的启动、终态和最终答复按发起它的输入写入 `subagent_checkpoints`；重跑同一输入时
   这些断点作为上下文回注给主 Agent：已完成的直接汇总，未完成的标明中断，部署、迁移、
   推送等非幂等操作要求先核实实际状态。宿主不会自动重跑任何子任务。
+- 卡死检测（`src/stuck-runner-recovery.ts`）每 30 秒查一次欠账的 Runner：query 还欠着经
+  IPC 注入的输入（IPC 债务，query 结束才还清），或 Runner 不在 query 中、同一会话却排着任务。
+  欠账且静默满 3 分钟时，Host 若 CPU 空闲就重启，CPU 忙或 Container（看不到 CPU）等静默满
+  `STUCK_RUNNER_FORCE_RESTART_MINUTES` 再重启。IPC 债务另有同样长、不看输出和 CPU 的绝对
+  上限：经 IPC 开场一轮 query 的输入从注入起算，到模型为这一 query 产出内容为止（带它
+  `queryRunId` 的正文、思考、工具调用、子代理等事件；Runner 读到输入就发出的记忆召回、
+  上下文审计，以及状态、hook 等系统事件和带上一个 query `queryRunId` 的迟到输出都不算。
+  上一轮结果后 SDK 流还开着的几秒里 pipe 进来的输入一被激活就按新 query 计，此后的事件都带
+  新 id）；之后追加进同一 query 的输入从最早一次追加起算，到 query 结束。暖 Runner 上持续
+  输出的一轮因此不会撞上限，模型开工后又静默下去的一轮仍按空闲规则重启。CLI 在主 Agent 的
+  工具调用期间每 30 秒发一次心跳（宿主收到 `tool_progress`），既刷新静默计时也算模型产出，
+  所以模型开工后卡住的工具调用与冷启动 query 一样，只受工具自身的超时约束。Runner 自行续写
+  （压缩后续写、截断续写）结束时，这一 query 若还有未确认回执或仍在磁盘上的 IPC 输入就留在
+  进行中：剩下的输入由此时空闲的 Runner 作为下一轮接手，等于这一 query 重新经 IPC 开场，IPC
+  债务从模型还没答复的最早一条输入起算（已回显的开场输入不算，追加的输入算，都没有时从续写结束
+  起算），模型为它产出内容后同样免除绝对上限，空闲规则照旧；续写结果的回执确认后宿主再判一次，
+  没有剩下的 IPC 输入就结束这一 query。重启后，已为该会话启动或排队
+  的会话任务（例如未确认投递的回放）就是下一轮，宿主不再另起一个。
+- 后台工作（除已转后台的 Bash 外的所有 SDK 后台任务，含子代理、监视器、MCP 任务）结清前，
+  CLI 照常接收输入，但 Runner 扣住结果、不发完成回执，这一 query 结束前 IPC 债务一直还不上。
+  Runner 发布的每个 result 都带 `pendingBgTasks`（结清后为 0），宿主只看 result 上的这个
+  值：大于 0 时把这一 query 记为扣住，卡死检测不做 CPU 探测，IPC 债务上限和空闲规则一律
+  defer（`background_tasks`），每个 query 只记一条 info 日志。中断、provider 失败、模型
+  回退重试、上下文溢出等结束 SDK query 的输出也解除扣住；解除时仍欠的 IPC 债务从解除时刻
+  重新计时。扣住期间子代理等网络或跑长命令时可能完全没有输出，Runner 于是按宿主经
+  `ContainerInput.hostIdleCloseMs` 传入的空闲关闭时长（min(`CONTAINER_TIMEOUT`,
+  `IDLE_TIMEOUT`)，看门狗不会更短）的三分之一、最长 5 分钟发一次保活控制帧
+  `backgroundHoldKeepalive`，没有存活的后台任务时暂停。宿主收到它只重置空闲关闭计时（帧本身
+  已重置进程看门狗），不算 Runner 活动，不进回合轨迹、Web、卡片或任何渠道。扣住从它的第一条
+  result 算起最多 2 小时（`BACKGROUND_HOLD_MAX_MS`，保活同一上限；不再扣住的 result 结束
+  这次扣住，之后再扣住重新计时）：超过后卡死检测按原规则和原有计时判定，扣住期间注入且仍欠着
+  的输入立即撞 IPC 债务上限；保活也停了，静默的 Runner 照常被空闲关闭和看门狗收掉。旧宿主
+  不传空闲关闭时长，Runner 就不发保活。
 - 一轮成功结束、最后一次模型响应只有思考而没有正文（静默停止）时，Claude Code 会先在
   轮内自行补问一次；仍无正文时 Runner 在同一 SDK 流里再要一次答复，每条输入最多一次。
   主动模式、已有后续输入排队、后台任务未结清时不续写。
@@ -436,6 +470,18 @@ preset 的身份和默认风格，只低于平台的安全、权限、工具和�
   （Runner 把上游原话放在 `providerErrorText`），宿主读额度，按模型 id 的 `provider/` 前缀
   找该 provider 已用尽窗口中最早的 `resetsAt`，交给用量上限等待；路由组、`auto/`、读不到额度
   或没有已用尽窗口时按原逻辑失败（`src/magpie-usage-limit.ts`）。
+- 子代理设置在 `runtime_policy.subagents`（`src/agent-subagents.ts`）：默认子代理模型、
+  同时运行上限（`CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS`）和自定义子代理（SDK `options.agents`）。
+  一个 Claude Code 进程只连一个端点，子代理不能跨连接，模型只能取智能体所绑连接里的，
+  创建、改动子代理或换连接时校验；运行时会话手选了别的连接或模型已移出列表，这些名字不生效
+  （后者记告警），默认回到连接的 `roles.subagent`（官方连接不写，由 Claude Code 决定），定义
+  改为继承。宿主解析（`resolveConnectionSubagents`）后经 `ContainerInput.subagents` 交给 Runner；
+  推理等级按主模型的规则下发（声明不支持的不传，未知的原样传），工具里去掉 Runner 默认禁用的
+  会话级工具；去掉后一个不剩（或列表本就为空）的定义保存时拒绝，运行时跳过并记告警，绝不以零
+  工具或全部工具运行；自定义子代理与默认子代理模型都计入最大输出的派生。Runner 把上限同时钉进 flag
+  settings（`subagent-launch.ts`），团队路由会话不注入自定义子代理。只有自定义子代理进身份 hash：
+  只改上限或默认子代理模型只换 Runner、保留 SDK 会话。导出带自定义子代理与上限、不带模型名，
+  导入清掉模型名，复制时清掉连接已不提供的模型名。
 - 宿主机 Skills 由 `runtime_policy.skills.host` 独立选择，不能通过
   `host_claude` 开关隐式获得；每个智能体都存显式值，新建、复制、导入一律写显式值。
 - 工作区 `CLAUDE.md`、项目 `.claude/skills` 和项目 MCP 属于项目上下文层。项目根按 CLI
@@ -461,6 +507,12 @@ preset 的身份和默认风格，只低于平台的安全、权限、工具和�
 - Workspace Memory 只有整批输入都来自工作区主人的互动轮次才直接写入；群成员轮次与自动化
   运行的写入存为 `proposed`，在记忆页确认后才参与召回。每轮按用户本人正文的词项召回
   相关条目（`workspace_memory_recall_fts`），全部条目的标题目录随每轮笔记增量注入。
+- 「工作区主人亲自发起」按每条输入的发送者判定（`src/workspace-owner-identity.ts`），记忆直写、
+  `install_skill`、自动化、派发、`session_list` 与 Owner Profile 共用：Web 输入是主人的用户 id；
+  IM 输入的来源聊天是主人自己的注册，发送者是主人登记在 Home 或当前工作区的聊天上由宿主记录的
+  可信身份（`configured`、`trusted_direct`、`auto_feishu`），与聊天绑定到哪个工作区无关。按
+  provider 跨主人的各个渠道账号比较（企业微信、钉钉的 id 只在企业内唯一，按同一渠道账号比较），
+  别的 provider 下相同的值不算。
 - 禁用、删除或缺失的精确选择能力必须让配置失败，不得静默替换。
 - Prompt 或能力身份变化后必须失效旧的暖 Runner。
 
@@ -735,21 +787,43 @@ v88 把每个工作区的旧主会话迁成普通会话，映射记在 router_st
   `work_decisions`
 - 记忆：`workspace_memory_*`（含召回索引 `workspace_memory_recall_fts`）
 - Web Push：`web_push_subscriptions`（每行记着登记它的登录会话，会话结束即删除）
+- 登录因子：`user_totp`、`user_recovery_codes`、`webauthn_credentials`（删除用户时一并删除）
 - 用量与计费：`usage_records`、`usage_events`、`usage_daily_summary`、
   `usage_event_connections` 及 `billing_*`、订阅、余额和兑换码相关表
 
 Channel Reliability 的 Inbox/Turn/Outbox/Card 表由
 `src/channel-reliability-store.ts` 在同一数据库连接上创建；同样，`session_worktrees` 由
 `src/session-worktree-store.ts`，自动化表由 `src/automation-store.ts`，团队模式表由 `src/work-item-store.ts`，
-`web_push_subscriptions` 由 `src/web-push-store.ts`，等待、补注、用量连接
+`web_push_subscriptions` 由 `src/web-push-store.ts`，登录因子表由 `src/auth-factor-store.ts`，等待、补注、用量连接
 和 Web 发送去重表由 `src/runtime-state-store.ts` 创建。
 
 ## 8. 认证与权限
 
 - Cookie 会话使用 HMAC 签名，密钥来自环境变量、持久文件或首次自动生成。
+- 二次验证（TOTP，`src/totp.ts`、`src/auth-mfa.ts`）：开启后密码正确只换来一个内存中的
+  challenge（5 分钟、5 次、单次使用），`POST /api/auth/login/2fa` 交验证码或恢复码后才下发会话，
+  失败与密码失败共用登录限流；发 challenge 时不清除已有的失败计数，第二步成功才清除。challenge
+  绑定发出时的密码与二次验证设置，改密码、关闭或重置二次验证、停用或删除账号后即失效。同一步长的
+  验证码只收一次。密钥用 `claude-provider.key` 加密存放，打不开时返回 `MFA_SECRET_UNREADABLE`；
+  恢复码只存逐条加盐的哈希，不依赖密钥（`src/auth-factor-store.ts`）。开启需要当前密码，开启后
+  注销其他会话。丢失验证器由有 `manage_users` 的人在用户管理里重置；唯一管理员的应急办法见
+  `DEPLOYMENT.md`。
+- 登录后重新核对身份（改密码、开关二次验证、添加和删除通行密钥）用 `routes/auth.ts` 的
+  `checkCurrentPassword`、`checkAccountCode`、`reauthenticate`：先占一次登录限流计数再校验，
+  错误返回 400 并带 `code`（不是 401）；核对通过只退还计数，不清除已有的失败。管理员在用户管理里
+  改自己的密码同样要当前密码。
+- 通行密钥（`src/passkeys.ts`）：无用户名登录，成功即下发会话、视同已过二次验证；访客不能用。
+  添加需要当前密码，开了二次验证还要验证码。origin 取请求的 `Origin` 头，只接受与 `Host` 同源、
+  localhost 或 `CORS_ALLOWED_ORIGINS` 列出的 HTTPS 地址，IP 地址不能作 RP ID；RP ID 随凭据保存，
+  换了主机名的凭据不被接受。登录与注册 challenge 分开存放，登录 challenge 每个客户端最多 50 个
+  （分不出客户端的共用一个名额）。改密码和管理员重置二次验证都不删除通行密钥，管理员用
+  `DELETE /api/admin/users/:id/passkeys` 撤销（连同进行中的注册）；本人删除需要当前密码。
 - `canAccessGroup`、`canModifyGroup` 和 `canDeleteGroup` 不提供 admin 全局旁路；
   工作区和渠道资源按 `created_by` 隔离。
 - Host 工作区额外要求 admin 角色。
+- 配对（或绑定后学习到）的私聊发送者在机器人里等同账号主人本人：可以 `/list`、`/bind` 到主人的
+  全部工作区（包括 Host 工作区）；配对登记在 Home，配对私聊的发送者在任意工作区按主人轮次判定。
+  配对页与渠道引导提示只给自己的账号配对；没有「受委托的他人」这一角色。
 - 系统配置、用户、邀请、审计和计费使用独立 Permission Middleware。
 - 敏感写操作必须先停止或暂停相关 Runner，并在提交失败时恢复队列。
 - API 返回资源不存在时通常使用 404 隐藏其他用户资源是否存在。
@@ -787,7 +861,7 @@ Web 持久设置 > 环境变量 > 代码默认值
 | `CONTAINER_IMAGE`                    | `riba2534/happyclaw-agent:latest` | GitHub Actions 发布的 Runner 镜像                                     |
 | `CONTAINER_TIMEOUT`                  | `1800000`                         | Runner 无输出看门狗                                                   |
 | `IDLE_TIMEOUT`                       | `1800000`                         | 暖 Runner 空闲时间                                                    |
-| `STUCK_RUNNER_FORCE_RESTART_MINUTES` | `10`                              | IPC 债务强制恢复上限（4–120 分钟）                                    |
+| `STUCK_RUNNER_FORCE_RESTART_MINUTES` | `10`                              | IPC 债务强制恢复上限（4–120 分钟）；后台工作扣住结果的前 2 小时不适用 |
 | `MAX_CONCURRENT_CONTAINERS`          | `20`                              | Docker 并发                                                           |
 | `CONTAINER_MEMORY_LIMIT`             | 不限制                            | 单个容器内存上限，须带单位，同设 swap                                 |
 | `MAX_FILE_SIZE_MB`                   | `50`                              | Web/IM 入站文件上限                                                   |

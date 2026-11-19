@@ -26,6 +26,7 @@ import {
 } from '@/components/ui/dialog';
 import { ResponsiveMenu } from '@/components/common/ResponsiveMenu';
 import { Input } from '@/components/ui/input';
+import { PasswordInput } from '@/components/common/PasswordInput';
 import { Label } from '@/components/ui/label';
 import { EmptyState } from '@/components/common/EmptyState';
 import { IconButton } from '@/components/common/IconButton';
@@ -220,9 +221,8 @@ function CreateGuestDialog({
               htmlFor="create-guest-password"
               className="sm:col-span-2"
             >
-              <Input
+              <PasswordInput
                 id="create-guest-password"
-                type="password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 placeholder="密码（至少 8 位）"
@@ -422,9 +422,8 @@ function ResetGuestPasswordDialog({
           </DialogHeader>
           <FormError message={error} />
           <SettingsField label="新密码" htmlFor="reset-guest-password">
-            <Input
+            <PasswordInput
               id="reset-guest-password"
-              type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               placeholder="新密码（至少 8 位）"

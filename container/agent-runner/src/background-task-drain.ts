@@ -423,3 +423,106 @@ export function shouldFailIncompleteQueryExit(
     !state.durableInputTurnCompleted
   );
 }
+
+/** The longest interval between keepalives while a result is held. */
+const BACKGROUND_HOLD_KEEPALIVE_MAX_INTERVAL_MS = 5 * 60_000;
+
+/**
+ * How often a held result tells the host it is alive: three times within the
+ * shortest silence the host tolerates (`ContainerInput.hostIdleCloseMs`, its
+ * idle close; the process watchdog is never shorter), and at least every five
+ * minutes. Null when the host did not say: an older host has no use for the
+ * keepalive frame, so none is sent.
+ */
+export function backgroundHoldKeepaliveIntervalMs(
+  hostIdleCloseMs: number | undefined,
+): number | null {
+  if (
+    typeof hostIdleCloseMs !== 'number' ||
+    !Number.isFinite(hostIdleCloseMs) ||
+    hostIdleCloseMs <= 0
+  ) {
+    return null;
+  }
+  return Math.max(
+    1_000,
+    Math.min(
+      BACKGROUND_HOLD_KEEPALIVE_MAX_INTERVAL_MS,
+      Math.floor(hostIdleCloseMs / 3),
+    ),
+  );
+}
+
+/**
+ * Keeps the host's idle close and process watchdog off while a result is held
+ * for background work. A held result emits nothing until the work settles, and
+ * a sub-agent waiting on the network or a long command is silent too; the host
+ * would read that silence as a hung runner and close it with its tasks.
+ *
+ * The hold runs from the first held result to the next result that holds
+ * nothing (or the end of the query attempt), as the host counts it
+ * (GroupQueue.markRunnerBackgroundHold). Ticks stop once no background task is
+ * live, and for good `maxMs` after the hold began, so a task that never ends
+ * still lets the runner go silent and the host close it; the host's stuck
+ * recovery defers for the same bound. A hold that ends and comes back counts
+ * from its own start.
+ */
+export class BackgroundHoldKeepalive {
+  private timer: ReturnType<typeof setInterval> | undefined;
+  private heldSince: number | null = null;
+
+  constructor(
+    private readonly options: {
+      /** Null sends no keepalive at all. */
+      intervalMs: number | null;
+      maxMs: number;
+      pendingCount: () => number;
+      onTick: () => void;
+      now?: () => number;
+    },
+  ) {}
+
+  /** A result was published while background work holds it. */
+  hold(): void {
+    const intervalMs = this.options.intervalMs;
+    if (intervalMs === null) return;
+    const now = this.now();
+    this.heldSince ??= now;
+    if (this.timer || now - this.heldSince >= this.options.maxMs) return;
+    this.timer = setInterval(() => this.tick(), intervalMs);
+    this.timer.unref?.();
+  }
+
+  /** A result holds nothing any more, or the query attempt ended. */
+  release(): void {
+    this.clearTimer();
+    this.heldSince = null;
+  }
+
+  get running(): boolean {
+    return this.timer !== undefined;
+  }
+
+  private tick(): void {
+    if (
+      this.options.pendingCount() <= 0 ||
+      this.now() - (this.heldSince ?? 0) >= this.options.maxMs
+    ) {
+      // The hold itself lasts until a result says so; only the ticks stop.
+      this.clearTimer();
+      return;
+    }
+    this.options.onTick();
+  }
+
+  private clearTimer(): void {
+    if (this.timer) {
+      clearInterval(this.timer);
+      this.timer = undefined;
+    }
+  }
+
+  private now(): number {
+    return (this.options.now ?? Date.now)();
+  }
+}

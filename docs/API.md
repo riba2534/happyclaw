@@ -55,7 +55,24 @@ Public：
 - `POST /api/auth/setup`，仅用户表为空时可用；可带
   `deployment_mode: "multi_user" | "single_user_host"`，在创建管理员的 Home 工作区之前保存。
   只写入这一项，其他系统设置仍按环境变量生效；不带时什么也不存
-- `POST /api/auth/login`
+- `POST /api/auth/login`：开启了二次验证的账号密码正确时不下发会话，返回
+  `{ mfa_required: true, challenge }`
+- `POST /api/auth/login/2fa`：`{ challenge, code }`，`code` 为验证器的 6 位验证码或一个恢复码；
+  成功后下发会话。challenge 只在内存中，绑定用户，5 分钟过期，最多试 5 次，用过即作废；
+  失败返回 400（`code: MFA_INVALID`，过期或用尽为 `MFA_EXPIRED`），并与密码失败共用登录限流。
+  密码正确时只退还这一次计数、不清除用户名+IP 桶里已有的失败，第二步成功才清除，所以重新输入
+  密码不会重置验证码的猜测次数。challenge 绑定发出时的密码与二次验证设置：之后改了密码（本人、
+  管理员或 `reset:admin`）、关闭或重置二次验证（即使重新开启）、账号被停用（即使再启用）或删除，
+  都返回 `MFA_EXPIRED`。验证器密钥无法解密（加密密钥被替换）时返回 500
+  `MFA_SECRET_UNREADABLE`，不计失败、challenge 保留，可改用恢复码
+- `POST /api/auth/passkey/login/options`：无用户名登录（可发现凭据）的 WebAuthn 选项。每个客户端
+  （IPv4 地址或 IPv6 /64）最多保留 50 个未用的登录 challenge，超出时丢弃它自己最早的那个；
+  loopback 与未知地址分不出客户端，共用一个同样上限的名额（反向代理后要设 `TRUST_PROXY`）。
+  登录 challenge 与注册 challenge 分开存放，刷登录选项挤不掉进行中的注册
+- `POST /api/auth/passkey/login`：`{ response }`（`navigator.credentials.get` 的 JSON），成功即下发
+  会话，视同已过二次验证。challenge 过期、用过或不存在返回 400 `PASSKEY_EXPIRED`（重新取选项
+  再试）；凭据未登记、属于别的主机、`userHandle` 不是凭据所属用户、签名或用户验证不通过，以及
+  停用账号和访客，返回 400 `PASSKEY_INVALID`
 - `GET /api/auth/register/status`：单人宿主机模式下恒为关闭
 - `POST /api/auth/register`：单人宿主机模式下 403
 - `GET /api/auth/avatars/:filename`
@@ -65,12 +82,56 @@ Public：
 - `POST /api/auth/logout`
 - `GET /api/auth/me`：顶层带 `deploymentMode`（生效值）
 - `PUT /api/auth/profile`
-- `PUT /api/auth/password`
+- `PUT /api/auth/password`：当前密码错误返回 400 `CURRENT_PASSWORD_INCORRECT`，与登录共用限流
 - `GET /api/auth/sessions`
 - `DELETE /api/auth/sessions/:id`
 - `POST /api/auth/avatar`
+- `GET /api/auth/2fa`：`{ enabled, recovery_codes_remaining }`
+- `POST /api/auth/2fa/setup`：生成待确认的 TOTP 密钥（RFC 6238，SHA-1、6 位、30 秒），返回
+  `{ secret, otpauth_uri, qr_data_url }`；已开启时 409 `MFA_ALREADY_ENABLED`
+- `POST /api/auth/2fa/enable`：`{ password, code }`，当前密码和第一个验证码都对才开启，返回
+  `{ success, recovery_codes, sessions_revoked }`：10 个恢复码只此一次（库里只存逐条加盐的哈希），
+  同时注销该账号除当前会话外的全部会话（写进审计 `mfa_enabled` 的 `details`）
+- `POST /api/auth/2fa/disable`：`{ password, code }`，`code` 可以是恢复码；未开启时 409
+  `MFA_NOT_ENABLED`
+- `POST /api/auth/2fa/recovery-codes`：`{ code }`（只接受验证器验证码），重新生成恢复码
 
-`POST /api/auth/login` 的失败次数按三个桶计数，任一超限返回 429：用户名+IP
+改密码、二次验证和通行密钥的接口重新核对当前密码与验证码时（开启二次验证时的第一个验证码也算），
+先占用一次登录限流计数再校验，错误的密码和验证码与登录失败共用同一组桶（用户名小写 + 客户端 IP）；
+核对通过只退还这一次计数，不清除已有的失败，只有真正登录成功才清除。超限返回 429（带
+`Retry-After` 头）
+`{ code: "TOO_MANY_ATTEMPTS", retry_after_seconds }`。错误一律返回 400 而不是 401（Web 客户端
+把 401 当作登录失效），并带 `code`：请求体无效 `INVALID_REQUEST`、当前密码错误
+`CURRENT_PASSWORD_INCORRECT`、验证码错误 `MFA_INVALID`、需要验证码却没给 `MFA_REQUIRED`、
+验证器密钥无法解密 `MFA_SECRET_UNREADABLE`（500）。同一个 30 秒步长的验证码只接受一次。访客没有
+二次验证，这些接口不在访客放行清单里。
+
+通行密钥（WebAuthn，`src/passkeys.ts`、`src/routes/passkeys.ts`）：
+
+- `GET /api/auth/passkeys`：`{ passkeys: [{ id, name, rp_id, created_at, last_used_at }], rp_id,
+unavailable_reason, two_factor_enabled }`，`unavailable_reason` 说明当前页面地址为什么不能用通行
+  密钥，`two_factor_enabled` 为真时添加还要验证码
+- `POST /api/auth/passkeys/options`：`{ password, code? }`，先重新验证本人：当前密码，开了二次
+  验证时还要验证码（可以是恢复码），失败计入登录限流（见上文的错误码）；通过后返回注册选项
+  （要求可发现凭据与用户验证，attestation `none`，算法 EdDSA、ES256、RS256）。每人最多 20 个，
+  超出 409 `PASSKEY_LIMIT_REACHED`
+- `POST /api/auth/passkeys`：`{ response, name? }`，用上一步的 challenge 验证后保存，写审计
+  `passkey_added`；保存前再查一次上限（409 `PASSKEY_LIMIT_REACHED`）
+- `PATCH /api/auth/passkeys/:id`：`{ name }`，只能改自己的，否则 404
+- `POST /api/auth/passkeys/:id/delete`：`{ password }`，密码错误 400 `CURRENT_PASSWORD_INCORRECT`
+  并计入登录限流，写审计 `passkey_removed`
+
+没有配置的公网地址，仪式的 origin 取请求的 `Origin` 头，只在它与 `Host` 同源、是 localhost
+（`CORS_ALLOW_LOCALHOST=false` 时除外）或列在 `CORS_ALLOWED_ORIGINS`（`*` 不算）时接受，且必须
+是 HTTPS（localhost 可用 HTTP）；否则 400，`code` 为 `PASSKEY_NO_ORIGIN`、`PASSKEY_INSECURE` 或
+`PASSKEY_NOT_ALLOWED`。RP ID 是该 origin 的主机名，必须是域名：IP 地址（含 `127.0.0.1` 与 IPv6
+地址）返回 400 `PASSKEY_IP_HOST`。RP ID 随凭据保存，登录时只接受同一 RP ID 的凭据。challenge
+存在内存里，绑定用途、用户、origin 和 RP ID，5 分钟过期，只能用一次。改密码和管理员重置二次验证
+都不删除通行密钥，撤销用 `DELETE /api/admin/users/:id/passkeys`；删除用户时一并删除。访客没有
+通行密钥：管理接口返回 403，访客的凭据不能登录。
+
+`POST /api/auth/login` 的失败次数按三个桶计数，任一超限返回 429（与 `/login/2fa` 及上面的复核
+接口同形：`{ error, code: "TOO_MANY_ATTEMPTS", retry_after_seconds }`，带 `Retry-After` 头）：用户名+IP
 （`maxLoginAttempts`/`loginLockoutMinutes`）、用户名（4 倍/1 小时）、客户端 IP
 （6 倍/同一窗口，IPv6 按 /64 合并；loopback 与未知地址不计）。客户端 IP 取自
 `getClientIp`，部署在反向代理后需设置 `TRUST_PROXY=true`。用户名超过 64 字符直接按无效凭据返回 401。
@@ -238,7 +299,8 @@ Runner 启动时，选中的模型取代配置的默认模型成为 `ANTHROPIC_M
 环境由 `buildConnectionModelEnv` 按本轮模型生成：上下文长度大于 200K 时模型名加 `[1m]`
 （Claude Code 的开关，请求前剥掉，只把上下文上限抬到 1M），小于 1M 且不等于 200K 时
 写 `CLAUDE_CODE_AUTO_COMPACT_WINDOW` 压回实际长度，未知时两者都不写；opus/sonnet/haiku
-档与 `CLAUDE_CODE_SUBAGENT_MODEL` 取连接的 `roles`，未设置时跟随本轮模型。官方连接只在
+档与 `CLAUDE_CODE_SUBAGENT_MODEL` 取连接的 `roles`，未设置时跟随本轮模型（智能体设置了
+默认子代理模型时以它为准，见 Agent Profile 的 `runtime_policy.subagents`）。官方连接只在
 模型条目声明了大于 200K 的上下文时加 `[1m]`（可能按长上下文计费）。已选模型被移出列表
 后，按配置默认模型运行并记录告警，不让本轮失败。
 
@@ -833,6 +895,32 @@ hook）。HappyClaw 本身不访问网络，但 LFS 或 partial clone 仓库在 
 每个 profile 的 `runtime_policy.skills.host` 都是显式值（schema v84 起），宿主机
 Skills 不再随有效上下文来源隐式继承。
 
+`runtime_policy.subagents`（可选，整体保存，`null` 清除）是智能体的子代理设置：
+`model`（默认子代理模型）、`max_concurrent`（1–20，写成
+`CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS`，未设置时不写，沿用 Claude Code 自己的上限；达到
+上限后 Claude Code 拒绝再派出子代理）、`definitions`（最多 20 个自定义子代理，每个有
+`name`、`description`、`prompt`、`tools`（`null` 为全部）、`model`、`effort`，经 SDK
+`options.agents` 注入）。名称为 2–48 位小写字母、数字或连字符，不能与内置子代理重名。
+`tools` 的每一项是一条工具规则：工具名，可带括号里的参数（如 `Bash(git log:*)`），不能含
+逗号或换行，否则 400；`CronCreate` 等 Runner 默认禁用的会话级工具运行时不提供。去掉这些
+工具后一个不剩（含 `tools: []`）的子代理在创建、导入、复制，以及 PATCH 带
+`runtime_policy.subagents` 时返回 400 与 `code: SUBAGENT_NO_AVAILABLE_TOOLS`、`subagents`
+（这些子代理的名称）；此前已保存的这类子代理运行时不注入并记告警。子代理与
+主 Agent 在同一个 Claude Code 进程里运行，只能用智能体所绑连接里的模型：创建时，以及
+PATCH 带 `runtime_policy.subagents` 或 `model_config_id` 时逐一校验，不在其中、智能体没有
+绑定连接，或连接是 ChatGPT 订阅时返回 400 与 `code: SUBAGENT_MODEL_NOT_IN_CONNECTION`；
+连接后来移除了某个模型时，只改名称、提示词等其他字段不受影响。`duplicate` 清掉连接已不
+提供的模型名；导出带 `definitions`（不含 `model`）与 `max_concurrent`，不带模型名，导入时
+清掉文件里的模型名。运行时，会话手选了别的连接或该模型已被移出列表（记告警），这些模型名
+不生效：默认子代理模型回到连接的 `roles.subagent`（官方连接不写，由 Claude Code 决定），
+定义改为继承。推理等级与主模型规则相同：声明不支持的不传，未知的原样传。自定义子代理和
+默认子代理模型声明的最大输出参与 `CLAUDE_CODE_MAX_OUTPUT_TOKENS` 的派生。团队路由会话
+不注入自定义子代理。CLI 里定义的 `model` 优先于 `CLAUDE_CODE_SUBAGENT_MODEL`。改动随
+`runtime_policy` 一起停相关 Runner；只有自定义子代理的改动开新 SDK 会话，只改上限或默认
+子代理模型保留会话。`effective-capabilities` 的 `preview.subagents` 给出一次未手选模型的
+运行实际得到的上限、默认子代理模型及其来源（`agent`、`connection`、`turn`、`claude_code`，
+没有连接时为 `null`）和每个自定义子代理的工具、模型与推理等级；没有子代理设置时为 `null`。
+
 `duplicate` 新建「<名称> 副本」（重名时为「副本 2」「副本 3」…），复制四段 Prompt、
 `prompt_mode`、`runtime_policy`、模型绑定、头像 Emoji/背景色与上传的头像文件（复制为
 新文件），不复制工作区和渠道挂载；内置 HappyClaw 返回 400。校验与创建相同；非
@@ -846,8 +934,9 @@ Runner 停止期间，用一个事务把该智能体的全部工作区迁到目�
 
 `export` 返回 `{format: "happyclaw-agent", version: 1, exported_at, agent}`，`agent`
 含名称、头像 Emoji/背景色、四段 Prompt、`prompt_mode` 与 `runtime_policy`；Skills 用
-目录名、MCP 用 `system:`/`user:` 前缀名引用，不含模型配置、上传头像、宿主机路径或
-凭据。`import` 接受 `{data, name?, drop_missing?, confirm_host_grants?}`：格式或
+目录名、MCP 用 `system:`/`user:` 前缀名引用；有自定义子代理或上限时带
+`runtime_policy.subagents`（`max_concurrent` 与不含 `model` 的 `definitions`）。不含模型
+配置（子代理模型名也不含）、上传头像、宿主机路径或凭据。`import` 接受 `{data, name?, drop_missing?, confirm_host_grants?}`：格式或
 版本不对返回 400
 （`INVALID_AGENT_EXPORT`、`UNSUPPORTED_AGENT_EXPORT_VERSION`）；引用了本账号没有的
 Skills/MCP 时返回 409 `AGENT_IMPORT_MISSING_REFERENCES` 与 `missing`，带
@@ -1569,9 +1658,16 @@ Web 和 Runtime 不再把它们当作第二个可写真相源。
 管理：
 
 - `GET|POST /api/admin/users`
-- `PATCH|DELETE /api/admin/users/:id`
+- `PATCH|DELETE /api/admin/users/:id`：改自己的密码（`password` 且目标是自己）要同时给
+  `current_password`，错误或缺失返回 400 `CURRENT_PASSWORD_INCORRECT` 并计入登录限流；停用或删除
+  会作废该用户待用的二次验证登录 challenge
 - `POST /api/admin/users/:id/restore`
 - `DELETE /api/admin/users/:id/sessions`
+- `DELETE /api/admin/users/:id/2fa`：清除他人的二次验证与恢复码（丢失验证器时的恢复路径，不动通行密钥），
+  写审计 `mfa_reset`；不能用于自己。用户列表的每行带 `two_factor_enabled` 和 `passkey_count`
+- `DELETE /api/admin/users/:id/passkeys`：删除他人的全部通行密钥并作废其进行中的注册 challenge，
+  返回 `{ success, removed }`，
+  有删除时写审计 `passkeys_revoked`；权限与重置二次验证相同，不能用于自己（自己的在设置里删）
 - `GET /api/admin/permission-templates`
 - `GET|POST /api/admin/invites`
 - `DELETE /api/admin/invites/:code`

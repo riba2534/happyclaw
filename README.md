@@ -14,7 +14,7 @@
 
 <p align="center">
   <a href="https://happyclaw.cc/"><img src="https://img.shields.io/badge/Website-happyclaw.cc-F97316?style=for-the-badge" alt="Website" /></a>
-  <a href="https://nodejs.org/"><img src="https://img.shields.io/badge/Node.js-%3E%3D20-339933?style=for-the-badge&logo=nodedotjs&logoColor=white" alt="Node.js" /></a>
+  <a href="https://nodejs.org/"><img src="https://img.shields.io/badge/Node.js-%3E%3D22-339933?style=for-the-badge&logo=nodedotjs&logoColor=white" alt="Node.js" /></a>
   <img src="https://img.shields.io/badge/TypeScript-5.9-3178C6?style=for-the-badge&logo=typescript&logoColor=white" alt="TypeScript" />
   <a href="https://github.com/riba2534/happyclaw"><img src="https://img.shields.io/github/stars/riba2534/happyclaw?style=for-the-badge&color=f5a623" alt="GitHub Stars" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-0F766E?style=for-the-badge" alt="MIT License" /></a>
@@ -257,7 +257,7 @@ REST 接口见 [API 文档](docs/API.md#自动化)。
 ### 环境要求
 
 - macOS 或 Linux；Windows 推荐使用 WSL2。
-- [Node.js](https://nodejs.org/) 20 或更高版本，推荐使用 Node.js 24。
+- [Node.js](https://nodejs.org/) 22 或更高版本，推荐使用 Node.js 24。
 - npm 与 GNU Make。
 - [Docker](https://www.docker.com/)：多人部署（普通成员和 Container 工作区）需要；单人宿主机部署不需要安装。
 
@@ -353,9 +353,9 @@ HappyClaw 优先通过 Web 设置管理配置，不要求用户维护一组庞�
 | `WEB_SESSION_SECRET`                 | 自动生成并持久化                  | Web 登录会话签名密钥                                                               |
 | `CONTAINER_IMAGE`                    | `riba2534/happyclaw-agent:latest` | 智能体容器镜像                                                                     |
 | `CONTAINER_IMAGE_HEADROOM`           | 从 core 标签派生 `-headroom`      | 启用 Headroom MCP 时使用的同版本能力镜像                                           |
-| `CONTAINER_TIMEOUT`                  | `1800000`                         | 容器硬超时，毫秒                                                                   |
+| `CONTAINER_TIMEOUT`                  | `1800000`                         | Runner 无输出看门狗，毫秒                                                          |
 | `IDLE_TIMEOUT`                       | `1800000`                         | 容器空闲保活时间，毫秒                                                             |
-| `STUCK_RUNNER_FORCE_RESTART_MINUTES` | `10`                              | IPC 债务强制恢复上限（整数分钟，范围 4–120；非法值回退默认）                       |
+| `STUCK_RUNNER_FORCE_RESTART_MINUTES` | `10`                              | IPC 债务强制恢复上限（整数分钟 4–120，非法值回退默认）；后台任务未结清时不适用     |
 | `ADMIN_HOST_ONLY_MODE`               | `false`                           | 管理员工作区与任务强制使用宿主机                                                   |
 | `HAPPYCLAW_DEPLOYMENT_MODE`          | `multi_user`                      | 部署方式：`multi_user` 或 `single_user_host`；Web 设置中保存过的值优先             |
 | `HAPPYCLAW_WORKSPACE_ROOT`           | `~/happyclaw`                     | 新建 Host 工作区的根目录；Web 设置中保存过的值优先                                 |
