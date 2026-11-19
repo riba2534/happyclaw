@@ -1,4 +1,4 @@
-import { ChevronRight, ExternalLink } from 'lucide-react';
+import { AlertTriangle, ChevronRight, ExternalLink } from 'lucide-react';
 import { SegmentedControl } from '@/components/common/SegmentedControl';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -11,6 +11,7 @@ import {
   FEISHU_BRAND_OPTIONS,
   feishuBrandOf,
   feishuSetupGuide,
+  PAIRING_OWNER_RISK_NOTE,
   providerDefinition,
   type ChannelSetupGuide,
 } from '../../../utils/channel-accounts';
@@ -46,6 +47,7 @@ export function ProviderConnectionFields({
           <ProviderSetupGuide
             id={`${idPrefix}-setup-guide`}
             guide={definition.setupGuide}
+            pairing={definition.supportsPairing}
           />
         )}
         <p className="text-caption leading-5 text-muted-foreground">
@@ -85,7 +87,11 @@ export function ProviderConnectionFields({
         />
       )}
       {shouldShowGuide && (
-        <ProviderSetupGuide id={`${idPrefix}-setup-guide`} guide={guide} />
+        <ProviderSetupGuide
+          id={`${idPrefix}-setup-guide`}
+          guide={guide}
+          pairing={definition.supportsPairing}
+        />
       )}
       {showSecrets && (
         <div className="grid gap-4 sm:grid-cols-2">
@@ -178,9 +184,12 @@ export function ProviderConnectionFields({
 function ProviderSetupGuide({
   id,
   guide,
+  pairing,
 }: {
   id: string;
   guide: ChannelSetupGuide;
+  /** The next step pairs chats: say what pairing a direct chat grants. */
+  pairing: boolean;
 }) {
   return (
     <section
@@ -230,6 +239,15 @@ function ProviderSetupGuide({
         <span className="font-medium text-foreground">创建后：</span>
         {guide.nextStep}
       </p>
+      {pairing && (
+        <p className="mt-1.5 flex items-start gap-1.5 text-caption leading-5 text-warning">
+          <AlertTriangle
+            aria-hidden="true"
+            className="mt-0.5 size-3.5 shrink-0"
+          />
+          {PAIRING_OWNER_RISK_NOTE}
+        </p>
+      )}
     </section>
   );
 }

@@ -756,6 +756,9 @@ Channel Reliability 的 Inbox/Turn/Outbox/Card 表由
 - `canAccessGroup`、`canModifyGroup` 和 `canDeleteGroup` 不提供 admin 全局旁路；
   工作区和渠道资源按 `created_by` 隔离。
 - Host 工作区额外要求 admin 角色。
+- 配对（或绑定后学习到）的私聊发送者在机器人里等同账号主人本人：可以 `/list`、`/bind` 到主人的
+  全部工作区（包括 Host 工作区），在任意工作区按主人轮次判定。配对页与渠道引导提示只给自己的账号
+  配对；没有「受委托的他人」这一角色。
 - 系统配置、用户、邀请、审计和计费使用独立 Permission Middleware。
 - 敏感写操作必须先停止或暂停相关 Runner，并在提交失败时恢复队列。
 - API 返回资源不存在时通常使用 404 隐藏其他用户资源是否存在。

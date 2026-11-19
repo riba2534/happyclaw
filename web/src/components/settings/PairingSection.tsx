@@ -1,5 +1,6 @@
 import { Link as RouterLink } from 'react-router-dom';
 import {
+  AlertTriangle,
   Loader2,
   Copy,
   Check,
@@ -10,6 +11,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { IconButton } from '@/components/common/IconButton';
 import { confirmDialog } from '@/stores/confirm';
+import { PAIRING_OWNER_RISK_NOTE } from '../../utils/channel-accounts';
 import type { PairedChat } from './hooks/usePairedChats';
 
 interface PairingSectionProps {
@@ -52,6 +54,13 @@ export function PairingSection({
   return (
     <section className="space-y-3 border-t border-surface-border pt-4">
       <h4 className="text-title-sm text-foreground">聊天配对</h4>
+      <p className="flex items-start gap-1.5 text-caption leading-5 text-warning">
+        <AlertTriangle
+          aria-hidden="true"
+          className="mt-0.5 size-3.5 shrink-0"
+        />
+        {PAIRING_OWNER_RISK_NOTE}
+      </p>
 
       {pairing.code && pairing.countdown > 0 ? (
         <div className="space-y-2">

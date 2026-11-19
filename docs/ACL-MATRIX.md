@@ -372,6 +372,9 @@ admin。admin 没有跨 owner bypass，不存在与无权限都返回 404。
 Owner Claim：
 
 - 可信的 1:1 私聊可以从第一条持久化人类消息学习 owner。
+- 配对（`/pair`）或绑定后学习到的私聊发送者在机器人里等同主人本人：IM 命令可以 `/list`
+  主人的全部工作区，`/bind` 到其中任意一个（包括宿主机工作区），在主人任意工作区里都按主人
+  轮次判定（见 4.5）。配对页和渠道引导提示只给主人自己的账号配对。
 - 未认领群聊不会让“第一个发命令的人”自动成为 owner。
 - 群聊用 `/owner_mention` 显式认领。
 - `/release_owner` 清除 owner 与 allowlist，并把 legacy `owner_mentioned` 降级。
@@ -398,6 +401,10 @@ Owner Claim：
 | `/steer <消息>`、`/break`（全部 IM 渠道）      | 群聊必须有渠道结构证明的真实 @Bot，并通过当前 audience/激活策略；不要求 owner |
 | 飞书 `/clear`、`/fresh [备注]`（运行时控制）   | 群聊必须结构化真实 @Bot 且为 IM Owner（与斜杠 `/clear`、`/fresh` 同一边界）   |
 | MCP `fresh_window`                             | 当前会话 Agent 可调用；不走斜杠 owner gate                                    |
+
+私聊里 `/list`、`/recall` 不受限、私聊发送者可以通过 owner-required 命令，是因为配对或绑定后
+私聊的对方就是主人本人；把别人的私聊配对或绑定进来，等于把这些权限（包括 `/bind` 到宿主机
+工作区）交给对方。
 
 飞书群聊中由 `handleCommand()` 处理的通用斜杠命令同样必须结构化真实 @Bot，并通过 audience
 检查；它们不受激活闸门（`activation_mode`、`when_mentioned`、`disabled`）约束，
