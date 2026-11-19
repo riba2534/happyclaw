@@ -10,6 +10,7 @@ import { AssistantUsageCollector } from '../container/agent-runner/src/assistant
 import { ResultUsageReconciler } from '../container/agent-runner/src/result-usage.js';
 import { createRuntimeSourceHarness } from './helpers/runtime-source.js';
 import { createTranscriptUsageLoader } from '../container/agent-runner/src/transcript-usage.js';
+import { cacheHitRate } from '../web/src/lib/usage-metrics.js';
 
 const MODEL = 'gpt-6.1-sol';
 const AUX = 'claude-haiku-5-5';
@@ -141,6 +142,33 @@ describe('Codex final input snapshots', () => {
       cacheCreationInputTokens: 0,
       outputTokens: 3,
     });
+  });
+
+  test('live progress shows the hit rate the call settles with', () => {
+    const collector = new AssistantUsageCollector({ codex: true });
+    start(collector);
+    finish(collector, {
+      input_tokens: 1_302,
+      cache_read_input_tokens: 27_776,
+      cache_creation_input_tokens: 0,
+      output_tokens: 669,
+    });
+    const progress = collector.takeUsageProgress();
+    const settled = collector.drain('s')?.tokens;
+    expect(settled).toMatchObject({
+      inputTokens: 1_302,
+      cacheReadInputTokens: 27_776,
+      cacheCreationInputTokens: 0,
+      outputTokens: 669,
+    });
+    expect(progress).toMatchObject({
+      calls: 1,
+      inputTokens: settled?.inputTokens,
+      cacheReadInputTokens: settled?.cacheReadInputTokens,
+      cacheCreationInputTokens: settled?.cacheCreationInputTokens,
+      outputTokens: settled?.outputTokens,
+    });
+    expect(cacheHitRate(progress!)).toBe(cacheHitRate(settled!));
   });
 
   test('a missing final field retains its earlier value', () => {

@@ -389,7 +389,9 @@ export class AssistantUsageCollector {
 
   private countFinishedCall(id: string): void {
     if (this.progressIds.has(id)) return;
-    const tokens = this.streamFinalById.get(id);
+    // The same per-call usage the ledger settles, so the live hit rate does
+    // not change when the result arrives (Codex: the final input fields).
+    const tokens = this.callTokens(id, this.bestById.get(id));
     if (!tokens) return;
     this.progressIds.add(id);
     const p = this.progress;
@@ -398,14 +400,52 @@ export class AssistantUsageCollector {
     p.cacheReadInputTokens += tokens.cacheReadInputTokens;
     p.cacheCreationInputTokens += tokens.cacheCreationInputTokens;
     p.outputTokens += tokens.outputTokens;
-    const timing = this.streamTimingById.get(id);
-    const ms =
-      timing?.stoppedAt !== undefined ? timing.stoppedAt - timing.startedAt : 0;
-    if (ms > 0 && tokens.outputTokens > 0) {
-      p.streamOutputTokens += tokens.outputTokens;
-      p.streamMs += ms;
-    }
+    const generation = this.callGeneration(id, tokens);
+    p.streamOutputTokens += generation.streamOutputTokens ?? 0;
+    p.streamMs += generation.streamMs ?? 0;
     this.progressChanged = true;
+  }
+
+  /**
+   * One API call's usage from every source seen so far: the live assistant
+   * snapshot, its stream events and its transcript line. By default the
+   * field-wise maximum; only the selected Codex gateway lets explicit final
+   * input fields replace the start estimate.
+   */
+  private callTokens(
+    id: string,
+    entry: CollectedAssistantUsage | undefined,
+    transcriptHit?: CollectedAssistantUsage,
+  ): TokenSnapshot | undefined {
+    const stream = this.streamFinalById.get(id);
+    const base = entry ?? stream;
+    if (!base) return undefined;
+    const merged = maxTokens(base, stream, transcriptHit);
+    if (this.options.codex) {
+      // The gateway's start count is an estimate of the whole prompt; its
+      // final input count excludes cache and can legitimately be smaller.
+      Object.assign(
+        merged,
+        entry?.finalInputTokens,
+        transcriptHit?.finalInputTokens,
+        this.streamFinalInputById.get(id),
+      );
+    }
+    return merged;
+  }
+
+  /**
+   * Output over the call's message_start-to-stop time. Output tokens are
+   * taken before the reasoning split: thinking is generated at the same
+   * speed as text.
+   */
+  private callGeneration(id: string, tokens: TokenSnapshot): StreamGeneration {
+    const timing = this.streamTimingById.get(id);
+    const streamMs =
+      timing?.stoppedAt !== undefined ? timing.stoppedAt - timing.startedAt : 0;
+    return streamMs > 0 && tokens.outputTokens > 0
+      ? { streamOutputTokens: tokens.outputTokens, streamMs }
+      : {};
   }
 
   private collectContent(sdkMessage: Record<string, unknown>): void {
@@ -649,30 +689,8 @@ export class AssistantUsageCollector {
     // the growth of a later cumulative result (through the resume baseline)
     // bills it as residual usage instead.
     if (child && boundary !== 'interrupt' && !completed) return undefined;
-    const merged = maxTokens(
-      entry,
-      this.streamFinalById.get(entry.id),
-      transcriptHit,
-    );
-    if (this.options.codex) {
-      // The gateway's start count is an estimate of the whole prompt; its
-      // final input count excludes cache and can legitimately be smaller.
-      Object.assign(
-        merged,
-        entry.finalInputTokens,
-        transcriptHit?.finalInputTokens,
-        this.streamFinalInputById.get(entry.id),
-      );
-    }
-    const timing = this.streamTimingById.get(entry.id);
-    const streamMs =
-      timing?.stoppedAt !== undefined ? timing.stoppedAt - timing.startedAt : 0;
-    // Output tokens before the reasoning split below: thinking is generated
-    // at the same speed as text.
-    const generation: StreamGeneration =
-      streamMs > 0 && merged.outputTokens > 0
-        ? { streamOutputTokens: merged.outputTokens, streamMs }
-        : {};
+    const merged = this.callTokens(entry.id, entry, transcriptHit)!;
+    const generation = this.callGeneration(entry.id, merged);
     const effective: CollectedAssistantUsage = {
       ...entry,
       ...merged,
