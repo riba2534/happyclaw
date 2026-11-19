@@ -837,6 +837,40 @@ try {
       result.usage.output_tokens === 22 &&
       !result.usage.cache_creation_input_tokens,
   );
+  const { AssistantUsageCollector } = await import(
+    pathToFileURL(
+      path.join(repository, 'container/agent-runner/dist/assistant-usage.js'),
+    ).href
+  );
+  for (const codex of [true, false]) {
+    const collector = new AssistantUsageCollector({ codex });
+    for (const message of sdkMessages) {
+      collector.observeStreamEvent(message);
+      collector.ingest(message);
+    }
+    let input = 0,
+      cached = 0,
+      output = 0;
+    for (
+      let batch = collector.drain('e2e');
+      batch;
+      batch = collector.drain('e2e')
+    ) {
+      input += batch.tokens.inputTokens;
+      cached += batch.tokens.cacheReadInputTokens;
+      output += batch.tokens.outputTokens;
+    }
+    check(
+      codex
+        ? 'codexCollectorUsesFinalInputs'
+        : 'nonCodexCollectorKeepsExistingRule',
+      codex
+        ? input === sdkFreshInputTokens &&
+            cached === sdkCachedInputTokens &&
+            output === sdkOutputTokens
+        : input > sdkFreshInputTokens,
+    );
+  }
   check(
     'sdkCachedInputCountedOnce',
     result.usage.input_tokens +
@@ -898,7 +932,7 @@ try {
     // The third-party default the host sets: the CLI sends max on its own.
     CLAUDE_CODE_EFFORT_LEVEL: 'max',
   };
-  const askOnce = async () => {
+  const askOnce = async (requestModel = pickedModel) => {
     const messages = [];
     querySession = query({
       prompt: 'Reply with the confirmation.',
@@ -906,7 +940,8 @@ try {
         cwd: workspace,
         env: pickEnv,
         pathToClaudeCodeExecutable: cli,
-        model: pickedModel,
+        model: requestModel,
+        includePartialMessages: true,
         systemPrompt: 'You are a controlled conversation-override test.',
         tools: [],
         allowedTools: [],
@@ -925,10 +960,13 @@ try {
     });
     for await (const message of querySession) messages.push(message);
     querySession.close();
-    return messages.find((message) => message.type === 'result');
+    return {
+      messages,
+      result: messages.find((message) => message.type === 'result'),
+    };
   };
 
-  const pickedResult = await askOnce();
+  const { result: pickedResult } = await askOnce();
   check(
     'conversationTurnCompleted',
     pickedResult?.subtype === 'success' &&
@@ -961,7 +999,7 @@ try {
     'liveEffortChangeReachesTheGrant',
     updateLiveSessionEffort(conversation, 'high') === 1,
   );
-  const changedResult = await askOnce();
+  const { result: changedResult } = await askOnce();
   check(
     'liveEffortChangeTurnCompleted',
     changedResult?.subtype === 'success' && !changedResult.is_error,
@@ -979,6 +1017,36 @@ try {
     'clearedEffortFallsBackToTheModelDefault',
     overrideUpstream.length === 3 &&
       overrideUpstream[2].reasoning?.effort === 'low',
+  );
+  // The SDK aggregates by request model; the per-message ledger sees the served model.
+  const alias = 'claude-haiku-5-5';
+  const { messages: aliasMessages, result: aliasResult } = await askOnce(alias);
+  const collector = new AssistantUsageCollector({ codex: true });
+  for (const message of aliasMessages) {
+    collector.observeStreamEvent(message);
+    collector.ingest(message);
+  }
+  const batch = collector.drain('alias');
+  check(
+    'sdkReportsRequestAndResponseUnderDifferentModels',
+    overrideRequests.at(-1).body.model === alias &&
+      overrideUpstream.at(-1).model === model &&
+      batch?.tokens.modelUsage[model]?.inputTokens === 30 &&
+      aliasResult?.modelUsage[alias]?.inputTokens === 30,
+  );
+  const { ResultUsageReconciler } = await import(
+    pathToFileURL(
+      path.join(repository, 'container/agent-runner/dist/result-usage.js'),
+    ).href
+  );
+  const reconciler = new ResultUsageReconciler();
+  reconciler.recordAccounted(batch.tokens.modelUsage, batch);
+  check(
+    'aliasedCallIsBilledOnce',
+    !reconciler.applyResult({
+      modelUsage: aliasResult.modelUsage,
+      fallbackModelKey: model,
+    }).residual && Object.keys(reconciler.pendingAccounted).length === 0,
   );
   clearTimeout(timer);
   pickLease.revoke();

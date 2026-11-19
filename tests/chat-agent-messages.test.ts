@@ -397,6 +397,8 @@ describe('conversation Agent usage events', () => {
           costUSD: 0,
           durationMs: 72_776,
           numTurns: 3,
+          streamOutputTokens: 583,
+          streamMs: 5_830,
         },
       },
       agentId,
@@ -409,6 +411,9 @@ describe('conversation Agent usage events', () => {
       outputTokens: 583,
       cacheReadInputTokens: 147_008,
       durationMs: 72_776,
+      // Kept, so the speed shows without reloading the history.
+      streamOutputTokens: 583,
+      streamMs: 5_830,
     });
     await Promise.resolve();
     expect(saveAgentMessageSnapshotMock).toHaveBeenCalledWith(
@@ -417,6 +422,62 @@ describe('conversation Agent usage events', () => {
       [expect.objectContaining({ id: finalReply.id })],
       false,
     );
+  });
+
+  it('keeps the latest per-call progress on the streaming reply', () => {
+    const agentId = 'agent-1';
+    const streaming = () => useChatStore.getState().agentStreaming[agentId];
+    const progress = {
+      calls: 2,
+      inputTokens: 10,
+      cacheReadInputTokens: 990,
+      cacheCreationInputTokens: 0,
+      outputTokens: 120,
+      streamOutputTokens: 120,
+      streamMs: 1_200,
+    };
+    const send = () =>
+      useChatStore
+        .getState()
+        .handleStreamEvent(
+          'web:main',
+          { eventType: 'usage_progress', usageProgress: progress },
+          agentId,
+          'run-1',
+        );
+
+    useChatStore.setState({
+      activeRuns: {
+        [`web:main#agent:${agentId}`]: {
+          chatJid: `web:main#agent:${agentId}`,
+          runId: 'run-1',
+          startedAt: '2026-11-16T00:00:00.000Z',
+          phase: 'running',
+        },
+      },
+    });
+    // Nothing streaming yet: no state is made up for it.
+    send();
+    expect(streaming()).toBeUndefined();
+
+    useChatStore.setState({
+      agentStreaming: {
+        [agentId]: {
+          partialText: '开头',
+          thinkingText: '',
+          isThinking: false,
+          activeTools: [],
+          activeHook: null,
+          systemStatus: null,
+          recentEvents: [],
+          traceEvents: [],
+          taskStates: {},
+        },
+      },
+    });
+    send();
+    expect(streaming()?.usageProgress).toEqual(progress);
+    expect(streaming()?.traceEvents).toEqual([]);
   });
 });
 

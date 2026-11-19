@@ -6,6 +6,19 @@ type LedgerReceipt = {
   inserted: boolean;
   providerEstimatedCostUSD: number;
 };
+/** Streamed calls add up; omitted when no call of the input was timed. */
+function sumStreamGeneration(
+  base: Usage | undefined,
+  next: Usage,
+): Pick<Usage, 'streamOutputTokens' | 'streamMs'> {
+  const streamMs = (base?.streamMs || 0) + (next.streamMs || 0);
+  const streamOutputTokens =
+    (base?.streamOutputTokens || 0) + (next.streamOutputTokens || 0);
+  return streamMs > 0 && streamOutputTokens > 0
+    ? { streamOutputTokens, streamMs }
+    : {};
+}
+
 type InputState = { usage?: Usage; messageId?: string; completed: boolean };
 
 /** One host invocation owns this bounded projection; billing remains in the ledger. */
@@ -95,6 +108,7 @@ export class InputUsageProjection {
         costUSD: (base?.costUSD || 0) + next.costUSD,
         durationMs: (base?.durationMs || 0) + next.durationMs,
         numTurns: (base?.numTurns || 0) + next.numTurns,
+        ...sumStreamGeneration(base, next),
         modelUsage: Object.keys(modelUsage).length ? modelUsage : undefined,
       };
     }
