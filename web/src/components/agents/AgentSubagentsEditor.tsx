@@ -22,6 +22,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { IconButton } from '@/components/common/IconButton';
 import { ListGroup, ListRow } from '@/components/common/ListRow';
 import { SettingsField } from '@/components/settings/SettingsLayout';
+import { selectableEfforts } from '@/components/settings/AgentModelSelect';
 import { effortLabel } from '@/components/settings/model-connections';
 import { confirmDialog } from '@/stores/confirm';
 import type {
@@ -51,8 +52,49 @@ const EFFORTS: SubagentEffortLevel[] = [
   'xhigh',
   'max',
 ];
+/** As the server checks a tool rule (SUBAGENT_TOOL_RE in agent-subagents.ts). */
+const TOOL_RE = /^[A-Za-z][\w.*-]*(?:\([^,\r\n\0]*\))?$/;
+const MAX_TOOL_CHARS = 200;
 /** Select items cannot hold '' or null. */
 const INHERIT = '__inherit__';
+
+/**
+ * The tool rules typed into the field: one per line or comma-separated, so a
+ * rule with an argument such as `Bash(git log:*)` keeps its spaces.
+ */
+export function parseSubagentTools(text: string): string[] {
+  const tools = text
+    .split(/[,，\r\n]+/)
+    .map((tool) => tool.trim())
+    .filter(Boolean);
+  return [...new Set(tools)];
+}
+
+/** A typed tool rule the server would refuse, or null. */
+export function invalidSubagentTool(tools: string[]): string | null {
+  return (
+    tools.find((tool) => tool.length > MAX_TOOL_CHARS || !TOOL_RE.test(tool)) ??
+    null
+  );
+}
+
+/**
+ * The levels a sub-agent may pick on the model it runs: what the model
+ * takes, every level for a model nothing is known about (`unverified`,
+ * sent as picked), and every level while it follows a model this form
+ * cannot name (the server sends only what that model takes).
+ */
+export function subagentEffortChoices(model: ConnectionModel | undefined): {
+  efforts: SubagentEffortLevel[];
+  unverified: boolean;
+} {
+  if (!model) return { efforts: EFFORTS, unverified: false };
+  const { efforts, unverified } = selectableEfforts(model);
+  return {
+    efforts: EFFORTS.filter((effort) => efforts.includes(effort)),
+    unverified,
+  };
+}
 
 const EMPTY_POLICY: AgentSubagentPolicy = {
   model: null,
@@ -166,7 +208,7 @@ export function AgentSubagentsEditor({
       />
       <AgentControlRow
         label="同时运行上限"
-        description="同一轮最多同时运行的子代理数，超出时 Agent 会收到提示并改为排队。"
+        description="最多同时运行的子代理数。达到上限后，Claude Code 会拒绝再派出新的子代理。"
         control={
           <Select
             value={
@@ -187,7 +229,9 @@ export function AgentSubagentsEditor({
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value={INHERIT}>默认（20）</SelectItem>
+              <SelectItem value={INHERIT}>
+                不设置（使用 Claude Code 默认）
+              </SelectItem>
               {CONCURRENCY_CHOICES.map((count) => (
                 <SelectItem key={count} value={String(count)}>
                   {count} 个
@@ -270,6 +314,7 @@ export function AgentSubagentsEditor({
           .filter((_, i) => i !== editing?.index)
           .map((item) => item.name)}
         connectionModels={connectionModels}
+        defaultModel={policy.model}
         onCancel={() => setEditing(null)}
         onSave={save}
       />
@@ -315,17 +360,6 @@ function ModelSelect({
   );
 }
 
-/** The model's levels (all when unknown), keeping a saved one it lacks. */
-function effortChoices(
-  modelEfforts: readonly string[] | null,
-  saved: SubagentEffortLevel | null,
-): SubagentEffortLevel[] {
-  const listed = modelEfforts
-    ? EFFORTS.filter((effort) => modelEfforts.includes(effort))
-    : EFFORTS;
-  return saved && !listed.includes(saved) ? [saved, ...listed] : listed;
-}
-
 function definitionError(
   definition: AgentSubagentDefinition,
   takenNames: string[],
@@ -337,6 +371,10 @@ function definitionError(
   if (takenNames.includes(definition.name)) return '已有同名子代理';
   if (!definition.description.trim()) return '请填写何时使用';
   if (!definition.prompt.trim()) return '请填写提示词';
+  const tool = invalidSubagentTool(definition.tools ?? []);
+  if (tool) {
+    return `工具「${tool}」格式不对：应为工具名，可带括号里的参数，如 Bash(git log:*)`;
+  }
   return null;
 }
 
@@ -344,12 +382,15 @@ function SubagentDialog({
   editing,
   takenNames,
   connectionModels,
+  defaultModel,
   onCancel,
   onSave,
 }: {
   editing: { index: number | null; definition: AgentSubagentDefinition } | null;
   takenNames: string[];
   connectionModels: ConnectionModel[] | null;
+  /** The Agent's default sub-agent model, which a definition without one runs. */
+  defaultModel: string | null;
   onCancel: () => void;
   onSave: (definition: AgentSubagentDefinition) => void;
 }) {
@@ -360,28 +401,32 @@ function SubagentDialog({
   useEffect(() => {
     if (!editing) return;
     setDraft(editing.definition);
-    setToolsText(editing.definition.tools?.join(', ') ?? '');
+    setToolsText(editing.definition.tools?.join('\n') ?? '');
     setError(null);
   }, [editing]);
 
   const set = (patch: Partial<AgentSubagentDefinition>) =>
     setDraft((current) => (current ? { ...current, ...patch } : current));
-  const modelEfforts =
-    connectionModels?.find((item) => item.id === draft?.model)?.efforts ?? null;
+  const runsOn = connectionModels?.find(
+    (item) => item.id === (draft?.model ?? defaultModel),
+  );
+  const { efforts, unverified } = subagentEffortChoices(runsOn);
+  const takesNone =
+    runsOn?.effortsSource === 'declared' && runsOn.efforts.length === 0;
+  // A saved level the model does not list stays visible as what is saved.
+  const unlistedEffort =
+    draft?.effort && !efforts.includes(draft.effort) ? draft.effort : null;
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
     if (!draft) return;
-    const tools = toolsText
-      .split(/[,，\s]+/)
-      .map((tool) => tool.trim())
-      .filter(Boolean);
+    const tools = parseSubagentTools(toolsText);
     const next: AgentSubagentDefinition = {
       ...draft,
       name: draft.name.trim(),
       description: draft.description.trim(),
       prompt: draft.prompt.trim(),
-      tools: tools.length > 0 ? [...new Set(tools)] : null,
+      tools: tools.length > 0 ? tools : null,
     };
     const invalid = definitionError(next, takenNames);
     if (invalid) {
@@ -448,11 +493,12 @@ function SubagentDialog({
             <SettingsField
               label="可用工具"
               htmlFor="subagent-tools"
-              description="用逗号分隔，例如 Read, Grep, Glob；留空表示和主 Agent 一样"
+              description="每行一个，或用逗号分隔，例如 Read、Grep、Bash(git log:*)；留空表示和主 Agent 一样"
             >
-              <Input
+              <Textarea
                 id="subagent-tools"
                 variant="code"
+                rows={3}
                 value={toolsText}
                 onChange={(e) => setToolsText(e.target.value)}
                 placeholder="全部工具"
@@ -471,7 +517,13 @@ function SubagentDialog({
               <SettingsField
                 label="推理等级"
                 htmlFor="subagent-effort"
-                description="模型不支持所选等级时不下发"
+                description={
+                  takesNone
+                    ? '这个模型不支持推理等级。'
+                    : unverified
+                      ? '未验证：没有这个模型的资料，所选等级原样下发。'
+                      : '模型不支持所选等级时不下发'
+                }
               >
                 <Select
                   value={draft.effort ?? INHERIT}
@@ -487,9 +539,16 @@ function SubagentDialog({
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value={INHERIT}>模型默认</SelectItem>
-                    {effortChoices(modelEfforts, draft.effort).map((effort) => (
+                    {unlistedEffort && (
+                      <SelectItem value={unlistedEffort}>
+                        {effortLabel(unlistedEffort)}（该模型不支持）
+                      </SelectItem>
+                    )}
+                    {efforts.map((effort) => (
                       <SelectItem key={effort} value={effort}>
-                        {effortLabel(effort)}
+                        {unverified
+                          ? `${effortLabel(effort)}（未验证）`
+                          : effortLabel(effort)}
                       </SelectItem>
                     ))}
                   </SelectContent>
