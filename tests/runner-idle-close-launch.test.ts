@@ -1,7 +1,8 @@
 /**
  * The host tells each Runner it launches how long it tolerates silence (its
  * idle close), so a result held for background work can keep it off with
- * keepalives paced to the configured timeouts.
+ * keepalives paced to the configured timeouts; the idle close the host keeps
+ * for a conversation is that same value.
  *
  * The real launcher, configuration and database run against a child that
  * records the input it was given. No Docker daemon or model endpoint is
@@ -78,10 +79,14 @@ vi.mock('../src/agent-capabilities.js', () => ({
 
 const db = await import('../src/db.js');
 const config = await import('../src/runtime-config.js');
-const { runHostAgent, runContainerAgent } =
+const { runHostAgent, runContainerAgent, runnerLivenessFor } =
   await import('../src/container-runner.js');
+const { createRuntimeSourceHarness } =
+  await import('./helpers/runtime-source.js');
 const { backgroundHoldKeepaliveIntervalMs } =
   await import('../container/agent-runner/src/background-task-drain.js');
+const { resolveRunnerLivenessTimeouts } =
+  await import('../src/runner-liveness.js');
 const folder = 'idle-close';
 const session = 'idle-close-session';
 
@@ -138,7 +143,7 @@ async function launch(
         folder,
         added_at: '2026-11-20',
         executionMode: mode,
-        ...(containerTimeout
+        ...(containerTimeout !== undefined
           ? { containerConfig: { timeout: containerTimeout } }
           : {}),
       },
@@ -220,5 +225,46 @@ describe(
         expect(backgroundHoldKeepaliveIntervalMs(sent)).toBe(interval);
       },
     );
+  },
+);
+
+/** The idle close processAgentConversation keeps for `effectiveGroup`,
+ * computed from the real settings by whichever of these it uses. */
+function conversationIdleCloseMs(effectiveGroup: object): number {
+  const globals: Record<string, unknown> = {
+    effectiveGroup,
+    runnerLivenessFor,
+    resolveRunnerLivenessTimeouts,
+    getSystemSettings: config.getSystemSettings,
+  };
+  createRuntimeSourceHarness(globals).install(
+    'agentRunnerIdleCloseMs',
+    'processAgentConversation',
+  );
+  return globals.agentRunnerIdleCloseMs as number;
+}
+
+// The keepalive comes every third of what the Runner was told; a host that
+// closed sooner would end a held result between two of them.
+describe(
+  "the host's own idle close is what the Runner is told",
+  { timeout: 20_000 },
+  () => {
+    test.each([
+      ['no execution timeout of its own', undefined],
+      ['an execution timeout of 0', 0],
+      ['an execution timeout of its own', 4 * 60_000],
+    ] as const)('a workspace with %s', async (_case, own) => {
+      config.saveSystemSettings({
+        idleTimeout: 30 * 60_000,
+        containerTimeout: 20 * 60_000,
+      });
+      const told = await launch('host', own);
+      expect(
+        conversationIdleCloseMs(
+          own === undefined ? {} : { containerConfig: { timeout: own } },
+        ),
+      ).toBe(told);
+    });
   },
 );
