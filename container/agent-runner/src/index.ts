@@ -2291,6 +2291,9 @@ async function runQueryAttempt(
       : 'interrupt',
   ): void => {
     const activeSessionId = newSessionId || sessionId;
+    // The settled usage replaces the live totals; later calls answer the
+    // next input.
+    assistantUsageCollector.resetUsageProgress();
     const assistantBatches: AssistantUsageBatch[] = [];
     const recordBatch = (batch: AssistantUsageBatch) => {
       assistantBatches.push(batch);
@@ -3593,6 +3596,16 @@ async function runQueryAttempt(
         assistantUsageCollector.observeStreamEvent(
           message as unknown as Record<string, unknown>,
         );
+        // A call just finished: the live totals for the run status bar.
+        // Display only; the ledger settles at the result.
+        const usageProgress = assistantUsageCollector.takeUsageProgress();
+        if (usageProgress && !suppressOutputAfterInterrupt) {
+          emit({
+            status: 'stream',
+            result: null,
+            streamEvent: { eventType: 'usage_progress', usageProgress },
+          });
+        }
         if (!suppressOutputAfterInterrupt) {
           visibleOutputStarted = true;
         }

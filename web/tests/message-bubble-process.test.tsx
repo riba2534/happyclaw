@@ -1091,6 +1091,46 @@ describe('a reply on a phone', () => {
     expect(details?.className).toContain('hidden');
   });
 
+  it('shows the cache hit rate and speed in the usage line', async () => {
+    await mount(
+      reply({
+        has_trace: false,
+        token_usage: JSON.stringify({
+          inputTokens: 5830,
+          outputTokens: 6174,
+          cacheReadInputTokens: 2588416,
+          cacheCreationInputTokens: 0,
+          durationMs: 63693,
+          streamOutputTokens: 6174,
+          streamMs: 98_000,
+        }),
+      }),
+    );
+    const inline = [...container.querySelectorAll('span')].find((el) =>
+      /tokens/.test(el.textContent ?? ''),
+    );
+    expect(inline?.textContent).toContain('命中 99.8%');
+    expect(inline?.textContent).toContain('63.0 tok/s');
+    // A phone shows the two at a glance on the button that opens the rest.
+    const phoneButton = container.querySelector(
+      'button[aria-label^="用量详情"]',
+    );
+    expect(phoneButton?.textContent).toBe('99.8% · 63.0 tok/s');
+  });
+
+  it('leaves a 0% hit rate out of the usage line', async () => {
+    await mount(
+      reply({
+        has_trace: false,
+        token_usage: JSON.stringify({ inputTokens: 1200, outputTokens: 300 }),
+      }),
+    );
+    const inline = [...container.querySelectorAll('span')].find((el) =>
+      /tokens/.test(el.textContent ?? ''),
+    );
+    expect(inline?.textContent).not.toContain('命中');
+  });
+
   it('gives the user a raised bubble, and 「⋯」 below it', async () => {
     await mount(
       reply({

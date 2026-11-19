@@ -520,6 +520,11 @@ const showAlreadySent = () => showToast('这条消息已经发送过');
 export interface StreamingState {
   turnId?: string;
   /**
+   * Totals of the model calls finished so far in this run, refreshed as each
+   * call ends (owner only): the run status bar's hit rate and speed.
+   */
+  usageProgress?: NonNullable<StreamEvent['usageProgress']>;
+  /**
    * The input this stream answers: the `turn_id` of its final row. A warm
    * turn's `turnId` is the Runner's own, so only this pairs the two there.
    */
@@ -2623,6 +2628,7 @@ function pushTrace(
     event.eventType === 'thinking_start' ||
     event.eventType === 'thinking_end' ||
     event.eventType === 'usage' ||
+    event.eventType === 'usage_progress' ||
     event.eventType === 'init' ||
     event.eventType === 'context_audit' ||
     // Debug rows are never shown; they only used up the trace's bound.
@@ -4112,6 +4118,22 @@ export const useChatStore = create<ChatState>((set, get) => ({
       return;
     }
 
+    if (event.eventType === 'usage_progress') {
+      const progress = event.usageProgress;
+      if (!progress) return;
+      set((s) => {
+        const prev = s.agentStreaming[agentId];
+        if (!prev || prev.interrupted) return s;
+        return {
+          agentStreaming: {
+            ...s.agentStreaming,
+            [agentId]: { ...prev, usageProgress: progress },
+          },
+        };
+      });
+      return;
+    }
+
     if (event.eventType === 'usage' && event.usage) {
       // Warm delivery IDs differ from presentation turn IDs. An old protocol
       // event may use only an exact turn match; never guess the latest reply.
@@ -4130,6 +4152,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
         costUSD: usage.costUSD,
         durationMs: usage.durationMs,
         numTurns: usage.numTurns,
+        streamOutputTokens: usage.streamOutputTokens,
+        streamMs: usage.streamMs,
         modelUsage: usage.modelUsage,
       });
       let snapshotMessages: Message[] | undefined;

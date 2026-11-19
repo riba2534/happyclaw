@@ -254,6 +254,45 @@ export function mergeCodexAssistantUsage(
   };
 }
 
+/**
+ * How long one streamed API call spent producing its output: from its
+ * message_start to the message_delta that carried its stop_reason. Prefill
+ * happens before message_start and tool runs happen between calls, so
+ * output tokens over this time is the model's generation speed. Absent for a
+ * call that was not streamed or never finished.
+ */
+export interface StreamGeneration {
+  streamOutputTokens?: number;
+  streamMs?: number;
+}
+
+/**
+ * What the calls finished since the last result add up to, for the live
+ * display only: the ledger still settles at the result. Each call counts
+ * once, when the message_delta with its stop_reason arrives.
+ */
+export interface UsageProgress {
+  calls: number;
+  inputTokens: number;
+  cacheReadInputTokens: number;
+  cacheCreationInputTokens: number;
+  outputTokens: number;
+  streamOutputTokens: number;
+  streamMs: number;
+}
+
+function emptyProgress(): UsageProgress {
+  return {
+    calls: 0,
+    inputTokens: 0,
+    cacheReadInputTokens: 0,
+    cacheCreationInputTokens: 0,
+    outputTokens: 0,
+    streamOutputTokens: 0,
+    streamMs: 0,
+  };
+}
+
 export interface AssistantUsageBatch {
   eventId: string;
   tokens: Pick<
@@ -264,7 +303,8 @@ export interface AssistantUsageBatch {
     | 'cacheCreationInputTokens'
     | 'reasoningTokens'
     | 'modelUsage'
-  >;
+  > &
+    StreamGeneration;
   /**
    * A message_delta with a stop_reason arrived before the flush. Claude
    * Code 2.1.296 adds the call to modelUsage before it yields that event,
@@ -315,8 +355,58 @@ export class AssistantUsageCollector {
     children: Set<string>;
     remaining: TokenSnapshot;
   }[] = [];
+  /** message_start and final message_delta arrival times, by message ID. */
+  private readonly streamTimingById = new Map<
+    string,
+    { startedAt: number; stoppedAt?: number }
+  >();
 
-  constructor(private readonly options: { codex?: boolean } = {}) {}
+  private progress = emptyProgress();
+  private readonly progressIds = new Set<string>();
+  private progressChanged = false;
+
+  constructor(
+    private readonly options: { codex?: boolean; now?: () => number } = {},
+  ) {}
+
+  private now(): number {
+    return (this.options.now ?? Date.now)();
+  }
+
+  /** The live totals when a call finished since the last read. */
+  takeUsageProgress(): UsageProgress | undefined {
+    if (!this.progressChanged) return undefined;
+    this.progressChanged = false;
+    return { ...this.progress };
+  }
+
+  /** Start the live totals afresh: the next calls answer the next input. */
+  resetUsageProgress(): void {
+    this.progress = emptyProgress();
+    this.progressIds.clear();
+    this.progressChanged = false;
+  }
+
+  private countFinishedCall(id: string): void {
+    if (this.progressIds.has(id)) return;
+    const tokens = this.streamFinalById.get(id);
+    if (!tokens) return;
+    this.progressIds.add(id);
+    const p = this.progress;
+    p.calls += 1;
+    p.inputTokens += tokens.inputTokens;
+    p.cacheReadInputTokens += tokens.cacheReadInputTokens;
+    p.cacheCreationInputTokens += tokens.cacheCreationInputTokens;
+    p.outputTokens += tokens.outputTokens;
+    const timing = this.streamTimingById.get(id);
+    const ms =
+      timing?.stoppedAt !== undefined ? timing.stoppedAt - timing.startedAt : 0;
+    if (ms > 0 && tokens.outputTokens > 0) {
+      p.streamOutputTokens += tokens.outputTokens;
+      p.streamMs += ms;
+    }
+    this.progressChanged = true;
+  }
 
   private collectContent(sdkMessage: Record<string, unknown>): void {
     const message = sdkMessage.message as Record<string, unknown> | undefined;
@@ -403,6 +493,9 @@ export class AssistantUsageCollector {
       this.streamIdByScope.set(scope, id);
       if (scope && this.options.codex && !this.flushedIds.has(id))
         this.codexSubagents.add(id);
+      if (!this.flushedIds.has(id) && !this.streamTimingById.has(id)) {
+        this.streamTimingById.set(id, { startedAt: this.now() });
+      }
       usage = message?.usage;
     } else if (event.type === 'message_delta') {
       id = this.streamIdByScope.get(scope);
@@ -418,6 +511,10 @@ export class AssistantUsageCollector {
         stopReason !== ''
       ) {
         this.finalIds.add(id);
+        const timing = this.streamTimingById.get(id);
+        if (timing && timing.stoppedAt === undefined) {
+          timing.stoppedAt = this.now();
+        }
       }
     }
     if (!id || this.flushedIds.has(id)) return;
@@ -438,6 +535,9 @@ export class AssistantUsageCollector {
       id,
       previous ? maxTokens(previous, tokens) : tokens,
     );
+    if (event.type === 'message_delta' && this.finalIds.has(id)) {
+      this.countFinishedCall(id);
+    }
   }
 
   drain(
@@ -564,6 +664,15 @@ export class AssistantUsageCollector {
         this.streamFinalInputById.get(entry.id),
       );
     }
+    const timing = this.streamTimingById.get(entry.id);
+    const streamMs =
+      timing?.stoppedAt !== undefined ? timing.stoppedAt - timing.startedAt : 0;
+    // Output tokens before the reasoning split below: thinking is generated
+    // at the same speed as text.
+    const generation: StreamGeneration =
+      streamMs > 0 && merged.outputTokens > 0
+        ? { streamOutputTokens: merged.outputTokens, streamMs }
+        : {};
     const effective: CollectedAssistantUsage = {
       ...entry,
       ...merged,
@@ -588,6 +697,7 @@ export class AssistantUsageCollector {
       this.streamFinalById.delete(entry.id);
       this.streamFinalInputById.delete(entry.id);
       this.finalIds.delete(entry.id);
+      this.streamTimingById.delete(entry.id);
       const model = modelUsage[entry.model] || {
         inputTokens: 0,
         outputTokens: 0,
@@ -633,7 +743,7 @@ export class AssistantUsageCollector {
     // when a fork gets a different SDK session ID.
     return {
       eventId: `claude-code:${entry.id}`,
-      tokens: { ...root, modelUsage },
+      tokens: { ...root, modelUsage, ...generation },
       final,
       completed,
     };
