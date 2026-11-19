@@ -86,6 +86,8 @@ interface UsersState {
       status?: 'active' | 'disabled' | 'deleted';
       display_name?: string;
       password?: string;
+      /** Needed with `password` when the user is the caller. */
+      current_password?: string;
       permissions?: Permission[];
       disable_reason?: string | null;
       notes?: string | null;

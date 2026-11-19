@@ -61,11 +61,14 @@ Public：
   成功后下发会话。challenge 只在内存中，绑定用户，5 分钟过期，最多试 5 次，用过即作废；
   失败返回 400（`code: MFA_INVALID`，过期或用尽为 `MFA_EXPIRED`），并与密码失败共用登录限流。
   密码正确时只退还这一次计数、不清除用户名+IP 桶里已有的失败，第二步成功才清除，所以重新输入
-  密码不会重置验证码的猜测次数。验证器密钥无法解密（加密密钥被替换）时返回 500
+  密码不会重置验证码的猜测次数。challenge 绑定发出时的密码与二次验证设置：之后改了密码（本人、
+  管理员或 `reset:admin`）、关闭或重置二次验证（即使重新开启）、账号被停用（即使再启用）或删除，
+  都返回 `MFA_EXPIRED`。验证器密钥无法解密（加密密钥被替换）时返回 500
   `MFA_SECRET_UNREADABLE`，不计失败、challenge 保留，可改用恢复码
 - `POST /api/auth/passkey/login/options`：无用户名登录（可发现凭据）的 WebAuthn 选项。每个客户端
-  （IPv4 地址或 IPv6 /64，loopback 与未知地址不分）最多保留 50 个未用的登录 challenge，超出时
-  丢弃它自己最早的那个
+  （IPv4 地址或 IPv6 /64）最多保留 50 个未用的登录 challenge，超出时丢弃它自己最早的那个；
+  loopback 与未知地址分不出客户端，共用一个同样上限的名额（反向代理后要设 `TRUST_PROXY`）。
+  登录 challenge 与注册 challenge 分开存放，刷登录选项挤不掉进行中的注册
 - `POST /api/auth/passkey/login`：`{ response }`（`navigator.credentials.get` 的 JSON），成功即下发
   会话，视同已过二次验证。challenge 过期、用过或不存在返回 400 `PASSKEY_EXPIRED`（重新取选项
   再试）；凭据未登记、属于别的主机、`userHandle` 不是凭据所属用户、签名或用户验证不通过，以及
@@ -93,8 +96,9 @@ Public：
   `MFA_NOT_ENABLED`
 - `POST /api/auth/2fa/recovery-codes`：`{ code }`（只接受验证器验证码），重新生成恢复码
 
-改密码、二次验证和通行密钥的接口重新核对当前密码与验证码时，先占用一次登录限流计数再校验，
-错误的密码和验证码与登录失败共用同一组桶（用户名小写 + 客户端 IP），超限返回 429
+改密码、二次验证和通行密钥的接口重新核对当前密码与验证码时（开启二次验证时的第一个验证码也算），
+先占用一次登录限流计数再校验，错误的密码和验证码与登录失败共用同一组桶（用户名小写 + 客户端 IP）；
+核对通过只退还这一次计数，不清除已有的失败，只有真正登录成功才清除。超限返回 429
 `{ code: "TOO_MANY_ATTEMPTS", retry_after_seconds }`。错误一律返回 400 而不是 401（Web 客户端
 把 401 当作登录失效），并带 `code`：请求体无效 `INVALID_REQUEST`、当前密码错误
 `CURRENT_PASSWORD_INCORRECT`、验证码错误 `MFA_INVALID`、需要验证码却没给 `MFA_REQUIRED`、
@@ -1649,12 +1653,15 @@ Web 和 Runtime 不再把它们当作第二个可写真相源。
 管理：
 
 - `GET|POST /api/admin/users`
-- `PATCH|DELETE /api/admin/users/:id`
+- `PATCH|DELETE /api/admin/users/:id`：改自己的密码（`password` 且目标是自己）要同时给
+  `current_password`，错误或缺失返回 400 `CURRENT_PASSWORD_INCORRECT` 并计入登录限流；停用或删除
+  会作废该用户待用的二次验证登录 challenge
 - `POST /api/admin/users/:id/restore`
 - `DELETE /api/admin/users/:id/sessions`
 - `DELETE /api/admin/users/:id/2fa`：清除他人的二次验证与恢复码（丢失验证器时的恢复路径，不动通行密钥），
   写审计 `mfa_reset`；不能用于自己。用户列表的每行带 `two_factor_enabled` 和 `passkey_count`
-- `DELETE /api/admin/users/:id/passkeys`：删除他人的全部通行密钥，返回 `{ success, removed }`，
+- `DELETE /api/admin/users/:id/passkeys`：删除他人的全部通行密钥并作废其进行中的注册 challenge，
+  返回 `{ success, removed }`，
   有删除时写审计 `passkeys_revoked`；权限与重置二次验证相同，不能用于自己（自己的在设置里删）
 - `GET /api/admin/permission-templates`
 - `GET|POST /api/admin/invites`

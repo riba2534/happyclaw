@@ -471,16 +471,18 @@ export function reserveLoginAttempt(
 /**
  * Settle a reserved attempt. A failure keeps the counts. A success refunds
  * this attempt's per-IP and per-username increments (earlier failures stay
- * counted, as before) and clears the username+IP pair. An attempt that was
- * never evaluated (password hashing overloaded) refunds all three, and so
- * does a right password that still owes a second factor (`first_factor`):
- * it must not clear the pair, or knowing the password would reset the code
- * guesses the pair allows. The second step's success clears it.
+ * counted, as before) and clears the username+IP pair; only a completed
+ * login is a success. An attempt that was never evaluated (password hashing
+ * overloaded) refunds all three, and so does a right credential that is no
+ * login (`verified`): a password that still owes a second factor, or a
+ * signed-in user's re-check of their password or code. Those must not clear
+ * the pair, or knowing the password (or holding a session) would reset the
+ * guesses the pair allows.
  */
 export function settleLoginAttempt(
   username: string,
   ip: string,
-  outcome: 'failure' | 'success' | 'first_factor' | 'not_evaluated',
+  outcome: 'failure' | 'success' | 'verified' | 'not_evaluated',
   options: LoginRateLimitOptions = {},
 ): void {
   if (outcome === 'failure') return;

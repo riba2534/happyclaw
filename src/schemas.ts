@@ -1071,6 +1071,8 @@ export const AdminPatchUserSchema = z.object({
   status: z.enum(['active', 'disabled', 'deleted']).optional(),
   display_name: z.string().max(64).optional(),
   password: z.string().min(8).max(128).optional(),
+  /** Required with `password` when the target is the caller. */
+  current_password: z.string().max(256).optional(),
   permissions: z
     .array(PermissionValueSchema)
     .max(ALL_PERMISSIONS.length)

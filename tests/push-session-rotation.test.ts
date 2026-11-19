@@ -171,7 +171,10 @@ describe('a password change keeps push on the device that made it', () => {
 
     const response = await send('PATCH', `/api/admin/users/${adminId}`, {
       cookie: desk,
-      body: { password: 'admin-password-2' },
+      body: {
+        password: 'admin-password-2',
+        current_password: 'admin-password-1',
+      },
     });
     expect(response.status).toBe(200);
     sessionCookie(response);

@@ -75,6 +75,7 @@ const { totpCode, totpStep } = await import('../src/totp.js');
 const {
   LOGIN_CHALLENGES_PER_CLIENT,
   MAX_PASSKEYS_PER_USER,
+  passkeyLoginOptions,
   resetPasskeyChallengesForTest,
   resolvePasskeyOrigin,
 } = await import('../src/passkeys.js');
@@ -272,6 +273,7 @@ beforeAll(() => {
   createUser('bob');
   createUser('carol');
   createUser('dave');
+  createUser('ella');
   createUser('owner', 'admin');
   as('alice');
 });
@@ -479,6 +481,38 @@ describe('passkeys', () => {
     expect(kept.status).toBe(200);
   });
 
+  test('clients behind an address that tells nobody apart share one capped bucket', async () => {
+    // A same-host reverse proxy without TRUST_PROXY: everyone is loopback.
+    const first = await loginOptions('127.0.0.1');
+    for (let i = 0; i < LOGIN_CHALLENGES_PER_CLIENT; i += 1) {
+      await loginOptions('127.0.0.1');
+    }
+    const lost = await request('/api/auth/passkey/login', {
+      response: authenticator.get(first),
+    });
+    expect((await lost.json()).code).toBe('PASSKEY_EXPIRED');
+  });
+
+  test('no flood of login options pushes out a registration in progress', async () => {
+    const ellaKey = new SoftAuthenticator('ella');
+    as('ella');
+    const options = await (
+      await request('/api/auth/passkeys/options', { password: PASSWORD })
+    ).json();
+    const where = { origin: ORIGIN, rpId: HOST };
+    // Enough distinct clients to fill the whole store.
+    for (let i = 0; i < 10_000; i += 1) {
+      await passkeyLoginOptions(
+        where,
+        `ip:10.0.${Math.floor(i / LOGIN_CHALLENGES_PER_CLIENT)}.1`,
+      );
+    }
+    const saved = await request('/api/auth/passkeys', {
+      response: ellaKey.create(options),
+    });
+    expect(saved.status).toBe(200);
+  });
+
   test('renaming is limited to your own passkeys', async () => {
     const id = encodeURIComponent(listPasskeys('alice')[0].id);
     as('bob');
@@ -622,6 +656,25 @@ describe('passkeys and two-factor authentication', () => {
     expect(audit.logs.map((log) => [log.username, log.actor_username])).toEqual(
       [['bob', 'owner']],
     );
+  });
+
+  test('revoking also ends a registration in progress', async () => {
+    as('bob');
+    const options = await (
+      await request('/api/auth/passkeys/options', { password: PASSWORD })
+    ).json();
+    as('owner');
+    const revoked = await app.request('/api/admin/users/bob/passkeys', {
+      method: 'DELETE',
+    });
+    expect(revoked.status).toBe(200);
+    as('bob');
+    const saved = await request('/api/auth/passkeys', {
+      response: new SoftAuthenticator('bob').create(options),
+    });
+    expect(saved.status).toBe(400);
+    expect((await saved.json()).code).toBe('PASSKEY_INVALID');
+    expect(listPasskeys('bob')).toEqual([]);
   });
 
   test('a member cannot revoke the passkeys of an admin', async () => {
