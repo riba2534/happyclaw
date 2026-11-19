@@ -3,6 +3,7 @@ import type {
   AgentBuilderTurnRegistry,
 } from './agent-builder-turn-auth.js';
 import { isWorkspaceMemoryOwnerTurn } from './workspace-memory-ipc.js';
+import type { WorkspaceOwnerIdentityLookup } from './workspace-owner-identity.js';
 
 export const SKILL_MUTATION_NON_OWNER_REJECTION =
   '本轮对话不是由工作区主人发起的（群成员、自动化或系统触发），不能安装或卸载 Skill。请由工作区主人亲自在对话中发起。';
@@ -19,8 +20,6 @@ export const SKILL_MUTATION_NON_OWNER_REJECTION =
  */
 export function skillMutationTurnRejection(input: {
   registry: Pick<AgentBuilderTurnRegistry, 'requireOwnerHumanTurn'>;
-  /** Folder of the verified IPC namespace. */
-  sourceFolder: string;
   /** Turn-registry scope of the requesting runtime (agentBuilderTurnScope). */
   turnScope: string;
   ownerUserId: string;
@@ -28,15 +27,16 @@ export function skillMutationTurnRejection(input: {
     chatJid: string,
     messageId: string,
   ) => AgentBuilderPersistedInput | null;
-  getGroup: Parameters<typeof isWorkspaceMemoryOwnerTurn>[0]['registration'];
-  getFolderJids: (folder: string) => string[];
-  getChannelType: (jid: string) => string | null;
+  getGroup: WorkspaceOwnerIdentityLookup['registration'];
+  /** Every chat registration the user created, in any workspace. */
+  getGroupsByOwner: (
+    userId: string,
+  ) => ReturnType<WorkspaceOwnerIdentityLookup['ownerRegistrations']>;
 }): string | null {
   const ownerTurn = isWorkspaceMemoryOwnerTurn({
     ownerUserId: input.ownerUserId,
-    workspaceJids: input.getFolderJids(input.sourceFolder),
-    channelType: input.getChannelType,
     registration: input.getGroup,
+    ownerRegistrations: () => input.getGroupsByOwner(input.ownerUserId),
     requireActiveOwnerTurn: (isOwnerInput) =>
       input.registry.requireOwnerHumanTurn(
         input.turnScope,

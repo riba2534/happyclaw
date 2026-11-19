@@ -1,10 +1,10 @@
-import {
-  isOwnerProfileOwnerInput,
-  OWNER_PROFILE_TRUSTED_CLAIM_SOURCES,
-  type AgentBuilderPersistedInput,
-} from './agent-builder-turn-auth.js';
+import type { AgentBuilderPersistedInput } from './agent-builder-turn-auth.js';
 import type { WorkspaceMemoryActor } from './memory-service.js';
 import type { WorkspaceMemorySourceType } from './memory-store.js';
+import {
+  isWorkspaceOwnerInput,
+  type WorkspaceOwnerIdentityLookup,
+} from './workspace-owner-identity.js';
 
 export type WorkspaceMemoryIpcOperation =
   | 'snapshot'
@@ -53,54 +53,16 @@ export function isWorkspaceMemoryMutation(
 }
 
 /**
- * The IM ids the workspace's own registrations on `provider` vouch for as
- * the owner: chats the owner registered whose owner was recorded by the host
- * (configured, a trusted direct chat, or the Feishu API), never by a claim
- * any group member could make.
- */
-interface WorkspaceRegistration {
-  created_by?: string;
-  owner_im_id?: string;
-  owner_claim_source?: string;
-}
-
-interface WorkspaceOwnerLookup {
-  ownerUserId: string;
-  /** Every chat JID registered to the workspace folder. */
-  workspaceJids: readonly string[];
-  channelType: (jid: string) => string | null;
-  registration: (jid: string) => WorkspaceRegistration | undefined;
-}
-
-export function workspaceOwnerImIds(
-  input: WorkspaceOwnerLookup & { provider: string },
-): string[] {
-  const ids = new Set<string>();
-  for (const jid of input.workspaceJids) {
-    if (input.channelType(jid) !== input.provider) continue;
-    const row = input.registration(jid);
-    if (
-      row?.created_by === input.ownerUserId &&
-      row.owner_im_id &&
-      row.owner_claim_source &&
-      OWNER_PROFILE_TRUSTED_CLAIM_SOURCES.includes(row.owner_claim_source)
-    ) {
-      ids.add(row.owner_im_id);
-    }
-  }
-  return [...ids];
-}
-
-/**
  * Whether the active batch is the owner's alone: `requireActiveOwnerTurn`
  * throws unless every input in it is a human message `isOwnerInput` accepts.
- * A Web input is the owner's by user id; an IM input by the sender's IM id.
- * Only such a turn writes memory directly; any other turn (a group member's,
- * a batch with anyone but the owner in it, an automation run) only proposes,
- * and the owner confirms or rejects the proposal on the Memory page.
+ * Who the owner is comes from {@link isWorkspaceOwnerInput}: a Web input by
+ * user id, an IM input by the sender's IM id, whichever workspace the chat is
+ * bound to. Only such a turn writes memory directly; any other turn (a group
+ * member's, a batch with anyone but the owner in it, an automation run) only
+ * proposes, and the owner confirms or rejects the proposal on the Memory page.
  */
 export function isWorkspaceMemoryOwnerTurn(
-  input: WorkspaceOwnerLookup & {
+  input: WorkspaceOwnerIdentityLookup & {
     requireActiveOwnerTurn: (
       isOwnerInput: (persisted: AgentBuilderPersistedInput) => boolean,
     ) => unknown;
@@ -108,12 +70,7 @@ export function isWorkspaceMemoryOwnerTurn(
 ): boolean {
   try {
     input.requireActiveOwnerTurn((persisted) =>
-      isOwnerProfileOwnerInput(
-        persisted,
-        input.ownerUserId,
-        input.registration,
-        (provider) => workspaceOwnerImIds({ ...input, provider }),
-      ),
+      isWorkspaceOwnerInput(persisted, input),
     );
     return true;
   } catch {

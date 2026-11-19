@@ -20,6 +20,7 @@ import {
   deriveAutomationActor,
   handleAutomationIpc,
 } from '../src/automation-runtime.js';
+import { getChannelType } from '../src/im-channel.js';
 import { skillMutationTurnRejection } from '../src/skill-ipc-authorization.js';
 import { createRuntimeSourceHarness } from './helpers/runtime-source.js';
 
@@ -31,20 +32,39 @@ const TOPIC_ROUTE = `${GROUP}#thread:omt_1#root:om_root`;
 const SESSION_ID = 'topic-session';
 const SESSION = `${WORKSPACE}#agent:${SESSION_ID}`;
 
+const HOME = 'home-owner';
+/** The owner's own Telegram direct chat, paired, bound to the session. */
+const OWNER_DM = 'telegram:111#account:tg-a';
+
+// Discovery registers chats under the account's default workspace (Home);
+// binding them to `team` never moves that folder.
 const registrations: Record<string, Record<string, unknown>> = {
   [WORKSPACE]: { folder: FOLDER, created_by: OWNER },
   [GROUP]: {
-    folder: FOLDER,
+    folder: HOME,
     created_by: OWNER,
     owner_im_id: 'ou_owner',
     owner_claim_source: 'configured',
+    target_main_jid: WORKSPACE,
+    binding_mode: 'thread_map',
+  },
+  [OWNER_DM]: {
+    folder: HOME,
+    created_by: OWNER,
+    channel_account_id: 'tg-a',
+    owner_im_id: '111',
+    owner_claim_source: 'trusted_direct',
+    target_agent_id: SESSION_ID,
   },
 };
 
-const humanInput = (sender: string): AgentBuilderPersistedInput => ({
+const humanInput = (
+  sender: string,
+  sourceJid = TOPIC_ROUTE,
+): AgentBuilderPersistedInput => ({
   content: '每个工作日早上 9 点提醒我看日报',
   sender,
-  source_jid: TOPIC_ROUTE,
+  source_jid: sourceJid,
   is_from_me: 0,
   source_kind: null,
   automation_run_id: null,
@@ -103,9 +123,15 @@ function ipcHost(
   const globals: Record<string, unknown> = {
     registeredGroups: registrations,
     getRegisteredGroup: (jid: string) => registrations[jid],
-    getJidsByFolder: () => Object.keys(registrations),
-    getChannelType: (jid: string) =>
-      jid.startsWith('feishu:') ? 'feishu' : null,
+    getJidsByFolder: (folder: string) =>
+      Object.keys(registrations).filter(
+        (jid) => registrations[jid].folder === folder,
+      ),
+    getGroupsByOwner: (userId: string) =>
+      Object.entries(registrations)
+        .filter(([, row]) => row.created_by === userId)
+        .map(([jid, row]) => ({ jid, ...row })),
+    getChannelType,
     findWebJidForFolder: () => WORKSPACE,
     getAgent: (id: string) =>
       id === SESSION_ID
@@ -178,6 +204,25 @@ describe('automation tools over task IPC', () => {
     expect(host.results).toEqual([
       ['automation_create', { requestId: 'req-1', success: true }],
     ]);
+  });
+
+  test("the owner's paired direct chat bound to this session acts as the owner", async () => {
+    // The chat stays registered under Home; the owner is who sent it.
+    const host = ipcHost({ m1: humanInput('tg:111', OWNER_DM) });
+    await host.send({
+      type: 'automation_create',
+      name: '日报提醒',
+      prompt: '提醒我看日报',
+      schedule: { kind: 'cron', cronExpr: '0 9 * * 1-5' },
+    });
+    expect(host.handleIpc.mock.calls[0][0]).toEqual({
+      kind: 'owner_turn',
+      userId: OWNER,
+      isAdmin: false,
+      workspaceJid: WORKSPACE,
+      sessionJid: SESSION,
+      sourceRouteJid: OWNER_DM,
+    });
   });
 
   test("a group member's turn reaches the service as other_turn", async () => {

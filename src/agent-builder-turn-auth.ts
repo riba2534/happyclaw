@@ -261,51 +261,6 @@ export function isAgentBuilderOwnerInput(
 }
 
 /**
- * Owner Profile trusts these claim sources as identity anchors. Unlike Agent
- * Builder mutations, `auto_feishu` qualifies: it is recorded by the host from
- * the Feishu API when the owner deliberately binds a group into their Home
- * workspace, not from any message content. `explicit` stays excluded because
- * any member may first-claim an unowned group via /owner_mention.
- */
-export const OWNER_PROFILE_TRUSTED_CLAIM_SOURCES: readonly string[] = [
-  'configured',
-  'trusted_direct',
-  'auto_feishu',
-];
-
-/**
- * Owner Profile sender verification. The owner's IM identity is anchored at
- * the Home-workspace level: any Home registration of the same provider with a
- * host-verified claim source vouches for the sender, so Home chats registered
- * before owner capture (e.g. legacy topic groups with a NULL owner_im_id)
- * still authorize the same human. The source conversation itself must remain
- * a registration of the same owner; unknown chats fail closed.
- */
-export function isOwnerProfileOwnerInput(
-  input: Pick<AgentBuilderPersistedInput, 'sender' | 'source_jid'>,
-  ownerUserId: string,
-  getSourceGroup: (jid: string) => { created_by?: string } | undefined,
-  resolveHomeOwnerImIds: (provider: string) => readonly string[],
-): boolean {
-  const sourceJid = input.source_jid;
-  if (!sourceJid || sourceJid.startsWith('web:')) {
-    return input.sender === ownerUserId;
-  }
-  if (!input.sender) return false;
-  const address = parseChannelAddress(sourceJid);
-  if (!address) return false;
-  const source = getSourceGroup(channelConversationJid(sourceJid));
-  if (source?.created_by !== ownerUserId) return false;
-  const senderImId = ownerImIdFromPersistedSender(sourceJid, input.sender);
-  if (!senderImId) return false;
-  return resolveHomeOwnerImIds(address.provider).some((ownerImId) =>
-    address.provider === 'whatsapp'
-      ? jidNormalizedUser(ownerImId) === senderImId
-      : ownerImId === senderImId,
-  );
-}
-
-/**
  * Host-owned authorization state for the conversational Agent Builder.
  * Runner-supplied chat/turn/task claims are not authorization inputs because
  * Agents intentionally have full Bash and write access to their IPC mount.

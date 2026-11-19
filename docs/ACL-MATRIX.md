@@ -224,10 +224,19 @@ Agent Runtime 的 Workspace Memory MCP 还叠加执行上下文策略：
 | 自动化运行的轮次                            | 允许 | 只能创建/修改/忘记 `proposed` 条目 |
 | Spawn/Task 会话、SDK Task Sub-Agent         | 允许 | 拒绝                               |
 
-owner 输入的判定在宿主：Web 输入的 sender 等于 owner 用户 id；IM 输入的发送者 IM id
-必须等于该工作区注册中由宿主记录的 owner（claim source 为 `configured`、
-`trusted_direct` 或 `auto_feishu`）。写入一律要求 Runner 的 HMAC 写能力；proposed
-只有 owner 在 Web 确认后才生效。Sub-Agent 的只读限制由 PreToolUse hook 与主进程
+owner 输入的判定在宿主（`src/workspace-owner-identity.ts`）：Web 输入的 sender 等于
+owner 用户 id；IM 输入的来源聊天必须是工作区主人（`created_by`）自己的注册，发送者 IM id
+必须等于主人在**同一渠道（provider）**下任一聊天注册中由宿主记录的 owner（claim source 为
+`configured`、`trusted_direct` 或 `auto_feishu`）。也就是「发送者是工作区主人自己的可信 IM
+身份」，与聊天登记的 folder、绑定到哪个工作区的会话无关：主人自己的配对私聊绑到非 Home 工作区
+的会话时，在那里同样是主人。比较按 provider、跨主人的各个渠道账号进行：sender 由平台给出、
+不可伪造，飞书 open_id、QQ openid 这类按应用区分的 id 跨应用不会撞值；不同 provider 的相同值
+不算同一人；其他用户的注册与身份永远不算；群成员按自己的 sender 判定，不因所在的群而成为主人。自动化运行、
+`work_item_input` 等宿主合成的输入永远不算主人亲自发起。`install_skill`、自动化的 owner 轮次、
+`work_delegate` 与 `session_list` 的主人轮次、HappyClaw Owner Profile 用同一判定。
+
+写入一律要求 Runner 的 HMAC 写能力；proposed 只有 owner 在 Web 确认后才生效。
+Sub-Agent 的只读限制由 PreToolUse hook 与主进程
 IPC broker 共同执行，不能由模型参数扩大权限。
 
 ### 4.6 HappyClaw Owner Profile
@@ -364,6 +373,9 @@ admin。admin 没有跨 owner bypass，不存在与无权限都返回 404。
 Owner Claim：
 
 - 可信的 1:1 私聊可以从第一条持久化人类消息学习 owner。
+- 配对（`/pair`）或绑定后学习到的私聊发送者在机器人里等同主人本人：IM 命令可以 `/list`
+  主人的全部工作区，`/bind` 到其中任意一个（包括宿主机工作区），在主人任意工作区里都按主人
+  轮次判定（见 4.5）。配对页和渠道引导提示只给主人自己的账号配对。
 - 未认领群聊不会让“第一个发命令的人”自动成为 owner。
 - 群聊用 `/owner_mention` 显式认领。
 - `/release_owner` 清除 owner 与 allowlist，并把 legacy `owner_mentioned` 降级。
@@ -390,6 +402,10 @@ Owner Claim：
 | `/steer <消息>`、`/break`（全部 IM 渠道）      | 群聊必须有渠道结构证明的真实 @Bot，并通过当前 audience/激活策略；不要求 owner |
 | 飞书 `/clear`、`/fresh [备注]`（运行时控制）   | 群聊必须结构化真实 @Bot 且为 IM Owner（与斜杠 `/clear`、`/fresh` 同一边界）   |
 | MCP `fresh_window`                             | 当前会话 Agent 可调用；不走斜杠 owner gate                                    |
+
+私聊里 `/list`、`/recall` 不受限、私聊发送者可以通过 owner-required 命令，是因为配对或绑定后
+私聊的对方就是主人本人；把别人的私聊配对或绑定进来，等于把这些权限（包括 `/bind` 到宿主机
+工作区）交给对方。
 
 飞书群聊中由 `handleCommand()` 处理的通用斜杠命令同样必须结构化真实 @Bot，并通过 audience
 检查；它们不受激活闸门（`activation_mode`、`when_mentioned`、`disabled`）约束，

@@ -5,9 +5,9 @@ import {
   agentBuilderTurnScope,
   getAgentBuilderRuntimeRejection,
   isAgentBuilderOwnerInput,
-  isOwnerProfileOwnerInput,
   type AgentBuilderPersistedInput,
 } from '../src/agent-builder-turn-auth.js';
+import { isWorkspaceOwnerInput } from '../src/workspace-owner-identity.js';
 
 const ownerWebInput: AgentBuilderPersistedInput = {
   content: '请把称呼改成何先生',
@@ -277,89 +277,98 @@ describe('HappyClaw Owner Profile actual sender identity', () => {
   });
 });
 
-describe('HappyClaw Owner Profile home-anchored sender identity', () => {
-  const registered = (jid: string) =>
-    jid.startsWith('feishu:') ? { created_by: 'owner-1' } : undefined;
-  const homeFeishuOwner = (provider: string) =>
-    provider === 'feishu' ? ['ou_owner'] : [];
+describe('HappyClaw Owner Profile owner-anchored sender identity', () => {
+  // Legacy unscoped Feishu chats; the account is on the row.
+  const rows = [
+    {
+      jid: 'feishu:oc_home',
+      created_by: 'owner-1',
+      channel_account_id: 'fs-legacy',
+      owner_im_id: 'ou_owner',
+      owner_claim_source: 'auto_feishu',
+    },
+    {
+      jid: 'feishu:legacy-topic',
+      created_by: 'owner-1',
+      channel_account_id: 'fs-legacy',
+    },
+    { jid: 'qq:c2c:ou_owner', created_by: 'owner-1' },
+  ];
+  const lookup = (
+    overrides: Partial<Parameters<typeof isWorkspaceOwnerInput>[1]> = {},
+  ) => ({
+    ownerUserId: 'owner-1',
+    registration: (jid: string) => rows.find((row) => row.jid === jid),
+    ownerRegistrations: () => rows,
+    ...overrides,
+  });
 
   test('accepts the owner in a Home topic group that never captured owner_im_id', () => {
     // Production regression: legacy topic groups have a NULL owner claim, but
-    // sibling Home registrations anchor the same human via auto_feishu.
+    // the owner's other registrations on the same bot anchor the same human
+    // via auto_feishu.
     expect(
-      isOwnerProfileOwnerInput(
+      isWorkspaceOwnerInput(
         {
           sender: 'ou_owner',
           source_jid: 'feishu:legacy-topic#thread:t1#root:r1',
         },
-        'owner-1',
-        registered,
-        homeFeishuOwner,
+        lookup(),
       ),
     ).toBe(true);
   });
 
   test('rejects a non-owner group member and an unknown source chat', () => {
     expect(
-      isOwnerProfileOwnerInput(
+      isWorkspaceOwnerInput(
         { sender: 'ou_member', source_jid: 'feishu:legacy-topic' },
-        'owner-1',
-        registered,
-        homeFeishuOwner,
+        lookup(),
       ),
     ).toBe(false);
     expect(
-      isOwnerProfileOwnerInput(
+      isWorkspaceOwnerInput(
         { sender: 'ou_owner', source_jid: 'feishu:unregistered' },
-        'owner-1',
-        () => undefined,
-        homeFeishuOwner,
+        lookup(),
       ),
     ).toBe(false);
     expect(
-      isOwnerProfileOwnerInput(
+      isWorkspaceOwnerInput(
         { sender: 'ou_owner', source_jid: 'feishu:legacy-topic' },
-        'owner-1',
-        () => ({ created_by: 'different-owner' }),
-        homeFeishuOwner,
+        lookup({ registration: () => ({ created_by: 'different-owner' }) }),
       ),
     ).toBe(false);
   });
 
   test('anchored identities never cross providers', () => {
     expect(
-      isOwnerProfileOwnerInput(
+      isWorkspaceOwnerInput(
         { sender: 'qq:ou_owner', source_jid: 'qq:c2c:ou_owner' },
-        'owner-1',
-        () => ({ created_by: 'owner-1' }),
-        homeFeishuOwner,
+        lookup(),
       ),
     ).toBe(false);
   });
 
   test('an empty anchor set fails closed and web turns stay user-id matched', () => {
     expect(
-      isOwnerProfileOwnerInput(
+      isWorkspaceOwnerInput(
         { sender: 'ou_owner', source_jid: 'feishu:legacy-topic' },
-        'owner-1',
-        registered,
-        () => [],
+        lookup({ ownerRegistrations: () => [] }),
       ),
     ).toBe(false);
+    const webOnly = lookup({
+      registration: () => undefined,
+      ownerRegistrations: () => [],
+    });
     expect(
-      isOwnerProfileOwnerInput(
+      isWorkspaceOwnerInput(
         { sender: 'owner-1', source_jid: 'web:home' },
-        'owner-1',
-        () => undefined,
-        () => [],
+        webOnly,
       ),
     ).toBe(true);
     expect(
-      isOwnerProfileOwnerInput(
+      isWorkspaceOwnerInput(
         { sender: 'someone-else', source_jid: 'web:home' },
-        'owner-1',
-        () => undefined,
-        () => [],
+        webOnly,
       ),
     ).toBe(false);
   });
