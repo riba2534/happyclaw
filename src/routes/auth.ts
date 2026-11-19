@@ -1083,6 +1083,31 @@ export function checkAccountCode(
   return null;
 }
 
+/**
+ * The password and, with two-factor authentication on, a code (or a
+ * recovery code): what adding a passkey takes, as a passkey stands in for
+ * both at login.
+ */
+export async function reauthenticate(
+  c: Context<{ Variables: Variables }>,
+  user: AuthUser,
+  password: string,
+  code: string | undefined,
+): Promise<Response | null> {
+  const totpOn = isTotpEnabled(user.id);
+  const denied = await checkCurrentPassword(c, user, password, {
+    secondFactorFollows: totpOn,
+  });
+  if (denied || !totpOn) return denied;
+  if (!code) {
+    return c.json(
+      { error: 'A verification code is required', code: 'MFA_REQUIRED' },
+      400,
+    );
+  }
+  return checkAccountCode(c, user, code, true);
+}
+
 /** End every session of the user but the current one; returns how many. */
 function revokeOtherSessions(userId: string, currentSessionId: string): number {
   let revoked = 0;

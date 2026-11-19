@@ -299,7 +299,7 @@ export interface LoginRateLimitOptions {
  * request looks like behind a same-host reverse proxy without TRUST_PROXY —
  * bucketing that would lock the whole site out after a few dozen failures.
  */
-function ipBucketKey(ip: string): string | null {
+export function ipBucketKey(ip: string): string | null {
   const raw = boundedKeyPart(ip.trim().toLowerCase());
   if (!raw || raw === 'unknown') return null;
   const mapped = raw.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);

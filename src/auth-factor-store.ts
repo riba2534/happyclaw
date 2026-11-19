@@ -225,7 +225,7 @@ export function deleteTwoFactorForUser(userId: string): void {
 export function deleteAuthFactorsForUser(userId: string): void {
   requireDatabase().transaction(() => {
     deleteTwoFactorForUser(userId);
-    stmt('DELETE FROM webauthn_credentials WHERE user_id = ?').run(userId);
+    deletePasskeysForUser(userId);
   })();
 }
 
@@ -274,6 +274,19 @@ export function listPasskeys(userId: string): PasskeyRow[] {
   return stmt(
     'SELECT * FROM webauthn_credentials WHERE user_id = ? ORDER BY created_at',
   ).all(userId) as PasskeyRow[];
+}
+
+export function countPasskeys(userId: string): number {
+  const row = stmt(
+    'SELECT COUNT(*) AS n FROM webauthn_credentials WHERE user_id = ?',
+  ).get(userId) as { n: number };
+  return row.n;
+}
+
+/** Remove all of a user's passkeys (admin revocation); returns how many. */
+export function deletePasskeysForUser(userId: string): number {
+  return stmt('DELETE FROM webauthn_credentials WHERE user_id = ?').run(userId)
+    .changes;
 }
 
 export function recordPasskeyUse(

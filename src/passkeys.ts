@@ -7,11 +7,13 @@
  * it is the same origin as the request (Origin host = Host header, the rule
  * the WebSocket upgrade uses), localhost, or listed in CORS_ALLOWED_ORIGINS
  * (a reverse proxy that rewrites Host). The RP ID is that origin's host
- * name. A credential is stored with its RP ID and only ever accepted for
- * that RP ID, so a page on another host cannot use it even if it reached
- * this server; the browser enforces the same binding on its side.
+ * name, which WebAuthn requires to be a domain: an IP address (127.0.0.1
+ * included) is refused. A credential is stored with its RP ID and only ever
+ * accepted for that RP ID, so a page on another host cannot use it even if
+ * it reached this server; the browser enforces the same binding on its side.
  */
 import crypto from 'node:crypto';
+import net from 'node:net';
 import {
   generateAuthenticationOptions,
   generateRegistrationOptions,
@@ -20,6 +22,7 @@ import {
   type AuthenticationResponseJSON,
   type RegistrationResponseJSON,
 } from '@simplewebauthn/server';
+import { COSEALG } from '@simplewebauthn/server/helpers';
 
 import {
   getPasskey,
@@ -32,7 +35,18 @@ import {
 const RP_NAME = 'HappyClaw';
 const CHALLENGE_TTL_MS = 5 * 60 * 1000;
 const CHALLENGE_MAX_ENTRIES = 10_000;
+/**
+ * Live login challenges one client (IPv4 address or IPv6 /64) may hold.
+ * Anyone can ask for login options; past this a client's own oldest goes,
+ * so one client cannot push everyone else's out of the shared store.
+ */
+export const LOGIN_CHALLENGES_PER_CLIENT = 50;
 export const MAX_PASSKEYS_PER_USER = 20;
+/**
+ * Named explicitly: the library's default probes the runtime for ML-DSA,
+ * which Node reports as an experimental Web Crypto feature.
+ */
+const SUPPORTED_ALGORITHM_IDS = [COSEALG.EdDSA, COSEALG.ES256, COSEALG.RS256];
 
 // --- Origin -------------------------------------------------------------
 
@@ -41,7 +55,11 @@ export interface PasskeyOrigin {
   rpId: string;
 }
 
-export type PasskeyOriginProblem = 'no_origin' | 'insecure' | 'not_allowed';
+export type PasskeyOriginProblem =
+  | 'no_origin'
+  | 'ip_host'
+  | 'insecure'
+  | 'not_allowed';
 
 function listedOrigins(): string[] {
   const raw = process.env.CORS_ALLOWED_ORIGINS || '';
@@ -65,8 +83,11 @@ export function resolvePasskeyOrigin(
     return { problem: 'no_origin' };
   }
   const origin = url.origin;
-  const localhost =
-    url.hostname === 'localhost' || url.hostname === '127.0.0.1';
+  // An RP ID must be a domain; browsers refuse IP literals outright.
+  if (net.isIP(url.hostname.replace(/^\[|\]$/g, ''))) {
+    return { problem: 'ip_host' };
+  }
+  const localhost = url.hostname === 'localhost';
   // WebAuthn needs a secure context: HTTPS, or localhost over HTTP.
   if (url.protocol !== 'https:' && !(localhost && url.protocol === 'http:')) {
     return { problem: 'insecure' };
@@ -94,14 +115,26 @@ interface PendingChallenge {
   origin: string;
   rpId: string;
   expiresAt: number;
+  /** The requesting client's bucket for a login challenge, if known. */
+  client: string | null;
 }
+
+type ExpectedChallenge = Omit<PendingChallenge, 'expiresAt' | 'client'>;
 
 const challenges = new Map<string, PendingChallenge>();
 
 function rememberChallenge(challenge: string, pending: PendingChallenge) {
   const now = Date.now();
+  // Insertion order is age order.
+  const sameClient: string[] = [];
   for (const [key, value] of challenges) {
     if (value.expiresAt <= now) challenges.delete(key);
+    else if (pending.client && value.client === pending.client) {
+      sameClient.push(key);
+    }
+  }
+  while (sameClient.length >= LOGIN_CHALLENGES_PER_CLIENT) {
+    challenges.delete(sameClient.shift()!);
   }
   for (const key of challenges.keys()) {
     if (challenges.size < CHALLENGE_MAX_ENTRIES) break;
@@ -113,7 +146,7 @@ function rememberChallenge(challenge: string, pending: PendingChallenge) {
 /** Spend a challenge if it matches; any lookup, matching or not, spends it. */
 function takeChallenge(
   challenge: string,
-  expected: Omit<PendingChallenge, 'expiresAt'>,
+  expected: ExpectedChallenge,
 ): boolean {
   const pending = challenges.get(challenge);
   challenges.delete(challenge);
@@ -174,6 +207,7 @@ export async function passkeyRegistrationOptions(
       residentKey: 'required',
       userVerification: 'required',
     },
+    supportedAlgorithmIDs: SUPPORTED_ALGORITHM_IDS,
   });
   rememberChallenge(options.challenge, {
     purpose: 'register',
@@ -181,6 +215,7 @@ export async function passkeyRegistrationOptions(
     origin: where.origin,
     rpId: where.rpId,
     expiresAt: Date.now() + CHALLENGE_TTL_MS,
+    client: null,
   });
   return options;
 }
@@ -205,6 +240,7 @@ export async function registerPasskey(
       expectedOrigin: where.origin,
       expectedRPID: where.rpId,
       requireUserVerification: true,
+      supportedAlgorithmIDs: SUPPORTED_ALGORITHM_IDS,
     });
   } catch {
     return null;
@@ -230,8 +266,15 @@ export async function registerPasskey(
 
 // --- Login --------------------------------------------------------------
 
-/** Options for a username-less login (discoverable credentials). */
-export async function passkeyLoginOptions(where: PasskeyOrigin) {
+/**
+ * Options for a username-less login (discoverable credentials). `client` is
+ * the requester's rate-limit bucket (see ipBucketKey), or null when the
+ * address cannot tell clients apart.
+ */
+export async function passkeyLoginOptions(
+  where: PasskeyOrigin,
+  client: string | null,
+) {
   const challenge = newChallenge();
   const options = await generateAuthenticationOptions({
     rpID: where.rpId,
@@ -244,28 +287,48 @@ export async function passkeyLoginOptions(where: PasskeyOrigin) {
     origin: where.origin,
     rpId: where.rpId,
     expiresAt: Date.now() + CHALLENGE_TTL_MS,
+    client,
   });
   return options;
 }
 
-/** The user ID a login response proves, or null. */
+/**
+ * What a login response proves: the user, or why not. `expired`: its
+ * challenge is unknown, used or past its five minutes (fetch new options and
+ * try again); `invalid`: the credential is unknown, made for another host,
+ * belongs to someone else than its user handle says, or does not verify.
+ */
+export type PasskeyLoginResult =
+  | { userId: string }
+  | { problem: 'expired' | 'invalid' };
+
 export async function verifyPasskeyLogin(
   where: PasskeyOrigin,
   response: AuthenticationResponseJSON,
-): Promise<string | null> {
+): Promise<PasskeyLoginResult> {
+  const challenge = challengeOf(response);
+  const pending = challenge ? challenges.get(challenge) : undefined;
+  if (!challenge || !pending || pending.expiresAt <= Date.now()) {
+    if (challenge) challenges.delete(challenge);
+    return { problem: 'expired' };
+  }
   const row = getPasskey(response.id);
-  // Unknown, or created for another host: refuse before any verification,
-  // and spend the challenge either way.
-  if (!row || row.rp_id !== where.rpId) {
-    takeChallengeFromResponse(response);
-    return null;
+  // Unknown, created for another host, or presented under another user's
+  // handle: refuse before any verification, and spend the challenge.
+  if (
+    !row ||
+    row.rp_id !== where.rpId ||
+    userHandleOf(response) !== row.user_id
+  ) {
+    challenges.delete(challenge);
+    return { problem: 'invalid' };
   }
   let verification;
   try {
     verification = await verifyAuthenticationResponse({
       response,
-      expectedChallenge: (challenge) =>
-        takeChallenge(challenge, {
+      expectedChallenge: (value) =>
+        takeChallenge(value, {
           purpose: 'login',
           userId: null,
           origin: where.origin,
@@ -282,24 +345,34 @@ export async function verifyPasskeyLogin(
       requireUserVerification: true,
     });
   } catch {
-    return null;
+    return { problem: 'invalid' };
   }
-  if (!verification.verified) return null;
+  if (!verification.verified) return { problem: 'invalid' };
   recordPasskeyUse(row.id, verification.authenticationInfo.newCounter);
-  return row.user_id;
+  return { userId: row.user_id };
 }
 
-function takeChallengeFromResponse(response: AuthenticationResponseJSON) {
+/** The challenge the client signed, from its clientDataJSON. */
+function challengeOf(response: AuthenticationResponseJSON): string | null {
   try {
     const client = JSON.parse(
       Buffer.from(response.response.clientDataJSON, 'base64url').toString(
         'utf8',
       ),
     ) as { challenge?: unknown };
-    if (typeof client.challenge === 'string') {
-      challenges.delete(client.challenge);
-    }
+    return typeof client.challenge === 'string' ? client.challenge : null;
   } catch {
-    /* malformed: nothing to spend */
+    return null;
   }
+}
+
+/**
+ * The user handle the authenticator returned: the user ID registration
+ * stored (see passkeyRegistrationOptions). A username-less login must have
+ * one.
+ */
+function userHandleOf(response: AuthenticationResponseJSON): string | null {
+  const handle = response.response.userHandle;
+  if (typeof handle !== 'string' || !handle) return null;
+  return Buffer.from(handle, 'base64url').toString('utf8');
 }

@@ -1,6 +1,10 @@
 import fs from 'fs';
 import { removeTwoFactor } from '../auth-mfa.js';
-import { isTotpEnabled } from '../auth-factor-store.js';
+import {
+  countPasskeys,
+  deletePasskeysForUser,
+  isTotpEnabled,
+} from '../auth-factor-store.js';
 import path from 'path';
 import { Hono } from 'hono';
 import type { Variables } from '../web-context.js';
@@ -304,6 +308,7 @@ adminRoutes.get('/users', authMiddleware, usersManageMiddleware, (c) => {
     users: result.users.map((user) => ({
       ...user,
       two_factor_enabled: isTotpEnabled(user.id),
+      passkey_count: countPasskeys(user.id),
     })),
   });
 });
@@ -1056,6 +1061,24 @@ adminRoutes.delete(
   },
 );
 
+/**
+ * Who may clear another user's login factors: someone with manage_users, not
+ * for themselves (that is done in Settings, with the password), and an
+ * admin's only by an admin.
+ */
+function loginFactorResetDenial(
+  c: any,
+  actor: AuthUser,
+  target: Parameters<typeof denyEscalationToTarget>[2] & { id: string },
+  what: { own: string; admin: string; action: string },
+): Response | null {
+  if (actor.id === target.id) return c.json({ error: what.own }, 400);
+  if (actor.role !== 'admin' && target.role === 'admin') {
+    return c.json({ error: what.admin }, 403);
+  }
+  return denyEscalationToTarget(c, actor, target, what.action);
+}
+
 // DELETE /api/admin/users/:id/2fa - 清除用户的二次验证（丢失验证器时的恢复路径）
 adminRoutes.delete(
   '/users/:id/2fa',
@@ -1067,27 +1090,12 @@ adminRoutes.delete(
     if (!target) return c.json({ error: 'User not found' }, 404);
     const actor = c.get('user') as AuthUser;
     // One's own factor is turned off in Settings with a password and a code.
-    if (actor.id === target.id) {
-      return c.json(
-        { error: 'Turn off your own two-factor authentication in Settings' },
-        400,
-      );
-    }
-    if (actor.role !== 'admin' && target.role === 'admin') {
-      return c.json(
-        { error: 'Forbidden: only admin can reset admin two-factor' },
-        403,
-      );
-    }
-    {
-      const denial = denyEscalationToTarget(
-        c,
-        actor,
-        target,
-        'reset two-factor for',
-      );
-      if (denial) return denial;
-    }
+    const denial = loginFactorResetDenial(c, actor, target, {
+      own: 'Turn off your own two-factor authentication in Settings',
+      admin: 'Forbidden: only admin can reset admin two-factor',
+      action: 'reset two-factor for',
+    });
+    if (denial) return denial;
     const removed = removeTwoFactor(id);
     if (removed) {
       logAuthEvent({
@@ -1095,6 +1103,39 @@ adminRoutes.delete(
         username: target.username,
         actor_username: actor.username,
         ip_address: getClientIp(c),
+      });
+    }
+    return c.json({ success: true, removed });
+  },
+);
+
+// DELETE /api/admin/users/:id/passkeys - 撤销用户的全部通行密钥
+// A passkey stands in for the password and the second factor, and neither a
+// password change nor a 2FA reset removes it: this is the way to take back
+// passkeys that may be in the wrong hands.
+adminRoutes.delete(
+  '/users/:id/passkeys',
+  authMiddleware,
+  usersManageMiddleware,
+  (c) => {
+    const id = c.req.param('id');
+    const target = getUserById(id);
+    if (!target) return c.json({ error: 'User not found' }, 404);
+    const actor = c.get('user') as AuthUser;
+    const denial = loginFactorResetDenial(c, actor, target, {
+      own: 'Remove your own passkeys in Settings',
+      admin: 'Forbidden: only admin can revoke admin passkeys',
+      action: 'revoke passkeys of',
+    });
+    if (denial) return denial;
+    const removed = deletePasskeysForUser(id);
+    if (removed > 0) {
+      logAuthEvent({
+        event_type: 'passkeys_revoked',
+        username: target.username,
+        actor_username: actor.username,
+        ip_address: getClientIp(c),
+        details: { removed },
       });
     }
     return c.json({ success: true, removed });

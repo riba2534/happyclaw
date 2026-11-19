@@ -10,10 +10,14 @@ import { authMiddleware } from '../middleware/auth.js';
 import type { Variables } from '../web-context.js';
 import { getClientIp } from '../utils.js';
 import { getUserById, logAuthEvent } from '../db.js';
-import { verifyPassword } from '../auth.js';
-import { getGuestAccountState } from '../guest-accounts.js';
+import { ipBucketKey } from '../auth.js';
+import { GUEST_READ_ONLY_ERROR } from '../guest-access.js';
+import { onPasswordHashBusy } from '../password-hash-busy.js';
+import { PasskeyReauthSchema } from '../schemas.js';
 import {
+  countPasskeys,
   deletePasskey,
+  isTotpEnabled,
   listPasskeys,
   renamePasskey,
   type PasskeyRow,
@@ -28,9 +32,14 @@ import {
   type PasskeyOrigin,
 } from '../passkeys.js';
 import type { AuthUser } from '../types.js';
-import { issueLoginSession } from './auth.js';
+import {
+  checkCurrentPassword,
+  issueLoginSession,
+  reauthenticate,
+} from './auth.js';
 
 const passkeyRoutes = new Hono<{ Variables: Variables }>();
+passkeyRoutes.onError(onPasswordHashBusy);
 
 const jsonBodyLimit = bodyLimit({
   maxSize: 64 * 1024,
@@ -49,6 +58,7 @@ const CredentialSchema = z
 
 const ORIGIN_ERRORS = {
   no_origin: 'This request has no page origin',
+  ip_host: 'Passkeys do not work on an IP address; use localhost or a domain',
   insecure: 'Passkeys need HTTPS (or localhost)',
   not_allowed:
     'This address is not allowed for passkeys; add it to CORS_ALLOWED_ORIGINS',
@@ -89,7 +99,7 @@ function publicPasskey(row: PasskeyRow) {
 passkeyRoutes.post('/passkey/login/options', async (c) => {
   const where = originOf(c);
   if (where instanceof Response) return where;
-  return c.json(await passkeyLoginOptions(where));
+  return c.json(await passkeyLoginOptions(where, ipBucketKey(getClientIp(c))));
 });
 
 passkeyRoutes.post('/passkey/login', jsonBodyLimit, async (c) => {
@@ -99,21 +109,31 @@ passkeyRoutes.post('/passkey/login', jsonBodyLimit, async (c) => {
   const parsed = CredentialSchema.safeParse(body.response);
   const ip = getClientIp(c);
   const ua = c.req.header('user-agent') || null;
-  const userId = parsed.success
+  const result = parsed.success
     ? await verifyPasskeyLogin(where, parsed.data as never)
-    : null;
-  const user = userId ? getUserById(userId) : undefined;
-  const usable =
-    !!user &&
-    user.status === 'active' &&
-    (user.role !== 'guest' || getGuestAccountState(user.id).valid);
-  if (!user || !usable) {
+    : ({ problem: 'invalid' } as const);
+  if ('problem' in result && result.problem === 'expired') {
+    return c.json(
+      { error: 'Passkey sign-in expired, try again', code: 'PASSKEY_EXPIRED' },
+      400,
+    );
+  }
+  const user = 'userId' in result ? getUserById(result.userId) : undefined;
+  // Guests get no passkeys; refuse one even if it somehow exists.
+  const reason = !user
+    ? 'passkey_invalid'
+    : user.status !== 'active'
+      ? 'account_inactive'
+      : user.role === 'guest'
+        ? 'guest'
+        : null;
+  if (!user || reason) {
     logAuthEvent({
       event_type: 'login_failed',
       username: user?.username ?? '',
       ip_address: ip,
       user_agent: ua,
-      details: { reason: user ? 'account_inactive' : 'passkey_invalid' },
+      details: { reason, method: 'passkey' },
     });
     return c.json(
       { error: 'Passkey not recognised', code: 'PASSKEY_INVALID' },
@@ -129,8 +149,24 @@ passkeyRoutes.post('/passkey/login', jsonBodyLimit, async (c) => {
 
 // --- The signed-in user's passkeys ---
 // Not on the guest allowlist: guests get no passkeys, as no second factor.
+// The guard already answers 403; the handlers refuse guests too.
 
-passkeyRoutes.get('/passkeys', authMiddleware, (c) => {
+async function refuseGuests(
+  c: Context<{ Variables: Variables }>,
+  next: () => Promise<void>,
+) {
+  if ((c.get('user') as AuthUser).role === 'guest') {
+    return c.json({ error: GUEST_READ_ONLY_ERROR }, 403);
+  }
+  await next();
+}
+
+const TOO_MANY_PASSKEYS = {
+  error: 'Too many passkeys',
+  code: 'PASSKEY_LIMIT_REACHED',
+};
+
+passkeyRoutes.get('/passkeys', authMiddleware, refuseGuests, (c) => {
   const user = c.get('user') as AuthUser;
   const where = resolvePasskeyOrigin(
     c.req.header('origin') ?? originFromReferer(c),
@@ -140,57 +176,96 @@ passkeyRoutes.get('/passkeys', authMiddleware, (c) => {
     passkeys: listPasskeys(user.id).map(publicPasskey),
     rp_id: 'problem' in where ? null : where.rpId,
     unavailable_reason: 'problem' in where ? where.problem : null,
+    // Adding one then also takes a code (see /passkeys/options).
+    two_factor_enabled: isTotpEnabled(user.id),
   });
 });
 
-passkeyRoutes.post('/passkeys/options', authMiddleware, async (c) => {
-  const where = originOf(c);
-  if (where instanceof Response) return where;
-  const user = c.get('user') as AuthUser;
-  if (listPasskeys(user.id).length >= MAX_PASSKEYS_PER_USER) {
-    return c.json({ error: 'Too many passkeys' }, 409);
-  }
-  return c.json(await passkeyRegistrationOptions(user, where));
-});
-
-passkeyRoutes.post('/passkeys', authMiddleware, jsonBodyLimit, async (c) => {
-  const where = originOf(c);
-  if (where instanceof Response) return where;
-  const user = c.get('user') as AuthUser;
-  const body = (await c.req.json().catch(() => ({}))) as {
-    response?: unknown;
-    name?: unknown;
-  };
-  const parsed = CredentialSchema.safeParse(body.response);
-  const name = NameSchema.safeParse(body.name ?? '通行密钥');
-  if (!parsed.success || !name.success) {
-    return c.json({ error: 'Invalid request' }, 400);
-  }
-  const row = await registerPasskey(
-    user.id,
-    where,
-    parsed.data as never,
-    name.data,
-  );
-  if (!row) {
-    return c.json(
-      { error: 'Passkey could not be verified', code: 'PASSKEY_INVALID' },
-      400,
+/**
+ * Registration options, after re-authentication: a passkey stands in for the
+ * password and the second factor at login, so adding one takes the password
+ * and, with two-factor on, a code. A stolen session alone must not be able
+ * to leave itself a way back in that a password change does not close.
+ * Failures count against the login rate limit.
+ */
+passkeyRoutes.post(
+  '/passkeys/options',
+  authMiddleware,
+  refuseGuests,
+  jsonBodyLimit,
+  async (c) => {
+    const where = originOf(c);
+    if (where instanceof Response) return where;
+    const user = c.get('user') as AuthUser;
+    const body = PasskeyReauthSchema.safeParse(
+      await c.req.json().catch(() => ({})),
     );
-  }
-  logAuthEvent({
-    event_type: 'passkey_added',
-    username: user.username,
-    ip_address: getClientIp(c),
-    user_agent: c.req.header('user-agent') || null,
-    details: { rp_id: row.rp_id },
-  });
-  return c.json({ success: true, passkey: publicPasskey(row) });
-});
+    if (!body.success) {
+      return c.json({ error: 'Invalid request', code: 'INVALID_REQUEST' }, 400);
+    }
+    if (countPasskeys(user.id) >= MAX_PASSKEYS_PER_USER) {
+      return c.json(TOO_MANY_PASSKEYS, 409);
+    }
+    const denied = await reauthenticate(
+      c,
+      user,
+      body.data.password,
+      body.data.code,
+    );
+    if (denied) return denied;
+    return c.json(await passkeyRegistrationOptions(user, where));
+  },
+);
+
+passkeyRoutes.post(
+  '/passkeys',
+  authMiddleware,
+  refuseGuests,
+  jsonBodyLimit,
+  async (c) => {
+    const where = originOf(c);
+    if (where instanceof Response) return where;
+    const user = c.get('user') as AuthUser;
+    const body = (await c.req.json().catch(() => ({}))) as {
+      response?: unknown;
+      name?: unknown;
+    };
+    const parsed = CredentialSchema.safeParse(body.response);
+    const name = NameSchema.safeParse(body.name ?? '通行密钥');
+    if (!parsed.success || !name.success) {
+      return c.json({ error: 'Invalid request', code: 'INVALID_REQUEST' }, 400);
+    }
+    // Checked again: options issued before the last slot filled are still live.
+    if (countPasskeys(user.id) >= MAX_PASSKEYS_PER_USER) {
+      return c.json(TOO_MANY_PASSKEYS, 409);
+    }
+    const row = await registerPasskey(
+      user.id,
+      where,
+      parsed.data as never,
+      name.data,
+    );
+    if (!row) {
+      return c.json(
+        { error: 'Passkey could not be verified', code: 'PASSKEY_INVALID' },
+        400,
+      );
+    }
+    logAuthEvent({
+      event_type: 'passkey_added',
+      username: user.username,
+      ip_address: getClientIp(c),
+      user_agent: c.req.header('user-agent') || null,
+      details: { rp_id: row.rp_id },
+    });
+    return c.json({ success: true, passkey: publicPasskey(row) });
+  },
+);
 
 passkeyRoutes.patch(
   '/passkeys/:id',
   authMiddleware,
+  refuseGuests,
   jsonBodyLimit,
   async (c) => {
     const user = c.get('user') as AuthUser;
@@ -205,29 +280,29 @@ passkeyRoutes.patch(
 );
 
 /**
- * Removing a passkey takes the password: a session that was taken over must
- * not be able to strip the owner's way back in. POST, as the client's
- * DELETE carries no body.
+ * Removing a passkey takes the password (counted like a login attempt): a
+ * session that was taken over must not be able to strip the owner's way back
+ * in. POST, as the client's DELETE carries no body.
  */
 passkeyRoutes.post(
   '/passkeys/:id/delete',
   authMiddleware,
+  refuseGuests,
   jsonBodyLimit,
   async (c) => {
     const user = c.get('user') as AuthUser;
     const body = (await c.req.json().catch(() => ({}))) as {
       password?: unknown;
     };
-    const fullUser = getUserById(user.id);
-    if (!fullUser) return c.json({ error: 'User not found' }, 404);
     const password = typeof body.password === 'string' ? body.password : '';
-    // 400, not 401: the Web client treats any 401 as a signed-out session.
-    if (
-      !password ||
-      !(await verifyPassword(password, fullUser.password_hash))
-    ) {
-      return c.json({ error: 'Current password is incorrect' }, 400);
+    if (!password || password.length > 256) {
+      return c.json(
+        { error: '当前密码不正确', code: 'CURRENT_PASSWORD_INCORRECT' },
+        400,
+      );
     }
+    const denied = await checkCurrentPassword(c, user, password);
+    if (denied) return denied;
     if (!deletePasskey(user.id, c.req.param('id'))) {
       return c.json({ error: 'Passkey not found' }, 404);
     }
