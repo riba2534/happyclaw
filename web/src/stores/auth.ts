@@ -181,6 +181,16 @@ function discardPrewarms(): void {
   holder.__groupsPrewarm = undefined;
 }
 
+/**
+ * Drop everything that belongs to the signed-in user before another one
+ * signs in on this browser, or after this one signs out.
+ */
+async function discardUserScopedState(): Promise<void> {
+  resetUserScopedStores();
+  discardPrewarms();
+  await clearMessageSnapshotCache();
+}
+
 interface LoginResponse {
   success: boolean;
   user: UserPublic;
@@ -216,9 +226,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   login: async (username: string, password: string) => {
     // Message snapshots are user-scoped application data. Clear them before
     // switching users on a shared browser.
-    resetUserScopedStores();
-    discardPrewarms();
-    await clearMessageSnapshotCache();
+    await discardUserScopedState();
     const data = await api.post<
       | LoginResponse
       | { mfa_required: true; challenge: string; user?: undefined }
@@ -258,9 +266,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       }
       throw err;
     }
-    resetUserScopedStores();
-    discardPrewarms();
-    await clearMessageSnapshotCache();
+    await discardUserScopedState();
     const data = await api.post<LoginResponse>('/api/auth/passkey/login', {
       response,
     });
@@ -270,9 +276,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
   register: async (payload) => {
     // Same rationale as login: clear user-scoped message snapshots.
-    resetUserScopedStores();
-    discardPrewarms();
-    await clearMessageSnapshotCache();
+    await discardUserScopedState();
     const data = await api.post<{ success: boolean; user: UserPublic }>(
       '/api/auth/register',
       payload,
@@ -302,9 +306,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     wsManager.disconnect();
     // Clear AFTER server-side session invalidation so the next user on this
     // device cannot see this user's message snapshots.
-    resetUserScopedStores();
-    discardPrewarms();
-    await clearMessageSnapshotCache();
+    await discardUserScopedState();
     set({
       authenticated: false,
       user: null,

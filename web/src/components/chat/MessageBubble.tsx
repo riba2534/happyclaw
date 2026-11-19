@@ -196,13 +196,17 @@ function tokenUsageView(
 
   // A first turn, or one right after the context was reset, reads nothing
   // from the cache: leave 0% out of the one-line summary, not the details.
-  const showHitRate = hitRate !== null && breakdown.cacheReadInputTokens > 0;
+  // The hit rate and speed also label a phone's 「详情」 button.
+  const glanceParts: string[] = [];
+  if (hitRate !== null && breakdown.cacheReadInputTokens > 0) {
+    glanceParts.push(`命中 ${formatHitRate(hitRate)}`);
+  }
+  if (tps !== null) glanceParts.push(formatTokensPerSecond(tps));
   const summaryParts: ReactNode[] = [];
   if (displayTotal > 0) {
     summaryParts.push(`${formatTokens(displayTotal)} tokens`);
   }
-  if (showHitRate) summaryParts.push(`命中 ${formatHitRate(hitRate)}`);
-  if (tps !== null) summaryParts.push(formatTokensPerSecond(tps));
+  summaryParts.push(...glanceParts);
   if (usage.durationMs) {
     summaryParts.push(`${(usage.durationMs / 1000).toFixed(1)}s`);
   }
@@ -280,13 +284,7 @@ function tokenUsageView(
         </dl>
       </div>
     ) : null;
-  const glance = [
-    showHitRate ? `命中 ${formatHitRate(hitRate)}` : null,
-    tps !== null ? formatTokensPerSecond(tps) : null,
-  ]
-    .filter(Boolean)
-    .join(' · ');
-  return { summary, details, glance: glance || null };
+  return { summary, details, glance: glanceParts.join(' · ') || null };
 }
 
 /** A reply's usage in its action row, the breakdown on hover. */
