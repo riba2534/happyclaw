@@ -226,11 +226,12 @@ Agent Runtime 的 Workspace Memory MCP 还叠加执行上下文策略：
 
 owner 输入的判定在宿主（`src/workspace-owner-identity.ts`）：Web 输入的 sender 等于
 owner 用户 id；IM 输入的来源聊天必须是工作区主人（`created_by`）自己的注册，发送者 IM id
-必须等于主人在**同一渠道账号**下任一聊天注册中由宿主记录的 owner（claim source 为
+必须等于主人在**同一渠道（provider）**下任一聊天注册中由宿主记录的 owner（claim source 为
 `configured`、`trusted_direct` 或 `auto_feishu`）。也就是「发送者是工作区主人自己的可信 IM
 身份」，与聊天登记的 folder、绑定到哪个工作区的会话无关：主人自己的配对私聊绑到非 Home 工作区
-的会话时，在那里同样是主人。不同渠道账号下相同的 IM id 不算同一人（飞书 open_id 按应用区分）；
-其他用户的注册与身份永远不算；群成员按自己的 sender 判定，不因所在的群而成为主人。自动化运行、
+的会话时，在那里同样是主人。比较按 provider、跨主人的各个渠道账号进行：sender 由平台给出、
+不可伪造，飞书 open_id、QQ openid 这类按应用区分的 id 跨应用不会撞值；不同 provider 的相同值
+不算同一人；其他用户的注册与身份永远不算；群成员按自己的 sender 判定，不因所在的群而成为主人。自动化运行、
 `work_item_input` 等宿主合成的输入永远不算主人亲自发起。`install_skill`、自动化的 owner 轮次、
 `work_delegate` 与 `session_list` 的主人轮次、HappyClaw Owner Profile 用同一判定。
 

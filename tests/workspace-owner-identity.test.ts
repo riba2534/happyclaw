@@ -14,7 +14,9 @@ const HOME = 'home-owner';
  * chat under the account's default workspace (here Home), and binding a chat
  * to a session only sets target_agent_id. The folder never follows the bind.
  */
-const rows: Array<OwnerIdentityRegistration & { folder: string }> = [
+const rows: Array<
+  OwnerIdentityRegistration & { folder: string; channel_account_id?: string }
+> = [
   {
     jid: 'web:ws-b',
     folder: 'ws-b',
@@ -59,18 +61,26 @@ const rows: Array<OwnerIdentityRegistration & { folder: string }> = [
     created_by: OWNER,
     channel_account_id: 'fs-a',
   },
-  // Another Feishu app of the owner: open_ids are per app.
+  // Another Feishu app of the owner, nobody recorded as owner there.
   {
     jid: 'feishu:oc_other_app#account:fs-b',
     folder: HOME,
     created_by: OWNER,
     channel_account_id: 'fs-b',
   },
+  // Chats of other providers, under ids equal to the owner's on Telegram and
+  // Feishu.
   {
     jid: 'dingtalk:cid_group#account:fs-a',
     folder: HOME,
     created_by: OWNER,
     channel_account_id: 'fs-a',
+  },
+  {
+    jid: 'discord:2001#account:dc-a',
+    folder: HOME,
+    created_by: OWNER,
+    channel_account_id: 'dc-a',
   },
   // Claims the host did not record never vouch.
   {
@@ -178,10 +188,13 @@ describe('whether the workspace owner sent an input', () => {
     ).toBe(true);
   });
 
-  test('the same IM id under another channel account is not the owner', () => {
-    expect(isOwner('tg:111', 'telegram:-1002#account:tg-b')).toBe(false);
-    expect(isOwner('ou_owner', 'feishu:oc_other_app#account:fs-b')).toBe(false);
-    // Nor across providers, even under an equal account id.
+  test('identities are compared per provider, across the owner’s bots', () => {
+    // The same IM id under the owner's other bot of the provider: the owner,
+    // as the folder-based rule had it (one human, one Telegram id).
+    expect(isOwner('tg:111', 'telegram:-1002#account:tg-b')).toBe(true);
+    expect(isOwner('ou_owner', 'feishu:oc_other_app#account:fs-b')).toBe(true);
+    // The same value on another provider is not.
+    expect(isOwner('discord:111', 'discord:2001#account:dc-a')).toBe(false);
     expect(
       isOwner('dingtalk:ou_owner', 'dingtalk:cid_group#account:fs-a'),
     ).toBe(false);
@@ -208,10 +221,11 @@ describe('whether the workspace owner sent an input', () => {
     expect(isOwner('tg:111', 'telegram:-9999#account:tg-a')).toBe(false);
   });
 
-  test('legacy unscoped chats compare by the account on the row', () => {
+  test('legacy unscoped chats count like any other chat of the provider', () => {
     expect(isOwner('tg:444', 'telegram:-1003')).toBe(true);
-    expect(isOwner('tg:444', 'telegram:-1001#account:tg-a')).toBe(false);
-    expect(isOwner('tg:111', 'telegram:-1003')).toBe(false);
+    expect(isOwner('tg:444', 'telegram:-1001#account:tg-a')).toBe(true);
+    expect(isOwner('tg:111', 'telegram:-1003')).toBe(true);
+    expect(isOwner('tg:999', 'telegram:-1003')).toBe(false);
   });
 
   test('WhatsApp ids are compared canonically', () => {

@@ -25,7 +25,6 @@ export const OWNER_IDENTITY_CLAIM_SOURCES: readonly string[] = [
 export interface OwnerIdentityRegistration {
   jid: string;
   created_by?: string;
-  channel_account_id?: string | null;
   owner_im_id?: string;
   owner_claim_source?: string;
 }
@@ -42,19 +41,15 @@ export interface WorkspaceOwnerIdentityLookup {
 }
 
 /**
- * The provider and channel account (bot) a registered chat belongs to. IM ids
- * are compared only within one account: a Feishu open_id is per app, so the
- * same value under another bot is not the same person. A legacy unscoped chat
- * with no stored account keeps the provider's legacy slot.
+ * IM ids are compared within one provider (channel type), across the owner's
+ * channel accounts, as the folder-based rule did. The sender comes from the
+ * platform and cannot be forged, and ids a provider issues per app (Feishu
+ * open_id, QQ openid) never collide across apps, so another bot's chat cannot
+ * make a stranger match; one human's global id (Telegram, Discord, WhatsApp)
+ * stays the owner on every bot of the owner's, legacy unscoped chats included.
  */
-function channelAccountKey(
-  jid: string,
-  row: Pick<OwnerIdentityRegistration, 'channel_account_id'>,
-): string | null {
-  const address = parseChannelAddress(jid);
-  if (!address) return null;
-  const accountId = address.channelAccountId ?? row.channel_account_id ?? '';
-  return `${address.provider}\u0000${accountId}`;
+function channelProvider(jid: string): string | null {
+  return parseChannelAddress(jid)?.provider ?? null;
 }
 
 /**
@@ -62,9 +57,9 @@ function channelAccountKey(
  * owner's when its sender is the owner's user id. An IM input is when its
  * chat is the owner's own registration and its sender is an IM identity the
  * host recorded for the owner (OWNER_IDENTITY_CLAIM_SOURCES) on a chat the
- * owner registered under the same channel account. Which workspace those
- * chats are registered or bound to plays no part: a paired direct chat bound
- * to a session of another workspace is the owner there too. Group members are
+ * owner registered on the same provider. Which workspace those chats are
+ * registered or bound to plays no part: a paired direct chat bound to a
+ * session of another workspace is the owner there too. Group members are
  * judged by their own sender id, never by the chat they write in.
  */
 export function isWorkspaceOwnerInput(
@@ -80,13 +75,11 @@ export function isWorkspaceOwnerInput(
   const conversationJid = channelConversationJid(sourceJid);
   const source = lookup.registration(conversationJid);
   if (source?.created_by !== ownerUserId) return false;
-  const account = channelAccountKey(conversationJid, source);
+  const provider = channelProvider(conversationJid);
   const senderImId = ownerImIdFromPersistedSender(sourceJid, input.sender);
-  if (!account || !senderImId) return false;
+  if (!provider || !senderImId) return false;
   const canonical =
-    parseChannelAddress(sourceJid)?.provider === 'whatsapp'
-      ? jidNormalizedUser
-      : (id: string) => id;
+    provider === 'whatsapp' ? jidNormalizedUser : (id: string) => id;
   return lookup
     .ownerRegistrations()
     .some(
@@ -95,7 +88,7 @@ export function isWorkspaceOwnerInput(
         !!row.owner_im_id &&
         !!row.owner_claim_source &&
         OWNER_IDENTITY_CLAIM_SOURCES.includes(row.owner_claim_source) &&
-        channelAccountKey(row.jid, row) === account &&
+        channelProvider(row.jid) === provider &&
         canonical(row.owner_im_id) === senderImId,
     );
 }

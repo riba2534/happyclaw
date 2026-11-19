@@ -238,21 +238,33 @@ describe('what a Workspace Memory write becomes on the host', () => {
     const { create, start } = host({
       'dm-owner': human('tg:111', OWNER_DM),
       'other-bot': human('tg:111', OTHER_BOT_GROUP),
+      'other-provider': human('111', GROUP),
       'other-user': human('tg:222', OTHER_USER_DM),
       composed: {
         ...human('tg:111', OWNER_DM),
         source_kind: 'work_item_input',
       },
     });
-    start(OWNER_DM, 'dm-owner');
-    expect(await create('dm-owner')).toMatchObject({
-      success: true,
-      proposal: false,
-    });
-    // The same IM id under the owner's other bot, another user's chat, and an
-    // input the host composed all only propose.
-    for (const turn of ['other-bot', 'other-user', 'composed']) {
-      start(turn === 'other-user' ? OTHER_USER_DM : OWNER_DM, turn);
+    // The owner's direct chat, and the same Telegram id in a group of the
+    // owner's other Telegram bot, write directly.
+    for (const [turn, chat] of [
+      ['dm-owner', OWNER_DM],
+      ['other-bot', OTHER_BOT_GROUP],
+    ]) {
+      start(chat, turn);
+      expect(await create(turn)).toMatchObject({
+        success: true,
+        proposal: false,
+      });
+    }
+    // The same value on another provider, another user's chat, and an input
+    // the host composed all only propose.
+    for (const [turn, chat] of [
+      ['other-provider', GROUP],
+      ['other-user', OTHER_USER_DM],
+      ['composed', OWNER_DM],
+    ]) {
+      start(chat, turn);
       expect(await create(turn)).toMatchObject({
         success: true,
         proposal: true,

@@ -45,7 +45,7 @@ const groups: Record<string, Record<string, string>> = {
     channel_account_id: 'tg-a',
     target_agent_id: 'session-b',
   },
-  // The owner's second bot, with no owner recorded on it.
+  // The owner's second Telegram bot, with no owner recorded on it.
   'telegram:-1002#account:tg-b': {
     folder: FOLDER,
     created_by: OWNER,
@@ -177,10 +177,14 @@ describe('install_skill / uninstall_skill only from the owner’s own turn', () 
     expect(
       check({ m1: input('tg:999', 'telegram:-1001#account:tg-a') }, inWsB),
     ).toBe(SKILL_MUTATION_NON_OWNER_REJECTION);
-    // The same IM id under the owner's other bot is not the owner.
+    // The same IM id under the owner's other bot of the provider is the
+    // owner, as before; the same value on another provider is not.
     expect(
       check({ m1: input('tg:111', 'telegram:-1002#account:tg-b') }, inWsB),
-    ).toBe(SKILL_MUTATION_NON_OWNER_REJECTION);
+    ).toBeNull();
+    expect(check({ m1: input('111', GROUP_JID) }, inWsB)).toBe(
+      SKILL_MUTATION_NON_OWNER_REJECTION,
+    );
     // Another user's paired direct chat never is.
     expect(
       check({ m1: input('tg:222', 'telegram:222#account:tg-x') }, inWsB),

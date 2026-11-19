@@ -464,9 +464,9 @@ preset 的身份和默认风格，只低于平台的安全、权限、工具和�
   相关条目（`workspace_memory_recall_fts`），全部条目的标题目录随每轮笔记增量注入。
 - 「工作区主人亲自发起」按每条输入的发送者判定（`src/workspace-owner-identity.ts`），记忆直写、
   `install_skill`、自动化、派发、`session_list` 与 Owner Profile 共用：Web 输入是主人的用户 id；
-  IM 输入的来源聊天是主人自己的注册，发送者是主人在同一渠道账号下由宿主记录的可信身份
-  （`configured`、`trusted_direct`、`auto_feishu`）。与聊天登记的 folder、绑定到哪个工作区无关，
-  别的渠道账号下相同的 IM id 不算。
+  IM 输入的来源聊天是主人自己的注册，发送者是主人在同一 provider（跨主人的各个渠道账号）下由宿主
+  记录的可信身份（`configured`、`trusted_direct`、`auto_feishu`）。与聊天登记的 folder、绑定到
+  哪个工作区无关，别的 provider 下相同的值不算。
 - 禁用、删除或缺失的精确选择能力必须让配置失败，不得静默替换。
 - Prompt 或能力身份变化后必须失效旧的暖 Runner。
 
