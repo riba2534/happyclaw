@@ -30,6 +30,9 @@ export function PasswordInput({
         disabled={disabled}
         className={cn('pr-9', className)}
       />
+      {/* Centred with margins, not a translate: the Button's active state
+          shifts it by a translate, which would drop the centring mid-press
+          and move the button out from under the pointer before mouseup. */}
       <IconButton
         label={visible ? '隐藏密码' : '显示密码'}
         icon={visible ? <EyeOff /> : <Eye />}
@@ -40,7 +43,7 @@ export function PasswordInput({
         aria-controls={props.id}
         onMouseDown={(event) => event.preventDefault()}
         onClick={() => setVisible((current) => !current)}
-        className="absolute top-1/2 right-1 -translate-y-1/2 text-muted-foreground"
+        className="absolute inset-y-0 right-1 my-auto text-muted-foreground"
       />
     </div>
   );
