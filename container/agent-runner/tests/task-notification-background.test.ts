@@ -223,9 +223,31 @@ describe('task_notification isBackground', () => {
     expect(event.isBackground).toBe(true);
   });
 
-  test('a task whose start states no is_backgrounded stays a background notice', () => {
+  test.each(['local_workflow', 'remote_agent', 'monitor_mcp', 'mcp_task'])(
+    'a foreground %s task, whose start states no is_backgrounded, is not a background notice',
+    (taskType) => {
+      const [event] = notices((p) => {
+        p.processSystemMessage(started({ task_type: taskType }));
+        p.processSystemMessage({
+          type: 'system',
+          subtype: 'task_updated',
+          task_id: 'task-a',
+          patch: { status: 'completed' },
+        });
+        p.processSystemMessage(notification);
+      });
+      expect(event.isBackground).toBe(false);
+    },
+  );
+
+  test('a task whose start states no is_backgrounded and that joins the level later is a background notice', () => {
     const [event] = notices((p) => {
       p.processSystemMessage(started({ task_type: 'local_workflow' }));
+      p.processSystemMessage({
+        type: 'system',
+        subtype: 'background_tasks_changed',
+        tasks: [{ task_id: 'task-a', task_type: 'local_workflow' }],
+      });
       p.processSystemMessage({
         type: 'system',
         subtype: 'task_updated',
@@ -233,6 +255,11 @@ describe('task_notification isBackground', () => {
         patch: { status: 'completed' },
       });
       p.processSystemMessage(notification);
+      p.processSystemMessage({
+        type: 'system',
+        subtype: 'background_tasks_changed',
+        tasks: [],
+      });
     });
     expect(event.isBackground).toBe(true);
   });
