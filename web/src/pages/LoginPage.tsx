@@ -6,6 +6,7 @@ import { LogoLoading } from '../components/common/LogoLoading';
 import { api } from '../api/client';
 import { extractErrorMessage } from '../utils/error';
 import { Input } from '@/components/ui/input';
+import { PasswordInput } from '@/components/common/PasswordInput';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { withBasePath } from '../utils/url';
@@ -233,9 +234,8 @@ export function LoginPage() {
                     <Label htmlFor="login-password" className="text-label">
                       密码
                     </Label>
-                    <Input
+                    <PasswordInput
                       id="login-password"
-                      type="password"
                       value={loginPassword}
                       onChange={(e) => setLoginPassword(e.target.value)}
                       placeholder="请输入密码"
@@ -333,9 +333,8 @@ export function LoginPage() {
                     <Label htmlFor="reg-password" className="text-label">
                       密码
                     </Label>
-                    <Input
+                    <PasswordInput
                       id="reg-password"
-                      type="password"
                       value={regPassword}
                       onChange={(e) => setRegPassword(e.target.value)}
                       placeholder="至少 8 位"

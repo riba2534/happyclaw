@@ -1,7 +1,7 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { Navigate, useNavigate } from 'react-router-dom';
-import { ChevronRight, Eye, EyeOff, Loader2 } from 'lucide-react';
-import { IconButton } from '../components/common/IconButton';
+import { ChevronRight, Loader2 } from 'lucide-react';
+import { PasswordInput } from '../components/common/PasswordInput';
 import { LogoLoading } from '../components/common/LogoLoading';
 import {
   SettingsField,
@@ -130,8 +130,6 @@ function CreateAdminStep({
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPwd, setConfirmPwd] = useState('');
-  const [showPassword, setShowPassword] = useState(false);
-  const [showConfirm, setShowConfirm] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -212,46 +210,22 @@ function CreateAdminStep({
             />
           </SettingsField>
           <SettingsField label="密码" htmlFor="setup-password">
-            <div className="relative">
-              <Input
-                id="setup-password"
-                type={showPassword ? 'text' : 'password'}
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                className="pr-9"
-                placeholder="至少 8 位"
-                autoComplete="new-password"
-              />
-              <IconButton
-                label={showPassword ? '隐藏密码' : '显示密码'}
-                icon={showPassword ? <EyeOff /> : <Eye />}
-                size="icon-xs"
-                hideTooltip
-                onClick={() => setShowPassword(!showPassword)}
-                className="absolute top-1/2 right-1 -translate-y-1/2 text-muted-foreground"
-              />
-            </div>
+            <PasswordInput
+              id="setup-password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder="至少 8 位"
+              autoComplete="new-password"
+            />
           </SettingsField>
           <SettingsField label="确认密码" htmlFor="setup-confirm">
-            <div className="relative">
-              <Input
-                id="setup-confirm"
-                type={showConfirm ? 'text' : 'password'}
-                value={confirmPwd}
-                onChange={(e) => setConfirmPwd(e.target.value)}
-                className="pr-9"
-                placeholder="再次输入密码"
-                autoComplete="new-password"
-              />
-              <IconButton
-                label={showConfirm ? '隐藏密码' : '显示密码'}
-                icon={showConfirm ? <EyeOff /> : <Eye />}
-                size="icon-xs"
-                hideTooltip
-                onClick={() => setShowConfirm(!showConfirm)}
-                className="absolute top-1/2 right-1 -translate-y-1/2 text-muted-foreground"
-              />
-            </div>
+            <PasswordInput
+              id="setup-confirm"
+              value={confirmPwd}
+              onChange={(e) => setConfirmPwd(e.target.value)}
+              placeholder="再次输入密码"
+              autoComplete="new-password"
+            />
           </SettingsField>
           <Button type="submit" disabled={saving} className="w-full">
             {saving && <Loader2 className="animate-spin" />}
