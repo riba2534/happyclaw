@@ -3,7 +3,7 @@
  * page accepts, the pasted callback input, the JSON token exchange/refresh
  * bodies and the identity fields Anthropic returns next to the tokens.
  *
- * Values mirror the Claude Code CLI bundled in node_modules (2.1.296) — the
+ * Values mirror the Claude Code CLI bundled in node_modules (2.1.328) — the
  * same client Anthropic expects on these endpoints — so HappyClaw logs in and
  * refreshes exactly like `claude /login` does. Everything here is pure;
  * persistence and network ownership live in claude-oauth-refresh.ts.
@@ -33,12 +33,12 @@ export const CLAUDE_OAUTH_BETA = 'oauth-2025-04-20';
 
 /**
  * The token endpoint sees the CLI's Axios client; the CLI sets no explicit
- * User-Agent there, so Axios 1.15.2 (bundled by Claude Code 2.1.296) sends
+ * User-Agent there, so Axios 1.15.2 (bundled by Claude Code 2.1.328) sends
  * its default.
  */
 export const CLAUDE_OAUTH_TOKEN_USER_AGENT = 'axios/1.15.2';
 /** The CLI's own User-Agent, used for its profile request. */
-export const CLAUDE_CODE_USER_AGENT = 'claude-code/2.1.296';
+export const CLAUDE_CODE_USER_AGENT = 'claude-code/2.1.328';
 
 /** Scopes the CLI requests when it refreshes a claude.ai grant. */
 export const CLAUDE_OAUTH_REFRESH_SCOPES: readonly string[] = [
