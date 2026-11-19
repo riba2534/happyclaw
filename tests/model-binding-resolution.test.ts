@@ -356,3 +356,74 @@ describe('launch effort', () => {
     expect(selection.resolved.launchEffort).toBe('low');
   });
 });
+
+describe('sub-agent launch', () => {
+  const policy = {
+    model: 'A-flash',
+    max_concurrent: 4,
+    definitions: [
+      {
+        name: 'reviewer',
+        description: 'Reviews diffs',
+        prompt: 'Review.',
+        tools: null,
+        model: 'A-pro',
+        effort: null,
+      },
+    ],
+  };
+
+  beforeEach(() => {
+    mocks.providers = [
+      provider('A', {
+        models: [{ id: 'A-model' }, { id: 'A-flash' }, { id: 'A-pro' }],
+      }),
+      provider('B'),
+    ];
+  });
+
+  test('on the Agent’s connection its models drive the sub-agents', () => {
+    const selection = runner.trySelectPoolProvider(
+      'grp',
+      null,
+      'A',
+      null,
+      undefined,
+      policy,
+    )!;
+    expect(selection.resolved.config.roles?.subagent).toBe('A-flash');
+    expect(selection.subagents).toEqual({
+      defaultModel: 'A-flash',
+      maxConcurrent: 4,
+      agents: {
+        reviewer: {
+          description: 'Reviews diffs',
+          prompt: 'Review.',
+          model: 'A-pro',
+        },
+      },
+    });
+    const input = runner.prepareLaunchInput(
+      { prompt: '', groupFolder: 'grp', chatJid: 'web:grp' } as never,
+      selection,
+    );
+    expect(input.subagents?.agents?.reviewer.model).toBe('A-pro');
+  });
+
+  test('a session pick of another connection drops the Agent’s models', () => {
+    db.setSessionModelSelection('grp', null, 'B', 'member');
+    const selection = runner.trySelectPoolProvider(
+      'grp',
+      null,
+      'A',
+      null,
+      undefined,
+      policy,
+    )!;
+    expect(selection.profileId).toBe('B');
+    expect(selection.resolved.config.roles?.subagent).toBeUndefined();
+    expect(selection.subagents?.defaultModel).toBeUndefined();
+    expect(selection.subagents?.maxConcurrent).toBe(4);
+    expect(selection.subagents?.agents?.reviewer.model).toBeUndefined();
+  });
+});

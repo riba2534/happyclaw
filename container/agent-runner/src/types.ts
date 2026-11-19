@@ -219,6 +219,23 @@ export interface ContainerInput {
    * the Agent's effort then goes as before.
    */
   launchEffort?: string | null;
+  /**
+   * The Agent's sub-agents resolved by the host for this launch: SDK
+   * definitions (models already named for the connection) and the cap.
+   */
+  subagents?: {
+    maxConcurrent?: number;
+    agents?: Record<
+      string,
+      {
+        description: string;
+        prompt: string;
+        tools?: string[];
+        model?: string;
+        effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+      }
+    >;
+  };
   turnId?: string;
   /** Persisted message IDs already represented by the cold bootstrap prompt. */
   currentBatchMessageIds?: readonly string[];

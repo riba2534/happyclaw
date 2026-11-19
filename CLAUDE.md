@@ -436,6 +436,11 @@ preset 的身份和默认风格，只低于平台的安全、权限、工具和�
   （Runner 把上游原话放在 `providerErrorText`），宿主读额度，按模型 id 的 `provider/` 前缀
   找该 provider 已用尽窗口中最早的 `resetsAt`，交给用量上限等待；路由组、`auto/`、读不到额度
   或没有已用尽窗口时按原逻辑失败（`src/magpie-usage-limit.ts`）。
+- 子代理设置在 `runtime_policy.subagents`（`src/agent-subagents.ts`）：默认子代理模型、
+  同时运行上限（`CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS`）和自定义子代理（SDK `options.agents`）。
+  一个 Claude Code 进程只连一个端点，子代理不能跨连接，模型只能取智能体所绑连接里的，
+  保存时校验；运行时会话手选了别的连接或模型已移出列表，这些名字不生效，回到连接的
+  `roles.subagent` 与继承。宿主解析后经 `ContainerInput.subagents` 交给 Runner。
 - 宿主机 Skills 由 `runtime_policy.skills.host` 独立选择，不能通过
   `host_claude` 开关隐式获得；每个智能体都存显式值，新建、复制、导入一律写显式值。
 - 工作区 `CLAUDE.md`、项目 `.claude/skills` 和项目 MCP 属于项目上下文层。项目根按 CLI

@@ -4001,17 +4001,31 @@ export function buildClaudeEnvLines(
       if (USER_TUNABLE_MODEL_ENV.has(key) && customEnv[key]?.trim()) continue;
       lines.push(`${key}=${sanitizeEnvValue(value)}`);
     }
-  } else if (config.anthropicModel) {
+  } else {
     // Declared or `[1m]`-named windows only: on the official endpoint `[1m]`
     // is the billed 1M opt-in, which a registry window must not turn on.
-    lines.push(
-      `ANTHROPIC_MODEL=${sanitizeEnvValue(
-        launchModelName(
-          config.anthropicModel,
-          windowOf(models, config.anthropicModel),
-        ),
-      )}`,
-    );
+    if (config.anthropicModel) {
+      lines.push(
+        `ANTHROPIC_MODEL=${sanitizeEnvValue(
+          launchModelName(
+            config.anthropicModel,
+            windowOf(models, config.anthropicModel),
+          ),
+        )}`,
+      );
+    }
+    // Only an explicit sub-agent model (an Agent's); otherwise Claude Code
+    // picks its own, as before.
+    if (config.roles?.subagent) {
+      lines.push(
+        `CLAUDE_CODE_SUBAGENT_MODEL=${sanitizeEnvValue(
+          launchModelName(
+            config.roles.subagent,
+            windowOf(models, config.roles.subagent),
+          ),
+        )}`,
+      );
+    }
   }
 
   for (const [key, value] of Object.entries(customEnv)) {

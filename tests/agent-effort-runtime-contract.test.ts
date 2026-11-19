@@ -55,4 +55,18 @@ describe('Agent effort runtime contracts', () => {
     const runner = read('container/agent-runner/src/index.ts');
     expect(runner).toContain('...(agentEffort ? { effort: agentEffort } : {})');
   });
+
+  test('host and container starts resolve the Agent’s sub-agents; the runner passes them', () => {
+    const host = read('src/container-runner.ts');
+    expect(
+      host.match(
+        /resolveAgentSdkEffort\(input\.agentProfile\?\.runtimePolicy\),\s*input\.agentProfile\?\.runtimePolicy\?\.subagents,/g,
+      ),
+    ).toHaveLength(2);
+    const runner = read('container/agent-runner/src/index.ts');
+    expect(runner).toContain('{ agents: containerInput.subagents.agents }');
+    expect(runner).toContain(
+      'claudeRuntimeEnv.CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS = cap;',
+    );
+  });
 });

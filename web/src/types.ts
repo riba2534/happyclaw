@@ -138,6 +138,8 @@ export interface ModelConfigOption {
   usable?: boolean;
   /** Every model an Agent may pin within this connection, its own included. */
   models: ConnectionModel[];
+  /** A ChatGPT subscription: no separate sub-agent model. */
+  chatgpt?: boolean;
 }
 
 /** A binding an Agent can follow: who supplies the connection and model. */
@@ -197,6 +199,27 @@ export interface AgentProfileRuntimePolicy {
     mode: 'inherit' | 'custom' | 'disabled';
     ids: string[];
   };
+  /** Absent when the Agent sets nothing about sub-agents. */
+  subagents?: AgentSubagentPolicy | null;
+}
+
+export type SubagentEffortLevel = Exclude<AgentEffortLevel, 'inherit'>;
+
+/** A user-defined sub-agent; its model is one of the Agent's connection. */
+export interface AgentSubagentDefinition {
+  name: string;
+  description: string;
+  prompt: string;
+  /** null inherits every tool. */
+  tools: string[] | null;
+  model: string | null;
+  effort: SubagentEffortLevel | null;
+}
+
+export interface AgentSubagentPolicy {
+  model: string | null;
+  max_concurrent: number | null;
+  definitions: AgentSubagentDefinition[];
 }
 
 export interface AgentProfileRuntimePolicyPatch {
@@ -208,6 +231,8 @@ export interface AgentProfileRuntimePolicyPatch {
     host?: Partial<NonNullable<AgentProfileRuntimePolicy['skills']['host']>>;
   };
   mcp?: Partial<AgentProfileRuntimePolicy['mcp']>;
+  /** Saved as one unit; null clears it. */
+  subagents?: AgentSubagentPolicy | null;
 }
 
 export type AgentContextSource = NonNullable<
