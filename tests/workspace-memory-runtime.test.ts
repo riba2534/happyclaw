@@ -820,15 +820,22 @@ describe('Workspace Memory runtime boundary', () => {
   test("only a batch of the owner's own messages is the owner's turn", () => {
     const registrations: Record<
       string,
-      { created_by?: string; owner_im_id?: string; owner_claim_source?: string }
+      {
+        folder: string;
+        created_by?: string;
+        owner_im_id?: string;
+        owner_claim_source?: string;
+      }
     > = {
-      'web:ws': { created_by: 'owner-1' },
+      'web:ws': { folder: 'ws', created_by: 'owner-1' },
       'feishu:oc_group': {
+        folder: 'home',
         created_by: 'owner-1',
         owner_im_id: 'ou_owner',
         owner_claim_source: 'auto_feishu',
       },
       'feishu:oc_claimed': {
+        folder: 'home',
         created_by: 'owner-1',
         owner_im_id: 'ou_claimer',
         owner_claim_source: 'explicit',
@@ -836,6 +843,8 @@ describe('Workspace Memory runtime boundary', () => {
     };
     const lookup = {
       ownerUserId: 'owner-1',
+      workspaceFolder: 'ws',
+      homeFolder: 'home',
       registration: (jid: string) => registrations[jid],
       ownerRegistrations: () =>
         Object.entries(registrations).map(([jid, row]) => ({ jid, ...row })),

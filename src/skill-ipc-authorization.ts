@@ -20,6 +20,8 @@ export const SKILL_MUTATION_NON_OWNER_REJECTION =
  */
 export function skillMutationTurnRejection(input: {
   registry: Pick<AgentBuilderTurnRegistry, 'requireOwnerHumanTurn'>;
+  /** Folder of the verified IPC namespace. */
+  sourceFolder: string;
   /** Turn-registry scope of the requesting runtime (agentBuilderTurnScope). */
   turnScope: string;
   ownerUserId: string;
@@ -32,9 +34,12 @@ export function skillMutationTurnRejection(input: {
   getGroupsByOwner: (
     userId: string,
   ) => ReturnType<WorkspaceOwnerIdentityLookup['ownerRegistrations']>;
+  getUserHomeGroup: (userId: string) => { folder: string } | undefined;
 }): string | null {
   const ownerTurn = isWorkspaceMemoryOwnerTurn({
     ownerUserId: input.ownerUserId,
+    workspaceFolder: input.sourceFolder,
+    homeFolder: input.getUserHomeGroup(input.ownerUserId)?.folder,
     registration: input.getGroup,
     ownerRegistrations: () => input.getGroupsByOwner(input.ownerUserId),
     requireActiveOwnerTurn: (isOwnerInput) =>

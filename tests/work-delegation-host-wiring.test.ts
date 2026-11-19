@@ -79,6 +79,8 @@ function host(inputs: Record<string, Input>) {
       Object.keys(registrations).filter(
         (jid) => registrations[jid].folder === folder,
       ),
+    getUserHomeGroup: (userId: string) =>
+      userId === OWNER ? { folder: 'home-owner' } : undefined,
     getGroupsByOwner: (userId: string) =>
       Object.entries(registrations)
         .filter(([, row]) => row.created_by === userId)
