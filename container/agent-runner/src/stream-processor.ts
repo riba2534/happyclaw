@@ -302,9 +302,9 @@ export class StreamEventProcessor {
   // isBackground: the Web announces only background completions. Kept apart
   // from pendingSdkTasks because a foreground sub-agent's terminal
   // task_updated settles it there before its task_notification arrives.
-  // Written by task_started (only when the CLI states is_backgrounded),
+  // Written by task_started (foreground unless something says background),
   // task_updated and background_tasks_changed; read and dropped by
-  // task_notification. A task that never notifies (a nested sub-agent ending
+  // task_notification. A task never seen to start counts as background. A task that never notifies (a nested sub-agent ending
   // with its parent, a watcher) stays until the oldest entries are dropped
   // past TASK_BACKGROUND_STATE_MAX_TASKS.
   private readonly taskRanInBackground = new Map<string, boolean>();
@@ -2570,22 +2570,24 @@ export class StreamEventProcessor {
   }
 
   /**
-   * The CLI states is_backgrounded only for local_agent and local_bash. A task
-   * already in the background level, or whose Task/Agent call asked for
-   * run_in_background, runs in the background whatever task_started says.
+   * The CLI states is_backgrounded only for local_agent and local_bash; any
+   * other task started in the background joins the level before its
+   * task_started. A task with none of these signals (nor a Task/Agent call
+   * asking for run_in_background) starts in the foreground; a later level or
+   * task_updated moves it to the background.
    */
   private recordStartedTaskBackground(message: {
     task_id: string;
     tool_use_id?: string;
     is_backgrounded?: boolean;
   }): void {
-    const inBackground =
+    this.recordTaskBackground(
+      message.task_id,
       message.is_backgrounded === true ||
-      this.backgroundLevelTaskIds.has(message.task_id) ||
-      (!!message.tool_use_id &&
-        this.backgroundTaskToolUseIds.has(message.tool_use_id));
-    if (!inBackground && message.is_backgrounded !== false) return;
-    this.recordTaskBackground(message.task_id, inBackground);
+        this.backgroundLevelTaskIds.has(message.task_id) ||
+        (!!message.tool_use_id &&
+          this.backgroundTaskToolUseIds.has(message.tool_use_id)),
+    );
   }
 
   private recordTaskBackground(taskId: string, inBackground: boolean): void {
