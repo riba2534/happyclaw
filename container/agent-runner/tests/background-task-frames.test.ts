@@ -8,7 +8,6 @@ import {
   BACKGROUND_BASH_LAUNCH,
   FOREGROUND_AGENT,
   FOREGROUND_BASH,
-  type Frame,
   replay,
 } from './cli-task-frames.js';
 
@@ -37,35 +36,46 @@ const synthesizedCompletions = (events: any[]) =>
     )
     .map((event) => event.toolUseId);
 
-// The level and task_started of a background Bash, in the other order.
-const BACKGROUND_BASH_STARTED_FIRST: Frame[] = [
-  BACKGROUND_BASH_LAUNCH[0],
-  BACKGROUND_BASH_LAUNCH[2],
-  BACKGROUND_BASH_LAUNCH[1],
-];
-
 describe('what holds the result on measured Claude Code 2.1.328 frames', () => {
-  test.each([
-    ['level first', BACKGROUND_BASH_LAUNCH],
-    ['task_started first', BACKGROUND_BASH_STARTED_FIRST],
-  ])(
-    'a background Bash (%s) holds nothing and owes nothing',
-    (_order, launch) => {
-      const { processor } = makeProcessor();
-      replay(processor, launch);
-      expect(processor.getPendingSdkTaskCount()).toBe(1);
-      expect(holds(processor)).toEqual({ pendingBgTasks: 0, protocol: 0 });
-      replay(processor, BACKGROUND_BASH_FINISH);
-      expect(processor.getPendingSdkTaskCount()).toBe(0);
-      expect(holds(processor)).toEqual({ pendingBgTasks: 0, protocol: 0 });
-    },
-  );
-
-  test('a Bash already in the background level stays detached when task_started does not say', () => {
+  test('a run_in_background Bash holds the result until the main Agent sums it up', () => {
     const { processor } = makeProcessor();
-    const [call, joined, started] = BACKGROUND_BASH_LAUNCH;
-    const { is_backgrounded: _stated, ...unstated } = started;
-    replay(processor, [call, joined, unstated]);
+    replay(processor, BACKGROUND_BASH_LAUNCH);
+    expect(holds(processor)).toEqual({ pendingBgTasks: 1, protocol: 1 });
+    replay(processor, BACKGROUND_BASH_FINISH);
+    expect(processor.getPendingSdkTaskCount()).toBe(0);
+    expect(processor.getBlockingBackgroundCompletionDebtCount()).toBe(1);
+    expect(holds(processor)).toEqual({ pendingBgTasks: 0, protocol: 1 });
+  });
+
+  test('a foreground Bash moved to the background later is detached and owes nothing', () => {
+    const { processor } = makeProcessor();
+    const [call, started] = FOREGROUND_BASH;
+    replay(processor, [call, started]);
+    expect(holds(processor)).toEqual({ pendingBgTasks: 1, protocol: 1 });
+    const taskId = started.task_id;
+    processor.processSystemMessage({
+      type: 'system',
+      subtype: 'task_updated',
+      task_id: taskId,
+      patch: { is_backgrounded: true },
+    });
+    expect(processor.getPendingSdkTaskCount()).toBe(1);
+    expect(holds(processor)).toEqual({ pendingBgTasks: 0, protocol: 0 });
+    processor.processSystemMessage({
+      type: 'system',
+      subtype: 'task_updated',
+      task_id: taskId,
+      patch: { status: 'completed' },
+    });
+    processor.processSystemMessage({
+      type: 'system',
+      subtype: 'task_notification',
+      task_id: taskId,
+      tool_use_id: started.tool_use_id,
+      status: 'completed',
+      summary: 'done',
+      output_file: '',
+    });
     expect(holds(processor)).toEqual({ pendingBgTasks: 0, protocol: 0 });
   });
 

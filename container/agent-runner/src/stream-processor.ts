@@ -1501,23 +1501,20 @@ export class StreamEventProcessor {
       if (message.task_id && !message.skip_transcript) {
         const subAgentOwned = this.isSubAgentOwnedTask(message);
         this.backgroundDrain.taskStarted(message.task_id, !subAgentOwned);
-        const taskType =
-          typeof message.task_type === 'string' ? message.task_type : undefined;
-        // A task started in the background joins the level before its
-        // task_started (Claude Code 2.1.328): keep what the level said.
-        const isBackgrounded =
-          this.pendingSdkTasks.get(message.task_id)?.isBackgrounded === true ||
-          message.is_backgrounded === true;
+        // A task started in the background (run_in_background, or Claude
+        // Code 2.1.328's level entry before task_started) is a debt the main
+        // Agent must sum up, a Bash included: only a foreground task moved to
+        // the background later (task_updated) is detached.
         this.pendingSdkTasks.set(message.task_id, {
           description: desc,
-          taskType,
-          isBackgrounded,
+          taskType:
+            typeof message.task_type === 'string'
+              ? message.task_type
+              : undefined,
+          isBackgrounded: false,
           launchedBySubAgent:
             subAgentOwned || typeof message.parent_task_id === 'string',
         });
-        if (isBackgrounded) {
-          this.markDrainBackgrounded(message.task_id, taskType);
-        }
         this.log(
           `[pending-tasks] +${message.task_id.slice(0, 12)} (${shorten(desc, 60)}) → ${this.pendingSdkTasks.size} pending`,
         );
@@ -1585,7 +1582,11 @@ export class StreamEventProcessor {
       }
       if (pending && message.patch?.is_backgrounded === true) {
         pending.isBackgrounded = true;
-        this.markDrainBackgrounded(message.task_id, pending.taskType);
+        if (pending.taskType === 'local_bash') {
+          this.backgroundDrain.markNonBlocking(message.task_id);
+        } else {
+          this.backgroundDrain.markBackground(message.task_id);
+        }
       }
       if (patchStatus && SDK_TERMINAL_TASK_STATUSES.has(patchStatus)) {
         this.backgroundDrain.taskTerminal(message.task_id);
@@ -2634,21 +2635,6 @@ export class StreamEventProcessor {
     this.log(
       `[pending-tasks] -${taskId.slice(0, 12)} (${reason}) → ${this.pendingSdkTasks.size} pending`,
     );
-  }
-
-  /**
-   * A backgrounded local_bash is a detached process that no longer holds the
-   * input; other background tasks owe the main Agent their completion.
-   */
-  private markDrainBackgrounded(
-    taskId: string,
-    taskType: string | undefined,
-  ): void {
-    if (taskType === 'local_bash') {
-      this.backgroundDrain.markNonBlocking(taskId);
-    } else {
-      this.backgroundDrain.markBackground(taskId);
-    }
   }
 
   /** 尚未 settle 的 SDK 任务数（异步 Agent / backgrounded Bash 等）。 */
