@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, test, vi } from 'vitest';
+import { CODEX_GATEWAY_BASE_URL_PLACEHOLDER } from '../src/codex-gateway/types.js';
 
 // Run the real Launcher/config/DB against a child that records its bootstrap.
 // No Docker daemon, model endpoint, native home or Keychain is touched.
@@ -80,6 +81,7 @@ const folder = 'connection-policy';
 const session = 'connection-session';
 let firstId: string;
 let secondId: string;
+let codexId: string;
 
 beforeAll(() => {
   fs.writeFileSync(
@@ -91,6 +93,7 @@ fs.writeFileSync(${JSON.stringify(capture)}, JSON.stringify({
   policy: input.webFetchPreflightPolicy,
   sent: 'webFetchPreflightPolicy' in input,
   endpoint: process.env.ANTHROPIC_BASE_URL,
+  accountingMode: input.usageAccountingMode,
 }));
 console.log('---HAPPYCLAW_OUTPUT_START---');
 console.log(JSON.stringify({status:'success', result:'captured'}));
@@ -115,6 +118,23 @@ console.log('---HAPPYCLAW_OUTPUT_END---');
     anthropicModel: 'second-model',
     enabled: true,
     webFetchPreflightPolicy: 'skip',
+  }).id;
+  codexId = config.createProvider({
+    name: 'Codex usage connection',
+    type: 'third_party',
+    anthropicBaseUrl: CODEX_GATEWAY_BASE_URL_PLACEHOLDER,
+    anthropicAuthToken: 'test-codex-identifier',
+    anthropicModel: 'gpt-6.1-sol',
+    codexOAuthCredentials: {
+      accessToken: 'fake-access',
+      refreshToken: 'fake-refresh',
+      expiresAt: Date.now() + 3_600_000,
+      accountId: 'fake-account',
+      planType: 'plus',
+      email: 'fake@example.invalid',
+      updatedAt: new Date().toISOString(),
+    },
+    enabled: true,
   }).id;
 });
 
@@ -145,6 +165,7 @@ async function launch(
     chatJid: `web:${folder}#agent:${session}`,
     agentId: session,
     webFetchPreflightPolicy: callerPolicy, // Deliberately stale caller input.
+    usageAccountingMode: 'codex' as const, // Must be overwritten by the launch selection.
     agentProfile: {
       id: 'profile',
       name: 'Profile',
@@ -170,6 +191,7 @@ async function launch(
     );
     expect(result, JSON.stringify(result)).toMatchObject({ status: 'success' });
     expect(input.webFetchPreflightPolicy).toBe(callerPolicy);
+    expect(input.usageAccountingMode).toBe('codex');
     return {
       ...JSON.parse(fs.readFileSync(capture, 'utf8')),
       providerId: selected.mock.calls[0]?.[2],
@@ -255,4 +277,37 @@ describe('selected connection WebFetch policy at launch', () => {
       skipWebFetchPreflight: true,
     });
   });
+});
+
+describe('Codex usage source at the real launch boundary', () => {
+  test.each(['host', 'container'] as const)(
+    '%s marks only the selected Codex connection',
+    async (mode) => {
+      db.setSessionModelSelection(folder, session, codexId, 'owner');
+      expect(await launch(mode, firstId)).toMatchObject({
+        providerId: codexId,
+        accountingMode: 'codex',
+      });
+      db.setSessionModelSelection(folder, session, firstId, 'owner');
+      expect(await launch(mode, codexId)).not.toHaveProperty('accountingMode');
+    },
+  );
+
+  test.each(['host', 'container'] as const)(
+    '%s ignores a spoofed mode for an ordinary GPT endpoint',
+    async (mode) => {
+      db.setSessionModelSelection(folder, session, null);
+      config.saveContainerEnvConfig(folder, {
+        anthropicBaseUrl: 'https://ordinary-gpt.example.test',
+        anthropicAuthToken: 'test-workspace-token',
+        anthropicModel: 'gpt-6.1-sol',
+        customEnv: { HAPPYCLAW_USAGE_ACCOUNTING: 'codex' },
+      });
+      try {
+        expect(await launch(mode, null)).not.toHaveProperty('accountingMode');
+      } finally {
+        config.saveContainerEnvConfig(folder, {});
+      }
+    },
+  );
 });

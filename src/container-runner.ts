@@ -38,7 +38,10 @@ import { isSingleUserHost } from './deployment-mode.js';
 export const SINGLE_USER_HOST_CONTAINER_REFUSAL =
   '单人宿主机模式不运行 Docker 工作区；请把工作区改为宿主机模式或切回多人模式。';
 import { logger } from './logger.js';
-import { isCodexGatewayBaseUrl } from './codex-gateway/resolve-gateway-url.js';
+import {
+  isCodexGatewayBaseUrl,
+  resolveCodexUsageAccountingMode,
+} from './codex-gateway/resolve-gateway-url.js';
 import {
   CodexGatewayRunnerLease,
   applyCodexGatewayNoProxy,
@@ -680,6 +683,8 @@ function ensureSettingsJson(
 export interface ContainerInput {
   prompt: string;
   sessionId?: string;
+  /** Host-derived accounting semantics for the selected Codex gateway only. */
+  usageAccountingMode?: 'codex';
   /**
    * The effort the host resolved for this launch: Claude Code runs at it, and
    * null means none is sent at all, not even the Agent's own effort as the
@@ -2160,6 +2165,7 @@ interface PreparedVolumeMounts {
   dockerOauthLaunch: OAuthLaunchSnapshot | null;
   /** Selected provider routes through the ChatGPT/Codex 订阅网关; docker run needs host.docker.internal. */
   usesCodexGateway: boolean;
+  usageAccountingMode?: 'codex';
   /** Selected provider endpoint was rewritten from host loopback to host.docker.internal. */
   providerNeedsHostGateway: boolean;
 }
@@ -2651,6 +2657,10 @@ function prepareVolumeMounts(
     hostPlugins: pluginSkills,
     dockerOauthLaunch,
     usesCodexGateway,
+    usageAccountingMode: resolveCodexUsageAccountingMode(
+      rawGlobalConfig.anthropicBaseUrl,
+      effectiveContainerOverride.anthropicBaseUrl,
+    ),
     providerNeedsHostGateway,
   };
 }
@@ -3431,6 +3441,7 @@ export async function runContainerAgent(
       // the caller's `input` object (queue/log/retry paths reuse the same ref).
       const dockerInput: ContainerInput = {
         ...input,
+        usageAccountingMode: preparedLaunch.usageAccountingMode,
         webFetchPreflightPolicy:
           resolveProviderWebFetchPreflightPolicy(selectedProfileId),
         toolSearch: resolveProviderToolSearch(selectedProfileId),
@@ -4735,6 +4746,12 @@ export async function runHostAgent(
       // plugins.
       const hostInput: ContainerInput = {
         ...input,
+        usageAccountingMode: resolveCodexUsageAccountingMode(
+          rawGlobalConfig.anthropicBaseUrl,
+          hostSelectedProfileId
+            ? undefined
+            : containerOverride.anthropicBaseUrl,
+        ),
         webFetchPreflightPolicy: resolveProviderWebFetchPreflightPolicy(
           hostSelectedProfileId,
         ),
