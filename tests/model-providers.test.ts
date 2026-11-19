@@ -555,6 +555,14 @@ describe('connection model env', () => {
     // one Claude Code knows.
     expect(keepsTwoHundredKWindow('claude-distill-qwen-72b', null)).toBe(true);
     expect(keepsTwoHundredKWindow('myproxy/claude-coder', null)).toBe(true);
+    for (const id of [
+      'claude-mythos-5',
+      'anthropic.claude-sonnet-5-5',
+      'claude-haiku-4-5-20251001',
+      'claude-3-7-sonnet-latest',
+    ]) {
+      expect(keepsTwoHundredKWindow(id, null)).toBe(false);
+    }
     expect(keepsTwoHundredKWindow('claude-opus-5-5', 200_000)).toBe(true);
     expect(keepsTwoHundredKWindow('', null)).toBe(false);
   });

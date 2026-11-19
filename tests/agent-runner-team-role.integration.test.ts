@@ -58,7 +58,11 @@ function runnerEnv(
         typeof entry[1] === 'string' &&
         !entry[0].startsWith('HAPPYCLAW_') &&
         !entry[0].startsWith('ANTHROPIC_') &&
-        !['CLAUDE_CODE_OAUTH_TOKEN', 'CLAUDE_CONFIG_DIR'].includes(entry[0]),
+        ![
+          'CLAUDE_CODE_OAUTH_TOKEN',
+          'CLAUDE_CONFIG_DIR',
+          'ENABLE_TOOL_SEARCH',
+        ].includes(entry[0]),
     ),
   );
   return {

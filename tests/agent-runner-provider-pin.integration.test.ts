@@ -281,7 +281,7 @@ async function runTurn(options: {
   for (const [key, value] of Object.entries(process.env)) {
     if (
       typeof value === 'string' &&
-      !/^(ANTHROPIC_|CLAUDE_|AWS_|HTTPS?_PROXY)/.test(key)
+      !/^(ANTHROPIC_|CLAUDE_|AWS_|HTTPS?_PROXY|ENABLE_TOOL_SEARCH$)/.test(key)
     ) {
       env[key] = value;
     }

@@ -494,8 +494,11 @@ export function autoCompactWindowFor(
   return contextWindow;
 }
 
-/** A Claude model id, under any provider prefix (`anthropic/…`). */
-const CLAUDE_MODEL_NAME_RE = /(?:^|\/)claude-(?:opus|sonnet|haiku|fable|\d)/i;
+/**
+ * A Claude model id as Claude Code names one (`claude-<family>-<version>`,
+ * `claude-3-…`), under any provider prefix (`anthropic/…`, `anthropic.…`).
+ */
+const CLAUDE_MODEL_NAME_RE = /(?:^|[/.])claude-(?:[a-z]+-)?\d/i;
 
 /**
  * Whether a third-party launch of `launchModel` (as launchModelName names it)
