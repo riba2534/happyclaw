@@ -99,7 +99,11 @@ export function isMagpieAliasModelId(id: string): boolean {
 const ONE_MILLION_SUFFIX = '[1m]';
 const ONE_MILLION_SUFFIX_RE = /(?:\[1m\])+$/i;
 
-/** Claude Code's window for a model it does not recognize, without `[1m]`. */
+/**
+ * The window of a model Claude Code does not recognize, without `[1m]`: what
+ * Claude Code assumed up to 2.1.322, and what HappyClaw keeps it at with
+ * CLAUDE_CODE_DISABLE_1M_CONTEXT (keepsTwoHundredKWindow).
+ */
 export const CLAUDE_CODE_DEFAULT_CONTEXT = 200_000;
 /** The window `[1m]` gives a model. */
 export const ONE_MILLION_CONTEXT = 1_000_000;
@@ -491,6 +495,27 @@ export function autoCompactWindowFor(
   return contextWindow;
 }
 
+/**
+ * Whether a third-party launch of `launchModel` (as launchModelName names it)
+ * needs CLAUDE_CODE_DISABLE_1M_CONTEXT=1. Claude Code 2.1.323 and later
+ * assume 1M for a model they do not recognize, and on a 1M window they do
+ * not compact at a threshold: they wait for the endpoint's "prompt is too
+ * long", which other vendors word differently, so a full session fails every
+ * turn. Claude Code before 2.1.323 assumed 200K and compacted in time. So
+ * the 200K ceiling stays for a model without `[1m]` that declares its window
+ * (200K or less) or whose name is not a Claude model's; a Claude model that
+ * declares none keeps the window Claude Code knows for it, and a `[1m]`
+ * launch keeps 1M.
+ */
+export function keepsTwoHundredKWindow(
+  launchModel: string,
+  contextWindow: number | null | undefined,
+): boolean {
+  const { model, oneMillion } = splitOneMillionSuffix(launchModel);
+  if (!model || oneMillion) return false;
+  return !!contextWindow || !/claude/i.test(model);
+}
+
 /** Keys the launch derives from the models and roles; not free env. */
 export const CONNECTION_MODEL_ENV_KEYS = [
   'ANTHROPIC_MODEL',
@@ -499,6 +524,7 @@ export const CONNECTION_MODEL_ENV_KEYS = [
   'ANTHROPIC_DEFAULT_HAIKU_MODEL',
   'CLAUDE_CODE_SUBAGENT_MODEL',
   'CLAUDE_CODE_AUTO_COMPACT_WINDOW',
+  'CLAUDE_CODE_DISABLE_1M_CONTEXT',
   'CLAUDE_CODE_EFFORT_LEVEL',
 ] as const;
 
@@ -525,8 +551,10 @@ export interface ConnectionModelEnvInput {
 /**
  * The model environment of one launch on a third-party endpoint: the turn's
  * model with `[1m]` when its window needs it, each tier and the sub-agent
- * model from the roles or else the turn's model, the compact window of the
- * turn's model, and the longest reply they all declare (maxOutputTokensFor).
+ * model from the roles or else the turn's model, the compact window and the
+ * 200K ceiling (keepsTwoHundredKWindow) of the turn's model, which apply to
+ * the whole launch, and the longest reply they all declare
+ * (maxOutputTokensFor).
  * A pass-through connection (no model) only gets the roles it names.
  * CLAUDE_CODE_MAX_OUTPUT_TOKENS is not one of CONNECTION_MODEL_ENV_KEYS: a
  * value in the connection's own env replaces it.
@@ -548,9 +576,13 @@ export function buildConnectionModelEnv(
   if (sonnet) env.ANTHROPIC_DEFAULT_SONNET_MODEL = sonnet;
   if (haiku) env.ANTHROPIC_DEFAULT_HAIKU_MODEL = haiku;
   if (subagent) env.CLAUDE_CODE_SUBAGENT_MODEL = subagent;
-  if (input.model.trim()) {
-    const window = autoCompactWindowFor(windowOf(input.models, input.model));
+  if (current) {
+    const declared = windowOf(input.models, input.model);
+    const window = autoCompactWindowFor(declared);
     if (window) env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = String(window);
+    if (keepsTwoHundredKWindow(current, declared)) {
+      env.CLAUDE_CODE_DISABLE_1M_CONTEXT = '1';
+    }
   }
   const maxOutput = maxOutputTokensFor(
     input.models,

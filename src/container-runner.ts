@@ -702,10 +702,11 @@ export interface ContainerInput {
    */
   thinking?: 'disabled';
   /**
-   * Set when the selected connection turns Claude Code's tool search on: the
-   * Runner pins ENABLE_TOOL_SEARCH=true in the flag settings. Read at launch.
+   * The selected connection's tool search, which the Runner pins as
+   * ENABLE_TOOL_SEARCH in the flag settings (resolveProviderToolSearch).
+   * Read at launch.
    */
-  toolSearch?: true;
+  toolSearch?: boolean;
   /**
    * The reply limit HappyClaw derived for this launch from its models'
    * declarations (derivedMaxOutputTokens): the Runner pins it as
@@ -2045,15 +2046,20 @@ export function fallbackLaunchModel(
 }
 
 /**
- * ContainerInput.toolSearch for a launch on `providerId`: set when the
- * connection turns Claude Code's tool search on. A launch on the
- * Workspace's own environment follows Claude Code's settings.
+ * ContainerInput.toolSearch for a launch on `providerId`: true when the
+ * connection turns Claude Code's tool search on, false when a connection on
+ * its own endpoint (a third-party one or the ChatGPT gateway) has it off,
+ * since Claude Code 2.1.304 and later turn it on there by themselves.
+ * Anthropic's own API and a launch on the Workspace's own environment
+ * follow Claude Code's settings.
  */
 export function resolveProviderToolSearch(
   providerId: string | null,
-): true | undefined {
+): boolean | undefined {
   const provider = providerId ? getProviderById(providerId) : null;
-  return provider && providerToolSearchEnabled(provider) ? true : undefined;
+  if (!provider) return undefined;
+  if (providerToolSearchEnabled(provider)) return true;
+  return provider.anthropicBaseUrl ? false : undefined;
 }
 
 /**

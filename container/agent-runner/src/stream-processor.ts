@@ -1311,9 +1311,18 @@ export class StreamEventProcessor {
    * Process a tool_progress message: the SDK's elapsed-time heartbeat of a
    * running tool. It arrives several times a second, so it is throttled per
    * tool (see emitToolProgress); the one-shot tool_progress events built from
-   * streamed tool input are not.
+   * streamed tool input are not. Agent SDK 0.3.323+ also sends one while a
+   * turn waits on a long-running hook, under a `hook-` id that never starts
+   * or ends a tool; it would leave a tool running in the Web until the turn
+   * ends, so it is dropped.
    */
   processToolProgress(message: any): void {
+    if (
+      typeof message.tool_use_id === 'string' &&
+      message.tool_use_id.startsWith('hook-')
+    ) {
+      return;
+    }
     const parentToolUseId =
       message.parent_tool_use_id === undefined
         ? null

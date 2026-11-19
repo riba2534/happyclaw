@@ -73,9 +73,18 @@ describe('tool search', () => {
     expect(pinned.env).not.toHaveProperty('ENABLE_TOOL_SEARCH');
   });
 
+  // Claude Code 2.1.304+ turns tool search on behind a custom endpoint by
+  // itself, so a connection that has it off has to say so.
+  test('a connection that has it off pins false', () => {
+    expect(pinToolSearch(pinned, false)).toEqual({
+      apiKeyHelper: '',
+      env: { ...pinned.env, ENABLE_TOOL_SEARCH: 'false' },
+    });
+  });
+
   // Flag settings outrank every settings file, so a pinned 'false' would
   // undo a workspace's own ENABLE_TOOL_SEARCH.
-  test('without it nothing is written, not even false', () => {
+  test('without a connection choice nothing is written, not even false', () => {
     expect(pinToolSearch(pinned, undefined)).toEqual(pinned);
   });
 });

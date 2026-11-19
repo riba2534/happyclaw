@@ -3114,7 +3114,9 @@ async function runQueryAttempt(
     if (runThinking.type === 'disabled') {
       log('Run thinking: off (the model does not reason)');
     }
-    if (containerInput.toolSearch) log('Run tool search: on');
+    if (containerInput.toolSearch !== undefined) {
+      log(`Run tool search: ${containerInput.toolSearch ? 'on' : 'off'}`);
+    }
     if (containerInput.maxOutputTokens) {
       log(`Run reply limit: ${containerInput.maxOutputTokens} (pinned)`);
     }

@@ -54,6 +54,16 @@ const MODEL = 'stub-model';
 // succeed normally.
 const SCENARIOS = [
   { mode: 'ok', expect: null, slow: false, note: 'healthy turn' },
+  // magpie answers deferred tools with this 400 on a route that cannot load
+  // them in place. Claude Code 2.1.327 and later ask again with every tool
+  // declared in full; 2.1.296 surfaced the 400 as the turn's error.
+  {
+    mode: 'refuse-deferred',
+    expect: null,
+    slow: false,
+    toolSearch: true,
+    note: 'deferred tools refused, sent again in full',
+  },
   {
     mode: 'http:404',
     expect: 'config',
@@ -86,8 +96,21 @@ const SCENARIOS = [
 
 // ── fake upstream ──────────────────────────────────────────────────────────
 
+const DEFERRED_REFUSAL =
+  'tools.defer_loading: deferred tools are not loaded in place on this route, so a tool loaded later would change the start of the prompt and lose its cache; ask again with every tool declared in full';
+
+function hasDeferredTool(body) {
+  try {
+    const tools = JSON.parse(body).tools;
+    return Array.isArray(tools) && tools.some((t) => t?.defer_loading === true);
+  } catch {
+    return false;
+  }
+}
+
 function startStub() {
   let mode = 'ok';
+  let refusedDeferred = 0;
   const okEvents = (text) => [
     {
       type: 'message_start',
@@ -144,6 +167,16 @@ function startStub() {
         return res.end(JSON.stringify({ input_tokens: 100 }));
       }
       if (mode === 'hang') return; // never respond
+      if (mode === 'refuse-deferred' && hasDeferredTool(body)) {
+        refusedDeferred += 1;
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        return res.end(
+          JSON.stringify({
+            type: 'error',
+            error: { type: 'invalid_request_error', message: DEFERRED_REFUSAL },
+          }),
+        );
+      }
       if (mode.startsWith('http:')) {
         const status = Number(mode.split(':')[1] || 500);
         const type =
@@ -180,7 +213,11 @@ function startStub() {
       resolve({
         server,
         port: server.address().port,
-        setMode: (m) => (mode = m),
+        setMode: (m) => {
+          mode = m;
+          refusedDeferred = 0;
+        },
+        refusedDeferred: () => refusedDeferred,
       }),
     );
   });
@@ -205,7 +242,7 @@ function parseFrames(buf) {
   return out;
 }
 
-async function runScenario({ mode, port, timeoutMs, tmp }) {
+async function runScenario({ mode, port, timeoutMs, tmp, toolSearch }) {
   const ipcDir = path.join(tmp, 'ipc');
   const workDir = path.join(tmp, 'workspace');
   fs.mkdirSync(ipcDir, { recursive: true });
@@ -244,6 +281,7 @@ async function runScenario({ mode, port, timeoutMs, tmp }) {
       isHome: false,
       isAdminHome: false,
       turnId: `stub-${mode.replace(/[^a-z0-9]/gi, '-')}`,
+      ...(toolSearch ? { toolSearch: true } : {}),
     }),
   );
 
@@ -303,16 +341,21 @@ for (const scenario of selected) {
     port: stub.port,
     timeoutMs,
     tmp,
+    toolSearch: scenario.toolSearch,
   });
+  // A refusal scenario that never saw a deferred tool proves nothing.
+  const refused = stub.refusedDeferred();
   const ok =
-    scenario.expect === null
+    (scenario.expect === null
       ? r.actual === null && r.answer === 'STUB_OK'
-      : r.actual === scenario.expect;
+      : r.actual === scenario.expect) &&
+    (scenario.mode !== 'refuse-deferred' || refused > 0);
   if (!ok) failed += 1;
   const detail =
-    scenario.expect === null
+    (scenario.expect === null
       ? `answer=${JSON.stringify(r.answer)}`
-      : `class=${r.actual}${r.livenessTimeout ? ' +livenessTimeout' : ''}`;
+      : `class=${r.actual}${r.livenessTimeout ? ' +livenessTimeout' : ''}`) +
+    (scenario.mode === 'refuse-deferred' ? ` refused=${refused}` : '');
   console.log(
     `${ok ? 'PASS' : 'FAIL'}  ${scenario.mode.padEnd(12)} ${String(r.elapsedSec).padStart(3)}s  ` +
       `expect=${scenario.expect ?? 'no failure'}  ${detail}  (${scenario.note})`,

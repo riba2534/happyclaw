@@ -9,6 +9,7 @@ import { afterAll, beforeAll, describe, expect, test } from 'vitest';
 
 import { writeCliSecretFiles } from '../container/agent-runner/src/cli-secret-files.js';
 import { pinBoundProviderSettings } from '../container/agent-runner/src/provider-env-pin.js';
+import { pinToolSearch } from '../container/agent-runner/src/tool-search.js';
 import {
   buildClaudeContextPlan,
   loadHostClaudeSettings,
@@ -297,9 +298,12 @@ async function runTurn(options: {
         `ps -ww -o command= -p $PPID > ${options.dumpArgvTo}`
       : undefined;
   // As the Runner does: the pin and external MCP servers reach the CLI as
-  // files, never argv.
+  // files, never argv. The bound connection has tool search off, so every
+  // tool is declared in full.
   const files = writeCliSecretFiles(
-    options.pin === false ? {} : pinBoundProviderSettings(env),
+    options.pin === false
+      ? {}
+      : pinToolSearch(pinBoundProviderSettings(env), false),
     options.mcpServers ?? {},
     dir,
   );

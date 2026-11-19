@@ -182,6 +182,8 @@ describe('buildClaudeEnvLines', () => {
     expect(
       lines.some((line) => line.startsWith('CLAUDE_CODE_AUTO_COMPACT_WINDOW=')),
     ).toBe(false);
+    // Claude Code 2.1.323+ would assume 1M for it.
+    expect(lines).toContain('CLAUDE_CODE_DISABLE_1M_CONTEXT=1');
   });
 
   test('injects nothing implicitly: no effort, no timeout, no traffic flags', () => {
@@ -253,6 +255,8 @@ describe('buildClaudeEnvLines', () => {
       expect(lines).toContain('ANTHROPIC_DEFAULT_OPUS_MODEL=gpt-6-sol');
       expect(lines).toContain('ANTHROPIC_DEFAULT_SONNET_MODEL=gpt-6-sol');
       expect(lines).toContain('CLAUDE_CODE_SUBAGENT_MODEL=gpt-6-sol');
+      // Claude Code 2.1.323+ would assume 1M for a Codex model name.
+      expect(lines).toContain('CLAUDE_CODE_DISABLE_1M_CONTEXT=1');
     },
   );
 

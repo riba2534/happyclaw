@@ -182,6 +182,27 @@ describe('tool_progress heartbeat throttle', () => {
     expect(elapsed(events())).toEqual([1, undefined]);
   });
 
+  // Agent SDK 0.3.323+: a turn waiting on a long-running hook. The id starts
+  // and ends no tool, so a forwarded frame would leave one running.
+  test('drops the heartbeat of a hook', () => {
+    const { processor, events } = makeProcessor();
+    processor.processToolProgress({
+      type: 'tool_progress',
+      tool_use_id: 'hook-3f2c',
+      tool_name: 'PreToolUse',
+      parent_tool_use_id: null,
+      elapsed_time_seconds: 12,
+      heartbeat: true,
+    });
+    processor.processToolProgress(heartbeat('t1', 1));
+    vi.advanceTimersByTime(5_000);
+    expect(
+      events()
+        .filter((event) => event.eventType === 'tool_progress')
+        .map((event) => event.toolUseId),
+    ).toEqual(['t1']);
+  });
+
   test('cleanup and a discarded stream cancel the pending frame', () => {
     for (const end of ['cleanup', 'discardPendingTextOutput'] as const) {
       const { processor, events } = makeProcessor();

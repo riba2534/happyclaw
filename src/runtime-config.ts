@@ -3984,6 +3984,9 @@ export function buildClaudeEnvLines(
       );
     }
     lines.push(`ANTHROPIC_DEFAULT_HAIKU_MODEL=${CODEX_GATEWAY_HAIKU_MODEL}`);
+    // Claude Code 2.1.323+ assumes 1M for a Codex model name it does not
+    // know, and then never compacts in time (keepsTwoHundredKWindow).
+    lines.push('CLAUDE_CODE_DISABLE_1M_CONTEXT=1');
   } else if (config.anthropicBaseUrl) {
     const modelEnv = buildConnectionModelEnv({
       model: config.anthropicModel,

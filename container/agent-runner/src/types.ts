@@ -236,10 +236,11 @@ export interface ContainerInput {
    */
   thinking?: 'disabled';
   /**
-   * The connection turns Claude Code's tool search on: the flag settings pin
-   * ENABLE_TOOL_SEARCH=true.
+   * The connection's tool search, pinned as ENABLE_TOOL_SEARCH in the flag
+   * settings. Absent (Anthropic's own API, or the Workspace's own
+   * environment) leaves it to Claude Code and the settings files.
    */
-  toolSearch?: true;
+  toolSearch?: boolean;
   /**
    * The reply limit the host derived from the launch's models: the flag
    * settings pin it as CLAUDE_CODE_MAX_OUTPUT_TOKENS. Absent leaves the key
