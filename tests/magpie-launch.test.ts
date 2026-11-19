@@ -221,6 +221,58 @@ describe('a magpie launch', () => {
     );
   });
 
+  test("the Agent's sub-agent models count toward the launch's reply limit", () => {
+    const withSubagents = (model: string | null, defined: string | null) =>
+      runner.trySelectPoolProvider(
+        FOLDER,
+        null,
+        magpie.id,
+        undefined,
+        undefined,
+        {
+          model,
+          max_concurrent: null,
+          definitions: [
+            {
+              name: 'reviewer',
+              description: 'Reviews diffs',
+              prompt: 'Review.',
+              tools: null,
+              model: defined,
+              effort: null,
+            },
+          ],
+        },
+      )!;
+    const limitOf = (selection: ReturnType<typeof withSubagents>) => ({
+      env: envOf(selection)('CLAUDE_CODE_MAX_OUTPUT_TOKENS'),
+      pinned: runner.resolveLaunchMaxOutputTokens(selection.resolved, FOLDER),
+    });
+    // GLM-5 declares 131072: the 128K cap still applies.
+    expect(limitOf(withSubagents(null, 'relaya/glm-5'))).toEqual({
+      env: '128000',
+      pinned: 128_000,
+    });
+    // DeepSeek Chat declares 8192: a custom sub-agent on it could be refused
+    // a longer reply, so nothing is raised.
+    expect(limitOf(withSubagents(null, 'relaya/deepseek-chat'))).toEqual({
+      env: undefined,
+      pinned: undefined,
+    });
+    // The same as the default sub-agent model.
+    expect(limitOf(withSubagents('relaya/deepseek-chat', null))).toEqual({
+      env: undefined,
+      pinned: undefined,
+    });
+    // Which reaches the launch's env, named like the turn's model.
+    expect(
+      envOf(withSubagents('relaya/glm-5', null))('CLAUDE_CODE_SUBAGENT_MODEL'),
+    ).toBe('relaya/glm-5[1m]');
+    expect(envOf(select())('CLAUDE_CODE_SUBAGENT_MODEL')).toBe(
+      envOf(select())('ANTHROPIC_MODEL'),
+    );
+  });
+
   test('tool search is on by default and follows the setting', () => {
     expect(runner.resolveProviderToolSearch(magpie.id)).toBe(true);
     runtimeConfig.updateProvider(magpie.id, { toolSearch: 'off' });

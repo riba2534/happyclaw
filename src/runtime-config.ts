@@ -461,6 +461,17 @@ export interface ClaudeProviderConfig {
    * limit counts toward CLAUDE_CODE_MAX_OUTPUT_TOKENS like the roles'.
    */
   fallbackModel?: string;
+  /**
+   * The Agent's default sub-agent model for this launch (agent-subagents.ts):
+   * it takes the place of `roles.subagent`, and is the only sub-agent model
+   * the official endpoint is given.
+   */
+  subagentModel?: string;
+  /**
+   * The models the launch's custom sub-agents name, whose declared reply
+   * limits count toward CLAUDE_CODE_MAX_OUTPUT_TOKENS like the roles'.
+   */
+  subagentModels?: string[];
   updatedAt: string | null;
 }
 
@@ -3912,6 +3923,15 @@ export function shellQuoteEnvLines(lines: string[]): string[] {
   });
 }
 
+/** The connection's roles with the Agent's default sub-agent model in place. */
+function launchRoles(
+  config: Pick<ClaudeProviderConfig, 'roles' | 'subagentModel'>,
+): ConnectionModelRoles | undefined {
+  return config.subagentModel
+    ? { ...config.roles, subagent: config.subagentModel }
+    : config.roles;
+}
+
 /**
  * The Claude environment of one launch on `config`. `config.anthropicModel`
  * is the model this launch runs on (callers replace it with a conversation's
@@ -3993,25 +4013,40 @@ export function buildClaudeEnvLines(
     const modelEnv = buildConnectionModelEnv({
       model: config.anthropicModel,
       models,
-      roles: config.roles,
+      roles: launchRoles(config),
       fallbackModel: config.fallbackModel,
+      subagentModels: config.subagentModels,
     });
     for (const [key, value] of Object.entries(modelEnv)) {
       // The admin's own reply limit for the connection wins.
       if (USER_TUNABLE_MODEL_ENV.has(key) && customEnv[key]?.trim()) continue;
       lines.push(`${key}=${sanitizeEnvValue(value)}`);
     }
-  } else if (config.anthropicModel) {
+  } else {
     // Declared or `[1m]`-named windows only: on the official endpoint `[1m]`
     // is the billed 1M opt-in, which a registry window must not turn on.
-    lines.push(
-      `ANTHROPIC_MODEL=${sanitizeEnvValue(
-        launchModelName(
-          config.anthropicModel,
-          windowOf(models, config.anthropicModel),
-        ),
-      )}`,
-    );
+    if (config.anthropicModel) {
+      lines.push(
+        `ANTHROPIC_MODEL=${sanitizeEnvValue(
+          launchModelName(
+            config.anthropicModel,
+            windowOf(models, config.anthropicModel),
+          ),
+        )}`,
+      );
+    }
+    // Only an Agent's own sub-agent model; otherwise Claude Code picks its
+    // own, as before (the connection's roles do not apply here).
+    if (config.subagentModel) {
+      lines.push(
+        `CLAUDE_CODE_SUBAGENT_MODEL=${sanitizeEnvValue(
+          launchModelName(
+            config.subagentModel,
+            windowOf(models, config.subagentModel),
+          ),
+        )}`,
+      );
+    }
   }
 
   for (const [key, value] of Object.entries(customEnv)) {
@@ -4052,8 +4087,9 @@ export function derivedMaxOutputTokens(
       models: config.models,
     }),
     config.anthropicModel,
-    config.roles,
+    launchRoles(config),
     config.fallbackModel,
+    config.subagentModels,
   );
 }
 
@@ -4303,6 +4339,13 @@ export function mergeClaudeEnvConfig(
       : {}),
     ...(!override.anthropicBaseUrl && global.fallbackModel
       ? { fallbackModel: global.fallbackModel }
+      : {}),
+    // So are the Agent's sub-agent models, which name models of the list.
+    ...(!override.anthropicBaseUrl && global.subagentModel
+      ? { subagentModel: global.subagentModel }
+      : {}),
+    ...(!override.anthropicBaseUrl && global.subagentModels
+      ? { subagentModels: global.subagentModels }
       : {}),
     updatedAt: global.updatedAt,
   };

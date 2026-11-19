@@ -1825,6 +1825,175 @@ describe('/api/agent-profiles model within a configuration', () => {
     );
   });
 
+  test('sub-agent models must be models of the Agent’s connection', async () => {
+    const subagents = (model: string) => ({
+      model,
+      definitions: [
+        {
+          name: 'reviewer',
+          description: 'Reviews diffs',
+          prompt: 'Review.',
+          model,
+        },
+      ],
+    });
+    const created = await send('POST', '/', {
+      name: 'Sub-agent Agent',
+      model_config_id: listed.id,
+      runtime_policy: { subagents: subagents('list-fast') },
+    });
+    expect(created.status).toBe(201);
+    expect(created.body.profile.runtime_policy.subagents).toMatchObject({
+      model: 'list-fast',
+      definitions: [{ name: 'reviewer', model: 'list-fast' }],
+    });
+
+    const refused = await send('POST', '/', {
+      name: 'Foreign Sub-agent Agent',
+      model_config_id: listed.id,
+      runtime_policy: { subagents: subagents('other-default') },
+    });
+    expect(refused).toMatchObject({
+      status: 400,
+      body: { code: 'SUBAGENT_MODEL_NOT_IN_CONNECTION' },
+    });
+    const unbound = await send('POST', '/', {
+      name: 'Unbound Sub-agent Agent',
+      runtime_policy: { subagents: subagents('list-fast') },
+    });
+    expect(unbound.body.code).toBe('SUBAGENT_MODEL_NOT_IN_CONNECTION');
+
+    // Moving to another connection would strand them: refused until cleared.
+    const at = `/${created.body.profile.id}`;
+    const moved = await send('PATCH', at, { model_config_id: null });
+    expect(moved.body.code).toBe('SUBAGENT_MODEL_NOT_IN_CONNECTION');
+    const cleared = await send('PATCH', at, {
+      model_config_id: null,
+      runtime_policy: { subagents: null },
+    });
+    expect(cleared.status).toBe(200);
+    expect(cleared.body.profile.runtime_policy.subagents).toBeUndefined();
+  });
+
+  test('a sub-agent model the connection dropped blocks only edits of it', async () => {
+    const definition = {
+      name: 'reviewer',
+      description: 'Reviews diffs',
+      prompt: 'Review.',
+      model: 'list-fast',
+    };
+    const created = await send('POST', '/', {
+      name: `Stale Sub-agent Agent ${Math.random()}`,
+      model_config_id: listed.id,
+      runtime_policy: { subagents: { definitions: [definition] } },
+    });
+    expect(created.status).toBe(201);
+    const at = `/${created.body.profile.id}`;
+    // As if the connection dropped the model after the save.
+    const stale = { definitions: [{ ...definition, model: 'list-gone' }] };
+    db.updateAgentProfile(created.body.profile.id, 'routes-agent-user', {
+      runtimePolicy: { subagents: stale } as never,
+    });
+
+    expect(await send('PATCH', at, { name: 'Stale renamed' })).toMatchObject({
+      status: 200,
+    });
+    expect(
+      await send('PATCH', at, {
+        runtime_policy: { mcp: { mode: 'disabled' } },
+      }),
+    ).toMatchObject({ status: 200 });
+    expect(
+      await send('PATCH', at, { runtime_policy: { subagents: stale } }),
+    ).toMatchObject({
+      status: 400,
+      body: { code: 'SUBAGENT_MODEL_NOT_IN_CONNECTION' },
+    });
+    expect(
+      await send('PATCH', at, { model_config_id: listed.id }),
+    ).toMatchObject({
+      status: 400,
+      body: { code: 'SUBAGENT_MODEL_NOT_IN_CONNECTION' },
+    });
+    const fixed = await send('PATCH', at, {
+      runtime_policy: { subagents: { definitions: [definition] } },
+    });
+    expect(fixed.status).toBe(200);
+  });
+
+  test('the capability preview shows the sub-agents a run gets', async () => {
+    const created = await send('POST', '/', {
+      name: `Previewed Sub-agent Agent ${Math.random()}`,
+      model_config_id: listed.id,
+      runtime_policy: {
+        subagents: {
+          model: 'list-fast',
+          max_concurrent: 2,
+          definitions: [
+            {
+              name: 'planner',
+              description: 'Plans work',
+              prompt: 'Plan.',
+              tools: ['Read', 'EnterPlanMode'],
+            },
+          ],
+        },
+      },
+    });
+    expect(created.status).toBe(201);
+    const previewOf = async (body: Record<string, unknown>) =>
+      (
+        await send(
+          'POST',
+          `/${created.body.profile.id}/effective-capabilities`,
+          body,
+        )
+      ).body.preview;
+    const preview = await previewOf({});
+    expect(preview.subagents).toEqual({
+      maxConcurrent: 2,
+      defaultModel: 'list-fast',
+      defaultModelSource: 'agent',
+      definitions: [
+        { name: 'planner', tools: ['Read'], model: null, effort: null },
+      ],
+    });
+    expect(preview.notes.join('\n')).toContain('EnterPlanMode');
+    // Unsaved: no default of the Agent's own, so the connection decides.
+    const unsaved = await previewOf({
+      runtime_policy: { subagents: { max_concurrent: 2 } },
+    });
+    expect(unsaved.subagents).toMatchObject({
+      defaultModel: 'list-default',
+      defaultModelSource: 'turn',
+    });
+  });
+
+  test('a sub-agent tool is one rule, refused when it cannot be one', async () => {
+    const withTools = (tools: string[]) =>
+      send('POST', '/', {
+        name: `Tool Rule Agent ${Math.random()}`,
+        runtime_policy: {
+          subagents: {
+            definitions: [
+              {
+                name: 'git-reader',
+                description: 'Reads history',
+                prompt: 'Read history.',
+                tools,
+              },
+            ],
+          },
+        },
+      });
+    const ok = await withTools(['Read', 'Bash(git log:*)']);
+    expect(ok.status).toBe(201);
+    expect(
+      ok.body.profile.runtime_policy.subagents.definitions[0].tools,
+    ).toEqual(['Read', 'Bash(git log:*)']);
+    expect((await withTools(['Read, Grep'])).status).toBe(400);
+  });
+
   test('PATCH checks a model against the configuration it will belong to', async () => {
     const created = (
       await send('POST', '/', {

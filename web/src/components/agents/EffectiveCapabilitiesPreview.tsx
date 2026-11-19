@@ -214,6 +214,9 @@ export function EffectiveCapabilitiesPreview({
               entries={preview.mcp.entries}
               conflicts={preview.mcp.conflicts}
             />
+            {preview.subagents && (
+              <SubagentsRow subagents={preview.subagents} />
+            )}
             <RunContextRow
               snapshot={runContext}
               status={runContextStatus}
@@ -397,6 +400,62 @@ function RunContextRow({
           </p>
         )}
       </div>
+    </PreviewRow>
+  );
+}
+
+const SUBAGENT_DEFAULT_SOURCE_LABELS = {
+  agent: '智能体设置',
+  connection: '连接的「后台与子代理」',
+  turn: '跟随本轮模型',
+  claude_code: 'Claude Code 自行选择',
+} as const;
+
+/** The default sub-agent model a run uses, and who chose it. */
+function subagentDefaultLabel(
+  subagents: NonNullable<AgentCapabilityPreview['subagents']>,
+): string {
+  const source = subagents.defaultModelSource;
+  if (!source) return '由工作区环境决定';
+  const label = SUBAGENT_DEFAULT_SOURCE_LABELS[source];
+  return subagents.defaultModel
+    ? `${subagents.defaultModel}（${label}）`
+    : label;
+}
+
+function SubagentsRow({
+  subagents,
+}: {
+  subagents: NonNullable<AgentCapabilityPreview['subagents']>;
+}) {
+  return (
+    <PreviewRow label="子代理">
+      <span className="basis-full text-caption text-muted-foreground">
+        默认模型 {subagentDefaultLabel(subagents)} · 同时运行上限{' '}
+        {subagents.maxConcurrent === null
+          ? '不设置（Claude Code 默认）'
+          : `${subagents.maxConcurrent} 个`}
+      </span>
+      {subagents.definitions.length > 0 && (
+        <div className="flex max-h-28 min-w-0 flex-wrap gap-1.5 overflow-y-auto">
+          {subagents.definitions.map((definition) => (
+            <Badge
+              key={definition.name}
+              variant="outline"
+              title={
+                definition.tools
+                  ? `工具：${definition.tools.join(', ') || '无'}`
+                  : '工具：与主 Agent 相同'
+              }
+            >
+              {definition.name} · {definition.model ?? '默认模型'} ·{' '}
+              {definition.tools
+                ? `${definition.tools.length} 个工具`
+                : '全部工具'}
+            </Badge>
+          ))}
+        </div>
+      )}
     </PreviewRow>
   );
 }

@@ -136,6 +136,11 @@ import { webFetchPreflightSettings } from './web-fetch-preflight.js';
 import { defaultToolSearchEnv, pinToolSearch } from './tool-search.js';
 import { pinMaxOutputTokens } from './max-output-pin.js';
 import {
+  pinSubagentConcurrency,
+  sdkSubagentDefinitions,
+  subagentConcurrencyEnv,
+} from './subagent-launch.js';
+import {
   assistantMessageText,
   isContextOverflowText,
   providerErrorText,
@@ -3058,23 +3063,28 @@ async function runQueryAttempt(
       CLAUDE_PROVIDER_RUNTIME.endpointKind,
       containerInput.toolSearch,
     ),
+    ...subagentConcurrencyEnv(containerInput.subagents),
   };
   // The bound connection outranks every settings file the CLI reads (the
   // admin's, the workspace's project and local ones), in host and container
   // mode alike.
   const flagSettings: Record<string, unknown> = {
-    ...pinMaxOutputTokens(
-      pinToolSearch(
-        pinBoundProviderSettings({
-          ...process.env,
-          ...claudeRuntimeEnv,
-        }),
-        containerInput.toolSearch,
+    ...pinSubagentConcurrency(
+      pinMaxOutputTokens(
+        pinToolSearch(
+          pinBoundProviderSettings({
+            ...process.env,
+            ...claudeRuntimeEnv,
+          }),
+          containerInput.toolSearch,
+        ),
+        containerInput.maxOutputTokens,
       ),
-      containerInput.maxOutputTokens,
+      containerInput.subagents,
     ),
     ...webFetchPreflightSettings(containerInput.webFetchPreflightPolicy),
   };
+  const subagentDefinitions = sdkSubagentDefinitions(containerInput);
   const claudeMdExcludes = resolveHostClaudeMdExcludes({
     executionMode: contextAuditBase.executionMode,
     runtimePolicy: containerInput.agentProfile?.runtimePolicy,
@@ -3210,6 +3220,7 @@ async function runQueryAttempt(
       disallowedTools: effectiveDisallowedTools,
       thinking: runThinking,
       ...(agentEffort ? { effort: agentEffort } : {}),
+      ...(subagentDefinitions ? { agents: subagentDefinitions } : {}),
       permissionMode: 'bypassPermissions' as const,
       allowDangerouslySkipPermissions: true,
       // Registers AskUserQuestion, which the CLI omits without a handler.

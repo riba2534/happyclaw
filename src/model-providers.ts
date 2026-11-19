@@ -548,6 +548,8 @@ export interface ConnectionModelEnvInput {
   roles?: ConnectionModelRoles | null;
   /** The same-turn fallback model the launch is handed, if any. */
   fallbackModel?: string | null;
+  /** The models the launch's custom sub-agents name, if any. */
+  subagentModels?: readonly string[];
 }
 
 /**
@@ -593,6 +595,7 @@ export function buildConnectionModelEnv(
     input.model,
     roles,
     input.fallbackModel,
+    input.subagentModels,
   );
   if (maxOutput) env.CLAUDE_CODE_MAX_OUTPUT_TOKENS = String(maxOutput);
   return env;
@@ -604,11 +607,12 @@ const CLAUDE_CODE_DEFAULT_MAX_OUTPUT = 32_000;
 const CLAUDE_CODE_MAX_OUTPUT_CEILING = 128_000;
 
 /**
- * CLAUDE_CODE_MAX_OUTPUT_TOKENS for a launch on `model` with `roles` and the
- * same-turn `fallbackModel`, or null to leave Claude Code's own limit. The
- * launch may answer with the turn's model, any role's (each tier and the
- * sub-agent fall back to the turn's model) or the fallback, so the value is
- * the smallest reply every one of them declares, capped at 128K. Nothing is
+ * CLAUDE_CODE_MAX_OUTPUT_TOKENS for a launch on `model` with `roles`, the
+ * same-turn `fallbackModel` and the models its custom sub-agents name, or
+ * null to leave Claude Code's own limit. The launch may answer with the
+ * turn's model, any role's (each tier and the sub-agent fall back to the
+ * turn's model), the fallback or a custom sub-agent's, so the value is the
+ * smallest reply every one of them declares, capped at 128K. Nothing is
  * written unless all of them declare one and it lifts the reply above
  * Claude Code's 32K default: a model that declares nothing (a fallback the
  * list does not have included) might refuse a longer request.
@@ -618,6 +622,7 @@ export function maxOutputTokensFor(
   model: string,
   roles: ConnectionModelRoles | null | undefined,
   fallbackModel?: string | null,
+  subagentModels: readonly string[] = [],
 ): number | null {
   const current = splitOneMillionSuffix(model).model;
   if (!current) return null;
@@ -626,6 +631,7 @@ export function maxOutputTokensFor(
     const id = roles?.[role];
     if (id) used.add(splitOneMillionSuffix(id).model);
   }
+  for (const id of subagentModels) used.add(splitOneMillionSuffix(id).model);
   const fallback = fallbackModel && splitOneMillionSuffix(fallbackModel).model;
   if (fallback) used.add(fallback);
   let smallest = Infinity;

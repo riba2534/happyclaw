@@ -138,6 +138,10 @@ import {
   type LegacyMainSessionMigrationReport,
 } from './legacy-main-session-migration.js';
 import { LEGACY_MAIN_SESSION_KEY_PREFIX } from './legacy-main-session-checks.js';
+import {
+  normalizeSubagentPolicy,
+  subagentIdentity,
+} from './agent-subagents.js';
 import { keyPrefixRange } from './sql-key-prefix.js';
 import {
   clearAgentSessionHistoryReinjections,
@@ -5892,6 +5896,7 @@ type RuntimePolicyInput = Partial<{
       })
     | null;
   mcp: Partial<AgentProfileRuntimePolicy['mcp']> | null;
+  subagents: unknown;
 }>;
 
 function normalizeIdList(value: unknown): string[] {
@@ -5982,6 +5987,8 @@ export function normalizeAgentProfileRuntimePolicy(
       ids: normalizeIdList(raw.mcp?.ids),
     },
   };
+  const subagents = normalizeSubagentPolicy(raw.subagents);
+  if (subagents) normalized.subagents = subagents;
   if (normalized.context.auto_compact_percentage > 0) {
     normalized.context.auto_compact_window = 0;
   }
@@ -6042,6 +6049,8 @@ export function mergeAgentProfileRuntimePolicy(
       : current.context,
     skills: has('skills') ? mergeCapability('skills') : current.skills,
     mcp: has('mcp') ? mergeCapability('mcp') : current.mcp,
+    // Sub-agent settings are saved as one unit; null clears them.
+    subagents: has('subagents') ? patch.subagents : current.subagents,
   });
 }
 
@@ -6271,6 +6280,7 @@ export function computeAgentProfileIdentityHash(
     runtimePolicy?: Record<string, unknown>;
     name?: string;
   } = { prompts };
+  const subagents = subagentIdentity(normalizedPolicy.subagents);
   const identityPolicy = {
     ...(normalizedPolicy.reasoning.effort === 'inherit'
       ? {}
@@ -6278,6 +6288,7 @@ export function computeAgentProfileIdentityHash(
     context: { source: normalizedPolicy.context.source },
     skills: normalizedPolicy.skills,
     mcp: normalizedPolicy.mcp,
+    ...(subagents ? { subagents } : {}),
   };
   const defaultIdentityPolicy = {
     context: { source: DEFAULT_AGENT_PROFILE_RUNTIME_POLICY.context.source },
