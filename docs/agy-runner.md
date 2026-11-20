@@ -203,7 +203,7 @@ from `HAPPYCLAW_WORKSPACE_IPC/input/*.json`) is written as one NDJSON line:
 | **Permissions** | Pass `--dangerously-skip-permissions` (mirrors `cc-runner`'s `bypassPermissions`) | On Linux hosts/containers without a terminal sandbox, `agy --mode auto` falls back to `default` and soft-denies headless shell commands |
 | **Thinking stream** | Account `thinking_tokens` in `usage`; no live thinking text delta | `agy --output-format stream-json` currently reports `thinking_tokens` without emitting raw thinking text deltas |
 | **Multimodal inputs** | Materialize inline base64 images under `HAPPYCLAW_WORKSPACE_IPC/agy-images/` and pass paths in text prompt | `agy --input-format stream-json` accepts `text` content blocks only; `agy` reads materialized images via `view_file` |
-| **HappyClaw built-in MCP tools** | Zero-dependency stdio MCP server (`dist/agy-runner/mcp-server.js`) in `<workspace>/.agents/mcp_config.json` | Exposes `send_message`, `send_image`, `send_file`, `get_channel_context`, and `automation_*` over native host IPC; inherits per-runner env so concurrent agents share one static config safely |
+| **HappyClaw built-in MCP tools** | Zero-dependency stdio MCP server (`dist/agy-runner/mcp-server.js`) in `<workspace>/.agents/mcp_config.json` | Exposes `send_message`, `send_image`, `send_file`, `get_channel_context`, `automation_*`, and HMAC-signed `workspace_memory_*` over native host IPC; inherits per-runner env so concurrent agents share one static config safely |
 | **HappyClaw Skills** | Materialized as real directories from `<CLAUDE_CONFIG_DIR>/skills/` into `<workspace>/.agents/skills/` (mtime-cached) | `agy` skips symlinked directories when scanning `.agents/skills/`; real copies cached via `.happyclaw-managed.json` keep all HappyClaw skills visible while preserving unmanaged user skills |
 | **System prompt / identity** | Prepend `agentProfile.identityPrompt` + deduplicated session & workspace `CLAUDE.md` on cold start | `agy` does not auto-read `CLAUDE.md` or accept an inline `--system-prompt` flag |
 
@@ -218,8 +218,7 @@ from `HAPPYCLAW_WORKSPACE_IPC/input/*.json`) is written as one NDJSON line:
   idle handling, Antigravity/Gemini brand icons, Runner badges, and 5-hour /
   weekly quota `UsageBars`.
 - **Optional future enhancements**:
-  - Mid-turn `_interrupt` / steer forwarding to `agy`.
-  - Additional HappyClaw MCP tools (e.g. `workspace_memory_*`, delegation,
-    Feishu/Discord channel helpers) in `mcp-server.ts`.
+  - Additional channel-specific HappyClaw MCP tools (e.g. `feishu_*`, `discord_*`,
+    delegation) in `mcp-server.ts`.
   - Evaluating `agy acp` transport if live thinking text deltas or native
     multimodal input blocks become needed.

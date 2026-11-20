@@ -38,8 +38,11 @@ interface AgyRunnerInput {
   currentSourceJid?: string;
   groupFolder: string;
   chatJid: string;
+  agentId?: string;
   interactionMode?: 'assistant' | 'proactive' | string;
   hostIdleCloseMs?: number;
+  workspaceMemoryMutationSigningSecret?: string;
+  workspaceMemoryRunnerInstanceId?: string;
   images?: Array<{ data: string; mimeType?: string }>;
   agentProfile?: {
     identityPrompt?: string;
@@ -64,12 +67,18 @@ const TURN_CONTEXT_FILE = path.join(WORKSPACE_IPC, '.agy-turn-context.json');
 const FINAL_SENT_FILE = path.join(WORKSPACE_IPC, '.agy-final-sent.json');
 const IPC_INPUT_CLOSE_SENTINEL = path.join(IPC_INPUT_DIR, '_close');
 const IPC_INPUT_DRAIN_SENTINEL = path.join(IPC_INPUT_DIR, '_drain');
+const IPC_INPUT_INTERRUPT_SENTINEL = path.join(IPC_INPUT_DIR, '_interrupt');
+const IPC_INPUT_INTERRUPT_REASON_SENTINEL = path.join(
+  IPC_INPUT_DIR,
+  '_interrupt_reason',
+);
 const IPC_POLL_MS = 500;
 
 function writeTurnContextFile(
   input: AgyRunnerInput,
   inputTurnId?: string,
   sourceJid?: string,
+  sessionId?: string,
 ): void {
   try {
     const tmp = `${TURN_CONTEXT_FILE}.tmp`;
@@ -78,16 +87,72 @@ function writeTurnContextFile(
       JSON.stringify({
         chatJid: input.chatJid,
         groupFolder: input.groupFolder,
+        ...(input.agentId ? { agentId: input.agentId } : {}),
         interactionMode:
           input.interactionMode === 'proactive' ? 'proactive' : 'assistant',
         ...(inputTurnId ? { inputTurnId } : {}),
+        ...(sessionId ? { sessionId } : {}),
         ...(sourceJid ? { sourceJid } : {}),
+        ...(input.workspaceMemoryRunnerInstanceId
+          ? {
+              workspaceMemoryRunnerInstanceId:
+                input.workspaceMemoryRunnerInstanceId,
+            }
+          : {}),
+        ...(input.workspaceMemoryMutationSigningSecret
+          ? {
+              workspaceMemoryMutationSigningSecret:
+                input.workspaceMemoryMutationSigningSecret,
+            }
+          : {}),
       }),
+      { mode: 0o600 },
     );
     fs.renameSync(tmp, TURN_CONTEXT_FILE);
   } catch {
     // best effort
   }
+}
+
+function cleanupTurnContextFile(): void {
+  try {
+    if (fs.existsSync(TURN_CONTEXT_FILE)) fs.unlinkSync(TURN_CONTEXT_FILE);
+  } catch {
+    // ignore
+  }
+}
+
+function consumeInterruptForQuery(
+  activeQueryRunId?: string,
+): { reason: 'stop' | 'steer' } | null {
+  if (!fs.existsSync(IPC_INPUT_INTERRUPT_SENTINEL)) return null;
+  let content = '';
+  try {
+    content = fs.readFileSync(IPC_INPUT_INTERRUPT_SENTINEL, 'utf-8').trim();
+  } catch {
+    return null;
+  }
+  if (content && activeQueryRunId && content !== activeQueryRunId) {
+    return null;
+  }
+  try {
+    fs.unlinkSync(IPC_INPUT_INTERRUPT_SENTINEL);
+  } catch {
+    // ignore
+  }
+  let reason: 'stop' | 'steer' = 'steer';
+  try {
+    const raw = JSON.parse(
+      fs.readFileSync(IPC_INPUT_INTERRUPT_REASON_SENTINEL, 'utf-8'),
+    ) as { queryId?: unknown; reason?: unknown };
+    if (!content || raw.queryId === content) {
+      if (raw.reason === 'stop') reason = 'stop';
+      fs.unlinkSync(IPC_INPUT_INTERRUPT_REASON_SENTINEL);
+    }
+  } catch {
+    // no reason file -> default steer
+  }
+  return { reason };
 }
 
 function clearFinalSentMarker(): void {
@@ -575,10 +640,12 @@ async function main(): Promise<void> {
   };
 
   process.on('SIGTERM', () => {
+    cleanupTurnContextFile();
     shutdownChild();
     process.exit(0);
   });
   process.on('SIGINT', () => {
+    cleanupTurnContextFile();
     shutdownChild();
     process.exit(0);
   });
@@ -600,7 +667,12 @@ async function main(): Promise<void> {
     pendingTerminalFrame = null;
     activeInputTurnId = currentTurn.inputTurnId;
     clearFinalSentMarker();
-    writeTurnContextFile(input, activeInputTurnId, currentTurn.sourceJid);
+    writeTurnContextFile(
+      input,
+      activeInputTurnId,
+      currentTurn.sourceJid,
+      translator.getSessionId(),
+    );
     translator.setTurnCorrelation({
       queryRunId: currentTurn.queryRunId,
       turnId: currentTurn.turnId,
@@ -633,11 +705,79 @@ async function main(): Promise<void> {
         error: `Failed to write prompt to agy stdin: ${err instanceof Error ? err.message : String(err)}`,
         ...(currentTurn.queryRunId ? { queryRunId: currentTurn.queryRunId } : {}),
         inputTurnCompleted: true,
+        queryIdle: true,
       });
       break;
     }
 
+    // Watch for `_interrupt` (steer / stop) while the active turn is running
+    let interruptedReason: 'stop' | 'steer' | null = null;
+    let interruptWatcher: fs.FSWatcher | null = null;
+    const checkInterrupt = () => {
+      if (interruptedReason) return;
+      const hit = consumeInterruptForQuery(currentTurn?.queryRunId);
+      if (!hit) return;
+      interruptedReason = hit.reason;
+      log(`Interrupt (${hit.reason}) received for query ${currentTurn?.queryRunId ?? 'unknown'}; interrupting agy`);
+      try {
+        child.kill('SIGINT');
+      } catch {
+        // ignore
+      }
+      signalTurnDone();
+    };
+    try {
+      interruptWatcher = fs.watch(IPC_INPUT_DIR, () => checkInterrupt());
+      interruptWatcher.on('error', () => {
+        // fallback poll handles it
+      });
+    } catch {
+      // fallback poll handles it
+    }
+    const interruptPoll = setInterval(checkInterrupt, 250);
+    checkInterrupt();
+
     await waitForTurnResult();
+
+    clearInterval(interruptPoll);
+    if (interruptWatcher) {
+      try {
+        interruptWatcher.close();
+      } catch {
+        // ignore
+      }
+    }
+
+    if (interruptedReason) {
+      writeOutput({
+        status: 'stream',
+        result: null,
+        ...(translator.getSessionId()
+          ? { newSessionId: translator.getSessionId() }
+          : {}),
+        ...(currentTurn.queryRunId ? { queryRunId: currentTurn.queryRunId } : {}),
+        ...(currentTurn.ipcReceipts?.length
+          ? { ipcReceipts: currentTurn.ipcReceipts }
+          : {}),
+        queryIdle: true,
+        streamEvent: {
+          agentScope: 'main',
+          eventType: 'status',
+          statusText: 'interrupted',
+          ...(currentTurn.queryRunId
+            ? { queryRunId: currentTurn.queryRunId }
+            : {}),
+          ...(currentTurn.turnId ? { turnId: currentTurn.turnId } : {}),
+          ...(currentTurn.inputTurnId
+            ? { inputTurnId: currentTurn.inputTurnId }
+            : {}),
+          ...(translator.getSessionId()
+            ? { sessionId: translator.getSessionId() }
+            : {}),
+        },
+      });
+      break;
+    }
 
     if (pendingTerminalFrame) {
       const terminalFrame: AgyRunnerOutputFrame = pendingTerminalFrame;
@@ -683,6 +823,7 @@ async function main(): Promise<void> {
     cancelIdleWait = null;
   }
 
+  cleanupTurnContextFile();
   shutdownChild();
   rl.close();
 }

@@ -13,9 +13,53 @@ import { detectImageMimeTypeFromBase64Strict } from '../image-detector.js';
 export interface AgyTurnContext {
   chatJid: string;
   groupFolder: string;
+  agentId?: string;
   interactionMode: 'assistant' | 'proactive';
   inputTurnId?: string;
+  sessionId?: string;
   sourceJid?: string;
+  workspaceMemoryRunnerInstanceId?: string;
+  workspaceMemoryMutationSigningSecret?: string;
+}
+
+function normalizeForCanonicalJson(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map((item) =>
+      item === undefined ? null : normalizeForCanonicalJson(item),
+    );
+  }
+  if (value && typeof value === 'object') {
+    const source = value as Record<string, unknown>;
+    return Object.fromEntries(
+      Object.keys(source)
+        .sort()
+        .filter((key) => source[key] !== undefined)
+        .map((key) => [key, normalizeForCanonicalJson(source[key])]),
+    );
+  }
+  return value;
+}
+
+export function signWorkspaceMemoryMutation(
+  secret: string,
+  namespace: { groupFolder: string; agentId?: string | null },
+  request: Record<string, unknown>,
+): string {
+  const { mutationSignature: _signature, ...unsignedRequest } = request;
+  const payload = JSON.stringify(
+    normalizeForCanonicalJson({
+      namespace: {
+        groupFolder: namespace.groupFolder,
+        agentId: namespace.agentId ?? null,
+        taskRunId: null,
+      },
+      request: unsignedRequest,
+    }),
+  );
+  return crypto
+    .createHmac('sha256', secret)
+    .update(payload, 'utf8')
+    .digest('base64url');
 }
 
 interface JsonRpcRequest {
@@ -56,10 +100,24 @@ function readTurnContext(): AgyTurnContext {
     return {
       chatJid: raw.chatJid || fallback.chatJid,
       groupFolder: raw.groupFolder || fallback.groupFolder,
+      ...(raw.agentId ? { agentId: raw.agentId } : {}),
       interactionMode:
         raw.interactionMode === 'proactive' ? 'proactive' : 'assistant',
       ...(raw.inputTurnId ? { inputTurnId: raw.inputTurnId } : {}),
+      ...(raw.sessionId ? { sessionId: raw.sessionId } : {}),
       ...(raw.sourceJid ? { sourceJid: raw.sourceJid } : {}),
+      ...(raw.workspaceMemoryRunnerInstanceId
+        ? {
+            workspaceMemoryRunnerInstanceId:
+              raw.workspaceMemoryRunnerInstanceId,
+          }
+        : {}),
+      ...(raw.workspaceMemoryMutationSigningSecret
+        ? {
+            workspaceMemoryMutationSigningSecret:
+              raw.workspaceMemoryMutationSigningSecret,
+          }
+        : {}),
     };
   } catch {
     return fallback;
@@ -303,6 +361,100 @@ export const HAPPYCLAW_MCP_TOOLS: McpToolDef[] = [
       required: ['id'],
     },
   },
+  {
+    name: 'workspace_memory_search',
+    description:
+      'Search durable memory belonging only to the current workspace. Returns stable item IDs, revisions, provenance, and store revision.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'What to recall from this workspace' },
+        kind: {
+          type: 'string',
+          enum: ['fact', 'decision', 'lesson', 'open_loop'],
+          description: 'Optional memory kind filter',
+        },
+        limit: { type: 'number', description: 'Max items (1-50, default 10)' },
+      },
+      required: ['query'],
+    },
+  },
+  {
+    name: 'workspace_memory_get',
+    description:
+      'Get one durable memory item from the current workspace by its opaque item_id.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        item_id: { type: 'string', description: 'Opaque workspace memory item ID' },
+      },
+      required: ['item_id'],
+    },
+  },
+  {
+    name: 'workspace_memory_remember',
+    description:
+      'Persist a concise fact, decision, lesson, or open loop for future sessions in this workspace. Never store secrets or transcript summaries.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        kind: {
+          type: 'string',
+          enum: ['fact', 'decision', 'lesson', 'open_loop'],
+        },
+        title: { type: 'string' },
+        content: { type: 'string' },
+        canonical_key: { type: 'string' },
+        importance: { type: 'number' },
+        confidence: { type: 'number' },
+        valid_from: { type: 'string' },
+        valid_until: { type: 'string' },
+        expires_at: { type: 'string' },
+        idempotency_key: { type: 'string' },
+      },
+      required: ['kind', 'title', 'content'],
+    },
+  },
+  {
+    name: 'workspace_memory_update',
+    description:
+      'Update an existing current-workspace memory using optimistic concurrency (expected_revision is required).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        item_id: { type: 'string' },
+        expected_revision: { type: 'number' },
+        kind: {
+          type: 'string',
+          enum: ['fact', 'decision', 'lesson', 'open_loop'],
+        },
+        title: { type: 'string' },
+        content: { type: 'string' },
+        canonical_key: { type: ['string', 'null'] },
+        importance: { type: 'number' },
+        confidence: { type: 'number' },
+        valid_from: { type: ['string', 'null'] },
+        valid_until: { type: ['string', 'null'] },
+        expires_at: { type: ['string', 'null'] },
+        idempotency_key: { type: 'string' },
+      },
+      required: ['item_id', 'expected_revision'],
+    },
+  },
+  {
+    name: 'workspace_memory_forget',
+    description:
+      'Forget one current-workspace memory item (requires expected_revision).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        item_id: { type: 'string' },
+        expected_revision: { type: 'number' },
+        idempotency_key: { type: 'string' },
+      },
+      required: ['item_id', 'expected_revision'],
+    },
+  },
 ];
 
 function toolText(text: string, isError = false) {
@@ -488,6 +640,190 @@ export async function handleToolCall(
     if (!result.success) {
       return toolText(
         typeof result.error === 'string' ? result.error : 'Operation failed.',
+        true,
+      );
+    }
+    return toolText(JSON.stringify(result, null, 2));
+  }
+
+  // Workspace memory IPC tools
+  const memoryOpByTool: Record<
+    string,
+    'search' | 'get' | 'create' | 'update' | 'delete'
+  > = {
+    workspace_memory_search: 'search',
+    workspace_memory_get: 'get',
+    workspace_memory_remember: 'create',
+    workspace_memory_update: 'update',
+    workspace_memory_forget: 'delete',
+  };
+  const memOp = memoryOpByTool[name];
+  if (memOp) {
+    const requestId = crypto.randomUUID();
+    let payload: Record<string, unknown> = {};
+    if (memOp === 'search') {
+      const q = typeof args.query === 'string' ? args.query.trim() : '';
+      if (!q) return toolText('Error: query is required.', true);
+      payload = {
+        query: q,
+        ...(typeof args.kind === 'string' ? { kind: args.kind } : {}),
+        limit: typeof args.limit === 'number' ? args.limit : 10,
+      };
+    } else if (memOp === 'get') {
+      const itemId = typeof args.item_id === 'string' ? args.item_id : '';
+      if (!itemId) return toolText('Error: item_id is required.', true);
+      payload = { itemId };
+    } else if (memOp === 'create') {
+      const title = typeof args.title === 'string' ? args.title.trim() : '';
+      const content = typeof args.content === 'string' ? args.content.trim() : '';
+      if (!title || !content || typeof args.kind !== 'string') {
+        return toolText('Error: kind, title, and content are required.', true);
+      }
+      const key =
+        typeof args.canonical_key === 'string'
+          ? args.canonical_key.trim()
+          : undefined;
+      payload = {
+        kind: args.kind,
+        title,
+        content,
+        ...(key ? { canonicalKey: key } : {}),
+        ...(typeof args.importance === 'number'
+          ? { importance: args.importance }
+          : {}),
+        ...(typeof args.confidence === 'number'
+          ? { confidence: args.confidence }
+          : {}),
+        ...(typeof args.valid_from === 'string'
+          ? { validFrom: args.valid_from }
+          : {}),
+        ...(typeof args.valid_until === 'string'
+          ? { validUntil: args.valid_until }
+          : {}),
+        ...(typeof args.expires_at === 'string'
+          ? { expiresAt: args.expires_at }
+          : {}),
+        idempotencyKey:
+          typeof args.idempotency_key === 'string' && args.idempotency_key.trim()
+            ? args.idempotency_key.trim()
+            : crypto
+                .createHash('sha256')
+                .update(`${ctx.inputTurnId ?? 'turn'}:create:${key ?? title}`)
+                .digest('hex')
+                .slice(0, 32),
+      };
+    } else if (memOp === 'update') {
+      const itemId = typeof args.item_id === 'string' ? args.item_id : '';
+      const expectedRevision =
+        typeof args.expected_revision === 'number'
+          ? args.expected_revision
+          : NaN;
+      if (!itemId || !Number.isInteger(expectedRevision)) {
+        return toolText(
+          'Error: item_id and integer expected_revision are required.',
+          true,
+        );
+      }
+      payload = {
+        itemId,
+        expectedRevision,
+        patch: {
+          ...(typeof args.kind === 'string' ? { kind: args.kind } : {}),
+          ...(typeof args.title === 'string' ? { title: args.title.trim() } : {}),
+          ...(typeof args.content === 'string'
+            ? { content: args.content.trim() }
+            : {}),
+          ...(args.canonical_key !== undefined
+            ? { canonicalKey: args.canonical_key }
+            : {}),
+          ...(typeof args.importance === 'number'
+            ? { importance: args.importance }
+            : {}),
+          ...(typeof args.confidence === 'number'
+            ? { confidence: args.confidence }
+            : {}),
+          ...(args.valid_from !== undefined
+            ? { validFrom: args.valid_from }
+            : {}),
+          ...(args.valid_until !== undefined
+            ? { validUntil: args.valid_until }
+            : {}),
+          ...(args.expires_at !== undefined
+            ? { expiresAt: args.expires_at }
+            : {}),
+        },
+        idempotencyKey:
+          typeof args.idempotency_key === 'string' && args.idempotency_key.trim()
+            ? args.idempotency_key.trim()
+            : crypto
+                .createHash('sha256')
+                .update(
+                  `${ctx.inputTurnId ?? 'turn'}:update:${itemId}:${expectedRevision}`,
+                )
+                .digest('hex')
+                .slice(0, 32),
+      };
+    } else if (memOp === 'delete') {
+      const itemId = typeof args.item_id === 'string' ? args.item_id : '';
+      const expectedRevision =
+        typeof args.expected_revision === 'number'
+          ? args.expected_revision
+          : NaN;
+      if (!itemId || !Number.isInteger(expectedRevision)) {
+        return toolText(
+          'Error: item_id and integer expected_revision are required.',
+          true,
+        );
+      }
+      payload = {
+        itemId,
+        expectedRevision,
+        idempotencyKey:
+          typeof args.idempotency_key === 'string' && args.idempotency_key.trim()
+            ? args.idempotency_key.trim()
+            : crypto
+                .createHash('sha256')
+                .update(
+                  `${ctx.inputTurnId ?? 'turn'}:delete:${itemId}:${expectedRevision}`,
+                )
+                .digest('hex')
+                .slice(0, 32),
+      };
+    }
+
+    const request: Record<string, unknown> & { requestId: string } = {
+      ...payload,
+      type: 'workspace_memory',
+      operation: memOp,
+      requestId,
+      inputTurnId: ctx.inputTurnId || undefined,
+      sessionId: ctx.sessionId || undefined,
+      timestamp: new Date().toISOString(),
+    };
+
+    if (
+      (memOp === 'create' || memOp === 'update' || memOp === 'delete') &&
+      ctx.workspaceMemoryMutationSigningSecret &&
+      ctx.workspaceMemoryRunnerInstanceId
+    ) {
+      request.runnerInstanceId = ctx.workspaceMemoryRunnerInstanceId;
+      request.mutationSignature = signWorkspaceMemoryMutation(
+        ctx.workspaceMemoryMutationSigningSecret,
+        { groupFolder: ctx.groupFolder, agentId: ctx.agentId ?? null },
+        request,
+      );
+    }
+
+    const result = await pollIpcResult(
+      TASKS_DIR,
+      request,
+      'workspace_memory_result',
+      30_000,
+    );
+    if (!result.success) {
+      const code = typeof result.code === 'string' ? ` (${result.code})` : '';
+      return toolText(
+        `${typeof result.error === 'string' ? result.error : 'Workspace memory request failed'}${code}`,
         true,
       );
     }

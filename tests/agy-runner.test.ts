@@ -8,7 +8,10 @@ import {
   ensureAgyWorkspaceMcpConfig,
   syncAgyWorkspaceSkills,
 } from '../src/agy-runner/mcp-config.js';
-import { HAPPYCLAW_MCP_TOOLS } from '../src/agy-runner/mcp-server.js';
+import {
+  HAPPYCLAW_MCP_TOOLS,
+  signWorkspaceMemoryMutation,
+} from '../src/agy-runner/mcp-server.js';
 import {
   DEFAULT_AGY_MODEL,
   parseAgyModelsOutput,
@@ -284,6 +287,24 @@ describe('ensureAgyWorkspaceMcpConfig & HAPPYCLAW_MCP_TOOLS', () => {
       expect(toolNames).toContain('send_file');
       expect(toolNames).toContain('automation_list');
       expect(toolNames).toContain('automation_create');
+      expect(toolNames).toContain('workspace_memory_search');
+      expect(toolNames).toContain('workspace_memory_get');
+      expect(toolNames).toContain('workspace_memory_remember');
+      expect(toolNames).toContain('workspace_memory_update');
+      expect(toolNames).toContain('workspace_memory_forget');
+
+      const sigA = signWorkspaceMemoryMutation(
+        'test-secret',
+        { groupFolder: 'main', agentId: 'a1' },
+        { b: 2, a: 1, type: 'workspace_memory' },
+      );
+      const sigB = signWorkspaceMemoryMutation(
+        'test-secret',
+        { groupFolder: 'main', agentId: 'a1' },
+        { type: 'workspace_memory', a: 1, b: 2, mutationSignature: 'ignored' },
+      );
+      expect(sigA).toBe(sigB);
+      expect(sigA.length).toBeGreaterThan(20);
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }
