@@ -351,7 +351,11 @@ export function AddModelWizard({
     let extra = () => {};
     try {
       const result = await discoverModels(
-        created ? { providerId: created.id } : draftBody(),
+        kind === 'agy'
+          ? { type: 'third_party', runner: 'agy', providerId: created?.id }
+          : created
+            ? { providerId: created.id }
+            : draftBody(),
       );
       if (result.ok) {
         next = {
@@ -484,7 +488,11 @@ export function AddModelWizard({
     };
     if (kind === 'agy') {
       const t0 = Date.now();
-      discoverModels({ type: 'third_party', runner: 'agy' })
+      discoverModels({
+        type: 'third_party',
+        runner: 'agy',
+        providerId: created?.id,
+      })
         .then((res) => {
           if (res.ok && res.models.length > 0) {
             settle(
@@ -612,7 +620,7 @@ export function AddModelWizard({
       case 'anthropic_api':
         return !!apiKey.trim();
       case 'agy':
-        return true;
+        return !!created;
       default:
         return false;
     }
@@ -742,17 +750,12 @@ export function AddModelWizard({
       )}
 
       {step === 'connect' && kind === 'agy' && (
-        <div className="space-y-3 rounded-lg bg-surface-subtle p-4 text-body text-muted-foreground ring-1 ring-surface-border">
-          <p className="font-medium text-foreground">
-            使用宿主机已登录的 Antigravity CLI（agy-runner）
-          </p>
-          <p className="text-caption leading-5">
-            无需填写 API Key，将直接复用宿主机当前用户的{' '}
-            <code className="font-mono text-foreground">agy</code>{' '}
-            登录态，并通过{' '}
-            <code className="font-mono text-foreground">stream-json</code>{' '}
-            常驻进程运行。目前仅支持宿主机模式工作区。
-          </p>
+        <div className="space-y-4">
+          {created ? (
+            <LoggedIn provider={created} />
+          ) : (
+            <OAuthLoginPanel service="agy" onSuccess={handleLoggedIn} />
+          )}
         </div>
       )}
 

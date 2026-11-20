@@ -39,7 +39,7 @@ const RECOMMENDED: ReadonlyArray<{
   },
   {
     kind: 'agy',
-    description: '复用宿主机 AGY CLI 订阅，通过 agy-runner 运行 Gemini 4 Neon 等模型',
+    description: '用 Google 账号 OAuth 登录，独立凭据隔离，支持宿主机/容器/群聊',
     icon: Terminal,
   },
   {

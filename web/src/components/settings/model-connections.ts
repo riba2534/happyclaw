@@ -236,11 +236,14 @@ export function testConnection(
 }
 
 export function discoverModels(
-  body: { providerId: string } | ConnectionDraftBody,
+  body: { providerId: string } | (ConnectionDraftBody & { providerId?: string }),
 ): Promise<DiscoverModelsResponse> {
   if ('runner' in body && body.runner === 'agy') {
+    const query = body.providerId
+      ? `?providerId=${encodeURIComponent(body.providerId)}`
+      : '';
     return api
-      .get<{ models: DiscoveredModel[] }>('/api/config/agy/models')
+      .get<{ models: DiscoveredModel[] }>(`/api/config/agy/models${query}`)
       .then((res) => ({
         ok: true as const,
         models: res.models ?? [],

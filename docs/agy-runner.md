@@ -129,7 +129,8 @@ exit, and terminates cleanly.
 
 | Area | Decision in Phase 1 (MVP) | Rationale & future path |
 | --- | --- | --- |
-| **Execution mode** | Host mode only; Docker mode fails fast with an explicit message | Avoids baking `agy` credentials into container images in Phase 1; Docker support can be added later via a dedicated image or credential proxy if needed |
+| **Execution mode** | Universal: supports Host mode, Docker container mode, and multi-user group chats | In Docker mode, HappyClaw bind-mounts the host's standalone `agy` binary (`/usr/local/bin/agy`, read-only), `dist/` (`/opt/happyclaw-host-dist`, read-only), and the provider's isolated `.gemini` profile directory (`/home/node/.gemini`) without requiring an image rebuild |
+| **Authentication & isolation** | Per-provider isolated OAuth via official `agy acp --login` (`data/config/agy-profiles/<profileId>`) | Each AGY provider authenticates via a browser OAuth link + pasted callback code/URL (identical UX to Claude/ChatGPT login) and stores credentials in its own `0700` directory rather than sharing the host user's `~/.gemini` |
 | **Permissions** | Pass `--dangerously-skip-permissions` in Host mode (mirrors `cc-runner`'s `bypassPermissions`) | On Linux hosts without an available terminal sandbox, `agy --mode auto` falls back to `default` and soft-denies headless shell commands. Scoped `permissions.allow` via `--settings` can be added as a policy option later |
 | **Thinking stream** | Account `thinking_tokens` in usage; no live thinking text delta | `agy --output-format stream-json` currently reports `thinking_tokens` in `usage` without emitting raw thinking text deltas; `agy acp` can be evaluated later if live thinking text is needed |
 | **Multimodal inputs** | Pass image/file paths in text prompt so `agy` reads them via `view_file` | `agy --input-format stream-json` currently accepts `text` content blocks only |

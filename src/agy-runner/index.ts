@@ -342,7 +342,7 @@ function waitForNextIpcTurn(
     onCancelRegister?.(() => finish(null));
 
     const check = () => {
-      if (shouldClose()) {
+      if (shouldClose() || shouldDrain()) {
         finish(null);
         return;
       }
@@ -467,13 +467,15 @@ async function main(): Promise<void> {
     );
   }
 
-  log(`Spawning ${agyBin} ${args.join(' ')}`);
+  const agyHome = process.env.HAPPYCLAW_AGY_HOME?.trim();
+  log(`Spawning ${agyBin} ${args.join(' ')}${agyHome ? ` (isolated HOME)` : ''}`);
 
   const child: ChildProcess = spawn(agyBin, args, {
     stdio: ['pipe', 'pipe', 'pipe'],
     cwd: process.cwd(),
     env: {
       ...process.env,
+      ...(agyHome ? { HOME: agyHome } : {}),
       HAPPYCLAW_CHAT_JID: input.chatJid,
       HAPPYCLAW_GROUP_FOLDER: input.groupFolder,
       HAPPYCLAW_INTERACTION_MODE:

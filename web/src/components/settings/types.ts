@@ -17,6 +17,7 @@ export interface UnifiedProviderPublic {
   name: string;
   type: 'official' | 'third_party';
   runner?: 'claude' | 'agy';
+  hasAgyProfile?: boolean;
   anthropicBaseUrl: string;
   anthropicModel: string;
   /** null for third-party providers saved before the explicit choice. */

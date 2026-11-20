@@ -38,8 +38,12 @@ import { isSingleUserHost } from './deployment-mode.js';
 export const SINGLE_USER_HOST_CONTAINER_REFUSAL =
   '单人宿主机模式不运行 Docker 工作区；请把工作区改为宿主机模式或切回多人模式。';
 export const AGY_RUNNER_CONTAINER_REFUSAL =
-  'AGY Runner 目前仅支持宿主机模式；请将该工作区改为宿主机模式或切换至其他模型配置。';
-import { DEFAULT_AGY_MODEL } from './agy-runner/models.js';
+  'AGY Runner 需要宿主机已安装 agy 二进制并完成编译（npm run build）。';
+import {
+  DEFAULT_AGY_MODEL,
+  resolveAgyBinary,
+} from './agy-runner/models.js';
+import { resolveAgyProfileHomeDir } from './agy-runner/oauth.js';
 import { logger } from './logger.js';
 import {
   isCodexGatewayBaseUrl,
@@ -3239,6 +3243,7 @@ export function buildContainerArgs(
   networkConfig: ContainerNetworkConfig = { addHostGateway: false },
   containerImage = CONTAINER_IMAGE,
   memoryLimit: ContainerMemoryLimit | null = CONTAINER_MEMORY_LIMIT,
+  agyLaunch?: { model: string; effort?: string | null } | null,
 ): string[] {
   const args: string[] = ['run', '-i', '--rm', '--name', containerName];
   // Hardening from the Agent SDK secure-deployment guidance that this image
@@ -3285,7 +3290,37 @@ export function buildContainerArgs(
     }
   }
 
+  if (agyLaunch) {
+    args.push(
+      '-e',
+      'HAPPYCLAW_RUNNER=agy',
+      '-e',
+      'HAPPYCLAW_AGY_BIN=/usr/local/bin/agy',
+      '-e',
+      `HAPPYCLAW_AGY_MODEL=${agyLaunch.model}`,
+      '-e',
+      'HAPPYCLAW_WORKSPACE_GROUP=/workspace/group',
+      '-e',
+      'HAPPYCLAW_WORKSPACE_IPC=/workspace/ipc',
+      '-e',
+      'CLAUDE_CONFIG_DIR=/home/node/.claude',
+      '-w',
+      '/workspace/group',
+      '--entrypoint',
+      '/bin/sh',
+    );
+    if (agyLaunch.effort) {
+      args.push('-e', `HAPPYCLAW_AGY_EFFORT=${agyLaunch.effort}`);
+    }
+  }
+
   args.push(containerImage);
+  if (agyLaunch) {
+    args.push(
+      '-c',
+      'cat > /tmp/input.json && chmod 644 /tmp/input.json && exec runuser -u node -- node /opt/happyclaw-host-dist/agy-runner/index.js < /tmp/input.json',
+    );
+  }
 
   return args;
 }
@@ -3423,13 +3458,10 @@ export async function runContainerAgent(
     input.agentProfile?.runtimePolicy?.subagents,
   );
   const selectedProfileId = poolResult?.profileId ?? null;
-  if (selectedProfileId && getProviderById(selectedProfileId)?.runner === 'agy') {
-    return {
-      status: 'error',
-      result: AGY_RUNNER_CONTAINER_REFUSAL,
-      error: `agent_profile_unavailable: ${AGY_RUNNER_CONTAINER_REFUSAL}`,
-    };
-  }
+  const selectedProviderObj = selectedProfileId
+    ? getProviderById(selectedProfileId)
+    : null;
+  const isAgyContainerRunner = selectedProviderObj?.runner === 'agy';
   const selectedProviderQuotaEpoch = selectedProfileId
     ? captureProviderQuotaObservationEpoch(selectedProfileId)
     : null;
@@ -3518,6 +3550,50 @@ export async function runContainerAgent(
     const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
     const safeAgentId = input.agentId.replace(/[^a-zA-Z0-9-]/g, '-');
     const containerName = `happyclaw-${safeName}-${safeAgentId}-${Date.now()}`;
+    let agyContainerLaunch: { model: string; effort?: string | null } | null =
+      null;
+    if (isAgyContainerRunner && selectedProviderObj) {
+      const agyBin = resolveAgyBinary();
+      const hostDistDir = path.join(process.cwd(), 'dist');
+      const agyRunnerEntry = path.join(hostDistDir, 'agy-runner', 'index.js');
+      if (!fs.existsSync(agyBin) || !fs.existsSync(agyRunnerEntry)) {
+        return {
+          status: 'error',
+          result: AGY_RUNNER_CONTAINER_REFUSAL,
+          error: `agent_profile_unavailable: ${AGY_RUNNER_CONTAINER_REFUSAL}`,
+        };
+      }
+      const agyHome =
+        resolveAgyProfileHomeDir(selectedProviderObj.agyProfileId) ||
+        process.env.HOME ||
+        os.homedir();
+      const agyGeminiDir = path.join(agyHome, '.gemini');
+      fs.mkdirSync(agyGeminiDir, { recursive: true });
+      mounts.push(
+        { hostPath: agyBin, containerPath: '/usr/local/bin/agy', readonly: true },
+        {
+          hostPath: hostDistDir,
+          containerPath: '/opt/happyclaw-host-dist',
+          readonly: true,
+        },
+        {
+          hostPath: agyGeminiDir,
+          containerPath: '/home/node/.gemini',
+          readonly: false,
+        },
+      );
+      const rawAgyModel =
+        resolvedProvider?.config.anthropicModel?.trim() ||
+        selectedProviderObj.anthropicModel?.trim() ||
+        DEFAULT_AGY_MODEL;
+      const resolvedAgyModel =
+        rawAgyModel.replace(/(?:\[1m\])+$/i, '').trim() || DEFAULT_AGY_MODEL;
+      agyContainerLaunch = {
+        model: resolvedAgyModel,
+        effort: input.launchEffort ?? null,
+      };
+    }
+
     const containerArgs = buildContainerArgs(
       mounts,
       containerName,
@@ -3530,6 +3606,8 @@ export async function runContainerAgent(
           preparedLaunch.providerNeedsHostGateway,
       },
       containerImage,
+      CONTAINER_MEMORY_LIMIT,
+      agyContainerLaunch,
     );
 
     logger.debug(
@@ -4771,10 +4849,10 @@ export async function runHostAgent(
 
     // 6. 编译检查与 Runner 分发（cc-runner vs agy-runner）
     const projectRoot = process.cwd();
-    const isAgyRunner = !!(
-      hostSelectedProfileId &&
-      getProviderById(hostSelectedProfileId)?.runner === 'agy'
-    );
+    const hostSelectedProvider = hostSelectedProfileId
+      ? getProviderById(hostSelectedProfileId)
+      : null;
+    const isAgyRunner = hostSelectedProvider?.runner === 'agy';
     let runnerEntrypoint: string;
 
     if (isAgyRunner) {
@@ -4799,6 +4877,14 @@ export async function runHostAgent(
         hostEnv['HAPPYCLAW_AGY_EFFORT'] = input.launchEffort;
       } else {
         delete hostEnv['HAPPYCLAW_AGY_EFFORT'];
+      }
+      const agyProfileHome = resolveAgyProfileHomeDir(
+        hostSelectedProvider?.agyProfileId,
+      );
+      if (agyProfileHome) {
+        hostEnv['HAPPYCLAW_AGY_HOME'] = agyProfileHome;
+      } else {
+        delete hostEnv['HAPPYCLAW_AGY_HOME'];
       }
     } else {
       const agentRunnerRoot = path.join(projectRoot, 'container', 'agent-runner');

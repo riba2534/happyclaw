@@ -107,15 +107,23 @@ export function parseAgyModelsOutput(raw: string): ProviderModelEntry[] {
 }
 
 /**
- * Discover available models from the host's authenticated `agy` CLI.
+ * Discover available models from the `agy` CLI. When `homeDir` is provided,
+ * runs with `HOME=homeDir` so an isolated per-provider AGY OAuth profile is used.
  */
 export async function discoverAgyModels(
-  timeoutMs = 15_000,
+  options: number | { timeoutMs?: number; homeDir?: string } = 15_000,
 ): Promise<ProviderModelEntry[]> {
+  const timeoutMs =
+    typeof options === 'number' ? options : (options.timeoutMs ?? 15_000);
+  const homeDir = typeof options === 'number' ? undefined : options.homeDir;
   const agyBin = resolveAgyBinary();
+  const env: NodeJS.ProcessEnv = homeDir
+    ? { ...process.env, HOME: homeDir }
+    : process.env;
   const { stdout } = await execFileAsync(agyBin, ['models'], {
     timeout: timeoutMs,
     maxBuffer: 1024 * 1024,
+    env,
   });
   return parseAgyModelsOutput(stdout);
 }

@@ -135,6 +135,9 @@ case "$HAPPYCLAW_AGENT_RUNNER_MODE" in
     exit 1
     ;;
 esac
+if [ "${HAPPYCLAW_RUNNER:-claude}" = "agy" ] && [ -f /opt/happyclaw-host-dist/agy-runner/index.js ]; then
+  AGENT_RUNNER_ENTRY=/opt/happyclaw-host-dist/agy-runner/index.js
+fi
 export AGENT_RUNNER_ENTRY
 happyclaw_startup_metric runner_artifact_ready
 

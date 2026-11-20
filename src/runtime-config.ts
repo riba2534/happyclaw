@@ -10,6 +10,10 @@ import {
   type FileSignature,
 } from './file-signature.js';
 import { ASSISTANT_NAME, DATA_DIR } from './config.js';
+import {
+  deleteAgyProfileDir,
+  isValidAgyProfileId,
+} from './agy-runner/oauth.js';
 import type { FeishuBrand } from './feishu-domain.js';
 import { logger } from './logger.js';
 import { HAPPYCLAW_OWNED_CLAUDE_ENV_KEYS } from './claude-provider-env.js';
@@ -648,6 +652,8 @@ interface StoredProviderV4 {
   type: 'official' | 'third_party';
   /** Execution runtime: absent means 'claude' (cc-runner). */
   runner?: ProviderRunner;
+  /** Isolated AGY OAuth profile directory ID under data/config/agy-profiles/. */
+  agyProfileId?: string;
   /**
    * Legacy pool membership and weight, for older releases and the one-time
    * binding backfill (readLegacyModelDefaults). This release decides nothing
@@ -727,6 +733,8 @@ export interface UnifiedProvider {
   type: 'official' | 'third_party';
   /** Execution runtime: absent means 'claude' (cc-runner). */
   runner?: ProviderRunner;
+  /** Isolated AGY OAuth profile directory ID under data/config/agy-profiles/. */
+  agyProfileId?: string;
   anthropicBaseUrl: string;
   anthropicAuthToken: string;
   anthropicAuthMode?: ProviderAuthMode;
@@ -765,6 +773,8 @@ export interface UnifiedProviderPublic {
   type: 'official' | 'third_party';
   /** Execution runtime: absent means 'claude' (cc-runner). */
   runner?: ProviderRunner;
+  /** True when the AGY provider holds its own isolated OAuth profile. */
+  hasAgyProfile: boolean;
   anthropicBaseUrl: string;
   anthropicModel: string;
   /** null for providers saved before the explicit choice existed. */
@@ -1621,6 +1631,9 @@ function toStoredProviderV4(
     name: provider.name,
     type: provider.type,
     ...(provider.runner === 'agy' ? { runner: 'agy' as const } : {}),
+    ...(isValidAgyProfileId(provider.agyProfileId)
+      ? { agyProfileId: provider.agyProfileId }
+      : {}),
     enabled,
     weight: 1,
     anthropicBaseUrl: provider.anthropicBaseUrl || '',
@@ -1859,6 +1872,9 @@ function fromStoredProviderV4(stored: StoredProviderV4): UnifiedProvider {
     name: stored.name,
     type: stored.type,
     ...(stored.runner === 'agy' ? { runner: 'agy' as const } : {}),
+    ...(isValidAgyProfileId(stored.agyProfileId)
+      ? { agyProfileId: stored.agyProfileId }
+      : {}),
     anthropicBaseUrl: stored.anthropicBaseUrl || '',
     anthropicAuthToken: secrets.anthropicAuthToken || '',
     ...(stored.webFetchPreflightPolicy === 'skip'
@@ -2784,6 +2800,7 @@ export function createProvider(input: {
   name: string;
   type: 'official' | 'third_party';
   runner?: ProviderRunner;
+  agyProfileId?: string;
   anthropicBaseUrl?: string;
   anthropicAuthToken?: string;
   anthropicAuthMode?: ProviderAuthMode;
@@ -2832,6 +2849,9 @@ export function createProvider(input: {
     name: normalizeProfileName(input.name),
     type: input.type,
     ...(input.runner === 'agy' ? { runner: 'agy' as const } : {}),
+    ...(isValidAgyProfileId(input.agyProfileId)
+      ? { agyProfileId: input.agyProfileId }
+      : {}),
     ...(webFetchPreflightPolicy === 'skip'
       ? { webFetchPreflightPolicy: 'skip' as const }
       : {}),
@@ -2902,6 +2922,7 @@ export function updateProvider(
   patch: {
     name?: string;
     runner?: ProviderRunner;
+    agyProfileId?: string | null;
     anthropicBaseUrl?: string;
     /** Null forgets the style, so it is inferred from the token again. */
     anthropicAuthMode?: ProviderAuthMode | null;
@@ -2936,6 +2957,13 @@ export function updateProvider(
       : {}),
     ...(patch.runner !== undefined
       ? { runner: patch.runner === 'agy' ? ('agy' as const) : undefined }
+      : {}),
+    ...(patch.agyProfileId !== undefined
+      ? {
+          agyProfileId: isValidAgyProfileId(patch.agyProfileId)
+            ? patch.agyProfileId
+            : undefined,
+        }
       : {}),
     ...(patch.anthropicBaseUrl !== undefined
       ? { anthropicBaseUrl: normalizeBaseUrl(patch.anthropicBaseUrl) }
@@ -3377,7 +3405,11 @@ export function duplicateProvider(id: string): UnifiedProvider {
   }
 
   const source = state.providers[idx];
-  if (source.codexOAuthCredentials || source.claudeOAuthCredentials) {
+  if (
+    source.codexOAuthCredentials ||
+    source.claudeOAuthCredentials ||
+    source.agyProfileId
+  ) {
     throw new Error(
       'OAuth 授权的模型配置不能复制：两份配置轮换同一个刷新令牌会互相失效，请新建后重新授权',
     );
@@ -3401,9 +3433,13 @@ export function deleteProvider(id: string): void {
   const idx = state.providers.findIndex((p) => p.id === id);
   if (idx < 0) throw new Error('未找到指定供应商');
 
+  const removed = state.providers[idx];
   state.providers.splice(idx, 1);
   writeStoredStateV4(state);
   clearProviderQuotaObservation(id);
+  if (removed?.agyProfileId) {
+    deleteAgyProfileDir(removed.agyProfileId);
+  }
 }
 
 /** Convert a UnifiedProvider to the flat ClaudeProviderConfig used by container runner */
@@ -3435,6 +3471,7 @@ export function toPublicProvider(
     name: provider.name,
     type: provider.type,
     runner: provider.runner ?? 'claude',
+    hasAgyProfile: isValidAgyProfileId(provider.agyProfileId),
     anthropicBaseUrl: provider.anthropicBaseUrl,
     anthropicModel: provider.anthropicModel,
     anthropicAuthMode: provider.anthropicAuthMode ?? null,

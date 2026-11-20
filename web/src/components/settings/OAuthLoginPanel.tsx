@@ -7,7 +7,7 @@ import { api } from '../../api/client';
 import { getErrorMessage, type UnifiedProviderPublic } from './types';
 
 interface OAuthLoginPanelProps {
-  service: 'claude' | 'chatgpt';
+  service: 'claude' | 'chatgpt' | 'agy';
   /** Logs an existing connection in again instead of creating one. */
   targetProviderId?: string;
   /** The server saved the login; the provider it answered with, if any. */
@@ -42,6 +42,20 @@ const COPY = {
     inputLabel: '粘贴 localhost:1455 回调完整地址',
     startError: 'ChatGPT 授权启动失败',
     exchangeError: 'ChatGPT 授权码换取失败',
+  },
+  agy: {
+    start: '/api/config/agy/oauth/start',
+    callback: '/api/config/agy/oauth/callback',
+    login: '登录 Antigravity',
+    relogin: '重新登录 Antigravity',
+    intro:
+      '打开 Google 授权页登录 Antigravity 账号。授权凭据将保存在独立隔离目录中（不依赖宿主机默认登录），支持宿主机、Docker 容器与群聊。',
+    waiting:
+      '授权窗口已打开。完成 Google 登录后，把回调页显示的授权码或完整页面地址粘贴到下方。',
+    placeholder: '粘贴授权码或 antigravity.google/oauth-callback 完整地址',
+    inputLabel: '粘贴授权码或回调完整地址',
+    startError: 'Antigravity 授权启动失败',
+    exchangeError: 'Antigravity 授权换取失败',
   },
 } as const;
 

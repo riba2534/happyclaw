@@ -65,7 +65,9 @@ function hasCredential(provider: UnifiedProviderPublic): boolean {
 function sourceText(provider: UnifiedProviderPublic): string | null {
   const kind = connectionKind(provider);
   if (kind === 'agy') {
-    return '宿主机 AGY CLI（agy-runner）';
+    return provider.hasAgyProfile
+      ? 'Antigravity 独立 OAuth 授权（通用 Runner）'
+      : '宿主机 AGY CLI（建议重新登录隔离凭据）';
   }
   if (kind === 'chatgpt') {
     return (

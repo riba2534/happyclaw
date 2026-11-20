@@ -14,6 +14,10 @@ import {
   parseAgyModelsOutput,
 } from '../src/agy-runner/models.js';
 import {
+  extractAgyOAuthUrl,
+  isValidAgyProfileId,
+} from '../src/agy-runner/oauth.js';
+import {
   AgyStreamTranslator,
   formatAgyUserEvent,
 } from '../src/agy-runner/protocol.js';
@@ -323,5 +327,19 @@ describe('ensureAgyWorkspaceMcpConfig & HAPPYCLAW_MCP_TOOLS', () => {
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }
+  });
+});
+
+describe('AGY OAuth helpers', () => {
+  it('extracts Google OAuth URL from agy acp --login output and validates profile IDs', () => {
+    const sample =
+      'Open this link in a browser to log in with Google:\n\n  https://accounts.google.com/o/oauth2/auth?client_id=abc&state=xyz\n\nThen paste the authorization code:';
+    expect(extractAgyOAuthUrl(sample)).toBe(
+      'https://accounts.google.com/o/oauth2/auth?client_id=abc&state=xyz',
+    );
+    expect(extractAgyOAuthUrl('no url here')).toBeNull();
+    expect(isValidAgyProfileId('a1b2c3d4e5f6a1b2c3d4e5f6')).toBe(true);
+    expect(isValidAgyProfileId('../escape')).toBe(false);
+    expect(isValidAgyProfileId('short')).toBe(false);
   });
 });
