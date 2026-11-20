@@ -26,6 +26,7 @@ export type ConnectionKind =
   | 'claude_subscription'
   | 'anthropic_api'
   | 'chatgpt'
+  | 'agy'
   | 'preset'
   | 'custom';
 
@@ -33,6 +34,7 @@ export const CONNECTION_KIND_LABELS: Record<ConnectionKind, string> = {
   claude_subscription: 'Claude 订阅',
   anthropic_api: 'Anthropic API Key',
   chatgpt: 'ChatGPT 订阅',
+  agy: 'Antigravity 订阅 (AGY)',
   preset: '厂商预设',
   custom: '自定义地址',
 };
@@ -40,6 +42,7 @@ export const CONNECTION_KIND_LABELS: Record<ConnectionKind, string> = {
 type KindFields = Pick<
   UnifiedProviderPublic,
   | 'type'
+  | 'runner'
   | 'hasCodexOAuthCredentials'
   | 'claudeAuthKind'
   | 'hasAnthropicApiKey'
@@ -49,6 +52,7 @@ type KindFields = Pick<
 >;
 
 export function connectionKind(provider: KindFields): ConnectionKind {
+  if (provider.runner === 'agy') return 'agy';
   if (provider.hasCodexOAuthCredentials) return 'chatgpt';
   if (provider.type === 'official') {
     const apiKey =
@@ -150,6 +154,7 @@ export const AUTO_AUTH_MODE_HINT = `先用 ${AUTH_MODE_LABELS.bearer}，被拒�
 /** Fields a not-yet-saved connection is tested or listed with. */
 export interface ConnectionDraftBody {
   type: 'official' | 'third_party';
+  runner?: 'claude' | 'agy';
   presetId?: string;
   anthropicBaseUrl?: string;
   anthropicAuthToken?: string;
@@ -233,6 +238,21 @@ export function testConnection(
 export function discoverModels(
   body: { providerId: string } | ConnectionDraftBody,
 ): Promise<DiscoverModelsResponse> {
+  if ('runner' in body && body.runner === 'agy') {
+    return api
+      .get<{ models: DiscoveredModel[] }>('/api/config/agy/models')
+      .then((res) => ({
+        ok: true as const,
+        models: res.models ?? [],
+        source: 'builtin' as const,
+      }))
+      .catch((err) => ({
+        ok: false as const,
+        code: 'UNKNOWN' as const,
+        status: null,
+        message: err instanceof Error ? err.message : '获取 AGY 模型列表失败',
+      }));
+  }
   return api.post<DiscoverModelsResponse>(
     `${PROVIDERS_API}/discover-models`,
     body,

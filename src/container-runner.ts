@@ -37,6 +37,9 @@ import { isSingleUserHost } from './deployment-mode.js';
 
 export const SINGLE_USER_HOST_CONTAINER_REFUSAL =
   '单人宿主机模式不运行 Docker 工作区；请把工作区改为宿主机模式或切回多人模式。';
+export const AGY_RUNNER_CONTAINER_REFUSAL =
+  'AGY Runner 目前仅支持宿主机模式；请将该工作区改为宿主机模式或切换至其他模型配置。';
+import { DEFAULT_AGY_MODEL } from './agy-runner/models.js';
 import { logger } from './logger.js';
 import {
   isCodexGatewayBaseUrl,
@@ -3420,6 +3423,13 @@ export async function runContainerAgent(
     input.agentProfile?.runtimePolicy?.subagents,
   );
   const selectedProfileId = poolResult?.profileId ?? null;
+  if (selectedProfileId && getProviderById(selectedProfileId)?.runner === 'agy') {
+    return {
+      status: 'error',
+      result: AGY_RUNNER_CONTAINER_REFUSAL,
+      error: `agent_profile_unavailable: ${AGY_RUNNER_CONTAINER_REFUSAL}`,
+    };
+  }
   const selectedProviderQuotaEpoch = selectedProfileId
     ? captureProviderQuotaObservationEpoch(selectedProfileId)
     : null;
@@ -4759,70 +4769,102 @@ export async function runHostAgent(
       );
     }
 
-    // 6. 编译检查
+    // 6. 编译检查与 Runner 分发（cc-runner vs agy-runner）
     const projectRoot = process.cwd();
-    const agentRunnerRoot = path.join(projectRoot, 'container', 'agent-runner');
-    const agentRunnerNodeModules = path.join(agentRunnerRoot, 'node_modules');
-    const agentRunnerDist = path.join(agentRunnerRoot, 'dist', 'index.js');
-    const requiredDeps = ['@anthropic-ai/claude-agent-sdk'];
-    const missingDeps = requiredDeps.filter((dep) => {
-      const depJson = path.join(
-        agentRunnerNodeModules,
-        ...dep.split('/'),
-        'package.json',
-      );
-      return !fs.existsSync(depJson);
-    });
-    if (missingDeps.length > 0) {
-      const missing = missingDeps.join(', ');
-      logger.error(
-        { group: group.name, missingDeps },
-        'Host agent preflight failed: dependencies missing',
-      );
-      return hostModeSetupError(
-        `缺少 agent-runner 依赖（${missing}）。请先执行：${setupInstallHint}`,
-      );
-    }
-    if (!fs.existsSync(agentRunnerDist)) {
-      logger.error(
-        { group: group.name, agentRunnerDist },
-        'Host agent preflight failed: dist not found',
-      );
-      return hostModeSetupError(
-        `agent-runner 未编译。请先执行：${setupBuildHint}`,
-      );
-    }
+    const isAgyRunner = !!(
+      hostSelectedProfileId &&
+      getProviderById(hostSelectedProfileId)?.runner === 'agy'
+    );
+    let runnerEntrypoint: string;
 
-    // Auto-rebuild if dist is stale (src newer than dist)
-    try {
-      const distMtime = fs.statSync(agentRunnerDist).mtimeMs;
-      const srcDir = path.join(agentRunnerRoot, 'src');
-      const srcFiles = fs.readdirSync(srcDir);
-      const newestSrc = Math.max(
-        ...srcFiles.map((f) => fs.statSync(path.join(srcDir, f)).mtimeMs),
-      );
-      if (newestSrc > distMtime) {
-        logger.info(
-          { group: group.name },
-          'agent-runner dist 已过期，自动重新编译...',
+    if (isAgyRunner) {
+      const agyRunnerDist = path.join(projectRoot, 'dist', 'agy-runner', 'index.js');
+      if (!fs.existsSync(agyRunnerDist)) {
+        logger.error(
+          { group: group.name, agyRunnerDist },
+          'Host agy-runner preflight failed: dist not found',
         );
-        try {
-          const { execSync } = await import('child_process');
-          execSync('npm run build', {
-            cwd: agentRunnerRoot,
-            stdio: 'pipe',
-            timeout: 30_000,
-          });
-          logger.info({ group: group.name }, 'agent-runner 自动编译完成');
-        } catch (buildErr) {
-          logger.warn(
-            { group: group.name, err: buildErr },
-            `agent-runner 自动编译失败，使用旧版 dist。手动执行：${setupBuildHint}`,
-          );
-        }
+        return hostModeSetupError('agy-runner 未编译。请先执行：npm run build');
       }
-    } catch {
-      // Best effort, don't block execution
+      runnerEntrypoint = agyRunnerDist;
+      const rawAgyModel =
+        hostEnv['ANTHROPIC_MODEL']?.trim() ||
+        rawGlobalConfig.anthropicModel?.trim() ||
+        DEFAULT_AGY_MODEL;
+      // Strip Claude Code's `[1m]` context-window suffix before passing to `agy`.
+      const resolvedAgyModel =
+        rawAgyModel.replace(/(?:\[1m\])+$/i, '').trim() || DEFAULT_AGY_MODEL;
+      hostEnv['HAPPYCLAW_AGY_MODEL'] = resolvedAgyModel;
+      if (input.launchEffort) {
+        hostEnv['HAPPYCLAW_AGY_EFFORT'] = input.launchEffort;
+      } else {
+        delete hostEnv['HAPPYCLAW_AGY_EFFORT'];
+      }
+    } else {
+      const agentRunnerRoot = path.join(projectRoot, 'container', 'agent-runner');
+      const agentRunnerNodeModules = path.join(agentRunnerRoot, 'node_modules');
+      const agentRunnerDist = path.join(agentRunnerRoot, 'dist', 'index.js');
+      const requiredDeps = ['@anthropic-ai/claude-agent-sdk'];
+      const missingDeps = requiredDeps.filter((dep) => {
+        const depJson = path.join(
+          agentRunnerNodeModules,
+          ...dep.split('/'),
+          'package.json',
+        );
+        return !fs.existsSync(depJson);
+      });
+      if (missingDeps.length > 0) {
+        const missing = missingDeps.join(', ');
+        logger.error(
+          { group: group.name, missingDeps },
+          'Host agent preflight failed: dependencies missing',
+        );
+        return hostModeSetupError(
+          `缺少 agent-runner 依赖（${missing}）。请先执行：${setupInstallHint}`,
+        );
+      }
+      if (!fs.existsSync(agentRunnerDist)) {
+        logger.error(
+          { group: group.name, agentRunnerDist },
+          'Host agent preflight failed: dist not found',
+        );
+        return hostModeSetupError(
+          `agent-runner 未编译。请先执行：${setupBuildHint}`,
+        );
+      }
+
+      // Auto-rebuild if dist is stale (src newer than dist)
+      try {
+        const distMtime = fs.statSync(agentRunnerDist).mtimeMs;
+        const srcDir = path.join(agentRunnerRoot, 'src');
+        const srcFiles = fs.readdirSync(srcDir);
+        const newestSrc = Math.max(
+          ...srcFiles.map((f) => fs.statSync(path.join(srcDir, f)).mtimeMs),
+        );
+        if (newestSrc > distMtime) {
+          logger.info(
+            { group: group.name },
+            'agent-runner dist 已过期，自动重新编译...',
+          );
+          try {
+            const { execSync } = await import('child_process');
+            execSync('npm run build', {
+              cwd: agentRunnerRoot,
+              stdio: 'pipe',
+              timeout: 30_000,
+            });
+            logger.info({ group: group.name }, 'agent-runner 自动编译完成');
+          } catch (buildErr) {
+            logger.warn(
+              { group: group.name, err: buildErr },
+              `agent-runner 自动编译失败，使用旧版 dist。手动执行：${setupBuildHint}`,
+            );
+          }
+        }
+      } catch {
+        // Best effort, don't block execution
+      }
+      runnerEntrypoint = agentRunnerDist;
     }
 
     logger.info(
@@ -4830,6 +4872,7 @@ export async function runHostAgent(
         group: group.name,
         workingDir: groupDir,
         agentId: input.agentId,
+        runner: isAgyRunner ? 'agy' : 'claude',
       },
       'Spawning host agent',
     );
@@ -4848,7 +4891,7 @@ export async function runHostAgent(
       // Resolve absolute node path: bare 'node' fails with ENOENT under
       // Process managers / launchd / GUI launchers where PATH lacks nvm/fnm dirs.
       const hostNodeBinary = resolveHostNodeBinary(hostEnv);
-      const proc = spawn(hostNodeBinary, [agentRunnerDist], {
+      const proc = spawn(hostNodeBinary, [runnerEntrypoint], {
         stdio: ['pipe', 'pipe', 'pipe'],
         env: hostEnv,
         cwd: groupDir,

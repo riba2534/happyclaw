@@ -16,6 +16,7 @@ import {
   withStorageSourceWriteLock,
 } from '../storage-source-admin.js';
 import { DATA_DIR } from '../config.js';
+import { discoverAgyModels } from '../agy-runner/models.js';
 import { bindSystemMainIfUnbound } from '../model-binding-backfill.js';
 import {
   avatarUploadBodyLimit,
@@ -1525,6 +1526,7 @@ configRoutes.post(
     // A connection without a credential could neither be tested nor run.
     const draft = validation.data;
     const hasCredential = !!(
+      draft.runner === 'agy' ||
       draft.anthropicAuthToken?.trim() ||
       draft.anthropicApiKey?.trim() ||
       (draft.type === 'official' &&
@@ -2948,6 +2950,24 @@ configRoutes.post(
       const message =
         err instanceof Error ? err.message : 'Failed to persist OAuth login';
       return c.json({ error: message }, 500);
+    }
+  },
+);
+
+// ─── GET /agy/models — 发现宿主机 AGY CLI 可用模型列表 ──────────
+configRoutes.get(
+  '/agy/models',
+  authMiddleware,
+  systemConfigMiddleware,
+  async (c) => {
+    try {
+      const models = await discoverAgyModels();
+      return c.json({ models });
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : 'Failed to discover AGY models';
+      logger.warn({ err }, 'Failed to discover AGY models');
+      return c.json({ error: `获取 AGY 模型列表失败：${message}` }, 502);
     }
   },
 );

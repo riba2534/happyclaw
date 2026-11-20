@@ -16,6 +16,7 @@ export interface UnifiedProviderPublic {
   id: string;
   name: string;
   type: 'official' | 'third_party';
+  runner?: 'claude' | 'agy';
   anthropicBaseUrl: string;
   anthropicModel: string;
   /** null for third-party providers saved before the explicit choice. */

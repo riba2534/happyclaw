@@ -6,6 +6,7 @@ import {
   MessageSquareText,
   Server,
   ShieldCheck,
+  Terminal,
 } from 'lucide-react';
 
 import { SearchInput } from '@/components/common/SearchInput';
@@ -22,7 +23,7 @@ export type WizardSource =
   | { kind: 'preset'; presetId: string };
 
 const RECOMMENDED: ReadonlyArray<{
-  kind: 'claude_subscription' | 'chatgpt' | 'anthropic_api';
+  kind: 'claude_subscription' | 'chatgpt' | 'agy' | 'anthropic_api';
   description: string;
   icon: typeof ShieldCheck;
 }> = [
@@ -35,6 +36,11 @@ const RECOMMENDED: ReadonlyArray<{
     kind: 'chatgpt',
     description: '用 ChatGPT Plus / Pro 账号登录，经内嵌网关运行',
     icon: MessageSquareText,
+  },
+  {
+    kind: 'agy',
+    description: '复用宿主机 AGY CLI 订阅，通过 agy-runner 运行 Gemini 4 Neon 等模型',
+    icon: Terminal,
   },
   {
     kind: 'anthropic_api',

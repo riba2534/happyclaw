@@ -323,6 +323,8 @@ export function AddModelWizard({
         };
       case 'anthropic_api':
         return { type: 'official', anthropicApiKey: apiKey.trim() };
+      case 'agy':
+        return { type: 'third_party', runner: 'agy' };
       default:
         return {
           type: 'official',
@@ -480,6 +482,34 @@ export function AddModelWizard({
       setTest({ signature, outcome, error });
       setTesting(false);
     };
+    if (kind === 'agy') {
+      const t0 = Date.now();
+      discoverModels({ type: 'third_party', runner: 'agy' })
+        .then((res) => {
+          if (res.ok && res.models.length > 0) {
+            settle(
+              {
+                ok: true,
+                code: null,
+                model: connectionModel || res.models[0].id,
+                authMode: null,
+                message: `AGY CLI 就绪（发现 ${res.models.length} 个可用模型）`,
+                latencyMs: Date.now() - t0,
+              },
+              null,
+            );
+          } else {
+            settle(
+              null,
+              !res.ok
+                ? res.message
+                : '未从宿主机 agy CLI 发现可用模型，请先执行 agy 登录',
+            );
+          }
+        })
+        .catch((err) => settle(null, getErrorMessage(err, '检测 AGY CLI 失败')));
+      return;
+    }
     testConnection(body)
       .then((result) => settle(testOutcome(result), null))
       .catch((err) => settle(null, getErrorMessage(err, '测试连接失败')));
@@ -544,7 +574,9 @@ export function AddModelWizard({
         provider = await api.post<UnifiedProviderPublic>(PROVIDERS_API, body);
         // The draft test was not stored; test the saved connection so its
         // status is on record.
-        await testConnection({ providerId: provider.id }).catch(() => {});
+        if (kind !== 'agy') {
+          await testConnection({ providerId: provider.id }).catch(() => {});
+        }
       }
       onDone(provider, verified);
     } catch (err) {
@@ -579,6 +611,8 @@ export function AddModelWizard({
         );
       case 'anthropic_api':
         return !!apiKey.trim();
+      case 'agy':
+        return true;
       default:
         return false;
     }
@@ -704,6 +738,21 @@ export function AddModelWizard({
           ) : (
             <OAuthLoginPanel service="chatgpt" onSuccess={handleLoggedIn} />
           )}
+        </div>
+      )}
+
+      {step === 'connect' && kind === 'agy' && (
+        <div className="space-y-3 rounded-lg bg-surface-subtle p-4 text-body text-muted-foreground ring-1 ring-surface-border">
+          <p className="font-medium text-foreground">
+            使用宿主机已登录的 Antigravity CLI（agy-runner）
+          </p>
+          <p className="text-caption leading-5">
+            无需填写 API Key，将直接复用宿主机当前用户的{' '}
+            <code className="font-mono text-foreground">agy</code>{' '}
+            登录态，并通过{' '}
+            <code className="font-mono text-foreground">stream-json</code>{' '}
+            常驻进程运行。目前仅支持宿主机模式工作区。
+          </p>
         </div>
       )}
 

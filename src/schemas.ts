@@ -1454,11 +1454,13 @@ const ProviderPresetIdSchema = z
   .refine((value) => !!getModelPreset(value), { message: '未知的厂商预设' });
 
 const WebFetchPreflightPolicySchema = z.enum(['check', 'skip']);
+const ProviderRunnerSchema = z.enum(['claude', 'agy']);
 
 export const UnifiedProviderCreateSchema = z
   .object({
     name: z.string().min(1).max(64),
     type: z.enum(['official', 'third_party']),
+    runner: ProviderRunnerSchema.optional(),
     anthropicBaseUrl: ProviderBaseUrlSchema.optional(),
     anthropicAuthToken: z.string().max(2000).optional(),
     anthropicAuthMode: ProviderAuthModeSchema.optional(),
@@ -1483,6 +1485,7 @@ export const UnifiedProviderCreateSchema = z
   })
   .superRefine((data, ctx) => {
     if (
+      data.runner !== 'agy' &&
       data.type === 'third_party' &&
       !data.anthropicBaseUrl?.trim() &&
       !data.anthropicAuthToken?.trim()
@@ -1498,6 +1501,7 @@ export const UnifiedProviderCreateSchema = z
 export const UnifiedProviderPatchSchema = z
   .object({
     name: z.string().min(1).max(64).optional(),
+    runner: ProviderRunnerSchema.optional(),
     anthropicBaseUrl: ProviderBaseUrlSchema.optional(),
     /** Null goes back to inferring the header style from the token. */
     anthropicAuthMode: ProviderAuthModeSchema.nullable().optional(),
@@ -1520,6 +1524,7 @@ export const UnifiedProviderPatchSchema = z
   .refine(
     (data) =>
       data.name !== undefined ||
+      data.runner !== undefined ||
       data.anthropicBaseUrl !== undefined ||
       data.anthropicAuthMode !== undefined ||
       data.webFetchPreflightPolicy !== undefined ||

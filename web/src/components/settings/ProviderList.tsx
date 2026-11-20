@@ -48,6 +48,7 @@ function ProviderMedia({ provider }: { provider: UnifiedProviderPublic }) {
 }
 
 function hasCredential(provider: UnifiedProviderPublic): boolean {
+  if (provider.runner === 'agy') return true;
   return (
     provider.hasClaudeOAuthCredentials ||
     provider.hasCodexOAuthCredentials ||
@@ -60,6 +61,9 @@ function hasCredential(provider: UnifiedProviderPublic): boolean {
 /** Where the connection's models come from, in one short line. */
 function sourceText(provider: UnifiedProviderPublic): string | null {
   const kind = connectionKind(provider);
+  if (kind === 'agy') {
+    return '宿主机 AGY CLI（agy-runner）';
+  }
   if (kind === 'chatgpt') {
     return (
       provider.codexOAuthCredentialsEmail ?? 'ChatGPT 订阅网关（服务内嵌）'

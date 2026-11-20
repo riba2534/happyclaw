@@ -232,6 +232,8 @@ const POSITIVE_INTEGER_PROVIDER_ENV_KEYS = new Set([
  */
 export type ProviderAuthMode = 'bearer' | 'x-api-key';
 
+export type ProviderRunner = 'claude' | 'agy';
+
 export type WebFetchPreflightPolicy = 'check' | 'skip';
 
 /**
@@ -644,6 +646,8 @@ interface StoredProviderV4 {
   id: string;
   name: string;
   type: 'official' | 'third_party';
+  /** Execution runtime: absent means 'claude' (cc-runner). */
+  runner?: ProviderRunner;
   /**
    * Legacy pool membership and weight, for older releases and the one-time
    * binding backfill (readLegacyModelDefaults). This release decides nothing
@@ -721,6 +725,8 @@ export interface UnifiedProvider {
   id: string;
   name: string;
   type: 'official' | 'third_party';
+  /** Execution runtime: absent means 'claude' (cc-runner). */
+  runner?: ProviderRunner;
   anthropicBaseUrl: string;
   anthropicAuthToken: string;
   anthropicAuthMode?: ProviderAuthMode;
@@ -757,6 +763,8 @@ export interface UnifiedProviderPublic {
   id: string;
   name: string;
   type: 'official' | 'third_party';
+  /** Execution runtime: absent means 'claude' (cc-runner). */
+  runner?: ProviderRunner;
   anthropicBaseUrl: string;
   anthropicModel: string;
   /** null for providers saved before the explicit choice existed. */
@@ -1612,6 +1620,7 @@ function toStoredProviderV4(
     id: provider.id,
     name: provider.name,
     type: provider.type,
+    ...(provider.runner === 'agy' ? { runner: 'agy' as const } : {}),
     enabled,
     weight: 1,
     anthropicBaseUrl: provider.anthropicBaseUrl || '',
@@ -1849,6 +1858,7 @@ function fromStoredProviderV4(stored: StoredProviderV4): UnifiedProvider {
     id: stored.id,
     name: stored.name,
     type: stored.type,
+    ...(stored.runner === 'agy' ? { runner: 'agy' as const } : {}),
     anthropicBaseUrl: stored.anthropicBaseUrl || '',
     anthropicAuthToken: secrets.anthropicAuthToken || '',
     ...(stored.webFetchPreflightPolicy === 'skip'
@@ -2773,6 +2783,7 @@ export function recordProviderCatalog(
 export function createProvider(input: {
   name: string;
   type: 'official' | 'third_party';
+  runner?: ProviderRunner;
   anthropicBaseUrl?: string;
   anthropicAuthToken?: string;
   anthropicAuthMode?: ProviderAuthMode;
@@ -2820,6 +2831,7 @@ export function createProvider(input: {
     id: crypto.randomBytes(8).toString('hex'),
     name: normalizeProfileName(input.name),
     type: input.type,
+    ...(input.runner === 'agy' ? { runner: 'agy' as const } : {}),
     ...(webFetchPreflightPolicy === 'skip'
       ? { webFetchPreflightPolicy: 'skip' as const }
       : {}),
@@ -2889,6 +2901,7 @@ export function updateProvider(
   id: string,
   patch: {
     name?: string;
+    runner?: ProviderRunner;
     anthropicBaseUrl?: string;
     /** Null forgets the style, so it is inferred from the token again. */
     anthropicAuthMode?: ProviderAuthMode | null;
@@ -2920,6 +2933,9 @@ export function updateProvider(
     ...current,
     ...(patch.name !== undefined
       ? { name: normalizeProfileName(patch.name) }
+      : {}),
+    ...(patch.runner !== undefined
+      ? { runner: patch.runner === 'agy' ? ('agy' as const) : undefined }
       : {}),
     ...(patch.anthropicBaseUrl !== undefined
       ? { anthropicBaseUrl: normalizeBaseUrl(patch.anthropicBaseUrl) }
@@ -3332,6 +3348,7 @@ export function getProviderById(id: string): UnifiedProvider | null {
 
 /** Whether a provider holds a credential its runtime can authenticate with. */
 export function providerHasCredentials(provider: UnifiedProvider): boolean {
+  if (provider.runner === 'agy') return true;
   if (provider.codexOAuthCredentials) return true;
   if (provider.type === 'third_party') {
     return !!(provider.anthropicAuthToken || provider.anthropicApiKey);
@@ -3417,6 +3434,7 @@ export function toPublicProvider(
     id: provider.id,
     name: provider.name,
     type: provider.type,
+    runner: provider.runner ?? 'claude',
     anthropicBaseUrl: provider.anthropicBaseUrl,
     anthropicModel: provider.anthropicModel,
     anthropicAuthMode: provider.anthropicAuthMode ?? null,
