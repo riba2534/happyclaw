@@ -286,13 +286,17 @@ export function testOutcome(result: ProviderTestResponse): TestOutcome {
 /**
  * Asks before an edit that stops runners: an address, a key, a removed
  * model or the environment. Says how many live runners the edit stops (the
- * server counts every one it quiesces, not only this connection's) and that
- * conversations keep their history.
+ * server counts every one it quiesces, not only this connection's) and
+ * whether conversations start a new SDK session. A new address alone keeps
+ * them.
  */
-export async function confirmProtocolChange(provider: {
-  id: string;
-  name: string;
-}): Promise<boolean> {
+export async function confirmProtocolChange(
+  provider: {
+    id: string;
+    name: string;
+  },
+  { keepsSessions = false }: { keepsSessions?: boolean } = {},
+): Promise<boolean> {
   let stoppedRunners: number | null = null;
   try {
     const impact = await api.get<{
@@ -313,7 +317,9 @@ export async function confirmProtocolChange(provider: {
         : '';
   return confirmDialog({
     title: `修改连接「${provider.name}」`,
-    message: `${runners}使用这个连接的对话，下一条消息会开启新的 SDK 会话，聊天记录保留。`,
+    message: keepsSessions
+      ? `${runners}使用这个连接的对话保留各自的 SDK 会话，下一条消息从新地址继续。`
+      : `${runners}使用这个连接的对话，下一条消息会开启新的 SDK 会话，聊天记录保留。`,
     confirmText: '保存修改',
   });
 }

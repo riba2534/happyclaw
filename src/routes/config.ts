@@ -397,12 +397,18 @@ interface ClaudeApplyResultPayload {
 interface ApplyOptions {
   /**
    * If set, drop only sticky session bindings that point to this provider —
-   * preserves bindings to unrelated providers. Used when a provider's
-   * protocol-level fields (anthropicBaseUrl / anthropicModel) change.
+   * preserves bindings to unrelated providers. Used when what a provider's
+   * sessions run changes: its default model, key, header style or env, or
+   * the account behind it.
    */
   clearSessionsForProviderId?: string;
   sessionInvalidation?: {
     modelChanged: boolean;
+    /**
+     * The account behind the sessions changed (a new key or login). A
+     * workspace's own Base URL shadows it. A new address alone does not set
+     * it.
+     */
     baseUrlChanged: boolean;
     /**
      * Set when the default model's change is the only reason: sessions on
@@ -1685,15 +1691,15 @@ configRoutes.patch(
           );
         }
         const pendingInvalidation = getPendingProviderSessionInvalidation(id);
+        // A new address alone stops the runners but keeps the sessions: the
+        // same key reaches the same account there (a domain change, a relay),
+        // and the session's model is unchanged. Should the backend behind it
+        // reject the old thinking signatures, Claude Code strips the thinking
+        // blocks and sends again.
         const sessionsInvalidated =
-          baseUrlChanged ||
-          modelChanged ||
-          customEnvChanged ||
-          tokenChanged ||
-          authModeChanged;
+          modelChanged || customEnvChanged || tokenChanged || authModeChanged;
         const onlyDefaultModelChanged =
           modelChanged &&
-          !baseUrlChanged &&
           !customEnvChanged &&
           !tokenChanged &&
           !authModeChanged &&
@@ -1702,9 +1708,7 @@ configRoutes.patch(
           modelChanged:
             modelChanged || pendingInvalidation?.modelChanged === true,
           baseUrlChanged:
-            baseUrlChanged ||
-            tokenChanged ||
-            pendingInvalidation?.baseUrlChanged === true,
+            tokenChanged || pendingInvalidation?.baseUrlChanged === true,
           ...(onlyDefaultModelChanged
             ? { previousDefaultModel: previous.anthropicModel }
             : {}),

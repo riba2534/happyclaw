@@ -476,7 +476,15 @@ function ConnectionSettings({
       setError('请填写服务地址');
       return;
     }
-    if (protocolChanged && !(await confirmProtocolChange(provider))) return;
+    if (
+      protocolChanged &&
+      !(await confirmProtocolChange(provider, {
+        keepsSessions:
+          urlChanged && !secret.trim() && !envChanged && !authModeChanged,
+      }))
+    ) {
+      return;
+    }
     setSaving(true);
     try {
       const patch: Record<string, unknown> = {};
