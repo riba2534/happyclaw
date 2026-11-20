@@ -5,6 +5,11 @@ import { describe, expect, it } from 'vitest';
 
 import { buildFreshSessionInstructions } from '../src/agy-runner/instructions.js';
 import {
+  ensureAgyWorkspaceMcpConfig,
+  syncAgyWorkspaceSkills,
+} from '../src/agy-runner/mcp-config.js';
+import { HAPPYCLAW_MCP_TOOLS } from '../src/agy-runner/mcp-server.js';
+import {
   DEFAULT_AGY_MODEL,
   parseAgyModelsOutput,
 } from '../src/agy-runner/models.js';
@@ -229,6 +234,92 @@ describe('buildFreshSessionInstructions', () => {
         claudeConfigDir: wsDir,
       });
       expect(deduped?.match(/Workspace rule/g)?.length).toBe(1);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('ensureAgyWorkspaceMcpConfig & HAPPYCLAW_MCP_TOOLS', () => {
+  it('merges happyclaw stdio server while preserving existing user MCP servers', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-mcp-'));
+    try {
+      const agentsDir = path.join(tmp, '.agents');
+      fs.mkdirSync(agentsDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(agentsDir, 'mcp_config.json'),
+        JSON.stringify({
+          mcpServers: {
+            custom: { command: 'python3', args: ['server.py'] },
+          },
+        }),
+      );
+
+      const cfgPath = ensureAgyWorkspaceMcpConfig({
+        workspaceDir: tmp,
+        nodeBinary: '/usr/bin/node',
+        mcpServerEntrypoint: '/app/dist/agy-runner/mcp-server.js',
+      });
+      const parsed = JSON.parse(fs.readFileSync(cfgPath, 'utf-8'));
+      expect(parsed.mcpServers.custom).toEqual({
+        command: 'python3',
+        args: ['server.py'],
+      });
+      expect(parsed.mcpServers.happyclaw).toEqual({
+        command: '/usr/bin/node',
+        args: ['/app/dist/agy-runner/mcp-server.js'],
+      });
+
+      const toolNames = HAPPYCLAW_MCP_TOOLS.map((t) => t.name);
+      expect(toolNames).toContain('send_message');
+      expect(toolNames).toContain('send_image');
+      expect(toolNames).toContain('send_file');
+      expect(toolNames).toContain('automation_list');
+      expect(toolNames).toContain('automation_create');
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('syncs HappyClaw skills into .agents/skills, preserves user skills, and prunes removed ones', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-skills-'));
+    try {
+      const wsDir = path.join(tmp, 'ws');
+      const cfgDir = path.join(tmp, 'cfg');
+      const srcSkills = path.join(cfgDir, 'skills');
+      const skillA = path.join(tmp, 'store', 'skill-a');
+      const skillB = path.join(tmp, 'store', 'skill-b');
+      const userSkill = path.join(wsDir, '.agents', 'skills', 'user-own');
+      fs.mkdirSync(srcSkills, { recursive: true });
+      fs.mkdirSync(skillA, { recursive: true });
+      fs.mkdirSync(skillB, { recursive: true });
+      fs.mkdirSync(userSkill, { recursive: true });
+      fs.writeFileSync(path.join(skillA, 'SKILL.md'), '# A');
+      fs.writeFileSync(path.join(skillB, 'SKILL.md'), '# B');
+      fs.writeFileSync(path.join(userSkill, 'SKILL.md'), '# User');
+      fs.symlinkSync(skillA, path.join(srcSkills, 'skill-a'), 'dir');
+      fs.symlinkSync(skillB, path.join(srcSkills, 'skill-b'), 'dir');
+
+      const first = syncAgyWorkspaceSkills({
+        workspaceDir: wsDir,
+        claudeConfigDir: cfgDir,
+      });
+      expect(first).toEqual({ synced: 2, pruned: 0 });
+      expect(
+        fs.lstatSync(path.join(wsDir, '.agents', 'skills', 'skill-a')).isSymbolicLink(),
+      ).toBe(false);
+      expect(fs.existsSync(path.join(wsDir, '.agents', 'skills', 'skill-a', 'SKILL.md'))).toBe(true);
+      expect(fs.existsSync(path.join(wsDir, '.agents', 'skills', 'user-own', 'SKILL.md'))).toBe(true);
+
+      // Remove skill-b from HappyClaw effective skills -> should prune managed copy only
+      fs.unlinkSync(path.join(srcSkills, 'skill-b'));
+      const second = syncAgyWorkspaceSkills({
+        workspaceDir: wsDir,
+        claudeConfigDir: cfgDir,
+      });
+      expect(second).toEqual({ synced: 1, pruned: 1 });
+      expect(fs.existsSync(path.join(wsDir, '.agents', 'skills', 'skill-b'))).toBe(false);
+      expect(fs.existsSync(path.join(wsDir, '.agents', 'skills', 'user-own', 'SKILL.md'))).toBe(true);
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }

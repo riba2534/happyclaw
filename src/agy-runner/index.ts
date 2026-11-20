@@ -16,6 +16,10 @@ import path from 'node:path';
 import readline from 'node:readline';
 
 import { buildFreshSessionInstructions } from './instructions.js';
+import {
+  ensureAgyWorkspaceMcpConfig,
+  syncAgyWorkspaceSkills,
+} from './mcp-config.js';
 import { DEFAULT_AGY_MODEL, resolveAgyBinary } from './models.js';
 import {
   AgyStreamTranslator,
@@ -31,6 +35,7 @@ interface AgyRunnerInput {
   launchEffort?: string | null;
   queryRunId?: string;
   turnId?: string;
+  currentSourceJid?: string;
   groupFolder: string;
   chatJid: string;
   interactionMode?: 'assistant' | 'proactive' | string;
@@ -47,6 +52,7 @@ interface QueuedTurn {
   queryRunId?: string;
   turnId?: string;
   inputTurnId?: string;
+  sourceJid?: string;
   ipcReceipts?: unknown[];
 }
 
@@ -54,9 +60,56 @@ const WORKSPACE_IPC = process.env.HAPPYCLAW_WORKSPACE_IPC || '/workspace/ipc';
 const IPC_INPUT_DIR = path.join(WORKSPACE_IPC, 'input');
 const IPC_MESSAGES_DIR = path.join(WORKSPACE_IPC, 'messages');
 const IPC_MESSAGE_RESULTS_DIR = path.join(WORKSPACE_IPC, 'message-results');
+const TURN_CONTEXT_FILE = path.join(WORKSPACE_IPC, '.agy-turn-context.json');
+const FINAL_SENT_FILE = path.join(WORKSPACE_IPC, '.agy-final-sent.json');
 const IPC_INPUT_CLOSE_SENTINEL = path.join(IPC_INPUT_DIR, '_close');
 const IPC_INPUT_DRAIN_SENTINEL = path.join(IPC_INPUT_DIR, '_drain');
 const IPC_POLL_MS = 500;
+
+function writeTurnContextFile(
+  input: AgyRunnerInput,
+  inputTurnId?: string,
+  sourceJid?: string,
+): void {
+  try {
+    const tmp = `${TURN_CONTEXT_FILE}.tmp`;
+    fs.writeFileSync(
+      tmp,
+      JSON.stringify({
+        chatJid: input.chatJid,
+        groupFolder: input.groupFolder,
+        interactionMode:
+          input.interactionMode === 'proactive' ? 'proactive' : 'assistant',
+        ...(inputTurnId ? { inputTurnId } : {}),
+        ...(sourceJid ? { sourceJid } : {}),
+      }),
+    );
+    fs.renameSync(tmp, TURN_CONTEXT_FILE);
+  } catch {
+    // best effort
+  }
+}
+
+function clearFinalSentMarker(): void {
+  try {
+    if (fs.existsSync(FINAL_SENT_FILE)) fs.unlinkSync(FINAL_SENT_FILE);
+  } catch {
+    // ignore
+  }
+}
+
+function wasProactiveFinalAlreadySent(inputTurnId?: string): boolean {
+  try {
+    if (!fs.existsSync(FINAL_SENT_FILE)) return false;
+    const raw = JSON.parse(fs.readFileSync(FINAL_SENT_FILE, 'utf-8')) as {
+      inputTurnId?: string | null;
+    };
+    if (!inputTurnId) return true;
+    return raw.inputTurnId === inputTurnId;
+  } catch {
+    return false;
+  }
+}
 
 async function publishProactiveFinalMessage(
   input: AgyRunnerInput,
@@ -88,7 +141,10 @@ async function publishProactiveFinalMessage(
 
     // Wait briefly for the host IPC watcher to acknowledge delivery so the
     // terminal ContainerOutput lands after nativeDelivered is recorded.
-    const resultFile = path.join(IPC_MESSAGE_RESULTS_DIR, `${requestId}.json`);
+    const resultFile = path.join(
+      IPC_MESSAGE_RESULTS_DIR,
+      `send_message_result_${requestId}.json`,
+    );
     const deadline = Date.now() + 5_000;
     while (Date.now() < deadline) {
       if (fs.existsSync(resultFile)) {
@@ -99,7 +155,7 @@ async function publishProactiveFinalMessage(
         }
         break;
       }
-      await new Promise((r) => setTimeout(r, 50));
+      await new Promise((r) => setTimeout(r, 25));
     }
   } catch (err) {
     log(
@@ -236,6 +292,8 @@ function drainIpcMessages(): QueuedTurn[] {
             queryRunId:
               typeof data.queryRunId === 'string' ? data.queryRunId : undefined,
             inputTurnId: deliveryId,
+            sourceJid:
+              typeof data.sourceJid === 'string' ? data.sourceJid : undefined,
             ...(receipt ? { ipcReceipts: [receipt] } : {}),
           });
         }
@@ -375,12 +433,52 @@ async function main(): Promise<void> {
     args.push('--conversation', input.sessionId);
   }
 
+  // Register HappyClaw's stdio MCP bridge in `<workspace>/.agents/mcp_config.json`
+  const mcpServerEntrypoint = path.join(
+    path.dirname(new URL(import.meta.url).pathname),
+    'mcp-server.js',
+  );
+  if (fs.existsSync(mcpServerEntrypoint)) {
+    try {
+      ensureAgyWorkspaceMcpConfig({
+        workspaceDir: process.cwd(),
+        nodeBinary: process.execPath,
+        mcpServerEntrypoint,
+      });
+    } catch (err) {
+      log(
+        `Failed to register HappyClaw MCP config: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
+  // Mirror HappyClaw's effective skills into `<workspace>/.agents/skills/`
+  try {
+    const { synced, pruned } = syncAgyWorkspaceSkills({
+      workspaceDir: process.cwd(),
+      claudeConfigDir: process.env.CLAUDE_CONFIG_DIR,
+    });
+    if (synced > 0 || pruned > 0) {
+      log(`Synced workspace skills for agy: synced=${synced}, pruned=${pruned}`);
+    }
+  } catch (err) {
+    log(
+      `Failed to sync workspace skills for agy: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+
   log(`Spawning ${agyBin} ${args.join(' ')}`);
 
   const child: ChildProcess = spawn(agyBin, args, {
     stdio: ['pipe', 'pipe', 'pipe'],
     cwd: process.cwd(),
-    env: process.env,
+    env: {
+      ...process.env,
+      HAPPYCLAW_CHAT_JID: input.chatJid,
+      HAPPYCLAW_GROUP_FOLDER: input.groupFolder,
+      HAPPYCLAW_INTERACTION_MODE:
+        input.interactionMode === 'proactive' ? 'proactive' : 'assistant',
+    },
   });
 
   const translator = new AgyStreamTranslator(input.sessionId, model);
@@ -490,6 +588,7 @@ async function main(): Promise<void> {
     queryRunId: input.queryRunId,
     turnId: input.turnId,
     inputTurnId: input.turnId,
+    sourceJid: input.currentSourceJid,
   };
   let isFirstTurn = true;
 
@@ -498,6 +597,8 @@ async function main(): Promise<void> {
     lastTurnStatus = null;
     pendingTerminalFrame = null;
     activeInputTurnId = currentTurn.inputTurnId;
+    clearFinalSentMarker();
+    writeTurnContextFile(input, activeInputTurnId, currentTurn.sourceJid);
     translator.setTurnCorrelation({
       queryRunId: currentTurn.queryRunId,
       turnId: currentTurn.turnId,
@@ -542,7 +643,8 @@ async function main(): Promise<void> {
       if (
         terminalFrame.status === 'success' &&
         input.interactionMode === 'proactive' &&
-        terminalFrame.result
+        terminalFrame.result &&
+        !wasProactiveFinalAlreadySent(activeInputTurnId)
       ) {
         await publishProactiveFinalMessage(
           input,
