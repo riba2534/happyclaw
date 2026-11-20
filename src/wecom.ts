@@ -999,17 +999,24 @@ export function createWeComConnection(
     };
   }
 
+  function stripLeadingGroupMentions(text: string): string {
+    return text.replace(/^(?:@\S+[\s ]+)+/u, '').trim();
+  }
+
   function extractInboundAdmissionText(body: BaseMessage): string {
+    const isGroup = body.chattype === 'group';
+    const normalize = (value: string) =>
+      isGroup ? stripLeadingGroupMentions(value) : value.trim();
     const msgtype = body.msgtype;
     if (msgtype === 'text') {
       return typeof body.text?.content === 'string'
-        ? body.text.content.trim()
+        ? normalize(body.text.content)
         : '';
     }
     if (msgtype === 'voice') {
       const transcript =
         typeof body.voice?.content === 'string'
-          ? body.voice.content.trim()
+          ? normalize(body.voice.content)
           : '';
       return transcript || '[语音消息]';
     }
@@ -1021,7 +1028,7 @@ export function createWeComConnection(
         .filter((item: { msgtype?: string }) => item?.msgtype === 'text')
         .map((item: { text?: { content?: string } }) =>
           typeof item.text?.content === 'string'
-            ? item.text.content.trim()
+            ? normalize(item.text.content)
             : '',
         )
         .filter(Boolean);
@@ -1374,7 +1381,8 @@ export function createWeComConnection(
       const createdAt = body.create_time ? body.create_time * 1000 : 0;
       if (
         opts?.ignoreMessagesBefore &&
-        (!createdAt || createdAt < opts.ignoreMessagesBefore)
+        createdAt > 0 &&
+        createdAt < opts.ignoreMessagesBefore
       ) {
         return;
       }

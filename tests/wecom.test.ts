@@ -427,6 +427,23 @@ describe('WeCom connection security and delivery', () => {
       expect.stringContaining('配对成功'),
       true,
     );
+
+    connected.client.emit(
+      'message.text',
+      frame({
+        reqId: 'group-pair',
+        chattype: 'group',
+        chatId: 'group-pair-1',
+        content: '@影音助手 /pair 123456',
+      }),
+    );
+    await vi.waitFor(() =>
+      expect(connected.opts.onPairAttempt).toHaveBeenCalledWith(
+        'wecom:group:group-pair-1',
+        'user-1',
+        '123456',
+      ),
+    );
   });
 
   test('applies stale filtering, bounded msgid dedup, and in-flight exclusion', async () => {
@@ -444,6 +461,11 @@ describe('WeCom connection security and delivery', () => {
     connected.client.emit('message.text', duplicate);
     connected.client.emit('message.text', duplicate);
     await vi.waitFor(() => expect(storeMessageDirect).toHaveBeenCalledTimes(1));
+
+    const missingCreateTime = frame({ reqId: 'no-ts', msgId: 'no-ts' });
+    delete missingCreateTime.body.create_time;
+    connected.client.emit('message.text', missingCreateTime);
+    await vi.waitFor(() => expect(storeMessageDirect).toHaveBeenCalledTimes(2));
   });
 
   test('retries a failed provider event without repeating completed side effects', async () => {
