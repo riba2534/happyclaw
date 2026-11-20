@@ -58,16 +58,16 @@ src/container-runner.ts (runHostAgent & runContainerAgent)
 
 ### Module layout (`src/agy-runner/`)
 
-| File | Responsibility |
-| --- | --- |
-| `src/agy-runner/index.ts` | Standalone Runner entrypoint (`dist/agy-runner/index.js`): reads `ContainerInput`, registers MCP & Skills, spawns persistent `agy` process, bridges IPC follow-up turns (`_close`, `_drain`), handles Proactive fallback delivery |
-| `src/agy-runner/protocol.ts` | Stateful NDJSON translator (`AgyStreamTranslator`) from `agy --output-format stream-json` to HappyClaw `ContainerOutput` / `StreamEvent` (`init`, `text_delta`, `tool_use_*`, `tool_result`, `task_start`, `usage`, `queryIdle`, `ipcReceipts`) |
-| `src/agy-runner/models.ts` | `agy` binary resolution (`resolveAgyBinary`) and `agy models` parser (`discoverAgyModels`, `parseAgyModelsOutput`) with inferred context windows and efforts |
-| `src/agy-runner/oauth.ts` | Isolated per-provider OAuth lifecycle via official `agy acp --login` (`data/config/agy-profiles/<profileId>`, mode `0700`) |
-| `src/agy-runner/usage.ts` | 5-hour and weekly quota query & parser (`agy -p "/usage"`, supporting both non-TTY TSV/ISO-8601 and TTY space-aligned output, 60s cache) |
-| `src/agy-runner/instructions.ts` | Deduplicated cold-start instruction loader merging `agentProfile.identityPrompt`, session `CLAUDE_CONFIG_DIR/CLAUDE.md`, and workspace `CLAUDE.md` |
-| `src/agy-runner/mcp-server.ts` | Zero-dependency JSON-RPC 2.0 stdio MCP server exposing HappyClaw's host IPC tools (`send_message`, `send_image`, `send_file`, `get_channel_context`, `automation_*`) |
-| `src/agy-runner/mcp-config.ts` | Workspace `.agents/mcp_config.json` merger and `.agents/skills/` real-directory synchronizer (mtime-cached via `.happyclaw-managed.json`) |
+| File                             | Responsibility                                                                                                                                                                                                                                  |
+| -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/agy-runner/index.ts`        | Standalone Runner entrypoint (`dist/agy-runner/index.js`): reads `ContainerInput`, registers MCP & Skills, spawns persistent `agy` process, bridges IPC follow-up turns (`_close`, `_drain`), handles Proactive fallback delivery               |
+| `src/agy-runner/protocol.ts`     | Stateful NDJSON translator (`AgyStreamTranslator`) from `agy --output-format stream-json` to HappyClaw `ContainerOutput` / `StreamEvent` (`init`, `text_delta`, `tool_use_*`, `tool_result`, `task_start`, `usage`, `queryIdle`, `ipcReceipts`) |
+| `src/agy-runner/models.ts`       | `agy` binary resolution (`resolveAgyBinary`) and `agy models` parser (`discoverAgyModels`, `parseAgyModelsOutput`) with inferred context windows and efforts                                                                                    |
+| `src/agy-runner/oauth.ts`        | Isolated per-provider OAuth lifecycle via official `agy acp --login` (`data/config/agy-profiles/<profileId>`, mode `0700`)                                                                                                                      |
+| `src/agy-runner/usage.ts`        | 5-hour and weekly quota query & parser (`agy -p "/usage"`, supporting both non-TTY TSV/ISO-8601 and TTY space-aligned output, 60s cache)                                                                                                        |
+| `src/agy-runner/instructions.ts` | Deduplicated cold-start instruction loader merging `agentProfile.identityPrompt`, session `CLAUDE_CONFIG_DIR/CLAUDE.md`, and workspace `CLAUDE.md`                                                                                              |
+| `src/agy-runner/mcp-server.ts`   | Zero-dependency JSON-RPC 2.0 stdio MCP server exposing HappyClaw's host IPC tools (`send_message`, `send_image`, `send_file`, `get_channel_context`, `automation_*`)                                                                            |
+| `src/agy-runner/mcp-config.ts`   | Workspace `.agents/mcp_config.json` merger and `.agents/skills/` real-directory synchronizer (mtime-cached via `.happyclaw-managed.json`)                                                                                                       |
 
 ## Authentication, isolation, and provider model
 
@@ -166,19 +166,19 @@ Each turn (initial `ContainerInput.prompt`, plus warm follow-up turns polled
 from `HAPPYCLAW_WORKSPACE_IPC/input/*.json`) is written as one NDJSON line:
 
 ```json
-{"event":"user","message":{"content":"..."}}
+{ "event": "user", "message": { "content": "..." } }
 ```
 
 ### Output (`agy` stdout -> HappyClaw `ContainerOutput` / `StreamEvent`)
 
-| `agy` NDJSON event | Key payload fields | HappyClaw output (`StreamEvent` / `ContainerOutput`) |
-| --- | --- | --- |
-| `init` | `conversation_id`, `init.model`, `init.tools` | `streamEvent: { eventType: 'init' }` + `newSessionId = conversation_id` |
-| `step_update` (`agent_response`) | `text_delta` | `streamEvent: { eventType: 'text_delta', text }` |
-| `step_update` (`tool`, `ACTIVE`) | `tool_name`, `tool_info.parameters` | `streamEvent: { eventType: 'tool_use_start', toolName, toolUseId, toolInputSummary, toolInput }` |
-| `step_update` (`tool`, `DONE`/`ERROR`) | `tool_info.output` / `tool_info.error`, `duration_seconds` | `streamEvent: { eventType: 'tool_use_end' }` + `streamEvent: { eventType: 'tool_result' }` |
-| `step_update` (`subagent_info`) | `subagents[]` | `streamEvent: { eventType: 'task_start' }` |
-| `result` | `status`, `response`, `error`, `conversation_id`, `usage`, `denied_actions` | `streamEvent: { eventType: 'usage', ... }` + turn-completing `ContainerOutput` (`status: 'success' \| 'error'`, `result`, `newSessionId`, `inputTurnCompleted: true`, `queryIdle: true`, `ipcReceipts`) |
+| `agy` NDJSON event                     | Key payload fields                                                          | HappyClaw output (`StreamEvent` / `ContainerOutput`)                                                                                                                                                    |
+| -------------------------------------- | --------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `init`                                 | `conversation_id`, `init.model`, `init.tools`                               | `streamEvent: { eventType: 'init' }` + `newSessionId = conversation_id`                                                                                                                                 |
+| `step_update` (`agent_response`)       | `text_delta`                                                                | `streamEvent: { eventType: 'text_delta', text }`                                                                                                                                                        |
+| `step_update` (`tool`, `ACTIVE`)       | `tool_name`, `tool_info.parameters`                                         | `streamEvent: { eventType: 'tool_use_start', toolName, toolUseId, toolInputSummary, toolInput }`                                                                                                        |
+| `step_update` (`tool`, `DONE`/`ERROR`) | `tool_info.output` / `tool_info.error`, `duration_seconds`                  | `streamEvent: { eventType: 'tool_use_end' }` + `streamEvent: { eventType: 'tool_result' }`                                                                                                              |
+| `step_update` (`subagent_info`)        | `subagents[]`                                                               | `streamEvent: { eventType: 'task_start' }`                                                                                                                                                              |
+| `result`                               | `status`, `response`, `error`, `conversation_id`, `usage`, `denied_actions` | `streamEvent: { eventType: 'usage', ... }` + turn-completing `ContainerOutput` (`status: 'success' \| 'error'`, `result`, `newSessionId`, `inputTurnCompleted: true`, `queryIdle: true`, `ipcReceipts`) |
 
 ## Quota usage & UI integration
 
@@ -196,16 +196,16 @@ from `HAPPYCLAW_WORKSPACE_IPC/input/*.json`) is written as one NDJSON line:
 
 ## Trade-offs and known limitations
 
-| Area | Current design | Rationale & notes |
-| --- | --- | --- |
-| **Execution mode** | Universal: Host mode, Docker container mode, and multi-user group chats | Docker mode bind-mounts the host `agy` binary, `dist/`, and isolated `.gemini` dir without requiring an image rebuild |
-| **Authentication & isolation** | Per-provider isolated OAuth via official `agy acp --login` (`data/config/agy-profiles/<profileId>`) | Eliminates dependency on host `~/.gemini`; supports multiple independent AGY accounts |
-| **Permissions** | Pass `--dangerously-skip-permissions` (mirrors `cc-runner`'s `bypassPermissions`) | On Linux hosts/containers without a terminal sandbox, `agy --mode auto` falls back to `default` and soft-denies headless shell commands |
-| **Thinking stream** | Account `thinking_tokens` in `usage`; no live thinking text delta | `agy --output-format stream-json` currently reports `thinking_tokens` without emitting raw thinking text deltas |
-| **Multimodal inputs** | Materialize inline base64 images under `HAPPYCLAW_WORKSPACE_IPC/agy-images/` and pass paths in text prompt | `agy --input-format stream-json` accepts `text` content blocks only; `agy` reads materialized images via `view_file` |
-| **HappyClaw built-in MCP tools** | Zero-dependency stdio MCP server (`dist/agy-runner/mcp-server.js`) in `<workspace>/.agents/mcp_config.json` | Exposes `send_message`, `send_image`, `send_file`, `get_channel_context`, `automation_*`, and HMAC-signed `workspace_memory_*` over native host IPC; inherits per-runner env so concurrent agents share one static config safely |
-| **HappyClaw Skills** | Materialized as real directories from `<CLAUDE_CONFIG_DIR>/skills/` into `<workspace>/.agents/skills/` (mtime-cached) | `agy` skips symlinked directories when scanning `.agents/skills/`; real copies cached via `.happyclaw-managed.json` keep all HappyClaw skills visible while preserving unmanaged user skills |
-| **System prompt / identity** | Prepend `agentProfile.identityPrompt` + deduplicated session & workspace `CLAUDE.md` on cold start | `agy` does not auto-read `CLAUDE.md` or accept an inline `--system-prompt` flag |
+| Area                             | Current design                                                                                                        | Rationale & notes                                                                                                                                                                                                                |
+| -------------------------------- | --------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Execution mode**               | Universal: Host mode, Docker container mode, and multi-user group chats                                               | Docker mode bind-mounts the host `agy` binary, `dist/`, and isolated `.gemini` dir without requiring an image rebuild                                                                                                            |
+| **Authentication & isolation**   | Per-provider isolated OAuth via official `agy acp --login` (`data/config/agy-profiles/<profileId>`)                   | Eliminates dependency on host `~/.gemini`; supports multiple independent AGY accounts                                                                                                                                            |
+| **Permissions**                  | Pass `--dangerously-skip-permissions` (mirrors `cc-runner`'s `bypassPermissions`)                                     | On Linux hosts/containers without a terminal sandbox, `agy --mode auto` falls back to `default` and soft-denies headless shell commands                                                                                          |
+| **Thinking stream**              | Account `thinking_tokens` in `usage`; no live thinking text delta                                                     | `agy --output-format stream-json` currently reports `thinking_tokens` without emitting raw thinking text deltas                                                                                                                  |
+| **Multimodal inputs**            | Materialize inline base64 images under `HAPPYCLAW_WORKSPACE_IPC/agy-images/` and pass paths in text prompt            | `agy --input-format stream-json` accepts `text` content blocks only; `agy` reads materialized images via `view_file`                                                                                                             |
+| **HappyClaw built-in MCP tools** | Zero-dependency stdio MCP server (`dist/agy-runner/mcp-server.js`) in `<workspace>/.agents/mcp_config.json`           | Exposes `send_message`, `send_image`, `send_file`, `get_channel_context`, `automation_*`, and HMAC-signed `workspace_memory_*` over native host IPC; inherits per-runner env so concurrent agents share one static config safely |
+| **HappyClaw Skills**             | Materialized as real directories from `<CLAUDE_CONFIG_DIR>/skills/` into `<workspace>/.agents/skills/` (mtime-cached) | `agy` skips symlinked directories when scanning `.agents/skills/`; real copies cached via `.happyclaw-managed.json` keep all HappyClaw skills visible while preserving unmanaged user skills                                     |
+| **System prompt / identity**     | Prepend `agentProfile.identityPrompt` + deduplicated session & workspace `CLAUDE.md` on cold start                    | `agy` does not auto-read `CLAUDE.md` or accept an inline `--system-prompt` flag                                                                                                                                                  |
 
 ## Delivery status & optional future work
 
@@ -215,8 +215,10 @@ from `HAPPYCLAW_WORKSPACE_IPC/input/*.json`) is written as one NDJSON line:
   images/files, automations) and real-directory workspace Skills sync.
 - **Phase 3 (Done)**: Universal Docker container & group chat support, isolated
   per-provider OAuth login (`agy acp --login`), connectivity testing, `_drain`
-  idle handling, Antigravity/Gemini brand icons, Runner badges, and 5-hour /
-  weekly quota `UsageBars`.
+  idle handling, mid-turn `_interrupt` (stop/steer), `workspace_memory_*` MCP
+  tools, Antigravity/Gemini brand icons, Runner badges, 5-hour / weekly quota
+  `UsageBars`, and hermetic CI/integration test coverage
+  (`tests/agy-runner.test.ts`, `tests/agy-runner.integration.test.ts`).
 - **Optional future enhancements**:
   - Additional channel-specific HappyClaw MCP tools (e.g. `feishu_*`, `discord_*`,
     delegation) in `mcp-server.ts`.

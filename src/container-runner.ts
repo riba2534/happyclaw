@@ -39,10 +39,7 @@ export const SINGLE_USER_HOST_CONTAINER_REFUSAL =
   '单人宿主机模式不运行 Docker 工作区；请把工作区改为宿主机模式或切回多人模式。';
 export const AGY_RUNNER_CONTAINER_REFUSAL =
   'AGY Runner 需要宿主机已安装 agy 二进制并完成编译（npm run build）。';
-import {
-  DEFAULT_AGY_MODEL,
-  resolveAgyBinary,
-} from './agy-runner/models.js';
+import { DEFAULT_AGY_MODEL, resolveAgyBinary } from './agy-runner/models.js';
 import { resolveAgyProfileHomeDir } from './agy-runner/oauth.js';
 import { logger } from './logger.js';
 import {
@@ -3570,7 +3567,11 @@ export async function runContainerAgent(
       const agyGeminiDir = path.join(agyHome, '.gemini');
       fs.mkdirSync(agyGeminiDir, { recursive: true });
       mounts.push(
-        { hostPath: agyBin, containerPath: '/usr/local/bin/agy', readonly: true },
+        {
+          hostPath: agyBin,
+          containerPath: '/usr/local/bin/agy',
+          readonly: true,
+        },
         {
           hostPath: hostDistDir,
           containerPath: '/opt/happyclaw-host-dist',
@@ -4856,7 +4857,12 @@ export async function runHostAgent(
     let runnerEntrypoint: string;
 
     if (isAgyRunner) {
-      const agyRunnerDist = path.join(projectRoot, 'dist', 'agy-runner', 'index.js');
+      const agyRunnerDist = path.join(
+        projectRoot,
+        'dist',
+        'agy-runner',
+        'index.js',
+      );
       if (!fs.existsSync(agyRunnerDist)) {
         logger.error(
           { group: group.name, agyRunnerDist },
@@ -4887,7 +4893,11 @@ export async function runHostAgent(
         delete hostEnv['HAPPYCLAW_AGY_HOME'];
       }
     } else {
-      const agentRunnerRoot = path.join(projectRoot, 'container', 'agent-runner');
+      const agentRunnerRoot = path.join(
+        projectRoot,
+        'container',
+        'agent-runner',
+      );
       const agentRunnerNodeModules = path.join(agentRunnerRoot, 'node_modules');
       const agentRunnerDist = path.join(agentRunnerRoot, 'dist', 'index.js');
       const requiredDeps = ['@anthropic-ai/claude-agent-sdk'];

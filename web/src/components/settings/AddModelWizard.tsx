@@ -515,7 +515,9 @@ export function AddModelWizard({
             );
           }
         })
-        .catch((err) => settle(null, getErrorMessage(err, '检测 AGY CLI 失败')));
+        .catch((err) =>
+          settle(null, getErrorMessage(err, '检测 AGY CLI 失败')),
+        );
       return;
     }
     testConnection(body)

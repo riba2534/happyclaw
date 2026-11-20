@@ -153,7 +153,10 @@ async function pollIpcResult(
   timeoutMs = 30_000,
   resultDir: string = dir,
 ): Promise<Record<string, unknown>> {
-  const resultPath = path.join(resultDir, `${resultPrefix}_${data.requestId}.json`);
+  const resultPath = path.join(
+    resultDir,
+    `${resultPrefix}_${data.requestId}.json`,
+  );
   fs.mkdirSync(resultDir, { recursive: true });
   writeIpcFile(dir, data);
 
@@ -198,7 +201,11 @@ export const HAPPYCLAW_MCP_TOOLS: McpToolDef[] = [
     name: 'get_channel_context',
     description:
       'Return the current HappyClaw conversation context (chatJid, groupFolder, interactionMode, sourceJid).',
-    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+    inputSchema: {
+      type: 'object',
+      properties: {},
+      additionalProperties: false,
+    },
   },
   {
     name: 'send_message',
@@ -226,7 +233,8 @@ export const HAPPYCLAW_MCP_TOOLS: McpToolDef[] = [
       properties: {
         file_path: {
           type: 'string',
-          description: 'Path to the image file (relative to workspace or absolute inside workspace)',
+          description:
+            'Path to the image file (relative to workspace or absolute inside workspace)',
         },
         caption: { type: 'string', description: 'Optional caption text' },
       },
@@ -242,7 +250,8 @@ export const HAPPYCLAW_MCP_TOOLS: McpToolDef[] = [
       properties: {
         filePath: {
           type: 'string',
-          description: 'File path relative to workspace (or absolute inside workspace)',
+          description:
+            'File path relative to workspace (or absolute inside workspace)',
         },
         fileName: { type: 'string', description: 'Display file name' },
       },
@@ -253,7 +262,11 @@ export const HAPPYCLAW_MCP_TOOLS: McpToolDef[] = [
     name: 'automation_list',
     description:
       'List all scheduled automations in the current HappyClaw workspace (id, revision, status, schedule, next run).',
-    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+    inputSchema: {
+      type: 'object',
+      properties: {},
+      additionalProperties: false,
+    },
   },
   {
     name: 'automation_create',
@@ -265,7 +278,8 @@ export const HAPPYCLAW_MCP_TOOLS: McpToolDef[] = [
         name: { type: 'string', description: 'Short display name' },
         prompt: {
           type: 'string',
-          description: 'Prompt executed on each run (required when execution is agent)',
+          description:
+            'Prompt executed on each run (required when execution is agent)',
         },
         schedule: {
           type: 'object',
@@ -288,7 +302,8 @@ export const HAPPYCLAW_MCP_TOOLS: McpToolDef[] = [
   },
   {
     name: 'automation_update',
-    description: 'Update an existing HappyClaw automation by id and expectedRevision.',
+    description:
+      'Update an existing HappyClaw automation by id and expectedRevision.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -368,7 +383,10 @@ export const HAPPYCLAW_MCP_TOOLS: McpToolDef[] = [
     inputSchema: {
       type: 'object',
       properties: {
-        query: { type: 'string', description: 'What to recall from this workspace' },
+        query: {
+          type: 'string',
+          description: 'What to recall from this workspace',
+        },
         kind: {
           type: 'string',
           enum: ['fact', 'decision', 'lesson', 'open_loop'],
@@ -386,7 +404,10 @@ export const HAPPYCLAW_MCP_TOOLS: McpToolDef[] = [
     inputSchema: {
       type: 'object',
       properties: {
-        item_id: { type: 'string', description: 'Opaque workspace memory item ID' },
+        item_id: {
+          type: 'string',
+          description: 'Opaque workspace memory item ID',
+        },
       },
       required: ['item_id'],
     },
@@ -467,7 +488,10 @@ function toolText(text: string, isError = false) {
 export async function handleToolCall(
   name: string,
   args: Record<string, unknown>,
-): Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }> {
+): Promise<{
+  content: Array<{ type: string; text: string }>;
+  isError?: boolean;
+}> {
   const ctx = readTurnContext();
 
   if (name === 'get_channel_context') {
@@ -675,7 +699,8 @@ export async function handleToolCall(
       payload = { itemId };
     } else if (memOp === 'create') {
       const title = typeof args.title === 'string' ? args.title.trim() : '';
-      const content = typeof args.content === 'string' ? args.content.trim() : '';
+      const content =
+        typeof args.content === 'string' ? args.content.trim() : '';
       if (!title || !content || typeof args.kind !== 'string') {
         return toolText('Error: kind, title, and content are required.', true);
       }
@@ -704,7 +729,8 @@ export async function handleToolCall(
           ? { expiresAt: args.expires_at }
           : {}),
         idempotencyKey:
-          typeof args.idempotency_key === 'string' && args.idempotency_key.trim()
+          typeof args.idempotency_key === 'string' &&
+          args.idempotency_key.trim()
             ? args.idempotency_key.trim()
             : crypto
                 .createHash('sha256')
@@ -729,7 +755,9 @@ export async function handleToolCall(
         expectedRevision,
         patch: {
           ...(typeof args.kind === 'string' ? { kind: args.kind } : {}),
-          ...(typeof args.title === 'string' ? { title: args.title.trim() } : {}),
+          ...(typeof args.title === 'string'
+            ? { title: args.title.trim() }
+            : {}),
           ...(typeof args.content === 'string'
             ? { content: args.content.trim() }
             : {}),
@@ -753,7 +781,8 @@ export async function handleToolCall(
             : {}),
         },
         idempotencyKey:
-          typeof args.idempotency_key === 'string' && args.idempotency_key.trim()
+          typeof args.idempotency_key === 'string' &&
+          args.idempotency_key.trim()
             ? args.idempotency_key.trim()
             : crypto
                 .createHash('sha256')
@@ -779,7 +808,8 @@ export async function handleToolCall(
         itemId,
         expectedRevision,
         idempotencyKey:
-          typeof args.idempotency_key === 'string' && args.idempotency_key.trim()
+          typeof args.idempotency_key === 'string' &&
+          args.idempotency_key.trim()
             ? args.idempotency_key.trim()
             : crypto
                 .createHash('sha256')

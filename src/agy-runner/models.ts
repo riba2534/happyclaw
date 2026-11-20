@@ -18,9 +18,7 @@ export const DEFAULT_AGY_MODEL = 'gemini-4-neon-medium';
  * standard user install locations so process managers (pm2/launchd) work even
  * when their PATH omits `~/.gemini/antigravity-cli/bin`.
  */
-export function resolveAgyBinary(
-  env: NodeJS.ProcessEnv = process.env,
-): string {
+export function resolveAgyBinary(env: NodeJS.ProcessEnv = process.env): string {
   const override = env.HAPPYCLAW_AGY_BIN?.trim();
   if (override) return override;
 
@@ -78,9 +76,7 @@ export function parseAgyModelsOutput(raw: string): ProviderModelEntry[] {
   for (const rawLine of raw.split(/\r?\n/)) {
     // Strip ANSI escape codes and keep the last carriage-return frame (spinner)
     const lastFrame = rawLine.split('\r').pop() ?? '';
-    const cleaned = lastFrame
-      .replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '')
-      .trim();
+    const cleaned = lastFrame.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '').trim();
     if (!cleaned) continue;
 
     const match = cleaned.match(AGY_MODEL_LINE_RE);

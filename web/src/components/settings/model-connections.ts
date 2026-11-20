@@ -236,7 +236,9 @@ export function testConnection(
 }
 
 export function discoverModels(
-  body: { providerId: string } | (ConnectionDraftBody & { providerId?: string }),
+  body:
+    | { providerId: string }
+    | (ConnectionDraftBody & { providerId?: string }),
 ): Promise<DiscoverModelsResponse> {
   if ('runner' in body && body.runner === 'agy') {
     const query = body.providerId

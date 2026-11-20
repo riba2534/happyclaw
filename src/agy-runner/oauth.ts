@@ -244,7 +244,8 @@ export async function completeAgyOAuthLogin(
           const detail = entry.outputTail.trim().slice(-500);
           reject(
             new Error(
-              detail || `Antigravity 授权失败（exit code ${code ?? 'unknown'}）`,
+              detail ||
+                `Antigravity 授权失败（exit code ${code ?? 'unknown'}）`,
             ),
           );
         }

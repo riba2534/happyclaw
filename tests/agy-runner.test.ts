@@ -66,7 +66,10 @@ describe('parseAgyModelsOutput', () => {
 
 describe('AgyStreamTranslator', () => {
   it('translates init, text_delta, tool lifecycle, usage, and result', () => {
-    const translator = new AgyStreamTranslator(undefined, 'gemini-4-neon-medium');
+    const translator = new AgyStreamTranslator(
+      undefined,
+      'gemini-4-neon-medium',
+    );
     translator.setTurnCorrelation({
       queryRunId: 'q-1',
       turnId: 't-1',
@@ -77,7 +80,11 @@ describe('AgyStreamTranslator', () => {
       JSON.stringify({
         event: 'init',
         conversation_id: 'conv-123',
-        init: { model: 'gemini-4-neon-medium', cwd: '/tmp/ws', tools: ['run_command'] },
+        init: {
+          model: 'gemini-4-neon-medium',
+          cwd: '/tmp/ws',
+          tools: ['run_command'],
+        },
       }),
     );
     expect(initFrames).toHaveLength(1);
@@ -335,10 +342,20 @@ describe('ensureAgyWorkspaceMcpConfig & HAPPYCLAW_MCP_TOOLS', () => {
       });
       expect(first).toEqual({ synced: 2, pruned: 0 });
       expect(
-        fs.lstatSync(path.join(wsDir, '.agents', 'skills', 'skill-a')).isSymbolicLink(),
+        fs
+          .lstatSync(path.join(wsDir, '.agents', 'skills', 'skill-a'))
+          .isSymbolicLink(),
       ).toBe(false);
-      expect(fs.existsSync(path.join(wsDir, '.agents', 'skills', 'skill-a', 'SKILL.md'))).toBe(true);
-      expect(fs.existsSync(path.join(wsDir, '.agents', 'skills', 'user-own', 'SKILL.md'))).toBe(true);
+      expect(
+        fs.existsSync(
+          path.join(wsDir, '.agents', 'skills', 'skill-a', 'SKILL.md'),
+        ),
+      ).toBe(true);
+      expect(
+        fs.existsSync(
+          path.join(wsDir, '.agents', 'skills', 'user-own', 'SKILL.md'),
+        ),
+      ).toBe(true);
 
       // Remove skill-b from HappyClaw effective skills -> should prune managed copy only
       fs.unlinkSync(path.join(srcSkills, 'skill-b'));
@@ -347,8 +364,14 @@ describe('ensureAgyWorkspaceMcpConfig & HAPPYCLAW_MCP_TOOLS', () => {
         claudeConfigDir: cfgDir,
       });
       expect(second).toEqual({ synced: 1, pruned: 1 });
-      expect(fs.existsSync(path.join(wsDir, '.agents', 'skills', 'skill-b'))).toBe(false);
-      expect(fs.existsSync(path.join(wsDir, '.agents', 'skills', 'user-own', 'SKILL.md'))).toBe(true);
+      expect(
+        fs.existsSync(path.join(wsDir, '.agents', 'skills', 'skill-b')),
+      ).toBe(false);
+      expect(
+        fs.existsSync(
+          path.join(wsDir, '.agents', 'skills', 'user-own', 'SKILL.md'),
+        ),
+      ).toBe(true);
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }

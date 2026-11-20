@@ -310,7 +310,9 @@ function buildTurnPrompt(
 ): string {
   const parts: string[] = [];
   if (identityPromptPrefix?.trim()) {
-    parts.push(`<system_instructions>\n${identityPromptPrefix.trim()}\n</system_instructions>`);
+    parts.push(
+      `<system_instructions>\n${identityPromptPrefix.trim()}\n</system_instructions>`,
+    );
   }
   parts.push(prompt);
 
@@ -340,7 +342,11 @@ function drainIpcMessages(): QueuedTurn[] {
         const raw = fs.readFileSync(fullPath, 'utf-8');
         fs.unlinkSync(fullPath);
         const data = JSON.parse(raw) as Record<string, unknown>;
-        if (data.type === 'message' && typeof data.text === 'string' && data.text) {
+        if (
+          data.type === 'message' &&
+          typeof data.text === 'string' &&
+          data.text
+        ) {
           const receipt =
             data.receipt && typeof data.receipt === 'object'
               ? (data.receipt as Record<string, unknown>)
@@ -426,7 +432,9 @@ function waitForNextIpcTurn(
             images: mergedImages.length > 0 ? mergedImages : undefined,
             queryRunId: last.queryRunId,
             inputTurnId: last.inputTurnId,
-            ...(mergedReceipts.length > 0 ? { ipcReceipts: mergedReceipts } : {}),
+            ...(mergedReceipts.length > 0
+              ? { ipcReceipts: mergedReceipts }
+              : {}),
           });
         }
       }
@@ -475,7 +483,8 @@ async function main(): Promise<void> {
     process.env.HAPPYCLAW_AGY_MODEL?.trim() ||
     process.env.ANTHROPIC_MODEL?.trim() ||
     DEFAULT_AGY_MODEL;
-  const model = rawModel.replace(/(?:\[1m\])+$/i, '').trim() || DEFAULT_AGY_MODEL;
+  const model =
+    rawModel.replace(/(?:\[1m\])+$/i, '').trim() || DEFAULT_AGY_MODEL;
   const effort =
     process.env.HAPPYCLAW_AGY_EFFORT?.trim() ||
     input.launchEffort?.trim() ||
@@ -524,7 +533,9 @@ async function main(): Promise<void> {
       claudeConfigDir: process.env.CLAUDE_CONFIG_DIR,
     });
     if (synced > 0 || pruned > 0) {
-      log(`Synced workspace skills for agy: synced=${synced}, pruned=${pruned}`);
+      log(
+        `Synced workspace skills for agy: synced=${synced}, pruned=${pruned}`,
+      );
     }
   } catch (err) {
     log(
@@ -533,7 +544,9 @@ async function main(): Promise<void> {
   }
 
   const agyHome = process.env.HAPPYCLAW_AGY_HOME?.trim();
-  log(`Spawning ${agyBin} ${args.join(' ')}${agyHome ? ` (isolated HOME)` : ''}`);
+  log(
+    `Spawning ${agyBin} ${args.join(' ')}${agyHome ? ` (isolated HOME)` : ''}`,
+  );
 
   const child: ChildProcess = spawn(agyBin, args, {
     stdio: ['pipe', 'pipe', 'pipe'],
@@ -703,7 +716,9 @@ async function main(): Promise<void> {
         status: 'error',
         result: null,
         error: `Failed to write prompt to agy stdin: ${err instanceof Error ? err.message : String(err)}`,
-        ...(currentTurn.queryRunId ? { queryRunId: currentTurn.queryRunId } : {}),
+        ...(currentTurn.queryRunId
+          ? { queryRunId: currentTurn.queryRunId }
+          : {}),
         inputTurnCompleted: true,
         queryIdle: true,
       });
@@ -718,7 +733,9 @@ async function main(): Promise<void> {
       const hit = consumeInterruptForQuery(currentTurn?.queryRunId);
       if (!hit) return;
       interruptedReason = hit.reason;
-      log(`Interrupt (${hit.reason}) received for query ${currentTurn?.queryRunId ?? 'unknown'}; interrupting agy`);
+      log(
+        `Interrupt (${hit.reason}) received for query ${currentTurn?.queryRunId ?? 'unknown'}; interrupting agy`,
+      );
       try {
         child.kill('SIGINT');
       } catch {
@@ -755,7 +772,9 @@ async function main(): Promise<void> {
         ...(translator.getSessionId()
           ? { newSessionId: translator.getSessionId() }
           : {}),
-        ...(currentTurn.queryRunId ? { queryRunId: currentTurn.queryRunId } : {}),
+        ...(currentTurn.queryRunId
+          ? { queryRunId: currentTurn.queryRunId }
+          : {}),
         ...(currentTurn.ipcReceipts?.length
           ? { ipcReceipts: currentTurn.ipcReceipts }
           : {}),
@@ -803,7 +822,9 @@ async function main(): Promise<void> {
         ...(translator.getSessionId()
           ? { newSessionId: translator.getSessionId() }
           : {}),
-        ...(currentTurn.queryRunId ? { queryRunId: currentTurn.queryRunId } : {}),
+        ...(currentTurn.queryRunId
+          ? { queryRunId: currentTurn.queryRunId }
+          : {}),
         ...(currentTurn.ipcReceipts?.length
           ? { ipcReceipts: currentTurn.ipcReceipts }
           : {}),
@@ -813,7 +834,12 @@ async function main(): Promise<void> {
       break;
     }
 
-    if (shouldDrain() || shouldClose() || childExited || lastTurnStatus === 'error') {
+    if (
+      shouldDrain() ||
+      shouldClose() ||
+      childExited ||
+      lastTurnStatus === 'error'
+    ) {
       break;
     }
 

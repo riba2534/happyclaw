@@ -445,7 +445,8 @@ export class AgyStreamTranslator {
       });
     } else {
       const errorMsg =
-        result.error || `AGY turn ended with status: ${result.status || 'ERROR'}`;
+        result.error ||
+        `AGY turn ended with status: ${result.status || 'ERROR'}`;
       frames.push({
         status: 'error',
         result: null,

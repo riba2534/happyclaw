@@ -16,10 +16,7 @@ import {
   withStorageSourceWriteLock,
 } from '../storage-source-admin.js';
 import { DATA_DIR } from '../config.js';
-import {
-  DEFAULT_AGY_MODEL,
-  discoverAgyModels,
-} from '../agy-runner/models.js';
+import { DEFAULT_AGY_MODEL, discoverAgyModels } from '../agy-runner/models.js';
 import {
   completeAgyOAuthLogin,
   deleteAgyProfileDir,
@@ -3106,7 +3103,9 @@ configRoutes.post(
         const updated = updateProvider(previous.id, {
           runner: 'agy',
           agyProfileId: completed.profileId,
-          ...(previous.anthropicModel ? {} : { anthropicModel: preferredModel }),
+          ...(previous.anthropicModel
+            ? {}
+            : { anthropicModel: preferredModel }),
           ...(previous.models?.length ? {} : { models: completed.models }),
         });
         if (

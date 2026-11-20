@@ -39,7 +39,8 @@ const RECOMMENDED: ReadonlyArray<{
   },
   {
     kind: 'agy',
-    description: '用 Google 账号 OAuth 登录，独立凭据隔离，支持宿主机/容器/群聊',
+    description:
+      '用 Google 账号 OAuth 登录，独立凭据隔离，支持宿主机/容器/群聊',
     icon: Terminal,
   },
   {

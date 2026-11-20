@@ -194,7 +194,10 @@ export function syncAgyWorkspaceSkills(options: {
     if (Object.prototype.hasOwnProperty.call(nextManaged, oldName)) continue;
     const stalePath = path.join(targetSkillsDir, oldName);
     try {
-      if (fs.existsSync(stalePath) || fs.lstatSync(stalePath).isSymbolicLink()) {
+      if (
+        fs.existsSync(stalePath) ||
+        fs.lstatSync(stalePath).isSymbolicLink()
+      ) {
         fs.rmSync(stalePath, { recursive: true, force: true });
         pruned += 1;
       }

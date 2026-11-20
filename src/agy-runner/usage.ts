@@ -30,7 +30,10 @@ export interface AgyQuotaUsage {
 }
 
 const CACHE_TTL_MS = 60_000;
-const usageCache = new Map<string, { value: AgyQuotaUsage; expiresAt: number }>();
+const usageCache = new Map<
+  string,
+  { value: AgyQuotaUsage; expiresAt: number }
+>();
 
 const QUOTA_ROW_RE = /^(.+?)\s{2,}(.+?)\s+(\d+(?:\.\d+)?)%(?:\s+(.+?))?\s*$/;
 
@@ -62,10 +65,14 @@ export function parseAgyResetTimestamp(raw: string | undefined): string | null {
   if (localTzMatch) {
     const [, date, hm, sec = '00', tz] = localTzMatch;
     if (tz) {
-      const offset = TZ_OFFSETS[tz] ?? (tz.startsWith('+') || tz.startsWith('-') ? tz : null);
+      const offset =
+        TZ_OFFSETS[tz] ??
+        (tz.startsWith('+') || tz.startsWith('-') ? tz : null);
       if (offset) {
         const normalizedOffset =
-          offset.length === 5 ? `${offset.slice(0, 3)}:${offset.slice(3)}` : offset;
+          offset.length === 5
+            ? `${offset.slice(0, 3)}:${offset.slice(3)}`
+            : offset;
         const parsed = Date.parse(`${date}T${hm}:${sec}${normalizedOffset}`);
         if (!Number.isNaN(parsed)) return new Date(parsed).toISOString();
       }
@@ -80,10 +87,18 @@ export function parseAgyResetTimestamp(raw: string | undefined): string | null {
 
 function classifyWindow(label: string): 'five_hour' | 'weekly' | 'other' {
   const lower = label.toLowerCase();
-  if (lower.includes('five hour') || lower.includes('5 hour') || lower.includes('5h')) {
+  if (
+    lower.includes('five hour') ||
+    lower.includes('5 hour') ||
+    lower.includes('5h')
+  ) {
     return 'five_hour';
   }
-  if (lower.includes('weekly') || lower.includes('week') || lower.includes('7d')) {
+  if (
+    lower.includes('weekly') ||
+    lower.includes('week') ||
+    lower.includes('7d')
+  ) {
     return 'weekly';
   }
   return 'other';
