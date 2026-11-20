@@ -551,7 +551,7 @@ function ConnectionSettings({
   return (
     <SettingsSection
       title="连接设置"
-      description="修改地址、密钥或环境变量会停止正在使用它的会话；下一条消息开启新的 SDK 会话，聊天记录保留。"
+      description="修改地址、密钥或环境变量会停止正在使用它的会话。只改地址时对话保留各自的 SDK 会话；改密钥、认证方式或环境变量时，下一条消息开启新的 SDK 会话，聊天记录保留。"
     >
       {kind === 'claude_subscription' && (
         <div className="space-y-3 rounded-lg p-3 ring-1 ring-surface-border">
