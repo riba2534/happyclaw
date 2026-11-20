@@ -56,6 +56,7 @@ const VENDOR_BY_HOST: ReadonlyArray<readonly [string, VendorKind]> = [
 const VENDOR_BY_MODEL: ReadonlyArray<readonly [RegExp, VendorKind]> = [
   [/^(claude|opus|sonnet|haiku|fable)\b/, 'anthropic'],
   [/^(gpt|chatgpt|codex|o\d)\b/, 'openai'],
+  [/^gemini\b/, 'gemini'],
   [/^glm\b/, 'zhipu'],
   [/^(kimi|k\d)/, 'moonshot'],
   [/^deepseek/, 'deepseek'],
@@ -72,6 +73,8 @@ const VENDOR_BY_MODEL: ReadonlyArray<readonly [RegExp, VendorKind]> = [
 const VENDOR_BY_PREFIX: Readonly<Record<string, VendorKind>> = {
   anthropic: 'anthropic',
   openai: 'openai',
+  google: 'gemini',
+  gemini: 'gemini',
   'z-ai': 'zhipu',
   zhipu: 'zhipu',
   moonshotai: 'moonshot',
@@ -116,13 +119,14 @@ function vendorOfHost(baseUrl: string): VendorKind | null {
  * Null when nothing says (a relay of unknown models): show a monogram.
  */
 export function vendorOfConnection(connection: {
-  kind: 'official' | 'third_party' | 'codex';
+  kind: 'official' | 'third_party' | 'codex' | 'agy';
   presetId?: string | null;
   baseUrl?: string;
   model?: string;
 }): VendorKind | null {
   if (connection.kind === 'official') return 'anthropic';
   if (connection.kind === 'codex') return 'openai';
+  if (connection.kind === 'agy') return 'antigravity';
   return (
     (connection.presetId ? VENDOR_BY_PRESET[connection.presetId] : null) ??
     (connection.baseUrl ? vendorOfHost(connection.baseUrl) : null) ??

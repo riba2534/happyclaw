@@ -129,7 +129,13 @@ function buildModelChoices(
     const option = {
       id: provider.id,
       name: provider.name,
-      kind: provider.codexOAuthCredentials ? ('codex' as const) : provider.type,
+      kind:
+        provider.runner === 'agy'
+          ? ('agy' as const)
+          : provider.codexOAuthCredentials
+            ? ('codex' as const)
+            : provider.type,
+      runner: provider.runner === 'agy' ? ('agy' as const) : ('claude' as const),
       model: provider.anthropicModel,
       // A configuration without a credential (e.g. an old copy that lost its
       // key) would fail every turn; the picker shows it but cannot pick it.

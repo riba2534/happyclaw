@@ -29,11 +29,14 @@ interface ProviderListProps {
 
 function ProviderMedia({ provider }: { provider: UnifiedProviderPublic }) {
   const vendor = vendorOfConnection({
-    kind: provider.hasCodexOAuthCredentials
-      ? 'codex'
-      : provider.type === 'official'
-        ? 'official'
-        : 'third_party',
+    kind:
+      provider.runner === 'agy'
+        ? 'agy'
+        : provider.hasCodexOAuthCredentials
+          ? 'codex'
+          : provider.type === 'official'
+            ? 'official'
+            : 'third_party',
     presetId: provider.presetId,
     baseUrl: provider.anthropicBaseUrl,
     model: provider.anthropicModel,
@@ -120,9 +123,22 @@ export function ProviderList({
               aria-label={`编辑「${provider.name}」`}
               title={provider.name}
               badges={
-                <Badge variant="neutral" className="max-sm:hidden">
-                  {connectionKindLabel(provider)}
-                </Badge>
+                <span className="flex items-center gap-1.5 max-sm:hidden">
+                  <Badge variant="neutral">
+                    {connectionKindLabel(provider)}
+                  </Badge>
+                  <Badge
+                    variant="outline"
+                    className="font-mono text-micro"
+                    title={
+                      provider.runner === 'agy'
+                        ? '使用 agy-runner（Antigravity CLI）执行'
+                        : '使用 cc-runner（Claude Code SDK）执行'
+                    }
+                  >
+                    {provider.runner === 'agy' ? 'agy-runner' : 'cc-runner'}
+                  </Badge>
+                </span>
               }
               description={
                 <span className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
@@ -132,6 +148,12 @@ export function ProviderList({
                     title={status.hint}
                   >
                     {testing ? '测试中…' : status.label}
+                  </Badge>
+                  <Badge
+                    variant="outline"
+                    className="font-mono text-micro sm:hidden"
+                  >
+                    {provider.runner === 'agy' ? 'agy-runner' : 'cc-runner'}
                   </Badge>
                   {/* Touch has no hover title, so the hint is spelled out. */}
                   {status.hint && !testing && (
