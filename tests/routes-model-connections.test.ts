@@ -571,6 +571,36 @@ describe('editing a model list', () => {
     ]);
   });
 
+  test('a new address stops the runners and keeps every session', async () => {
+    const provider = thirdParty({ enabled: true });
+    boundSession(provider.id);
+    const moved = await request('PATCH', `/providers/${provider.id}`, {
+      anthropicBaseUrl: 'https://relay.example.test',
+    });
+    expect(moved.status).toBe(200);
+    expect(moved.body.provider.anthropicBaseUrl).toBe(
+      'https://relay.example.test',
+    );
+    // Runners were launched with the old address, so they stop.
+    expect(queue.pauseGroupsForMutation).toHaveBeenCalledTimes(1);
+    expect(moved.body.applied.clearedSessionsCount).toBeUndefined();
+    expect(db.getSession('connections-folder')).toBe('sdk-session-1');
+    expect(runner.willClearSessionOnProviderSwitch('connections-folder')).toBe(
+      false,
+    );
+  });
+
+  test('a new address with a new key still starts new sessions', async () => {
+    const provider = thirdParty({ enabled: true });
+    boundSession(provider.id);
+    const moved = await request('PATCH', `/providers/${provider.id}`, {
+      anthropicBaseUrl: 'https://relay.example.test',
+      anthropicAuthToken: 'another-account-123456',
+    });
+    expect(moved.status).toBe(200);
+    expect(db.getSession('connections-folder')).toBeUndefined();
+  });
+
   test('a new default model drops only the sessions that ran the old one', async () => {
     const folder = 'default-change-folder';
     const workspaceJid = 'web:default-change-folder';
@@ -621,6 +651,31 @@ describe('editing a model list', () => {
     expect(next.resolved.config.anthropicModel).toBe('glm-5.2');
     expect(db.getSession(folder)).toBe('sdk-main');
     db.setSessionModelSelection(folder, null, null);
+  });
+
+  test('a new address with a new default drops only the sessions on the old default', async () => {
+    const folder = 'address-default-folder';
+    const provider = thirdParty({
+      enabled: true,
+      models: [{ id: 'glm-5.3' }, { id: 'glm-5.2' }],
+    });
+    for (const [agentId, model] of [
+      ['on-other', 'glm-5.2'],
+      ['on-default', 'glm-5.3'],
+    ] as const) {
+      db.setSession(folder, `sdk-${agentId}`, agentId);
+      db.setSessionProviderId(folder, agentId, provider.id);
+      db.setSessionModel(folder, agentId, model);
+    }
+
+    const patched = await request('PATCH', `/providers/${provider.id}`, {
+      anthropicBaseUrl: 'https://relay.example.test',
+      anthropicModel: 'glm-5.2',
+    });
+    expect(patched.status).toBe(200);
+    expect(patched.body.applied).toMatchObject({ clearedSessionsCount: 1 });
+    expect(db.getSession(folder, 'on-other')).toBe('sdk-on-other');
+    expect(db.getSession(folder, 'on-default')).toBeUndefined();
   });
 
   test("an older client's [1m] on the model sets its window and keeps every session", async () => {

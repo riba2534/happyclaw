@@ -310,7 +310,7 @@ describe('third-party connection settings', () => {
     expect(mocks.put).not.toHaveBeenCalled();
   });
 
-  test('the confirmation states the runners it stops and that history is kept', async () => {
+  test('a new address: the confirmation states the runners it stops and that sessions are kept', async () => {
     await render(legacyProvider);
     await type('#connection-base-url', 'https://open.bigmodel.cn/api/paas');
     await click(button('保存连接设置'));
@@ -318,12 +318,23 @@ describe('third-party connection settings', () => {
     expect(mocks.get).toHaveBeenCalledWith(`${PROVIDERS}/glm/impact`);
     const message = mocks.confirm.mock.calls[0][0].message as string;
     expect(message).toContain('保存会停止 2 个运行中的会话');
-    expect(message).toContain('下一条消息会开启新的 SDK 会话，聊天记录保留');
+    expect(message).toContain('保留各自的 SDK 会话');
+    expect(message).not.toContain('开启新的 SDK 会话');
     expect(mocks.patch).toHaveBeenCalledWith(
       `${PROVIDERS}/glm`,
       { anthropicBaseUrl: 'https://open.bigmodel.cn/api/paas' },
       120_000,
     );
+  });
+
+  test('a new address with a new key: the confirmation says sessions start over', async () => {
+    await render(legacyProvider);
+    await type('#connection-base-url', 'https://open.bigmodel.cn/api/paas');
+    await type('#connection-secret', 'glm-new-key');
+    await click(button('保存连接设置'));
+    await flush();
+    const message = mocks.confirm.mock.calls[0][0].message as string;
+    expect(message).toContain('下一条消息会开启新的 SDK 会话，聊天记录保留');
   });
 
   test('with nothing to stop the confirmation skips the count; declining saves nothing', async () => {
