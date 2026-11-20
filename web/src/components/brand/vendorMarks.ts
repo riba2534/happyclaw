@@ -124,6 +124,19 @@ export const VENDOR_MARKS = {
     ],
     evenOdd: true,
   },
+  // Google Gemini (4-point star)
+  gemini: {
+    paths: [
+      'M12 1.5C12 7.3 7.3 12 1.5 12 7.3 12 12 16.7 12 22.5 12 16.7 16.7 12 22.5 12 16.7 12 12 7.3 12 1.5Z',
+    ],
+  },
+  // Google Antigravity (upward lift A with floating core)
+  antigravity: {
+    paths: [
+      'M12 2.4 3.8 20h3.5l4.7-10.4L16.7 20h3.5L12 2.4Z',
+      'M12 13.6a2.3 2.3 0 1 0 0 4.6 2.3 2.3 0 0 0 0-4.6Z',
+    ],
+  },
 } as const satisfies Record<string, VendorMark>;
 
 export type VendorKind = keyof typeof VENDOR_MARKS;

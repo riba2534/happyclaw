@@ -19,6 +19,8 @@ describe('vendorOfModel', () => {
     expect(vendorOfModel('opus')).toBe('anthropic');
     expect(vendorOfModel('sonnet[1m]')).toBe('anthropic');
     expect(vendorOfModel('gpt-6.1-sol')).toBe('openai');
+    expect(vendorOfModel('gemini-4-neon-medium')).toBe('gemini');
+    expect(vendorOfModel('google/gemini-3.8-flash')).toBe('gemini');
     expect(vendorOfModel('glm-5.3[1m]')).toBe('zhipu');
     expect(vendorOfModel('kimi-k3.1-pro')).toBe('moonshot');
     expect(vendorOfModel('deepseek-v4-pro')).toBe('deepseek');
@@ -36,6 +38,7 @@ describe('vendorOfModel', () => {
 describe('vendorOfConnection', () => {
   test('a subscription by its kind, a preset or address by that, else its model', () => {
     expect(vendorOfConnection({ kind: 'official' })).toBe('anthropic');
+    expect(vendorOfConnection({ kind: 'agy' })).toBe('antigravity');
     expect(vendorOfConnection({ kind: 'codex', model: 'glm-5' })).toBe(
       'openai',
     );

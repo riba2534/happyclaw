@@ -16,6 +16,14 @@ import {
   withStorageSourceWriteLock,
 } from '../storage-source-admin.js';
 import { DATA_DIR } from '../config.js';
+import { DEFAULT_AGY_MODEL, discoverAgyModels } from '../agy-runner/models.js';
+import {
+  completeAgyOAuthLogin,
+  deleteAgyProfileDir,
+  resolveAgyProfileHomeDir,
+  startAgyOAuthLogin,
+} from '../agy-runner/oauth.js';
+import { fetchAgyProviderUsage } from '../agy-runner/usage.js';
 import { bindSystemMainIfUnbound } from '../model-binding-backfill.js';
 import {
   avatarUploadBodyLimit,
@@ -1525,6 +1533,7 @@ configRoutes.post(
     // A connection without a credential could neither be tested nor run.
     const draft = validation.data;
     const hasCredential = !!(
+      draft.runner === 'agy' ||
       draft.anthropicAuthToken?.trim() ||
       draft.anthropicApiKey?.trim() ||
       (draft.type === 'official' &&
@@ -2505,6 +2514,80 @@ configRoutes.post(
       return c.json({ error: 'Invalid request body' }, 400);
     }
     const draft = validation.data;
+    const storedAgy = draft.providerId
+      ? getProviderById(draft.providerId)
+      : null;
+    if (storedAgy?.runner === 'agy') {
+      const t0 = Date.now();
+      const targetModel =
+        draft.anthropicModel?.trim() ||
+        storedAgy.anthropicModel?.trim() ||
+        DEFAULT_AGY_MODEL;
+      try {
+        const models = await discoverAgyModels({
+          homeDir: resolveAgyProfileHomeDir(storedAgy.agyProfileId),
+        });
+        const latencyMs = Date.now() - t0;
+        const ok = models.length > 0;
+        const record = {
+          ok,
+          at: new Date().toISOString(),
+          model: targetModel,
+          status: ok ? 200 : 401,
+          latencyMs,
+          code: ok ? null : ('AUTH_INVALID' as const),
+        };
+        recordProviderTest(storedAgy.id, storedAgy, record);
+        appendClaudeConfigAuditBestEffort(user.username, 'test_provider', [
+          `id:${storedAgy.id}`,
+          `ok:${ok}`,
+          'runner:agy',
+        ]);
+        return c.json({
+          ok,
+          probes: [
+            {
+              model: targetModel,
+              ok,
+              status: ok ? 200 : 401,
+              latencyMs,
+              message: ok
+                ? `AGY CLI 就绪（发现 ${models.length} 个可用模型）`
+                : '未发现可用模型，请重新登录 Antigravity',
+            },
+          ],
+          code: ok ? null : 'AUTH_INVALID',
+          record,
+        });
+      } catch (err) {
+        const latencyMs = Date.now() - t0;
+        const message =
+          err instanceof Error ? err.message : 'AGY 连通性测试失败';
+        const record = {
+          ok: false,
+          at: new Date().toISOString(),
+          model: targetModel,
+          status: null,
+          latencyMs,
+          code: 'AUTH_INVALID' as const,
+        };
+        recordProviderTest(storedAgy.id, storedAgy, record);
+        return c.json({
+          ok: false,
+          probes: [
+            {
+              model: targetModel,
+              ok: false,
+              status: null,
+              latencyMs,
+              message,
+            },
+          ],
+          code: 'AUTH_INVALID',
+          record,
+        });
+      }
+    }
     const resolved = resolveCheckedConnection(draft);
     if ('error' in resolved) {
       return c.json({ error: resolved.error }, resolved.status);
@@ -2606,6 +2689,14 @@ configRoutes.get(
   async (c) => {
     const { id } = c.req.param();
     const stored = getProviderById(id);
+    if (stored?.runner === 'agy') {
+      return c.json(
+        await fetchAgyProviderUsage({
+          providerId: stored.id,
+          agyProfileId: stored.agyProfileId,
+        }),
+      );
+    }
     if (stored?.anthropicBaseUrl === CODEX_GATEWAY_BASE_URL_PLACEHOLDER) {
       return c.json(getCodexProviderRateLimits(id));
     }
@@ -2948,6 +3039,136 @@ configRoutes.post(
       const message =
         err instanceof Error ? err.message : 'Failed to persist OAuth login';
       return c.json({ error: message }, 500);
+    }
+  },
+);
+
+// ─── POST /agy/oauth/start — 启动官方 agy acp --login OAuth 流程 ──────────
+configRoutes.post(
+  '/agy/oauth/start',
+  authMiddleware,
+  systemConfigMiddleware,
+  async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as {
+      targetProviderId?: string;
+    };
+    const targetProviderId =
+      typeof body.targetProviderId === 'string' && body.targetProviderId.trim()
+        ? body.targetProviderId.trim()
+        : undefined;
+    if (targetProviderId && !getProviderById(targetProviderId)) {
+      return c.json({ error: '目标模型配置不存在' }, 404);
+    }
+    try {
+      const started = await startAgyOAuthLogin({ targetProviderId });
+      return c.json(started);
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : '启动 Antigravity 登录失败';
+      logger.warn({ err }, 'Failed to start AGY OAuth login');
+      return c.json({ error: message }, 502);
+    }
+  },
+);
+
+// ─── POST /agy/oauth/callback — 完成 agy OAuth 授权并创建/更新连接 ──────────
+configRoutes.post(
+  '/agy/oauth/callback',
+  authMiddleware,
+  systemConfigMiddleware,
+  async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as {
+      state?: string;
+      code?: string;
+    };
+    const state = typeof body.state === 'string' ? body.state.trim() : '';
+    const code = typeof body.code === 'string' ? body.code.trim() : '';
+    if (!state || !code) {
+      return c.json({ error: '缺少 state 或授权码', retryable: false }, 400);
+    }
+    const actor = (c.get('user') as AuthUser).username;
+    try {
+      const completed = await completeAgyOAuthLogin(state, code);
+      const preferredModel =
+        completed.models.find((m) => m.id === DEFAULT_AGY_MODEL)?.id ??
+        completed.models[0]?.id ??
+        DEFAULT_AGY_MODEL;
+
+      if (completed.targetProviderId) {
+        const previous = getProviderById(completed.targetProviderId);
+        if (!previous) {
+          deleteAgyProfileDir(completed.profileId);
+          return c.json({ error: '目标模型配置不存在', retryable: false }, 404);
+        }
+        const updated = updateProvider(previous.id, {
+          runner: 'agy',
+          agyProfileId: completed.profileId,
+          ...(previous.anthropicModel
+            ? {}
+            : { anthropicModel: preferredModel }),
+          ...(previous.models?.length ? {} : { models: completed.models }),
+        });
+        if (
+          previous.agyProfileId &&
+          previous.agyProfileId !== completed.profileId
+        ) {
+          deleteAgyProfileDir(previous.agyProfileId);
+        }
+        appendClaudeConfigAudit(actor, 'update_provider', [
+          `id:${updated.id}`,
+          'runner:agy',
+          'agy_oauth:relogin',
+        ]);
+        return c.json(toPublicProvider(updated));
+      }
+
+      const provider = createProvider({
+        name: 'Antigravity 订阅',
+        type: 'third_party',
+        runner: 'agy',
+        agyProfileId: completed.profileId,
+        anthropicModel: preferredModel,
+        models: completed.models,
+      });
+      appendClaudeConfigAudit(actor, 'create_provider', [
+        `id:${provider.id}`,
+        'runner:agy',
+        `name:${provider.name}`,
+      ]);
+      bindSystemMainIfUnbound(provider.id);
+      return c.json(toPublicProvider(provider), 201);
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : 'Antigravity 授权失败';
+      logger.warn({ err }, 'Failed to complete AGY OAuth login');
+      return c.json({ error: message, retryable: false }, 400);
+    }
+  },
+);
+
+// ─── GET /agy/models — 发现 AGY CLI 可用模型列表 ──────────
+configRoutes.get(
+  '/agy/models',
+  authMiddleware,
+  systemConfigMiddleware,
+  async (c) => {
+    try {
+      const providerId = c.req.query('providerId')?.trim();
+      let homeDir: string | undefined;
+      if (providerId) {
+        const provider = getProviderById(providerId);
+        if (!provider || provider.runner !== 'agy') {
+          return c.json({ error: 'AGY provider not found' }, 404);
+        }
+        homeDir = resolveAgyProfileHomeDir(provider.agyProfileId);
+      }
+      const models = await discoverAgyModels({ homeDir });
+      return c.json({ models });
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : 'Failed to discover AGY models';
+      logger.warn({ err }, 'Failed to discover AGY models');
+      return c.json({ error: `获取 AGY 模型列表失败：${message}` }, 502);
     }
   },
 );

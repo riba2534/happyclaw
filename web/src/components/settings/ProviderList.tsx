@@ -29,11 +29,14 @@ interface ProviderListProps {
 
 function ProviderMedia({ provider }: { provider: UnifiedProviderPublic }) {
   const vendor = vendorOfConnection({
-    kind: provider.hasCodexOAuthCredentials
-      ? 'codex'
-      : provider.type === 'official'
-        ? 'official'
-        : 'third_party',
+    kind:
+      provider.runner === 'agy'
+        ? 'agy'
+        : provider.hasCodexOAuthCredentials
+          ? 'codex'
+          : provider.type === 'official'
+            ? 'official'
+            : 'third_party',
     presetId: provider.presetId,
     baseUrl: provider.anthropicBaseUrl,
     model: provider.anthropicModel,
@@ -48,6 +51,7 @@ function ProviderMedia({ provider }: { provider: UnifiedProviderPublic }) {
 }
 
 function hasCredential(provider: UnifiedProviderPublic): boolean {
+  if (provider.runner === 'agy') return true;
   return (
     provider.hasClaudeOAuthCredentials ||
     provider.hasCodexOAuthCredentials ||
@@ -60,6 +64,11 @@ function hasCredential(provider: UnifiedProviderPublic): boolean {
 /** Where the connection's models come from, in one short line. */
 function sourceText(provider: UnifiedProviderPublic): string | null {
   const kind = connectionKind(provider);
+  if (kind === 'agy') {
+    return provider.hasAgyProfile
+      ? 'Antigravity 独立 OAuth 授权（通用 Runner）'
+      : '宿主机 AGY CLI（建议重新登录隔离凭据）';
+  }
   if (kind === 'chatgpt') {
     return (
       provider.codexOAuthCredentialsEmail ?? 'ChatGPT 订阅网关（服务内嵌）'
@@ -116,9 +125,22 @@ export function ProviderList({
               aria-label={`编辑「${provider.name}」`}
               title={provider.name}
               badges={
-                <Badge variant="neutral" className="max-sm:hidden">
-                  {connectionKindLabel(provider)}
-                </Badge>
+                <span className="flex items-center gap-1.5 max-sm:hidden">
+                  <Badge variant="neutral">
+                    {connectionKindLabel(provider)}
+                  </Badge>
+                  <Badge
+                    variant="outline"
+                    className="font-mono text-micro"
+                    title={
+                      provider.runner === 'agy'
+                        ? '使用 agy-runner（Antigravity CLI）执行'
+                        : '使用 cc-runner（Claude Code SDK）执行'
+                    }
+                  >
+                    {provider.runner === 'agy' ? 'agy-runner' : 'cc-runner'}
+                  </Badge>
+                </span>
               }
               description={
                 <span className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
@@ -128,6 +150,12 @@ export function ProviderList({
                     title={status.hint}
                   >
                     {testing ? '测试中…' : status.label}
+                  </Badge>
+                  <Badge
+                    variant="outline"
+                    className="font-mono text-micro sm:hidden"
+                  >
+                    {provider.runner === 'agy' ? 'agy-runner' : 'cc-runner'}
                   </Badge>
                   {/* Touch has no hover title, so the hint is spelled out. */}
                   {status.hint && !testing && (
@@ -199,9 +227,10 @@ export function ProviderList({
               }
             />
 
-            {/* 订阅用量：Claude OAuth、ChatGPT 订阅与 magpie 的各个账号 */}
+            {/* 订阅用量：Claude OAuth、ChatGPT 订阅、Antigravity 订阅与 magpie */}
             {(provider.type === 'official' ||
               provider.hasCodexOAuthCredentials ||
+              provider.runner === 'agy' ||
               provider.gateway === 'magpie') && (
               <UsageBars
                 providerId={provider.id}

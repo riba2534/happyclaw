@@ -323,6 +323,8 @@ export function AddModelWizard({
         };
       case 'anthropic_api':
         return { type: 'official', anthropicApiKey: apiKey.trim() };
+      case 'agy':
+        return { type: 'third_party', runner: 'agy' };
       default:
         return {
           type: 'official',
@@ -349,7 +351,11 @@ export function AddModelWizard({
     let extra = () => {};
     try {
       const result = await discoverModels(
-        created ? { providerId: created.id } : draftBody(),
+        kind === 'agy'
+          ? { type: 'third_party', runner: 'agy', providerId: created?.id }
+          : created
+            ? { providerId: created.id }
+            : draftBody(),
       );
       if (result.ok) {
         next = {
@@ -480,6 +486,40 @@ export function AddModelWizard({
       setTest({ signature, outcome, error });
       setTesting(false);
     };
+    if (kind === 'agy') {
+      const t0 = Date.now();
+      discoverModels({
+        type: 'third_party',
+        runner: 'agy',
+        providerId: created?.id,
+      })
+        .then((res) => {
+          if (res.ok && res.models.length > 0) {
+            settle(
+              {
+                ok: true,
+                code: null,
+                model: connectionModel || res.models[0].id,
+                authMode: null,
+                message: `AGY CLI 就绪（发现 ${res.models.length} 个可用模型）`,
+                latencyMs: Date.now() - t0,
+              },
+              null,
+            );
+          } else {
+            settle(
+              null,
+              !res.ok
+                ? res.message
+                : '未从宿主机 agy CLI 发现可用模型，请先执行 agy 登录',
+            );
+          }
+        })
+        .catch((err) =>
+          settle(null, getErrorMessage(err, '检测 AGY CLI 失败')),
+        );
+      return;
+    }
     testConnection(body)
       .then((result) => settle(testOutcome(result), null))
       .catch((err) => settle(null, getErrorMessage(err, '测试连接失败')));
@@ -544,7 +584,9 @@ export function AddModelWizard({
         provider = await api.post<UnifiedProviderPublic>(PROVIDERS_API, body);
         // The draft test was not stored; test the saved connection so its
         // status is on record.
-        await testConnection({ providerId: provider.id }).catch(() => {});
+        if (kind !== 'agy') {
+          await testConnection({ providerId: provider.id }).catch(() => {});
+        }
       }
       onDone(provider, verified);
     } catch (err) {
@@ -579,6 +621,8 @@ export function AddModelWizard({
         );
       case 'anthropic_api':
         return !!apiKey.trim();
+      case 'agy':
+        return !!created;
       default:
         return false;
     }
@@ -703,6 +747,16 @@ export function AddModelWizard({
             <LoggedIn provider={created} />
           ) : (
             <OAuthLoginPanel service="chatgpt" onSuccess={handleLoggedIn} />
+          )}
+        </div>
+      )}
+
+      {step === 'connect' && kind === 'agy' && (
+        <div className="space-y-4">
+          {created ? (
+            <LoggedIn provider={created} />
+          ) : (
+            <OAuthLoginPanel service="agy" onSuccess={handleLoggedIn} />
           )}
         </div>
       )}

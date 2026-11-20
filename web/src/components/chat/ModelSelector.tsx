@@ -117,7 +117,9 @@ export type ConnectionModelChoice = ConnectionModel;
 export interface SessionModelOption {
   id: string;
   name: string;
-  kind: 'official' | 'third_party' | 'codex';
+  kind: 'official' | 'third_party' | 'codex' | 'agy';
+  /** Execution runner for this connection ('claude' = cc-runner, 'agy' = agy-runner). */
+  runner?: 'claude' | 'agy';
   /** The connection's own model; '' lets a relay decide. */
   model: string;
   /** False when the connection holds no credential and would fail. */
@@ -962,6 +964,16 @@ export function ModelSelector({
     />
   );
 
+  const activeRunner: 'agy' | 'claude' | null =
+    inUse.option && !unusable
+      ? inUse.option.runner === 'agy' || inUse.option.kind === 'agy'
+        ? 'agy'
+        : 'claude'
+      : null;
+  const runnerTooltipLine = activeRunner
+    ? ` · ${activeRunner === 'agy' ? 'agy-runner' : 'cc-runner'}`
+    : '';
+
   const mark = saving ? (
     <Loader2 className="size-5 shrink-0 animate-spin p-0.5" />
   ) : inUse.option && !unusable ? (
@@ -1042,7 +1054,9 @@ export function ModelSelector({
                   disabled={disabled}
                   aria-label={`模型：${fullLabel}`}
                   // A disabled button gets no tooltip; the title still reads.
-                  title={disabled ? tooltip : undefined}
+                  title={
+                    disabled ? `${tooltip}${runnerTooltipLine}` : undefined
+                  }
                   {...modelTooltip.triggerProps}
                   className={cn(TRIGGER_CLASS, 'max-w-[240px]')}
                 >
@@ -1059,7 +1073,9 @@ export function ModelSelector({
                 </button>
               </TooltipTrigger>
             </Trigger>
-            <TooltipContent side="top">{tooltip}</TooltipContent>
+            <TooltipContent side="top">
+              {`${tooltip}${runnerTooltipLine}`}
+            </TooltipContent>
           </Tooltip>
         )}
         {inSheet ? (
@@ -1079,7 +1095,21 @@ export function ModelSelector({
             }}
           >
             <SheetHeader className="shrink-0 border-b border-surface-border px-4 py-3 pr-12">
-              <SheetTitle className="text-title-sm">选择模型</SheetTitle>
+              <SheetTitle className="flex items-center gap-2 text-title-sm">
+                <span>选择模型</span>
+                {activeRunner && (
+                  <span
+                    className={cn(
+                      'rounded px-1.5 py-0.5 font-mono text-micro font-medium',
+                      activeRunner === 'agy'
+                        ? 'bg-primary/15 text-primary'
+                        : 'bg-surface-selected text-muted-foreground',
+                    )}
+                  >
+                    {activeRunner === 'agy' ? 'agy-runner' : 'cc-runner'}
+                  </span>
+                )}
+              </SheetTitle>
               <SheetDescription className="sr-only">
                 本会话使用的模型
               </SheetDescription>

@@ -647,7 +647,24 @@ function ConnectionSettings({
         </div>
       )}
 
-      {kind !== 'chatgpt' && (
+      {kind === 'agy' && (
+        <div className="space-y-3 rounded-lg p-3 ring-1 ring-surface-border">
+          <div className="space-y-0.5 text-caption leading-5 text-muted-foreground">
+            <div className="text-foreground">
+              {provider.hasAgyProfile
+                ? '已绑定独立的 Antigravity OAuth 凭据（支持宿主机、容器与群聊）。'
+                : '当前正在复用宿主机默认 agy 登录态，建议点击下方重新登录以切换到独立隔离凭据。'}
+            </div>
+          </div>
+          <OAuthLoginPanel
+            service="agy"
+            targetProviderId={provider.id}
+            onSuccess={relogin}
+          />
+        </div>
+      )}
+
+      {kind !== 'chatgpt' && kind !== 'agy' && (
         <div className="space-y-4">
           {thirdParty && (
             <SettingsField
