@@ -18,6 +18,10 @@ import {
   isValidAgyProfileId,
 } from '../src/agy-runner/oauth.js';
 import {
+  parseAgyResetTimestamp,
+  parseAgyUsageOutput,
+} from '../src/agy-runner/usage.js';
+import {
   AgyStreamTranslator,
   formatAgyUserEvent,
 } from '../src/agy-runner/protocol.js';
@@ -341,5 +345,56 @@ describe('AGY OAuth helpers', () => {
     expect(isValidAgyProfileId('a1b2c3d4e5f6a1b2c3d4e5f6')).toBe(true);
     expect(isValidAgyProfileId('../escape')).toBe(false);
     expect(isValidAgyProfileId('short')).toBe(false);
+  });
+});
+
+describe('AGY usage parser', () => {
+  it('parses agy -p /usage output into 5-hour and weekly quota windows', () => {
+    const sample = [
+      'Quota:',
+      'Gemini Models          Weekly Limit Remaining       66%   2026-11-27 10:08 CST',
+      'Gemini Models          Five Hour Limit Remaining    37%   2026-11-20 20:08 CST',
+      'Claude and GPT models  Weekly Limit Remaining       100%  2026-11-27 17:08 CST',
+      'Claude and GPT models  Five Hour Limit Remaining    100%  2026-11-20 22:08 CST',
+      'Gemini 4 Argon         Gemini 4 Argon Weekly Limit  100%  2026-11-27 17:08 CST',
+    ].join('\n');
+
+    const usage = parseAgyUsageOutput(sample, '2026-11-20T09:00:00.000Z');
+    expect(usage.kind).toBe('agy_quotas');
+    expect(usage.groups).toHaveLength(3);
+    expect(usage.groups[0].group).toBe('Gemini Models');
+    expect(usage.groups[0].fiveHour).toMatchObject({
+      windowKind: 'five_hour',
+      remainingPercent: 37,
+      usedPercent: 63,
+      resetsAt: '2026-11-20T12:08:00.000Z',
+    });
+    expect(usage.groups[0].weekly).toMatchObject({
+      windowKind: 'weekly',
+      remainingPercent: 66,
+      usedPercent: 34,
+      resetsAt: '2026-11-27T02:08:00.000Z',
+    });
+    expect(usage.groups[2].weekly?.usedPercent).toBe(0);
+    expect(parseAgyResetTimestamp('2026-11-20 20:08 CST')).toBe(
+      '2026-11-20T12:08:00.000Z',
+    );
+
+    // Non-TTY piped output uses TSV with ISO-8601 UTC timestamps
+    const tsv =
+      'Gemini Models\tWeekly Limit Remaining\t65%\t2026-11-27T02:08:25Z\n' +
+      'Gemini Models\tFive Hour Limit Remaining\t34%\t2026-11-20T12:08:25Z\n';
+    const tsvUsage = parseAgyUsageOutput(tsv, '2026-11-20T09:00:00.000Z');
+    expect(tsvUsage.groups).toHaveLength(1);
+    expect(tsvUsage.groups[0].fiveHour).toMatchObject({
+      remainingPercent: 34,
+      usedPercent: 66,
+      resetsAt: '2026-11-20T12:08:25.000Z',
+    });
+    expect(tsvUsage.groups[0].weekly).toMatchObject({
+      remainingPercent: 65,
+      usedPercent: 35,
+      resetsAt: '2026-11-27T02:08:25.000Z',
+    });
   });
 });

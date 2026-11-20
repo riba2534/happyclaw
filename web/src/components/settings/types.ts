@@ -12,6 +12,29 @@ import type { DeploymentMode } from '../../stores/auth';
 
 export type WebFetchPreflightPolicy = 'check' | 'skip';
 
+export interface AgyQuotaWindow {
+  label: string;
+  windowKind: 'five_hour' | 'weekly' | 'other';
+  remainingPercent: number;
+  usedPercent: number;
+  resetsAt: string | null;
+  resetsAtRaw: string | null;
+}
+
+export interface AgyQuotaGroup {
+  group: string;
+  fiveHour: AgyQuotaWindow | null;
+  weekly: AgyQuotaWindow | null;
+  others: AgyQuotaWindow[];
+}
+
+export interface AgyQuotaUsage {
+  kind: 'agy_quotas';
+  groups: AgyQuotaGroup[];
+  fetchedAt: string;
+  error?: string;
+}
+
 export interface UnifiedProviderPublic {
   id: string;
   name: string;

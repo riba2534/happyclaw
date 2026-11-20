@@ -6,6 +6,7 @@ import type {
 } from '@/lib/model-providers';
 import { cn } from '@/lib/utils';
 import type {
+  AgyQuotaUsage,
   CachedOAuthUsage,
   CodexRateLimitsUsage,
   CodexRateLimitWindow,
@@ -16,6 +17,7 @@ import type {
 
 /** What the usage route answers, by the kind of connection. */
 type ProviderUsage =
+  | AgyQuotaUsage
   | CachedOAuthUsage
   | CodexRateLimitsUsage
   | MagpieQuotasUsage;
@@ -479,6 +481,90 @@ function LiveStatus({
   );
 }
 
+function AgyUsage({
+  usage,
+  className,
+}: {
+  usage: AgyQuotaUsage;
+  className?: string;
+}) {
+  if (usage.groups.length === 0 && !usage.error) return null;
+
+  return (
+    <div className={cn('min-w-0 space-y-2', className)}>
+      {usage.error && (
+        <div className="text-micro text-warning" title={usage.error}>
+          暂时无法刷新 AGY 配额
+          {usage.groups.length > 0 ? '，显示上次数据' : `：${usage.error}`}
+        </div>
+      )}
+      {usage.groups.length > 0 && (
+        <div className="space-y-2">
+          {usage.groups.map((group) => {
+            const windows: Array<{
+              key: string;
+              label: string;
+              bucket: OAuthUsageBucket;
+              detail?: string;
+            }> = [];
+            if (group.fiveHour) {
+              windows.push({
+                key: '5h',
+                label: '5h',
+                bucket: {
+                  utilization: group.fiveHour.usedPercent,
+                  resets_at: group.fiveHour.resetsAt,
+                },
+                detail: `剩余 ${group.fiveHour.remainingPercent}%`,
+              });
+            }
+            if (group.weekly) {
+              windows.push({
+                key: '7d',
+                label: '7d',
+                bucket: {
+                  utilization: group.weekly.usedPercent,
+                  resets_at: group.weekly.resetsAt,
+                },
+                detail: `剩余 ${group.weekly.remainingPercent}%`,
+              });
+            }
+            for (const other of group.others) {
+              windows.push({
+                key: other.label,
+                label: other.label,
+                bucket: {
+                  utilization: other.usedPercent,
+                  resets_at: other.resetsAt,
+                },
+                detail: `剩余 ${other.remainingPercent}%`,
+              });
+            }
+            if (windows.length === 0) return null;
+            return (
+              <div key={group.group} className="space-y-1">
+                <div className="text-micro font-medium text-muted-foreground">
+                  {group.group}
+                </div>
+                <div className="grid min-w-0 grid-cols-1 gap-2 sm:grid-cols-2">
+                  {windows.map((w) => (
+                    <UsageColumn
+                      key={w.key}
+                      label={w.label}
+                      bucket={w.bucket}
+                      detail={w.detail}
+                    />
+                  ))}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function UsageBars({
   providerId,
   providerVersion,
@@ -528,6 +614,9 @@ export function UsageBars({
   }, [providerId, providerVersion]);
 
   if (loading || !usage) return null;
+  if ('kind' in usage && usage.kind === 'agy_quotas') {
+    return <AgyUsage usage={usage} className={className} />;
+  }
   if ('kind' in usage && usage.kind === 'codex_rate_limits') {
     return <CodexUsage usage={usage} className={className} />;
   }

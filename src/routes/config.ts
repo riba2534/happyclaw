@@ -26,6 +26,7 @@ import {
   resolveAgyProfileHomeDir,
   startAgyOAuthLogin,
 } from '../agy-runner/oauth.js';
+import { fetchAgyProviderUsage } from '../agy-runner/usage.js';
 import { bindSystemMainIfUnbound } from '../model-binding-backfill.js';
 import {
   avatarUploadBodyLimit,
@@ -2691,6 +2692,14 @@ configRoutes.get(
   async (c) => {
     const { id } = c.req.param();
     const stored = getProviderById(id);
+    if (stored?.runner === 'agy') {
+      return c.json(
+        await fetchAgyProviderUsage({
+          providerId: stored.id,
+          agyProfileId: stored.agyProfileId,
+        }),
+      );
+    }
     if (stored?.anthropicBaseUrl === CODEX_GATEWAY_BASE_URL_PLACEHOLDER) {
       return c.json(getCodexProviderRateLimits(id));
     }
