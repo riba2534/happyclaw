@@ -316,7 +316,7 @@ describe('connection WebFetch policy API', () => {
     const target = createPolicyProvider();
     db.setSessionProviderId(folder, '', target.id);
     const response = await patchProvider(target.id, {
-      anthropicBaseUrl: 'https://new.example.test',
+      anthropicAuthToken: 'another-policy-key',
       webFetchPreflightPolicy: 'skip',
     });
     expect(response.status).toBe(200);
@@ -328,6 +328,22 @@ describe('connection WebFetch policy API', () => {
     expect(
       runtimeConfig.getProviderById(target.id)!.webFetchPreflightPolicy,
     ).toBe('skip');
+  });
+
+  test('a new address with a policy edit stops the runners and keeps the session', async () => {
+    const { folder, sessionId, queue } = bindPolicyQueue();
+    const target = createPolicyProvider();
+    db.setSessionProviderId(folder, '', target.id);
+    const response = await patchProvider(target.id, {
+      anthropicBaseUrl: 'https://new.example.test',
+      webFetchPreflightPolicy: 'skip',
+    });
+    expect(response.status).toBe(200);
+    expect(queue.stopGroup).toHaveBeenCalled();
+    expect(
+      queue.drainProviderRunnersForCredentialRefresh,
+    ).not.toHaveBeenCalled();
+    expect(db.getSession(folder)).toBe(sessionId);
   });
 });
 
@@ -1078,7 +1094,7 @@ describe('provider session invalidation only removes attributable sessions', () 
     expect(db.getSession(folder)).toBeUndefined();
   });
 
-  test('clears an unbound session unless every changed protocol field is overridden', async () => {
+  test('a new address does not clear an unbound session whose workspace overrides the changed model', async () => {
     const folder = unique('partial-protocol-override');
     const jid = `web:${folder}`;
     const sessionId = unique('partial-override-session');
@@ -1102,7 +1118,7 @@ describe('provider session invalidation only removes attributable sessions', () 
     });
 
     expect(response.status).toBe(200);
-    expect(db.getSession(folder)).toBeUndefined();
+    expect(db.getSession(folder)).toBe(sessionId);
   });
 
   test('repairs a corrupt durable invalidation marker instead of leaving a permanent gate', async () => {
