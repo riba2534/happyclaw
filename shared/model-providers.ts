@@ -1916,6 +1916,30 @@ const MODEL_CAPABILITY_ENTRIES: readonly ModelCapabilityEntry[] = [
     defaultEffort: 'medium',
   },
   {
+    id: 'google/gemini-4-carbon',
+    aliases: ['gemini-4-carbon'],
+    name: 'Gemini 4 Carbon',
+    contextWindow: 1_048_576,
+    efforts: ['low', 'medium', 'high'],
+    defaultEffort: 'medium',
+  },
+  {
+    id: 'google/gemini-4-hydrogen',
+    aliases: ['gemini-4-hydrogen'],
+    name: 'Gemini 4 Hydrogen',
+    contextWindow: 1_048_576,
+    efforts: ['low', 'medium', 'high', 'xhigh'],
+    defaultEffort: 'high',
+  },
+  {
+    id: 'google/gemini-4-neon',
+    aliases: ['gemini-4-neon'],
+    name: 'Gemini 4 Neon',
+    contextWindow: 1_048_576,
+    efforts: ['low', 'medium', 'high', 'xhigh'],
+    defaultEffort: 'high',
+  },
+  {
     id: 'google/gemini-3.7-flash',
     aliases: ['gemini-3.7-flash'],
     name: 'Gemini 3.7 Flash',
@@ -2337,12 +2361,17 @@ export function modelCapabilities(id: string): ModelCapabilities | null {
 
 /**
  * The registry entry a model id not in the registry borrows from, following
- * cindy's generation inheritance: for GPT a sibling of the same generation
- * (`gpt-6.1-terra` → `gpt-6.1-sol`), else the same variant of the newest
- * older generation (`gpt-6.1-terra` → `gpt-5.6-terra`); for Claude only the
- * same variant of an older generation. Only efforts are inferred.
+ * cindy's generation inheritance: for GPT and Gemini a sibling of the same
+ * generation (`gpt-6.1-terra` → `gpt-6.1-sol`, `gemini-4-helium` →
+ * `gemini-4-argon`), else the same variant of the newest older generation
+ * (`gpt-6.1-terra` → `gpt-5.6-terra`, `gemini-3.8-flash` → `gemini-3.7-flash`);
+ * for Claude only the same variant of an older generation. Only efforts are
+ * inferred.
  */
 const familyCache = new Map<string, ModelCapabilities | null>();
+
+const GEMINI_FAMILY_RE =
+  /^gemini-(\d+(?:\.\d+)?)-([a-z]+(?:-lite)?)(?:-preview)?$/;
 
 function inferredFamilyCapabilities(id: string): ModelCapabilities | null {
   const { model } = splitOneMillionSuffix(id);
@@ -2359,6 +2388,7 @@ function computeFamilyCapabilities(model: string): ModelCapabilities | null {
   const bare = key.includes('/') ? key.slice(key.lastIndexOf('/') + 1) : key;
   const gpt = /^gpt-(\d+(?:\.\d+)?)-([a-z]+)$/.exec(bare);
   const claude = /^claude-([a-z]+)-(\d+(?:-\d+)?)$/.exec(bare);
+  const gemini = GEMINI_FAMILY_RE.exec(bare);
   const unique = [...new Set(capabilityLookup().values())];
   const version = (value: string) =>
     value.split(/[.-]/).map((part) => Number(part));
@@ -2416,6 +2446,17 @@ function computeFamilyCapabilities(model: string): ModelCapabilities | null {
       { version: claude[2], variant: claude[1] },
       // Claude variants differ (haiku takes fewer efforts than opus).
       false,
+    );
+  } else if (gemini) {
+    found = pick(
+      (name) => {
+        const m = GEMINI_FAMILY_RE.exec(name);
+        return m ? { version: m[1], variant: m[2] } : null;
+      },
+      { version: gemini[1], variant: gemini[2] },
+      // Same-generation Gemini siblings share at least the conservative base
+      // efforts (argon is listed first for Gemini 4: low/medium/high).
+      true,
     );
   }
   if (!found) return null;
@@ -2518,6 +2559,35 @@ export function resolveModelCapabilities(
     thinkingDisabled:
       declared && efforts.length === 0 && entry.thinks === false,
   };
+}
+
+const PINNED_EFFORT_SUFFIX_RE = /^(.+)-(low|medium|high|xhigh)$/i;
+
+/**
+ * When a relay encodes a fixed effort into a model id (e.g.
+ * `gemini-4-neon-high`), returns the base model's resolved capabilities and
+ * the pinned effort — only when the base model is known (registry or family)
+ * and accepts that effort. `-max` is excluded because vendors use it as a
+ * model tier name (e.g. `qwen3.8-max`, `kimi-k3-max`).
+ */
+export function effortSuffixedBaseModel(id: string): {
+  baseId: string;
+  effort: ModelEffort;
+  capabilities: ResolvedModelCapabilities;
+} | null {
+  const { model } = splitOneMillionSuffix(id);
+  const match = PINNED_EFFORT_SUFFIX_RE.exec(model);
+  if (!match) return null;
+  const baseId = match[1];
+  const effort = match[2].toLowerCase() as ModelEffort;
+  const capabilities = resolveModelCapabilities({ id: baseId });
+  if (
+    capabilities.effortsSource === 'none' ||
+    !capabilities.efforts.includes(effort)
+  ) {
+    return null;
+  }
+  return { baseId, effort, capabilities };
 }
 
 // ─── magpie quotas ─────────────────────────────────────────────

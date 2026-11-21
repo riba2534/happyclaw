@@ -8,6 +8,7 @@ import {
   classifyProviderError,
   describeBaseUrlProblem,
   effectiveProviderModels,
+  effortSuffixedBaseModel,
   findPresetsByBaseUrl,
   getModelPreset,
   isValidModelId,
@@ -667,6 +668,85 @@ describe('resolved capabilities', () => {
     expect(
       resolveModelCapabilities({ id: 'claude-haiku-4-5' }).effortsSource,
     ).toBe('none');
+  });
+
+  test('Gemini 4 lineup is in the registry and newer Gemini models infer efforts', () => {
+    expect(resolveModelCapabilities({ id: 'gemini-4-carbon' })).toMatchObject({
+      effortsSource: 'registry',
+      efforts: ['low', 'medium', 'high'],
+      defaultEffort: 'medium',
+      suggestedContextWindow: 1_048_576,
+    });
+    expect(
+      resolveModelCapabilities({ id: 'google/gemini-4-hydrogen' }),
+    ).toMatchObject({
+      effortsSource: 'registry',
+      efforts: ['low', 'medium', 'high', 'xhigh'],
+      defaultEffort: 'high',
+      suggestedContextWindow: 1_048_576,
+    });
+    expect(resolveModelCapabilities({ id: 'gemini-4-neon' })).toMatchObject({
+      effortsSource: 'registry',
+      efforts: ['low', 'medium', 'high', 'xhigh'],
+      defaultEffort: 'high',
+      suggestedContextWindow: 1_048_576,
+    });
+    // Same-generation Gemini 4 sibling borrows argon's conservative efforts.
+    const helium = resolveModelCapabilities({ id: 'google/gemini-4-helium' });
+    expect(helium).toMatchObject({
+      effortsSource: 'family',
+      efforts: ['low', 'medium', 'high'],
+      defaultEffort: 'medium',
+      contextWindow: null,
+      suggestedContextWindow: null,
+    });
+    // Newer Gemini 3.x flash/flash-lite variants inherit from older siblings.
+    for (const id of [
+      'gemini-3.8-flash',
+      'gemini-3.8-flash-preview',
+      'gemini-3.8-flash-lite',
+    ]) {
+      expect(resolveModelCapabilities({ id }), id).toMatchObject({
+        effortsSource: 'family',
+        efforts: ['low', 'medium', 'high'],
+        defaultEffort: 'medium',
+      });
+    }
+    // Effort-suffixed relay ids must not infer full multi-level efforts.
+    expect(
+      resolveModelCapabilities({ id: 'gemini-4-neon-high' }).effortsSource,
+    ).toBe('none');
+    expect(
+      resolveModelCapabilities({ id: 'gemini-3.8-flash-high' }).effortsSource,
+    ).toBe('none');
+  });
+
+  test('effortSuffixedBaseModel recognizes relay effort suffixes without hitting -max tiers', () => {
+    expect(effortSuffixedBaseModel('gemini-4-neon-high')).toMatchObject({
+      baseId: 'gemini-4-neon',
+      effort: 'high',
+      capabilities: {
+        effortsSource: 'registry',
+        suggestedContextWindow: 1_048_576,
+      },
+    });
+    expect(
+      effortSuffixedBaseModel('google/gemini-4-hydrogen-xhigh'),
+    ).toMatchObject({
+      baseId: 'google/gemini-4-hydrogen',
+      effort: 'xhigh',
+    });
+    expect(effortSuffixedBaseModel('gemini-3.8-flash-medium')).toMatchObject({
+      baseId: 'gemini-3.8-flash',
+      effort: 'medium',
+      capabilities: { effortsSource: 'family' },
+    });
+    // Argon does not support xhigh.
+    expect(effortSuffixedBaseModel('gemini-4-argon-xhigh')).toBeNull();
+    // -max is commonly a model tier name, never treated as a pinned effort.
+    expect(effortSuffixedBaseModel('kimi-k3-max')).toBeNull();
+    // Unknown base models stay unknown.
+    expect(effortSuffixedBaseModel('acme/vx-lab-high')).toBeNull();
   });
 });
 
