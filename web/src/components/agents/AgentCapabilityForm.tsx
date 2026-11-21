@@ -399,7 +399,8 @@ export function AgentCapabilityForm({
               模型默认使用该模型自己的默认等级；只列出所选模型支持的等级。
               {unverified && (
                 <span className="mt-1 block text-warning">
-                  未验证：没有这个模型的资料，先列出全部等级。
+                  未验证：没有这个模型的资料，先列出全部等级；可在 设置 → 模型
+                  里为该模型指定支持的档位。
                 </span>
               )}
               {takesNone && (

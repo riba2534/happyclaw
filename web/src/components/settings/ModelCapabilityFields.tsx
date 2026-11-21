@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { ChevronRight } from 'lucide-react';
 
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Toggle } from '@/components/ui/toggle';
 import {
@@ -11,6 +12,7 @@ import {
 import {
   MODEL_EFFORTS,
   defaultEffortFor,
+  effortSuffixedBaseModel,
   normalizeContextWindow,
   resolveModelCapabilities,
   type ConnectionModelRoles,
@@ -29,7 +31,7 @@ const CONTEXT_PRESETS = [128_000, 200_000, 256_000, 1_000_000] as const;
 const EFFORTS_UNVERIFIED_TITLE =
   '没有这个模型的资料，先按全部档位列出；不支持的档位请取消';
 const EFFORTS_UNKNOWN_TITLE =
-  '没有这个模型的资料，对话里可以选任意档位；点选档位后只提供所选的';
+  '没有这个模型的资料，对话里可以选任意档位；点选档位后只提供所选的，或点「设为不传档位」声明不传';
 const EFFORTS_NONE_TITLE = '不向这个模型传推理等级；点选档位后只提供所选的';
 const NO_THINKING_TITLE = '服务商声明这个模型不推理，对话会关闭思考';
 
@@ -37,9 +39,11 @@ const NO_THINKING_TITLE = '服务商声明这个模型不推理，对话会关�
  * What a model added to a connection starts with. A third-party connection
  * declares the window the registry suggests (launches use only declared
  * windows); an official one does not, since above 200K that is the billed 1M
- * opt-in. A model nothing is known about gets every effort, unverified, for
- * the user to trim; one the vendor declared to take none keeps its empty
- * list, which is a declaration and not a gap.
+ * opt-in. A relay variant whose id pins a known base model's effort (e.g.
+ * `gemini-4-neon-high`) starts with that single effort and the base model's
+ * suggested window. A model nothing is known about gets every effort,
+ * unverified, for the user to trim; one the vendor declared to take none keeps
+ * its empty list, which is a declaration and not a gap.
  */
 export function withAddDefaults(
   entry: ProviderModelEntry,
@@ -52,13 +56,29 @@ export function withAddDefaults(
 } {
   const next = { ...entry };
   const known = resolveModelCapabilities(entry);
-  const windowSuggested =
+  let windowSuggested =
     declareSuggestedWindow &&
     !next.contextWindow &&
     !!known.suggestedContextWindow;
   if (windowSuggested) next.contextWindow = known.suggestedContextWindow!;
   if (known.effortsSource !== 'none') {
     return { entry: next, effortsUnverified: false, windowSuggested };
+  }
+  const suffixed = effortSuffixedBaseModel(entry.id);
+  if (suffixed) {
+    if (
+      declareSuggestedWindow &&
+      !next.contextWindow &&
+      suffixed.capabilities.suggestedContextWindow
+    ) {
+      next.contextWindow = suffixed.capabilities.suggestedContextWindow;
+      windowSuggested = true;
+    }
+    return {
+      entry: { ...next, efforts: [suffixed.effort] },
+      effortsUnverified: false,
+      windowSuggested,
+    };
   }
   return {
     entry: { ...next, efforts: [...MODEL_EFFORTS] },
@@ -124,6 +144,12 @@ export function ModelCapabilityFields({
     if (next.defaultEffort && !nextEfforts.includes(next.defaultEffort)) {
       delete next.defaultEffort;
     }
+    onChange(next, true);
+  };
+
+  const declareNoEffort = () => {
+    const next: ProviderModelEntry = { ...entry, efforts: [] };
+    delete next.defaultEffort;
     onChange(next, true);
   };
 
@@ -194,6 +220,19 @@ export function ModelCapabilityFields({
           </Badge>
         )}
       </div>
+      {unknown && (
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          onClick={declareNoEffort}
+          disabled={disabled}
+          title={EFFORTS_NONE_TITLE}
+          className="h-7 px-2 text-caption text-muted-foreground hover:text-foreground pointer-coarse:h-11"
+        >
+          设为不传档位
+        </Button>
+      )}
       {showDefaultEffort && efforts.length > 0 && (
         <NativeSelect
           size="sm"

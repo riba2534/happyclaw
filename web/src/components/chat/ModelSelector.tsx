@@ -1568,7 +1568,7 @@ function ModelPanel({
 const EFFORTS_SOURCE_TITLES: Partial<Record<ModelCapabilitySource, string>> = {
   family: '按同系列模型推断，未经上游确认',
   declared: '在模型连接里手动声明',
-  none: '没有这个模型的资料，各档位都可以试，但未经验证',
+  none: '没有这个模型的资料，各档位都可以试，但未经验证；可在 设置 → 模型 中指定',
 };
 
 /**

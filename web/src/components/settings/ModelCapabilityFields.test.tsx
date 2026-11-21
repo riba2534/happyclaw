@@ -47,6 +47,34 @@ describe('withAddDefaults', () => {
       withAddDefaults({ id: 'acme/vx-pro', efforts: ['high'] }, true).entry,
     ).toEqual({ id: 'acme/vx-pro', efforts: ['high'] });
   });
+
+  test('effort-suffixed relay variants pin that single effort and inherit the base window', () => {
+    expect(withAddDefaults({ id: 'gemini-4-neon-high' }, true)).toEqual({
+      entry: {
+        id: 'gemini-4-neon-high',
+        contextWindow: 1_048_576,
+        efforts: ['high'],
+      },
+      effortsUnverified: false,
+      windowSuggested: true,
+    });
+    expect(withAddDefaults({ id: 'gemini-4-neon-high' }, false)).toEqual({
+      entry: { id: 'gemini-4-neon-high', efforts: ['high'] },
+      effortsUnverified: false,
+      windowSuggested: false,
+    });
+    // Unsupported suffix or -max model tier falls back to unverified full list.
+    expect(withAddDefaults({ id: 'gemini-4-argon-xhigh' }, true)).toEqual({
+      entry: { id: 'gemini-4-argon-xhigh', efforts: FULL },
+      effortsUnverified: true,
+      windowSuggested: false,
+    });
+    expect(withAddDefaults({ id: 'kimi-k3-max' }, true)).toEqual({
+      entry: { id: 'kimi-k3-max', efforts: FULL },
+      effortsUnverified: true,
+      windowSuggested: false,
+    });
+  });
 });
 
 describe('ModelCapabilityFields', () => {
@@ -125,5 +153,26 @@ describe('ModelCapabilityFields', () => {
       { id: 'acme/vx-lab', efforts: ['high'] },
       true,
     );
+  });
+
+  test('an unknown model can be marked as passing no effort in one click', async () => {
+    await render({ id: 'acme/vx-lab' });
+    const clearButton = [...container.querySelectorAll('button')].find(
+      (button) => button.textContent === '设为不传档位',
+    );
+    expect(clearButton).toBeTruthy();
+    await click(clearButton);
+    expect(onChange).toHaveBeenCalledWith(
+      { id: 'acme/vx-lab', efforts: [] },
+      true,
+    );
+  });
+
+  test('a declared-none model does not show the one-click clear action', async () => {
+    await render({ id: 'acme/vx-mini', efforts: [] });
+    const clearButton = [...container.querySelectorAll('button')].find(
+      (button) => button.textContent === '设为不传档位',
+    );
+    expect(clearButton).toBeUndefined();
   });
 });
