@@ -160,4 +160,21 @@ describe('GET /:jid/files/preview/:path caching', () => {
     expect(res.headers.get('ETag')).not.toBe(etag);
     expect((await res.arrayBuffer()).byteLength).toBe(4096);
   });
+
+  test('uses RFC 5987 filename*=UTF-8 for non-inline attachment downloads with Unicode names', async () => {
+    const fileName = '测试表格.xlsx';
+    fs.writeFileSync(
+      path.join(workspaceDir, fileName),
+      Buffer.from('PK\x03\x04'),
+    );
+    const xlsxUrl = `http://localhost/web%3Apreview/files/preview/${Buffer.from(fileName).toString('base64url')}`;
+    const res = await routes.request(xlsxUrl);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('Content-Type')).toBe('application/octet-stream');
+    const disposition = res.headers.get('Content-Disposition') ?? '';
+    expect(disposition).toContain('attachment; filename="____.xlsx"');
+    expect(disposition).toContain(
+      `filename*=UTF-8''${encodeURIComponent(fileName)}`,
+    );
+  });
 });

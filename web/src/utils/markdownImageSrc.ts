@@ -77,6 +77,19 @@ export function resolveMarkdownImageSrc(
 }
 
 /**
+ * Extract the decoded workspace-relative path for a relative markdown link,
+ * or null for in-page anchors, absolute URLs, and root-relative paths.
+ */
+export function resolveMarkdownRelativePath(href: string): string | null {
+  if (!href || href.startsWith('#') || NON_WORKSPACE_URL.test(href)) {
+    return null;
+  }
+  const path = href.replace(/[?#].*$/, '');
+  if (!path) return null;
+  return decodeMarkdownImagePath(path);
+}
+
+/**
  * Resolve a relative markdown link (`[报告](output/report.md)`) to the
  * workspace file preview API, which serves safe types inline and downloads
  * the rest. Left as is: in-page anchors, URLs with a scheme, protocol- and
@@ -91,4 +104,19 @@ export function resolveMarkdownLinkHref(
   const path = href.replace(/[?#].*$/, '');
   if (!path) return href;
   return workspaceFileUrl('preview', path, groupJid);
+}
+
+/**
+ * Resolve a relative markdown link to the workspace file download API
+ * (always served as an attachment with an RFC 5987 filename).
+ */
+export function resolveMarkdownDownloadHref(
+  href: string,
+  groupJid?: string,
+): string {
+  if (!groupJid || !href || href.startsWith('#')) return href;
+  if (NON_WORKSPACE_URL.test(href)) return href;
+  const path = href.replace(/[?#].*$/, '');
+  if (!path) return href;
+  return workspaceFileUrl('download', path, groupJid);
 }
