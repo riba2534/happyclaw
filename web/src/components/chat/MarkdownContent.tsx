@@ -21,10 +21,13 @@ import { useIsPhone } from '../layout/phone';
 import { DetailSheet } from './DetailSheet';
 import { downloadFromUrl, downloadTextFile } from '../../utils/download';
 import { ImageLightbox } from './ImageLightbox';
+import { isOfficeFile, OfficePreview } from './OfficePreview';
 import {
   decodeMarkdownImagePath,
+  resolveMarkdownDownloadHref,
   resolveMarkdownImageSrc,
   resolveMarkdownLinkHref,
+  resolveMarkdownRelativePath,
 } from '../../utils/markdownImageSrc';
 import { cn } from '@/lib/utils';
 import { REMARK_REHYPE_OPTIONS } from '../../lib/markdown/pipeline';
@@ -528,10 +531,11 @@ const IMAGE_FILE = /\.(?:avif|bmp|gif|jpe?g|png|svg|webp)$/i;
 
 /**
  * A link in Markdown. In-page links (footnotes) jump within the message, with
- * a finger-sized hit area; links elsewhere open in a new tab. A workspace
- * file on a phone opens inside the app instead: a new tab would leave the
- * installed PWA for the browser. An image goes to the image viewer, anything
- * else to a sheet that previews it, with a download for what cannot be shown.
+ * a finger-sized hit area; links elsewhere open in a new tab. Workspace Office
+ * documents open in the OfficePreview overlay on both desktop and phone (with
+ * server-side PDF conversion and original-file download fallback). Other
+ * workspace files on a phone open inside the app instead of leaving the PWA:
+ * images in the image viewer, anything else in a sheet with a download button.
  */
 function MarkdownLink({
   href,
@@ -544,16 +548,34 @@ function MarkdownLink({
   const isPhone = useIsPhone();
   const [preview, setPreview] = useState(false);
   const inPage = href?.startsWith('#') ?? false;
+  const relativePath =
+    href && !inPage ? resolveMarkdownRelativePath(href) : null;
   const resolved =
     href && !inPage ? resolveMarkdownLinkHref(href, groupJid) : href;
-  const workspaceFile = !!href && !inPage && resolved !== href;
-  const inApp = isPhone && workspaceFile;
+  const workspaceFile =
+    !!href && !inPage && resolved !== href && relativePath !== null;
   const name = (href && markdownFileName(href)) || '文件';
+  const isOffice = workspaceFile && isOfficeFile(name);
+  const downloadUrl =
+    workspaceFile && href
+      ? resolveMarkdownDownloadHref(href, groupJid)
+      : resolved;
+  const inApp = workspaceFile && (isPhone || isOffice);
+  const baseJid = groupJid ? groupJid.replace(/#agent:.*$/, '') : '';
+  const triggerDownload = () => {
+    if (!downloadUrl) return;
+    // iOS and an installed app ignore a link's `download`.
+    void downloadFromUrl(
+      new URL(downloadUrl, window.location.href).href,
+      name,
+    ).catch(() => toast.error('下载失败'));
+  };
+
   return (
     <>
       <a
         {...rest}
-        href={resolved}
+        href={isOffice ? downloadUrl : resolved}
         {...(inPage
           ? { onClick: scrollToMarkdownAnchor, 'data-hc-anchor': '' }
           : inApp
@@ -575,7 +597,21 @@ function MarkdownLink({
       </a>
       {preview &&
         resolved &&
-        (IMAGE_FILE.test(name) ? (
+        (isOffice && baseJid && relativePath ? (
+          <OfficePreview
+            groupJid={baseJid}
+            file={{
+              name,
+              path: relativePath,
+              type: 'file',
+              size: 0,
+              modifiedAt: '',
+              isSystem: false,
+            }}
+            onClose={() => setPreview(false)}
+            onDownload={triggerDownload}
+          />
+        ) : IMAGE_FILE.test(name) ? (
           <ImageLightbox
             images={[resolved]}
             names={[name]}
@@ -589,17 +625,7 @@ function MarkdownLink({
             className="h-[calc(var(--vvh,100dvh)-4rem)]"
             bodyClassName="flex flex-col p-0"
             action={
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() =>
-                  // iOS and an installed app ignore a link's `download`.
-                  void downloadFromUrl(
-                    new URL(resolved, window.location.href).href,
-                    name,
-                  ).catch(() => toast.error('下载失败'))
-                }
-              >
+              <Button variant="outline" size="sm" onClick={triggerDownload}>
                 <Download aria-hidden="true" />
                 下载
               </Button>

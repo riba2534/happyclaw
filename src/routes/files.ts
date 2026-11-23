@@ -891,7 +891,7 @@ fileRoutes.get('/:jid/files/preview/:path', authMiddleware, (c) => {
       disposition = 'inline';
     } else {
       contentType = 'application/octet-stream';
-      disposition = `attachment; filename="${encodeURIComponent(fileName)}"`;
+      disposition = buildAttachmentContentDisposition(fileName);
     }
 
     // 预览经公网链路往返很慢：用大小+修改时间做 ETag，没变就回 304、不再传整个文件。
