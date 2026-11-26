@@ -190,9 +190,20 @@ function syncMcpToSettings(
   group: RegisteredGroup & { jid: string },
   meta: WorkspaceMeta,
   existingSettings?: Record<string, unknown>,
+  removedId?: string,
 ): void {
   const settings = existingSettings ?? readWorkspaceSettings(group);
   const mcpServers: Record<string, Record<string, unknown>> = {};
+
+  // Keep servers that exist only in settings.json (externally added, not
+  // tracked in metadata) unless this call is deleting that id. Servers that
+  // are in metadata are rebuilt below, so disabled ones stay removed.
+  const currentMcp =
+    (settings.mcpServers as Record<string, Record<string, unknown>>) || {};
+  for (const [id, server] of Object.entries(currentMcp)) {
+    if (meta.mcpServers[id] || id === removedId) continue;
+    mcpServers[id] = server;
+  }
 
   for (const [id, entry] of Object.entries(meta.mcpServers)) {
     if (!entry.enabled) continue;
@@ -670,8 +681,19 @@ workspaceConfigRoutes.patch(
           ? {
               type: settingsEntry.type as 'http' | 'sse',
               url: settingsEntry.url as string,
+              ...(settingsEntry.headers
+                ? { headers: settingsEntry.headers as Record<string, string> }
+                : {}),
             }
-          : { command: settingsEntry.command as string }),
+          : {
+              command: settingsEntry.command as string,
+              ...(settingsEntry.args
+                ? { args: settingsEntry.args as string[] }
+                : {}),
+              ...(settingsEntry.env
+                ? { env: settingsEntry.env as Record<string, string> }
+                : {}),
+            }),
       };
       meta.mcpServers[id] = entry;
     }
@@ -726,7 +748,7 @@ workspaceConfigRoutes.delete(
     if (hadMeta) {
       writeWorkspaceMeta(group, meta);
     }
-    syncMcpToSettings(group, meta, settings);
+    syncMcpToSettings(group, meta, settings, id);
 
     return c.json({ success: true });
   },
