@@ -35,7 +35,11 @@ import { readFile } from 'node:fs/promises';
 import { logger } from './logger.js';
 import { storeChatMetadata, storeMessageDirect, updateChatName } from './db.js';
 import { markdownToPlainText, splitTextChunks } from './im-utils.js';
-import { saveDownloadedFile, FileTooLargeError } from './im-downloader.js';
+import {
+  saveDownloadedFile,
+  FileTooLargeError,
+  MAX_FILE_SIZE,
+} from './im-downloader.js';
 import { ProcessingLock, isStale } from './im-safety/index.js';
 import {
   evaluateChannelAdmission,
@@ -691,20 +695,51 @@ export function createWhatsAppConnection(
     const downloadEnvelope: WAMessage =
       msg.message === content ? msg : { ...msg, message: content };
 
+    const captionLine = caption ? `\n${caption}` : '';
+    const fileName =
+      (node as { fileName?: string }).fileName ||
+      `wa_${kind}_${Date.now()}${extFromMime(node.mimetype) || defaultExt}`;
+
+    // Baileys' 'buffer' mode concatenates the whole decrypted media with no
+    // in-flight cap (WhatsApp documents can be ~2GB). Drain the 'stream' mode
+    // ourselves and abort as soon as MAX_FILE_SIZE is crossed, like the other
+    // channels' capped downloaders.
     let buffer: Buffer;
+    let received = 0;
     try {
-      buffer = await downloadMediaMessage(
+      const stream = await downloadMediaMessage(
         downloadEnvelope,
-        'buffer',
+        'stream',
         { options: { signal: lease.signal } },
         {
           logger: logger.child({ feature: 'whatsapp-media' }) as never,
           reuploadRequest: activeSock.updateMediaMessage as never,
         },
       );
+      const chunks: Buffer[] = [];
+      try {
+        for await (const chunk of stream as AsyncIterable<Buffer>) {
+          received += chunk.length;
+          if (received > MAX_FILE_SIZE) {
+            throw new FileTooLargeError(fileName, received);
+          }
+          chunks.push(chunk);
+        }
+      } finally {
+        stream.destroy();
+      }
+      buffer = Buffer.concat(chunks, received);
       inboundLifecycle.assertCurrent(lease);
     } catch (err) {
       inboundLifecycle.assertCurrent(lease);
+      if (err instanceof FileTooLargeError) {
+        if (!groupFolder) {
+          return { content: `[${label}（未关联工作区）${captionLine}]` };
+        }
+        return {
+          content: `[${label}: 文件过大未保存（超过 ${MAX_FILE_SIZE / 1024 / 1024}MB 上限）${captionLine}]`,
+        };
+      }
       logger.warn(
         { err, kind, msgId: msg.key?.id },
         'WhatsApp media download failed',
@@ -713,16 +748,10 @@ export function createWhatsAppConnection(
       return { content: `[${label} 下载失败${cap}]` };
     }
 
-    const captionLine = caption ? `\n${caption}` : '';
-
     if (!groupFolder) {
       // No workspace mapping for this chat — skip disk save, just signal what arrived
       return { content: `[${label}（未关联工作区）${captionLine}]` };
     }
-
-    const fileName =
-      (node as { fileName?: string }).fileName ||
-      `wa_${kind}_${Date.now()}${extFromMime(node.mimetype) || defaultExt}`;
 
     let savedPath: string;
     try {

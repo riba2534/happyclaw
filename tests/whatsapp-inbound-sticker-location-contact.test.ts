@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { Readable } from 'node:stream';
 
 import { afterAll, beforeEach, describe, expect, test, vi } from 'vitest';
 import type { proto } from 'baileys';
@@ -36,9 +37,19 @@ const harness = vi.hoisted(() => {
   return { sockets: [] as ReturnType<typeof createSocket>[], createSocket };
 });
 
-const downloadMediaMessage = vi.hoisted(() =>
-  vi.fn(async () => Buffer.from('sticker-bytes')),
-);
+const downloadMediaMessage = vi.hoisted(() => vi.fn());
+
+// Baileys returns a Readable for 'stream' and the concatenated Buffer for
+// 'buffer'; serve the same bytes either way.
+function mediaFor(type: unknown, bytes: Buffer) {
+  return type === 'stream' ? Readable.from([bytes]) : bytes;
+}
+
+function serveMedia(bytes: string) {
+  downloadMediaMessage.mockImplementation(async (_message, type) =>
+    mediaFor(type, Buffer.from(bytes)),
+  );
+}
 
 vi.mock('baileys', async (importOriginal) => {
   const original = (await importOriginal()) as Record<string, unknown>;
@@ -161,7 +172,7 @@ describe('WhatsApp inbound sticker / location / contact (live upsert)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     harness.sockets.length = 0;
-    downloadMediaMessage.mockResolvedValue(Buffer.from('sticker-bytes'));
+    serveMedia('sticker-bytes');
   });
 
   test('authorized stickerMessage persists and notifies via messages.upsert', async () => {
@@ -176,7 +187,9 @@ describe('WhatsApp inbound sticker / location / contact (live upsert)', () => {
     });
     expect(downloadMediaMessage).toHaveBeenCalled();
     expect(db.storeMessageDirect).toHaveBeenCalled();
-    expect(String(db.storeMessageDirect.mock.calls[0][4])).toMatch(/贴纸/);
+    expect(db.storeMessageDirect.mock.calls[0][4]).toBe(
+      '[贴纸（未关联工作区）]',
+    );
   });
 
   test('authorized ptvMessage video note downloads and persists', async () => {
@@ -192,8 +205,8 @@ describe('WhatsApp inbound sticker / location / contact (live upsert)', () => {
 
     expect(downloadMediaMessage).toHaveBeenCalledOnce();
     expect(db.storeMessageDirect).toHaveBeenCalledOnce();
-    expect(String(db.storeMessageDirect.mock.calls[0][4])).toMatch(
-      /视频.*video note/s,
+    expect(db.storeMessageDirect.mock.calls[0][4]).toBe(
+      '[视频（未关联工作区）\nvideo note]',
     );
   });
 
@@ -234,7 +247,9 @@ describe('WhatsApp inbound sticker / location / contact (live upsert)', () => {
     };
     expect(passed.message?.stickerMessage).toBeTruthy();
     expect(passed.message?.lottieStickerMessage).toBeUndefined();
-    expect(String(db.storeMessageDirect.mock.calls[0][4])).toMatch(/贴纸/);
+    expect(db.storeMessageDirect.mock.calls[0][4]).toBe(
+      '[贴纸（未关联工作区）]',
+    );
   });
 
   test('authorized locationMessage persists as text via messages.upsert', async () => {
@@ -317,10 +332,10 @@ describe('WhatsApp inbound sticker / location / contact (live upsert)', () => {
     let releaseDownload!: (value: Buffer) => void;
     let admittedSignal: AbortSignal | undefined;
     downloadMediaMessage.mockImplementation(
-      async (_message, _type, options) =>
-        new Promise<Buffer>((resolve) => {
+      async (_message, type, options) =>
+        new Promise((resolve) => {
           admittedSignal = options?.options?.signal ?? undefined;
-          releaseDownload = resolve;
+          releaseDownload = (value) => resolve(mediaFor(type, value));
         }),
     );
 
@@ -342,7 +357,7 @@ describe('WhatsApp inbound sticker / location / contact (live upsert)', () => {
     await Promise.all([oldAttempt, disconnect]);
     expect(db.storeMessageDirect).not.toHaveBeenCalled();
 
-    downloadMediaMessage.mockResolvedValue(Buffer.from('fresh-sticker'));
+    serveMedia('fresh-sticker');
     const second = await connect(true);
     await second.socket.emit('messages.upsert', {
       type: 'notify',
@@ -353,6 +368,9 @@ describe('WhatsApp inbound sticker / location / contact (live upsert)', () => {
       messages: [inbound],
     });
     expect(db.storeMessageDirect).toHaveBeenCalledTimes(1);
+    expect(db.storeMessageDirect.mock.calls[0][4]).toBe(
+      '[贴纸（未关联工作区）]',
+    );
     await second.connection.disconnect();
   });
 
@@ -360,10 +378,10 @@ describe('WhatsApp inbound sticker / location / contact (live upsert)', () => {
     let releaseDownload!: (value: Buffer) => void;
     let admittedSignal: AbortSignal | undefined;
     downloadMediaMessage.mockImplementation(
-      async (_message, _type, options) =>
-        new Promise<Buffer>((resolve) => {
+      async (_message, type, options) =>
+        new Promise((resolve) => {
           admittedSignal = options?.options?.signal ?? undefined;
-          releaseDownload = resolve;
+          releaseDownload = (value) => resolve(mediaFor(type, value));
         }),
     );
 
@@ -389,13 +407,16 @@ describe('WhatsApp inbound sticker / location / contact (live upsert)', () => {
     await Promise.all([oldAttempt, disconnect]);
     expect(db.storeMessageDirect).not.toHaveBeenCalled();
 
-    downloadMediaMessage.mockResolvedValue(Buffer.from('fresh-lottie'));
+    serveMedia('fresh-lottie');
     const second = await connect(true);
     await second.socket.emit('messages.upsert', {
       type: 'notify',
       messages: [inbound],
     });
     expect(db.storeMessageDirect).toHaveBeenCalledOnce();
+    expect(db.storeMessageDirect.mock.calls[0][4]).toBe(
+      '[贴纸（未关联工作区）]',
+    );
     await second.connection.disconnect();
   });
 
