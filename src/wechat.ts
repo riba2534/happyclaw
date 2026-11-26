@@ -22,7 +22,11 @@ import {
   detectImageMimeType,
   detectImageMimeTypeStrict,
 } from './image-detector.js';
-import { downloadAndDecryptMedia, uploadMediaBuffer } from './wechat-crypto.js';
+import {
+  downloadAndDecryptMedia,
+  uploadMediaBuffer,
+  WeChatMediaTooLargeError,
+} from './wechat-crypto.js';
 import { createDedupCache } from './im-utils.js';
 import { weChatIlinkHeaders } from './wechat-onboarding.js';
 import { resolveAdmittedChannelRoute } from './channel-admission.js';
@@ -1025,6 +1029,15 @@ export function createWeChatConnection(
 
   // ─── CDN Media Download ────────────────────────────────────
 
+  /** Log and describe inbound media rejected by the MAX_FILE_SIZE cap. */
+  function mediaTooLargeText(label: string, err: WeChatMediaTooLargeError) {
+    logger.warn(
+      { size: err.size, maxBytes: err.maxBytes },
+      `WeChat ${label} exceeds max file size, skipping`,
+    );
+    return `文件过大未保存（超过 ${MAX_FILE_SIZE / 1024 / 1024}MB 上限）`;
+  }
+
   /**
    * Download, decrypt, and save a CDN media item (image, file, etc.).
    * `resolveFileName` receives the decrypted buffer so callers can inspect
@@ -1047,6 +1060,7 @@ export function createWeChatConnection(
       media.aes_key,
       cdnBaseUrl,
       ensureDispatcher(),
+      MAX_FILE_SIZE,
     );
 
     if (!buffer || buffer.length === 0) {
@@ -1055,11 +1069,7 @@ export function createWeChatConnection(
     }
 
     if (buffer.length > MAX_FILE_SIZE) {
-      logger.warn(
-        { size: buffer.length },
-        `WeChat ${label} exceeds max file size, skipping`,
-      );
-      return null;
+      throw new WeChatMediaTooLargeError(buffer.length, MAX_FILE_SIZE);
     }
 
     let savedPath: string | undefined;
@@ -1142,6 +1152,9 @@ export function createWeChatConnection(
       }
       return { attachmentEntry };
     } catch (err) {
+      if (err instanceof WeChatMediaTooLargeError) {
+        return { textPrefix: `[图片消息: ${mediaTooLargeText('image', err)}]` };
+      }
       logger.warn({ err }, 'WeChat image download/decrypt failed');
       return { textPrefix: downloadFailed };
     }
@@ -1176,6 +1189,10 @@ export function createWeChatConnection(
       }
       return fallback;
     } catch (err) {
+      if (err instanceof WeChatMediaTooLargeError) {
+        const name = kind === 'video' ? '视频消息' : '语音消息';
+        return `[${name}: ${mediaTooLargeText(kind, err)}]`;
+      }
       logger.warn({ err, kind }, `WeChat ${kind} download/decrypt failed`);
       return fallback;
     }
@@ -1199,6 +1216,9 @@ export function createWeChatConnection(
       // CDN media unavailable, fall back to name-only label
       return `[文件: ${fileName}]`;
     } catch (err) {
+      if (err instanceof WeChatMediaTooLargeError) {
+        return `[文件: ${fileName}，${mediaTooLargeText('file', err)}]`;
+      }
       logger.warn({ err, fileName }, 'WeChat file download/decrypt failed');
       return `[文件: ${fileName}]`;
     }

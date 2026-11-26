@@ -16,7 +16,12 @@ const db = vi.hoisted(() => ({
   isDatabaseInitialized: () => false,
 }));
 
-vi.mock('../src/wechat-crypto.js', () => crypto);
+// Keep the real exports (e.g. WeChatMediaTooLargeError for wechat.ts's
+// instanceof checks); only the network functions are stubbed.
+vi.mock('../src/wechat-crypto.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/wechat-crypto.js')>()),
+  ...crypto,
+}));
 vi.mock('../src/im-downloader.js', () => downloader);
 vi.mock('../src/db.js', () => db);
 vi.mock('../src/logger.js', () => ({

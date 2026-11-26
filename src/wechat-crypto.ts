@@ -1,7 +1,11 @@
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
-import { fetch as undiciFetch, type Dispatcher } from 'undici';
+import {
+  fetch as undiciFetch,
+  type Dispatcher,
+  type Response as UndiciResponse,
+} from 'undici';
 
 import { logger } from './logger.js';
 
@@ -32,6 +36,18 @@ export function decryptAesEcb(ciphertext: Buffer, key: Buffer): Buffer {
 export function aesEcbPaddedSize(plaintextSize: number): number {
   // PKCS7 always adds at least 1 byte, up to block size (16)
   return Math.ceil((plaintextSize + 1) / 16) * 16;
+}
+
+/** 入站 CDN 媒体超过字节上限（在解密前、读取过程中即中止） */
+export class WeChatMediaTooLargeError extends Error {
+  readonly size: number;
+  readonly maxBytes: number;
+  constructor(size: number, maxBytes: number) {
+    super(`WeChat media too large: ${size} bytes (max ${maxBytes} bytes)`);
+    this.name = 'WeChatMediaTooLargeError';
+    this.size = size;
+    this.maxBytes = maxBytes;
+  }
 }
 
 /** 构造 CDN 下载 URL */
@@ -75,12 +91,50 @@ function parseAesKey(aesKeyBase64: string): Buffer {
   );
 }
 
-/** 从 CDN 下载并 AES-128-ECB 解密 */
+/**
+ * Read a CDN response body, giving up as soon as it exceeds `maxCiphertext`
+ * bytes: an oversized Content-Length is rejected before reading, and a body
+ * without one (chunked) is cancelled mid-stream once the count passes the cap.
+ */
+async function readCappedCiphertext(
+  resp: UndiciResponse,
+  maxCiphertext: number,
+  maxBytes: number,
+): Promise<Buffer> {
+  const declared = Number(resp.headers.get('content-length'));
+  if (declared > maxCiphertext) {
+    await resp.body?.cancel().catch(() => {});
+    throw new WeChatMediaTooLargeError(declared, maxBytes);
+  }
+  if (!resp.body) return Buffer.from(await resp.arrayBuffer());
+
+  const reader = resp.body.getReader();
+  const chunks: Buffer[] = [];
+  let received = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    received += value.byteLength;
+    if (received > maxCiphertext) {
+      await reader.cancel().catch(() => {});
+      throw new WeChatMediaTooLargeError(received, maxBytes);
+    }
+    chunks.push(Buffer.from(value.buffer, value.byteOffset, value.byteLength));
+  }
+  return Buffer.concat(chunks, received);
+}
+
+/**
+ * 从 CDN 下载并 AES-128-ECB 解密。
+ * 传入 `maxBytes`（明文上限）时，密文超过 aesEcbPaddedSize(maxBytes) 即在解密前
+ * 抛出 WeChatMediaTooLargeError，不会把整个对象读入内存。
+ */
 export async function downloadAndDecryptMedia(
   encryptQueryParam: string,
   aesKeyBase64: string,
   cdnBaseUrl?: string,
   dispatcher?: Dispatcher,
+  maxBytes?: number,
 ): Promise<Buffer> {
   const url = buildCdnDownloadUrl(encryptQueryParam, cdnBaseUrl);
   const key = parseAesKey(aesKeyBase64);
@@ -98,7 +152,10 @@ export async function downloadAndDecryptMedia(
     throw new Error(`CDN download failed: ${resp.status} ${resp.statusText}`);
   }
 
-  const ciphertext = Buffer.from(await resp.arrayBuffer());
+  const ciphertext =
+    maxBytes === undefined
+      ? Buffer.from(await resp.arrayBuffer())
+      : await readCappedCiphertext(resp, aesEcbPaddedSize(maxBytes), maxBytes);
   return decryptAesEcb(ciphertext, key);
 }
 
