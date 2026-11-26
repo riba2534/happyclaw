@@ -11429,8 +11429,12 @@ async function processAgentConversation(
   // A session streams only when the message originates from an IM channel
   // (replySourceImJid); Web-only interactions need no Feishu streaming card.
   // The key is session-scoped so sessions bound to one chat never collide (#242).
-  const streamingSessionJid = replySourceImJid
-    ? `${replySourceImJid}#agent:${agentId}`
+  // A warm runner first spawned for a Web input may later admit an IM input,
+  // so the key follows the IM route of the card currently being projected.
+  const streamingSessionJidFor = (imJid: string): string =>
+    `${imJid}#agent:${agentId}`;
+  let streamingSessionJid = replySourceImJid
+    ? streamingSessionJidFor(replySourceImJid)
     : undefined;
   const healthyAgentCompletedInputTurns = new Set<string>();
   const agentInputUsageProjection = new InputUsageProjection(lastProcessed.id);
@@ -12492,10 +12496,11 @@ async function processAgentConversation(
       return;
     }
     const admitted = admittedWarmAgentInputs.get(inputTurnId);
-    if (!admitted?.imJid || !admitted.lifecycle || !streamingSessionJid) return;
+    if (!admitted?.imJid || !admitted.lifecycle) return;
+    const projectionJid = streamingSessionJidFor(admitted.imJid);
     const session = await createReplyStreamingSession(
       admitted.imJid,
-      (messageId) => registerMessageIdMapping(messageId, streamingSessionJid),
+      (messageId) => registerMessageIdMapping(messageId, projectionJid),
       admitted.lifecycle,
       admitted.inputMessageId,
     ).catch((error) => {
@@ -12508,9 +12513,10 @@ async function processAgentConversation(
     if (!session) return;
     agentStreamingSessionsByInput.set(inputTurnId, {
       session,
-      jid: streamingSessionJid,
+      jid: projectionJid,
     });
-    registerStreamingSession(streamingSessionJid, session);
+    registerStreamingSession(projectionJid, session);
+    streamingSessionJid = projectionJid;
     agentStreamingSession = session;
     agentStreamingAccText = '';
   };

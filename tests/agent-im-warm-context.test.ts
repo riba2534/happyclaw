@@ -235,7 +235,14 @@ async function fixture(
     agentProcessingIndicatorJidsByInput: new Map(),
     trackProcessingIndicator: vi.fn(),
     activeRouteAdmissions: new Map(),
+    // The runner of input A started without an IM reply route.
     streamingSessionJid: undefined,
+    streamingSessionJidFor: (imJid: string) => `${imJid}#agent:agent1`,
+    createReplyStreamingSession: vi.fn(async () => ({ isActive: () => true })),
+    registerMessageIdMapping: vi.fn(),
+    registerStreamingSession: vi.fn(),
+    agentStreamingSession: undefined,
+    agentStreamingAccText: '',
     agentId: 'agent1',
     admitWarmSessionInputs: () => true,
     virtualChatJid: jid,
@@ -379,6 +386,21 @@ test('same-Bot IM follow-up preserves context and keeps A active until B execute
   await f.globals.activateAgentProjectionForInput(payload.receipt.deliveryId);
   // Rendering B or late A output cannot change capability ownership.
   expect(f.registry.require(f.scope, 'cold-a').context).toEqual(f.cold);
+  // B came from IM, so it projects its own card even though the runner that
+  // took it was first spawned without an IM reply route.
+  const projectionJid = `${f.warm.sourceJid}#agent:agent1`;
+  expect(f.globals.createReplyStreamingSession).toHaveBeenCalledTimes(1);
+  expect(f.globals.createReplyStreamingSession.mock.calls[0][0]).toBe(
+    f.warm.sourceJid,
+  );
+  expect(f.globals.registerStreamingSession).toHaveBeenCalledWith(
+    projectionJid,
+    f.globals.agentStreamingSession,
+  );
+  expect(f.globals.streamingSessionJid).toBe(projectionJid);
+  expect(
+    f.globals.agentStreamingSessionsByInput.get(payload.receipt.deliveryId),
+  ).toMatchObject({ jid: projectionJid });
 });
 
 test('idle injection waits for runner activation before changing the input', async () => {
