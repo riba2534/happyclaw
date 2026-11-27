@@ -252,6 +252,29 @@ describe('POST /api/config/gemini/oauth/callback', () => {
     expect(form.get('code')).toBe('auth-code');
   });
 
+  test('keeps a catalog larger than 64 KB intact', async () => {
+    // Antigravity returns a multi-hundred-KB catalog for some accounts; the
+    // response must be parsed in full rather than truncated.
+    const bigCatalog: Record<string, unknown> = {};
+    for (let i = 0; i < 96; i += 1) {
+      bigCatalog[`gemini-test-model-${i}`] = {
+        displayName: `Gemini Test Model ${i} ${'x'.repeat(800)}`,
+        maxTokens: 1_048_576,
+        maxOutputTokens: 65_536,
+      };
+    }
+    const body = JSON.stringify({ models: bigCatalog });
+    expect(body.length).toBeGreaterThan(64 * 1024);
+    modelsEndpoint.mockImplementationOnce(async () =>
+      json(200, { models: bigCatalog }),
+    );
+    const state = await startFlow();
+    const response = await callback(callbackUrl(state, '127.0.0.1'), state);
+    expect(response.status).toBe(200);
+    const provider = await response.json();
+    expect(provider.models).toHaveLength(96);
+  });
+
   test('accepts a bare authorization code', async () => {
     const state = await startFlow();
     const response = await callback('4/0Abrigaded', state);

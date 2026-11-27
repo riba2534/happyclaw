@@ -266,7 +266,8 @@ export async function fetchGeminiUserInfo(
   };
 }
 
-const AUTH_BODY_LIMIT = 64 * 1024;
+/** Upper bound for a non-JSON error body echoed back to the caller. */
+const AUTH_ERROR_SNIPPET_LIMIT = 300;
 
 async function postAntigravityControlPlane(
   path: string,
@@ -290,20 +291,23 @@ async function postAntigravityControlPlane(
     },
   );
   const raw = await response.text();
-  const bounded =
-    raw.length > AUTH_BODY_LIMIT ? raw.slice(0, AUTH_BODY_LIMIT) : raw;
+  // Parse the whole body. `fetchAvailableModels` legitimately returns far more
+  // than 64 KB on accounts with a large catalog; truncating before parsing
+  // used to collapse that into an empty model list.
   let parsed: unknown = null;
   try {
-    parsed = JSON.parse(bounded);
+    parsed = JSON.parse(raw);
   } catch {
     parsed = null;
   }
   if (!response.ok) {
+    const detail =
+      parsed && typeof parsed === 'object'
+        ? describeUpstreamMessage(parsed)
+        : raw.trim().slice(0, AUTH_ERROR_SNIPPET_LIMIT);
     throw new GeminiOAuthError(
       `Antigravity ${path} failed: HTTP ${response.status}${
-        parsed && typeof parsed === 'object'
-          ? ` ${describeUpstreamMessage(parsed)}`
-          : ''
+        detail ? ` ${detail}` : ''
       }`,
       response.status,
       null,
