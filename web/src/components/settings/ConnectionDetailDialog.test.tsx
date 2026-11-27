@@ -128,6 +128,42 @@ const codexProvider = makeProvider({
   models: [],
 });
 
+function geminiEntry(id: string, displayName: string) {
+  return {
+    id,
+    displayName,
+    contextWindow: 1_000_000,
+    maxOutputTokens: 64_000,
+    supportsThinking: true,
+    supportsImages: true,
+    thinkingBudget: null,
+    minThinkingBudget: null,
+  };
+}
+
+const geminiProvider = makeProvider({
+  id: 'gemini',
+  name: 'Gemini 订阅',
+  anthropicBaseUrl: '',
+  anthropicModel: 'gemini-3-flash',
+  anthropicAuthMode: null,
+  hasAnthropicAuthToken: false,
+  anthropicAuthTokenMasked: null,
+  hasGeminiOAuthCredentials: true,
+  geminiOAuthCredentialsEmail: 'owner@gmail.com',
+  geminiOAuthProjectId: 'aicode-consumers',
+  models: [
+    { id: 'gemini-3-flash', contextWindow: 1_000_000 },
+    { id: 'gemini-3-pro', contextWindow: 1_000_000 },
+    { id: 'claude-opus-5-5-high', contextWindow: 1_000_000 },
+  ],
+  geminiModels: [
+    geminiEntry('gemini-3-flash', 'Gemini 3 Flash'),
+    geminiEntry('gemini-3-pro', 'Gemini 3 Pro'),
+    geminiEntry('claude-opus-5-5-high', 'Claude Opus 5.5 (High)'),
+  ],
+});
+
 const legacyProvider = makeProvider({
   id: 'glm',
   name: 'GLM',
@@ -292,6 +328,48 @@ describe('ChatGPT subscription', () => {
     await flush();
     expect(text()).toContain('授权码已失效');
     expect(button('重新登录 ChatGPT')).toBeTruthy();
+  });
+});
+
+describe('Gemini subscription', () => {
+  test('the default model is one dropdown over the account catalog, saved with a PATCH', async () => {
+    await render(geminiProvider);
+    const model = select('#gemini-model-select');
+    expect(model.value).toBe('gemini-3-flash');
+    expect([...model.options].map((option) => option.value)).toEqual([
+      'gemini-3-flash',
+      'gemini-3-pro',
+      'claude-opus-5-5-high',
+    ]);
+    // The catalog's display name sits beside the id.
+    expect(
+      [...model.options].find((option) => option.value === 'gemini-3-flash')
+        ?.text,
+    ).toBe('Gemini 3 Flash · gemini-3-flash');
+    // Nothing changed yet: nothing to save.
+    expect(button('保存默认模型').disabled).toBe(true);
+
+    await choose('#gemini-model-select', 'gemini-3-pro');
+    await click(button('保存默认模型'));
+    await flush();
+    expect(mocks.confirm).toHaveBeenCalledTimes(1);
+    expect(mocks.patch).toHaveBeenCalledWith(
+      `${PROVIDERS}/gemini`,
+      { anthropicModel: 'gemini-3-pro' },
+      120_000,
+    );
+  });
+
+  test('the long catalog stays behind a disclosure and the refresh stays in reach', async () => {
+    await render(geminiProvider);
+    const details = document.querySelector(
+      'details[aria-label="逐个模型设置"]',
+    ) as HTMLDetailsElement | null;
+    expect(details).toBeTruthy();
+    expect(details!.open).toBe(false);
+    expect(details!.querySelector('ul[aria-label="连接的模型"]')).toBeTruthy();
+    expect(text()).toContain('逐个模型设置（3 个）');
+    expect(button('获取模型列表')).toBeTruthy();
   });
 });
 

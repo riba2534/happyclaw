@@ -37,6 +37,7 @@ import {
 } from './codex-catalog';
 import { CodexModelFields } from './CodexModelFields';
 import { ConnectionModelList } from './ConnectionModelList';
+import { GeminiDefaultModel } from './GeminiDefaultModel';
 import { ConnectionTestResult } from './ConnectionTestResult';
 import {
   AUTH_MODE_LABELS,
@@ -304,11 +305,24 @@ function ConnectionDetail({
       ) : (
         <SettingsSection
           title="模型"
-          description="这些模型都可以在聊天和智能体里选择。"
+          description={
+            kind === 'gemini'
+              ? '对话没有指定模型时使用上方选的默认模型；逐个模型的设置收在下方。'
+              : '这些模型都可以在聊天和智能体里选择。'
+          }
         >
+          {kind === 'gemini' && (
+            <GeminiDefaultModel
+              provider={provider}
+              onChanged={onChanged}
+              setNotice={setNotice}
+              setError={setError}
+            />
+          )}
           <ConnectionModelList
             provider={provider}
             thirdParty={thirdParty}
+            collapseModels={kind === 'gemini'}
             onSaved={onChanged}
             setNotice={setNotice}
             setError={setError}

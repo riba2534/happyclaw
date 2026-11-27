@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Loader2, RefreshCw, Trash2 } from 'lucide-react';
+import { ChevronRight, Loader2, RefreshCw, Trash2 } from 'lucide-react';
 
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -43,6 +43,11 @@ interface ConnectionModelListProps {
    * declare the registry's window.
    */
   thirdParty: boolean;
+  /**
+   * A connection whose catalog is long (a subscription with tens of models)
+   * keeps its rows behind a disclosure; the default model is set above.
+   */
+  collapseModels?: boolean;
   onSaved: (provider: UnifiedProviderPublic) => void;
   setNotice: (message: string | null) => void;
   setError: (message: string | null) => void;
@@ -57,6 +62,7 @@ interface ConnectionModelListProps {
 export function ConnectionModelList({
   provider,
   thirdParty,
+  collapseModels = false,
   onSaved,
   setNotice,
   setError,
@@ -207,8 +213,8 @@ export function ConnectionModelList({
 
   const disabled = busy || refreshing;
 
-  return (
-    <div className="space-y-3">
+  const rows = (
+    <>
       {provider.gateway === 'magpie' && provider.catalog && (
         <ConnectionCatalog
           catalog={provider.catalog}
@@ -301,10 +307,36 @@ export function ConnectionModelList({
           })}
         </ul>
       )}
-      {models.length > 0 && (
-        <p className="text-caption text-muted-foreground">
-          上下文和推理等级从下次启动会话时生效；智能体或对话选了推理等级时以它们为准。
-        </p>
+    </>
+  );
+
+  const hint = models.length > 0 && (
+    <p className="text-caption text-muted-foreground">
+      上下文和推理等级从下次启动会话时生效；智能体或对话选了推理等级时以它们为准。
+    </p>
+  );
+
+  return (
+    <div className="space-y-3">
+      {collapseModels ? (
+        <details className="group/models" aria-label="逐个模型设置">
+          <summary className="flex min-h-9 cursor-pointer list-none items-center gap-1.5 text-caption text-muted-foreground select-none hover:text-foreground pointer-coarse:min-h-11 [&::-webkit-details-marker]:hidden">
+            <ChevronRight
+              className="size-3.5 transition-transform duration-150 group-open/models:rotate-90"
+              aria-hidden="true"
+            />
+            逐个模型设置（{models.length} 个）
+          </summary>
+          <div className="mt-2 space-y-3">
+            {rows}
+            {hint}
+          </div>
+        </details>
+      ) : (
+        <>
+          {rows}
+          {hint}
+        </>
       )}
 
       <div className="flex flex-col gap-2 sm:flex-row sm:items-start">
