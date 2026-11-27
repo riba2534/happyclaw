@@ -44,8 +44,10 @@ function openFenceAfter(text: string): OpenFence | null {
   return open;
 }
 
+const MAX_REOPENED_FENCE_INFO = 32;
+
 function fenceOpener(fence: OpenFence): string {
-  return `${fence.indent}${fence.marker}${fence.info}\n`;
+  return `${fence.indent}${fence.marker}${fence.info.slice(0, MAX_REOPENED_FENCE_INFO)}\n`;
 }
 
 /**
