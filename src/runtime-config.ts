@@ -1116,11 +1116,31 @@ function getOrCreateEncryptionKey(): Buffer {
   }
 
   const key = crypto.randomBytes(32);
-  fs.writeFileSync(CLAUDE_CONFIG_KEY_FILE, key.toString('hex') + '\n', {
-    encoding: 'utf-8',
-    mode: 0o600,
-  });
-  return key;
+  const temporaryKeyFile = `${CLAUDE_CONFIG_KEY_FILE}.${process.pid}.${crypto.randomUUID()}.tmp`;
+  try {
+    fs.writeFileSync(temporaryKeyFile, `${key.toString('hex')}\n`, {
+      encoding: 'utf-8',
+      mode: 0o600,
+      flag: 'wx',
+    });
+    // link(2) is an atomic no-replace publish. Unlike rename / truncating
+    // writeFileSync('w'), it cannot overwrite a key another HappyClaw process
+    // (or channel-account-secrets) won the race to create on this shared file.
+    try {
+      fs.linkSync(temporaryKeyFile, CLAUDE_CONFIG_KEY_FILE);
+      fs.chmodSync(CLAUDE_CONFIG_KEY_FILE, 0o600);
+      return key;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+      const raw = fs.readFileSync(CLAUDE_CONFIG_KEY_FILE, 'utf-8').trim();
+      const existing = Buffer.from(raw, 'hex');
+      if (existing.length !== 32)
+        throw new Error('Invalid encryption key file');
+      return existing;
+    }
+  } finally {
+    fs.rmSync(temporaryKeyFile, { force: true });
+  }
 }
 
 function encryptSecrets(payload: SecretPayload): EncryptedSecrets {
