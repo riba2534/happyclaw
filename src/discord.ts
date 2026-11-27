@@ -49,6 +49,7 @@ import {
   groupSenderAdmission,
   type ChannelCommandMention,
   type GroupAudienceConnectOpts,
+  type GroupOwnerView,
   type GroupSenderAdmission,
 } from './im-group-audience.js';
 import {
@@ -154,6 +155,10 @@ export interface DiscordConnectOpts
   onBotRemovedFromGroup?: (chatJid: string) => void;
   shouldProcessGroupMessage?: (chatJid: string, senderImId?: string) => boolean;
   isGroupOwnerMessage?: (chatJid: string, senderImId?: string) => boolean;
+  /** Resolve registered group for activation_mode (disabled hard-stop). */
+  resolveRegisteredGroup?: (
+    jid: string,
+  ) => ({ activation_mode?: string } & GroupOwnerView) | undefined;
   normalizeIncomingJid?: (jid: string) => string | null;
 }
 
@@ -598,6 +603,19 @@ export function createDiscordConnection(
           : groupSenderAdmission(opts, jid, senderImId, unmentionedContent);
         if (!isDM) {
           if (audience === 'rejected') return;
+          // Like WeCom/DingTalk: @bot must never reopen a paused (disabled) group.
+          // shouldProcessGroupMessage returns false for both when_mentioned and
+          // disabled, so Gate1's (!shouldProcess && !isBotMentioned) OR cannot
+          // distinguish them — hard-stop disabled before the mention admit.
+          const activationMode =
+            opts.resolveRegisteredGroup?.(jid)?.activation_mode;
+          if (activationMode === 'disabled') {
+            logger.debug(
+              { jid },
+              'Discord group message dropped (activation disabled)',
+            );
+            return;
+          }
           const isBotMentioned = connectedClient.user
             ? msg.mentions.has(connectedClient.user)
             : false;
@@ -1124,6 +1142,21 @@ export function createDiscordConnection(
             ? `discord:dm:${interaction.user.id}`
             : `discord:${interaction.channelId}`;
           const jid = opts.normalizeIncomingJid?.(rawJid) ?? rawJid;
+          // App Commands skip MessageCreate mention gates; still honor disabled.
+          if (!isDM) {
+            const activationMode =
+              opts.resolveRegisteredGroup?.(jid)?.activation_mode;
+            if (activationMode === 'disabled') {
+              await interaction
+                .reply({
+                  content:
+                    '此群组已停用（activation_mode=disabled），命令未执行。',
+                  ephemeral: true,
+                })
+                .catch(() => {});
+              return;
+            }
+          }
 
           // Build command string matching HappyClaw's text command format.
           let cmdBody = interaction.commandName;
