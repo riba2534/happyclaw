@@ -1689,6 +1689,7 @@ async function prepareFollowUp(
 async function completeFollowUpReply(
   item: QueuedFollowUp,
   replyText: string,
+  opts?: { advanceCursor?: boolean },
 ): Promise<boolean> {
   const runId = item.delivery_run_id || crypto.randomUUID();
   const deliveryUpdatedAt = new Date().toISOString();
@@ -1709,11 +1710,13 @@ async function completeFollowUpReply(
     deliveryUpdatedAt,
   );
   if (!released) return false;
-  completeOutOfBandMessage(item.chat_jid, {
-    timestamp: item.timestamp,
-    id: item.id,
-    sequence: item.ingest_sequence,
-  });
+  if (opts?.advanceCursor !== false) {
+    completeOutOfBandMessage(item.chat_jid, {
+      timestamp: item.timestamp,
+      id: item.id,
+      sequence: item.ingest_sequence,
+    });
+  }
   broadcastFollowUpUpdate(item.chat_jid, {
     id: item.id,
     delivery_status: 'released',
@@ -2070,8 +2073,47 @@ async function dispatchNextQueuedFollowUp(chatJid: string): Promise<void> {
       queue.releaseQueryReservation(chatJid, reservedRunId, true);
       return;
     }
+    // Prefer-0 (Batch-1078): claimed follow-up rows stay
+    // delivery_status='promoting', which getMessagesSince excludes.
+    // completeOutOfBandMessage → hasEarlierPendingMessage is therefore
+    // blind to earlier toSend siblings and can advance BOTH next_pull
+    // and committed past a later plugin reply. inject→no_active then
+    // releases toSend as 'released', but cursors already skipped it —
+    // silent drop that survives restart (distinct from UF-1076
+    // next_pull-only sticky). While prepared.messages (toSend) remains,
+    // never advance any cursor for replies with sequence >= min(toSend);
+    // defer those advances until after successful inject, and leave
+    // them unadvanced on no_active.
+    const minToSendSeq =
+      prepared.messages.length > 0
+        ? Math.min(
+            ...prepared.messages.map(
+              (m) => m.ingest_sequence ?? Number.MAX_SAFE_INTEGER,
+            ),
+          )
+        : null;
+    const deferredFollowUpReplyCursors: MessageCursor[] = [];
+    const completeFollowUpReplyCursor = (item: QueuedFollowUp): void => {
+      const cursor: MessageCursor = {
+        timestamp: item.timestamp,
+        id: item.id,
+        sequence: item.ingest_sequence,
+      };
+      if (
+        minToSendSeq != null &&
+        typeof cursor.sequence === 'number' &&
+        cursor.sequence >= minToSendSeq
+      ) {
+        deferredFollowUpReplyCursors.push(cursor);
+        return;
+      }
+      completeOutOfBandMessage(item.chat_jid, cursor);
+    };
     for (const reply of prepared.replies) {
-      const completed = await completeFollowUpReply(reply.item, reply.text);
+      const completed = await completeFollowUpReply(reply.item, reply.text, {
+        advanceCursor: false,
+      });
+      if (completed) completeFollowUpReplyCursor(reply.item);
       if (!completed) {
         const remaining = items.filter((queued) =>
           getQueuedFollowUp(chatJid, queued.id),
@@ -2120,6 +2162,9 @@ async function dispatchNextQueuedFollowUp(chatJid: string): Promise<void> {
     if (result === 'sent') {
       // The active main/agent admission map now owns terminal cleanup.
       prePublishedIndicatorOwners = [];
+      for (const cursor of deferredFollowUpReplyCursors) {
+        completeOutOfBandMessage(chatJid, cursor);
+      }
     } else {
       void clearUntrackedBatchAckReactions(
         chatJid,
