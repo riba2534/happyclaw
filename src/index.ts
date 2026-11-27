@@ -5710,6 +5710,7 @@ async function handleNewCommand(
     channel_type: getChannelType(chatJid),
     chat_mode: group.feishu_chat_mode,
     group_message_type: group.feishu_group_message_type,
+    native_context_type: group.native_context_type,
   });
   let updated: RegisteredGroup;
   let targetLabel: string;
