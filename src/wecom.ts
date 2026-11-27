@@ -1429,20 +1429,6 @@ export function createWeComConnection(
         return;
       }
 
-      const resolvedRoute = resolveAdmittedChannelRoute(
-        jid,
-        opts?.resolveEffectiveChatJid,
-      );
-      if (!resolvedRoute) {
-        logger.warn(
-          { ...logCtx, jid },
-          'WeCom message dropped: binding resolver rejected route',
-        );
-        return;
-      }
-      let targetJid = resolvedRoute.targetJid;
-      let routeAgentId = resolvedRoute.routing?.agentId ?? null;
-
       const slashMatch = admissionText.match(/^\/(\S+)(?:\s+(.*))?$/u);
       const commandName = slashMatch?.[1]?.toLowerCase();
       const registeredGroup = conversation.isGroup
@@ -1496,38 +1482,71 @@ export function createWeComConnection(
       });
       const steerText =
         runtimeControl?.kind === 'steer' ? runtimeControl.text : undefined;
+      const resolvedRoute = resolveAdmittedChannelRoute(
+        jid,
+        opts?.resolveEffectiveChatJid,
+      );
       const onCommand = opts?.onCommand;
-      let commandReply: string | null = null;
+      // /break runs ahead of the bootstrap-only return (matching upstream)
+      // and requires a resolved route for targetJid; generic slash commands
+      // run before route validation so paired-unbound mounts reach /new, /bind.
       if (runtimeControl?.kind === 'break') {
+        if (!resolvedRoute) {
+          logger.warn(
+            { ...logCtx, jid },
+            'WeCom message dropped: binding resolver rejected route',
+          );
+          return;
+        }
         const onSessionBreak = opts?.onSessionBreak;
-        commandReply = await settleCommandReply(dedupKey, jid, 'break', () =>
-          runSessionBreak(onSessionBreak, {
-            sourceJid: jid,
-            targetJid,
-            senderImId: fromUserId,
-            chatType: conversation.isGroup ? 'group' : 'p2p',
-          }),
+        const breakReply = await settleCommandReply(
+          dedupKey,
+          jid,
+          'break',
+          () =>
+            runSessionBreak(onSessionBreak, {
+              sourceJid: jid,
+              targetJid: resolvedRoute.targetJid,
+              senderImId: fromUserId,
+              chatType: conversation.isGroup ? 'group' : 'p2p',
+            }),
         );
+        if (breakReply) {
+          if (!ws) throw new Error('WeCom connection is unavailable');
+          await sendReply(ws, frame, breakReply);
+          commandReplies.delete(dedupKey);
+          return;
+        }
       } else if (slashMatch && onCommand && steerText === undefined) {
         const command = `${slashMatch[1]}${slashMatch[2] ? ` ${slashMatch[2]}` : ''}`;
-        commandReply = await settleCommandReply(
+        const commandReply = await settleCommandReply(
           dedupKey,
           jid,
           commandName,
           () => onCommand(jid, command, fromUserId),
         );
-      }
-      if (commandReply) {
-        if (!ws) throw new Error('WeCom connection is unavailable');
-        // A failed send keeps the cached reply for the provider retry.
-        await sendReply(ws, frame, commandReply);
-        commandReplies.delete(dedupKey);
-        return;
+        if (commandReply) {
+          if (!ws) throw new Error('WeCom connection is unavailable');
+          // A failed send keeps the cached reply for the provider retry.
+          await sendReply(ws, frame, commandReply);
+          commandReplies.delete(dedupKey);
+          return;
+        }
       }
       // An unknown command (no reply) is ordinary input for the Agent, as on
       // Feishu.
       commandReplies.delete(dedupKey);
       if (bootstrapOnly) return;
+
+      if (!resolvedRoute) {
+        logger.warn(
+          { ...logCtx, jid },
+          'WeCom message dropped: binding resolver rejected route',
+        );
+        return;
+      }
+      let targetJid = resolvedRoute.targetJid;
+      let routeAgentId = resolvedRoute.routing?.agentId ?? null;
 
       // All registration and business side effects are after admission,
       // routing, command handling, and group policy filters.

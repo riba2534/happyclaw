@@ -2096,23 +2096,10 @@ export function createQQConnection(config: QQConnectionConfig): QQConnection {
           return;
         }
 
-        const resolvedRoute = resolveAdmittedChannelRoute(
-          jid,
-          opts.resolveEffectiveChatJid,
-        );
-        if (!resolvedRoute) {
-          logger.warn(
-            { jid },
-            'QQ message dropped: binding resolver rejected route',
-          );
-          return;
-        }
-        const { targetJid, routing: agentRouting } = resolvedRoute;
-
-        // Runtime controls are parsed before the generic slash handler so
-        // `/steer` and `/break` cannot be swallowed as unknown commands.
-        // A C2C message is always eligible: it is addressed to the bot by
-        // construction.
+        // Runtime controls + generic slash commands run before route validation
+        // so a post-/pair account mount (no explicit binding yet) can still
+        // reach /new, /bind, /clear, /fresh, etc. `/steer` and `/break` need a
+        // targetJid and stay after the route gate -- unbound ones stay dropped.
         const runtimeControl = parseRuntimeControl({
           commandText: content,
           eligible: true,
@@ -2122,14 +2109,6 @@ export function createQQConnection(config: QQConnectionConfig): QQConnection {
         if (runtimeControl?.kind === 'steer') {
           requestedFollowUpMode = 'steer';
           content = runtimeControl.text;
-        } else if (runtimeControl?.kind === 'break') {
-          const reply = await runSessionBreak(opts.onSessionBreak, {
-            sourceJid: jid,
-            targetJid,
-            senderImId: `c2c:${userOpenId}`,
-          });
-          await sendQQMessage('c2c', userOpenId, markdownToPlainText(reply));
-          return;
         }
 
         // Handle slash commands
@@ -2137,6 +2116,7 @@ export function createQQConnection(config: QQConnectionConfig): QQConnection {
         if (
           slashMatch &&
           !requestedFollowUpMode &&
+          runtimeControl?.kind !== 'break' &&
           opts.onCommand &&
           // Control lookalikes (`/queue ...`, a bare `/steer`, `/break` with
           // arguments) are deliberately not commands: they fall through to the
@@ -2173,6 +2153,29 @@ export function createQQConnection(config: QQConnectionConfig): QQConnection {
             await sendQQMessage('c2c', userOpenId, '命令执行失败，请稍后重试');
             return;
           }
+        }
+
+        const resolvedRoute = resolveAdmittedChannelRoute(
+          jid,
+          opts.resolveEffectiveChatJid,
+        );
+        if (!resolvedRoute) {
+          logger.warn(
+            { jid },
+            'QQ message dropped: binding resolver rejected route',
+          );
+          return;
+        }
+        const { targetJid, routing: agentRouting } = resolvedRoute;
+
+        if (runtimeControl?.kind === 'break') {
+          const reply = await runSessionBreak(opts.onSessionBreak, {
+            sourceJid: jid,
+            targetJid,
+            senderImId: `c2c:${userOpenId}`,
+          });
+          await sendQQMessage('c2c', userOpenId, markdownToPlainText(reply));
+          return;
         }
 
         // Handle attachments (images / files)
@@ -2361,24 +2364,8 @@ export function createQQConnection(config: QQConnectionConfig): QQConnection {
         );
         if (admission === 'rejected') return;
 
-        const resolvedRoute = resolveAdmittedChannelRoute(
-          jid,
-          opts.resolveEffectiveChatJid,
-        );
-        if (!resolvedRoute) {
-          logger.warn(
-            { jid },
-            'QQ group message dropped: binding resolver rejected route',
-          );
-          return;
-        }
-        const { targetJid, routing: agentRouting } = resolvedRoute;
-
-        // Runtime controls are parsed before the generic slash handler so
-        // `/steer` and `/break` cannot be swallowed as unknown commands.
-        // Eligibility is structural here: the gateway only delivers
-        // GROUP_AT_MESSAGE_CREATE for messages that actually @-mention the
-        // bot, so reaching this point is the proof Feishu has to compute.
+        // Same pre-route command path as C2C: paired account mounts must reach
+        // /new and /bind before resolveAdmittedChannelRoute fail-closes.
         const runtimeControl = parseRuntimeControl({
           commandText: content,
           eligible: true,
@@ -2388,7 +2375,25 @@ export function createQQConnection(config: QQConnectionConfig): QQConnection {
         if (runtimeControl?.kind === 'steer') {
           requestedFollowUpMode = 'steer';
           content = runtimeControl.text;
-        } else if (runtimeControl?.kind === 'break') {
+        }
+
+        const resolvedRoute = resolveAdmittedChannelRoute(
+          jid,
+          opts.resolveEffectiveChatJid,
+        );
+
+        // /break runs ahead of the bootstrap return (matching upstream) and
+        // requires a resolved route for targetJid; generic slash commands run
+        // before route validation so paired-unbound mounts reach /new, /bind.
+        const slashMatch = content.match(/^\/(\S+)(?:\s+(.*))?$/i);
+        if (runtimeControl?.kind === 'break') {
+          if (!resolvedRoute) {
+            logger.warn(
+              { jid },
+              'QQ group message dropped: binding resolver rejected route',
+            );
+            return;
+          }
           // An unidentifiable sender is refused rather than passed through
           // under a placeholder id: the host ignores senderImId today, but a
           // synthetic one would silently defeat any check added later.
@@ -2396,16 +2401,12 @@ export function createQQConnection(config: QQConnectionConfig): QQConnection {
             ? '无法确认发送者身份，未执行 /break。'
             : await runSessionBreak(opts.onSessionBreak, {
                 sourceJid: jid,
-                targetJid,
+                targetJid: resolvedRoute.targetJid,
                 senderImId: `group:${memberOpenId}`,
               });
           await sendQQMessage('group', groupOpenId, markdownToPlainText(reply));
           return;
-        }
-
-        // Handle slash commands
-        const slashMatch = content.match(/^\/(\S+)(?:\s+(.*))?$/i);
-        if (
+        } else if (
           slashMatch &&
           !requestedFollowUpMode &&
           opts.onCommand &&
@@ -2449,6 +2450,15 @@ export function createQQConnection(config: QQConnectionConfig): QQConnection {
         }
         // Admitted only as `/owner_mention`, and not consumed as it.
         if (admission === 'bootstrap') return;
+
+        if (!resolvedRoute) {
+          logger.warn(
+            { jid },
+            'QQ group message dropped: binding resolver rejected route',
+          );
+          return;
+        }
+        const { targetJid, routing: agentRouting } = resolvedRoute;
 
         // Handle attachments (images / files)
         let attachmentsJson: string | undefined;

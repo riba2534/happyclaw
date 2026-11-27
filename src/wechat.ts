@@ -1286,22 +1286,10 @@ export function createWeChatConnection(
         return;
       }
 
-      const resolvedRoute = resolveAdmittedChannelRoute(
-        jid,
-        opts.resolveEffectiveChatJid,
-      );
-      if (!resolvedRoute) {
-        logger.warn(
-          { jid },
-          'WeChat message dropped: binding resolver rejected route',
-        );
-        return;
-      }
-      const { targetJid, routing: agentRouting } = resolvedRoute;
-
       // Cache a reply token only after authorization, preventing arbitrary
       // senders from growing durable account-scoped storage. Persist before
       // acknowledging the getUpdates cursor so a restart cannot lose it.
+      // Token refresh stays ahead of slash commands so /new replies can send.
       if (msg.context_token) {
         try {
           contextTokens.refresh(
@@ -1329,15 +1317,6 @@ export function createWeChatConnection(
         }
       }
 
-      // ── Register the authorized base chat ──
-      const nowIso = new Date().toISOString();
-      if (!knownJids.has(jid)) {
-        knownJids.add(jid);
-        storeChatMetadata(jid, nowIso);
-        updateChatName(jid, chatName);
-        opts.onNewChat(jid, chatName);
-      }
-
       // iLink delivers 1:1 conversations only, so every message is directly
       // addressed to the bot.
       const items = msg.item_list ?? [];
@@ -1351,27 +1330,20 @@ export function createWeChatConnection(
           (item) => item.type !== MESSAGE_ITEM_TYPE_TEXT,
         ),
       });
-      if (runtimeControl?.kind === 'break') {
-        const reply = await runSessionBreak(opts.onSessionBreak, {
-          sourceJid: jid,
-          targetJid,
-          senderImId: fromUserId,
-          chatType: 'p2p',
-        });
-        try {
-          await sendManagedText(fromUserId, reply);
-        } catch (err) {
-          logger.warn({ jid, err }, 'Failed to send WeChat /break reply');
-        }
-        return;
-      }
       const requestedFollowUpMode =
         runtimeControl?.kind === 'steer' ? ('steer' as const) : undefined;
       if (runtimeControl?.kind === 'steer') content = runtimeControl.text;
 
-      // Handle slash commands
+      // Slash commands run before route validation so a paired account mount
+      // (no explicit binding yet) can still reach /new, /bind, etc. /break
+      // stays after the route gate because it needs targetJid.
       const slashMatch = content.match(/^\/(\S+)(?:\s+(.*))?$/i);
-      if (slashMatch && opts.onCommand && !requestedFollowUpMode) {
+      if (
+        slashMatch &&
+        opts.onCommand &&
+        !requestedFollowUpMode &&
+        runtimeControl?.kind !== 'break'
+      ) {
         const cmdBody = (
           slashMatch[1] + (slashMatch[2] ? ' ' + slashMatch[2] : '')
         ).trim();
@@ -1393,6 +1365,43 @@ export function createWeChatConnection(
           }
           return;
         }
+      }
+
+      const resolvedRoute = resolveAdmittedChannelRoute(
+        jid,
+        opts.resolveEffectiveChatJid,
+      );
+      if (!resolvedRoute) {
+        logger.warn(
+          { jid },
+          'WeChat message dropped: binding resolver rejected route',
+        );
+        return;
+      }
+      const { targetJid, routing: agentRouting } = resolvedRoute;
+
+      if (runtimeControl?.kind === 'break') {
+        const reply = await runSessionBreak(opts.onSessionBreak, {
+          sourceJid: jid,
+          targetJid,
+          senderImId: fromUserId,
+          chatType: 'p2p',
+        });
+        try {
+          await sendManagedText(fromUserId, reply);
+        } catch (err) {
+          logger.warn({ jid, err }, 'Failed to send WeChat /break reply');
+        }
+        return;
+      }
+
+      // ── Register the authorized base chat (only after a valid route) ──
+      const nowIso = new Date().toISOString();
+      if (!knownJids.has(jid)) {
+        knownJids.add(jid);
+        storeChatMetadata(jid, nowIso);
+        updateChatName(jid, chatName);
+        opts.onNewChat(jid, chatName);
       }
 
       // Handle image attachments
