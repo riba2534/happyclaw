@@ -31,9 +31,11 @@ function ProviderMedia({ provider }: { provider: UnifiedProviderPublic }) {
   const vendor = vendorOfConnection({
     kind: provider.hasCodexOAuthCredentials
       ? 'codex'
-      : provider.type === 'official'
-        ? 'official'
-        : 'third_party',
+      : provider.hasGeminiOAuthCredentials
+        ? 'gemini'
+        : provider.type === 'official'
+          ? 'official'
+          : 'third_party',
     presetId: provider.presetId,
     baseUrl: provider.anthropicBaseUrl,
     model: provider.anthropicModel,
@@ -51,6 +53,7 @@ function hasCredential(provider: UnifiedProviderPublic): boolean {
   return (
     provider.hasClaudeOAuthCredentials ||
     provider.hasCodexOAuthCredentials ||
+    provider.hasGeminiOAuthCredentials ||
     provider.hasClaudeCodeOauthToken ||
     provider.hasAnthropicApiKey ||
     provider.hasAnthropicAuthToken
@@ -63,6 +66,11 @@ function sourceText(provider: UnifiedProviderPublic): string | null {
   if (kind === 'chatgpt') {
     return (
       provider.codexOAuthCredentialsEmail ?? 'ChatGPT 订阅网关（服务内嵌）'
+    );
+  }
+  if (kind === 'gemini') {
+    return (
+      provider.geminiOAuthCredentialsEmail ?? 'Gemini 订阅网关（服务内嵌）'
     );
   }
   if (kind === 'claude_subscription') {

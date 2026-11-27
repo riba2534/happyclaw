@@ -7,7 +7,7 @@ import { api } from '../../api/client';
 import { getErrorMessage, type UnifiedProviderPublic } from './types';
 
 interface OAuthLoginPanelProps {
-  service: 'claude' | 'chatgpt';
+  service: 'claude' | 'chatgpt' | 'gemini';
   /** Logs an existing connection in again instead of creating one. */
   targetProviderId?: string;
   /** The server saved the login; the provider it answered with, if any. */
@@ -42,6 +42,20 @@ const COPY = {
     inputLabel: '粘贴 localhost:1455 回调完整地址',
     startError: 'ChatGPT 授权启动失败',
     exchangeError: 'ChatGPT 授权码换取失败',
+  },
+  gemini: {
+    start: '/api/config/gemini/oauth/start',
+    callback: '/api/config/gemini/oauth/callback',
+    login: '登录 Google',
+    relogin: '重新登录 Google',
+    intro:
+      '打开 Google 授权页（使用有 Gemini 权益的个人 Google 账号）。授权后浏览器会跳到 localhost:51121，这个页面打不开是正常的，把地址栏的完整地址粘贴回来即可。',
+    waiting:
+      '授权窗口已打开。在 Google 完成登录后，把跳转页面的完整地址粘贴到下方。',
+    placeholder: '粘贴 localhost:51121（或 127.0.0.1:51121）回调完整地址',
+    inputLabel: '粘贴 localhost:51121 回调完整地址',
+    startError: 'Google 授权启动失败',
+    exchangeError: 'Google 授权码换取失败',
   },
 } as const;
 

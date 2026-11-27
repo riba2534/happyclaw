@@ -16,6 +16,7 @@ import {
   applyCodexGatewayNoProxy,
   resolveCodexGatewayLaunchConfig,
 } from './codex-gateway/runner-tokens.js';
+import { resolveGeminiGatewayLaunchConfig } from './gemini-gateway/resolve-gateway-url.js';
 
 /**
  * Send a prompt to Claude and return the plain-text response.
@@ -52,10 +53,9 @@ export async function sdkQuery(
   const timer = setTimeout(() => abortController.abort(), timeout);
 
   try {
-    const config = resolveCodexGatewayLaunchConfig(
-      storedConfig,
+    const config = resolveGeminiGatewayLaunchConfig(
+      resolveCodexGatewayLaunchConfig(storedConfig, 'host', codexGatewayLease),
       'host',
-      codexGatewayLease,
     );
     const envLines = buildClaudeEnvLines(config);
     const env: Record<string, string | undefined> = { ...process.env };

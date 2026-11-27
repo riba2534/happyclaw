@@ -263,6 +263,16 @@ import {
   syncProviderCatalog,
 } from '../model-catalog-sync.js';
 import {
+  GeminiOAuthError,
+  fetchGeminiModels,
+} from '../gemini-gateway/oauth.js';
+import {
+  GeminiGatewayAuthError,
+  GeminiReauthRequiredError,
+  GeminiRefreshUnavailableError,
+  resolveGeminiAccess,
+} from '../gemini-gateway/token-manager.js';
+import {
   buildSessionMountUpdate,
   buildDetachedWorkspaceUpdate,
   buildWorkspaceMountUpdate,
@@ -558,7 +568,7 @@ function restorePendingProviderRuntimeSafetyBlocks(): void {
   );
 }
 
-interface ClaudeMutationResult<T> {
+export interface ClaudeMutationResult<T> {
   value?: T;
   applied: ClaudeApplyResultPayload;
 }
@@ -589,7 +599,7 @@ function runAfterProviderPersistence<T>(
   }
 }
 
-function appendClaudeConfigAuditBestEffort(
+export function appendClaudeConfigAuditBestEffort(
   actor: string,
   action: string,
   changedFields: string[],
@@ -607,7 +617,7 @@ function appendClaudeConfigAuditBestEffort(
 
 let claudeConfigMutationTail: Promise<void> = Promise.resolve();
 
-async function withClaudeConfigMutationLock<T>(
+export async function withClaudeConfigMutationLock<T>(
   fn: () => Promise<T>,
 ): Promise<T> {
   const previous = claudeConfigMutationTail;
@@ -752,7 +762,7 @@ function getKnownClaudeRuntimeJids(): string[] {
   return collectWorkspaceRuntimeJids(deps, getClaudeRuntimeTargets());
 }
 
-async function mutateClaudeConfigForAllGroups<T>(
+export async function mutateClaudeConfigForAllGroups<T>(
   actor: string,
   metadata: Record<string, unknown> | undefined,
   commit: () => T,
@@ -2066,6 +2076,7 @@ function takeConnectivityCheck(userId: string): boolean {
 /** The upstream a test or a model list reaches, and what it sends there. */
 type CheckedConnection =
   | { kind: 'chatgpt'; stored: UnifiedProvider }
+  | { kind: 'gemini'; stored: UnifiedProvider }
   | {
       kind: 'third_party';
       baseUrl: string;
@@ -2110,6 +2121,9 @@ function resolveCheckedConnection(
   }
   if (stored?.codexOAuthCredentials) {
     return { connection: { kind: 'chatgpt', stored }, stored };
+  }
+  if (stored?.geminiOAuthCredentials) {
+    return { connection: { kind: 'gemini', stored }, stored };
   }
   const type = stored?.type ?? draft.type ?? 'third_party';
   const model = draft.anthropicModel ?? stored?.anthropicModel;
@@ -2254,6 +2268,8 @@ function connectionOrigin(connection: CheckedConnection): string {
       return ANTHROPIC_API_ORIGIN;
     case 'chatgpt':
       return 'chatgpt';
+    case 'gemini':
+      return 'gemini';
   }
 }
 
@@ -2356,6 +2372,82 @@ async function checkChatGptAccount(
   );
 }
 
+/** Gemini subscription: renew the Google token and read the live catalog. */
+async function checkGeminiAccount(
+  provider: UnifiedProvider,
+): Promise<ConnectionTestResult> {
+  const startedAt = Date.now();
+  try {
+    const access = await resolveGeminiAccess(provider.id);
+    const projectId = access.credentials.projectId;
+    if (!projectId) {
+      return unreachedTest(
+        'UNKNOWN',
+        '该连接缺少项目 ID，请重新登录 Google 账号',
+      );
+    }
+    const catalog = await fetchGeminiModels(access.accessToken, projectId);
+    const latencyMs = Date.now() - startedAt;
+    if (catalog.length === 0) {
+      return connectionTestResult(
+        {
+          ok: false,
+          probes: [
+            {
+              model: '',
+              ok: false,
+              status: null,
+              latencyMs,
+              message: '上游没有返回可用模型',
+              code: 'UNKNOWN',
+            },
+          ],
+        },
+        { model: null },
+      );
+    }
+    return connectionTestResult(
+      { ok: true, probes: [{ model: '', ok: true, status: 200, latencyMs }] },
+      { model: null },
+    );
+  } catch (err) {
+    const latencyMs = Date.now() - startedAt;
+    const reauth =
+      err instanceof GeminiReauthRequiredError ||
+      getProviderById(provider.id)?.geminiOAuthLastRefreshError?.kind ===
+        'reauth_required';
+    const code: ProviderErrorCode = reauth
+      ? 'AUTH_INVALID'
+      : err instanceof GeminiRefreshUnavailableError
+        ? 'UPSTREAM_ERROR'
+        : err instanceof GeminiGatewayAuthError
+          ? 'AUTH_INVALID'
+          : err instanceof GeminiOAuthError
+            ? classifyProviderError({
+                status: err.status ?? undefined,
+                bodyText: err.message,
+              }).code
+            : 'UNKNOWN';
+    const message = err instanceof Error ? err.message : 'Gemini 账号检查失败';
+    return connectionTestResult(
+      {
+        ok: false,
+        probes: [
+          {
+            model: '',
+            ok: false,
+            status: null,
+            latencyMs,
+            message: redact(message, []),
+            code,
+          },
+        ],
+      },
+      { model: null },
+    );
+  }
+}
+
 function testConnection(
   connection: CheckedConnection,
 ): Promise<ConnectionTestResult> {
@@ -2379,6 +2471,8 @@ function testConnection(
       return checkSubscriptionAccount(connection);
     case 'chatgpt':
       return checkChatGptAccount(connection.stored);
+    case 'gemini':
+      return checkGeminiAccount(connection.stored);
   }
 }
 
@@ -2434,6 +2528,54 @@ async function discoverModels(
           }),
         ),
       };
+    }
+    case 'gemini': {
+      try {
+        const access = await resolveGeminiAccess(connection.stored.id);
+        const projectId = access.credentials.projectId;
+        if (!projectId) {
+          return {
+            ok: false,
+            code: 'UNKNOWN',
+            status: null,
+            message: '该连接缺少项目 ID，请重新登录 Google 账号',
+          };
+        }
+        const catalog = await fetchGeminiModels(access.accessToken, projectId);
+        if (catalog.length === 0) {
+          return {
+            ok: false,
+            code: 'UNKNOWN',
+            status: null,
+            message: '上游没有返回可用模型',
+          };
+        }
+        return {
+          ok: true,
+          source: 'catalog',
+          gateway: null,
+          models: catalog.map((entry) => ({
+            id: entry.id,
+            ...(entry.displayName && entry.displayName !== entry.id
+              ? { name: entry.displayName }
+              : {}),
+          })),
+        };
+      } catch (err) {
+        const reauth =
+          err instanceof GeminiReauthRequiredError ||
+          connection.stored.geminiOAuthLastRefreshError?.kind ===
+            'reauth_required';
+        return {
+          ok: false,
+          code: reauth ? 'AUTH_INVALID' : 'UPSTREAM_ERROR',
+          status: err instanceof GeminiOAuthError ? err.status : null,
+          message: redact(
+            err instanceof Error ? err.message : 'Gemini 模型目录获取失败',
+            [],
+          ),
+        };
+      }
     }
   }
 }

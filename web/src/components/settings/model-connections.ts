@@ -26,6 +26,7 @@ export type ConnectionKind =
   | 'claude_subscription'
   | 'anthropic_api'
   | 'chatgpt'
+  | 'gemini'
   | 'preset'
   | 'custom';
 
@@ -33,6 +34,7 @@ export const CONNECTION_KIND_LABELS: Record<ConnectionKind, string> = {
   claude_subscription: 'Claude 订阅',
   anthropic_api: 'Anthropic API Key',
   chatgpt: 'ChatGPT 订阅',
+  gemini: 'Gemini 订阅',
   preset: '厂商预设',
   custom: '自定义地址',
 };
@@ -41,6 +43,7 @@ type KindFields = Pick<
   UnifiedProviderPublic,
   | 'type'
   | 'hasCodexOAuthCredentials'
+  | 'hasGeminiOAuthCredentials'
   | 'claudeAuthKind'
   | 'hasAnthropicApiKey'
   | 'hasClaudeOAuthCredentials'
@@ -50,6 +53,7 @@ type KindFields = Pick<
 
 export function connectionKind(provider: KindFields): ConnectionKind {
   if (provider.hasCodexOAuthCredentials) return 'chatgpt';
+  if (provider.hasGeminiOAuthCredentials) return 'gemini';
   if (provider.type === 'official') {
     const apiKey =
       provider.claudeAuthKind === 'api_key' ||
@@ -65,6 +69,13 @@ export function connectionKind(provider: KindFields): ConnectionKind {
 /** Kinds that talk to an Anthropic-compatible address with a key. */
 export function isThirdPartyKind(kind: ConnectionKind | null): boolean {
   return kind === 'preset' || kind === 'custom';
+}
+
+/** Kinds that are an account login behind an embedded gateway. */
+export function isSubscriptionKind(kind: ConnectionKind | null): boolean {
+  return (
+    kind === 'claude_subscription' || kind === 'chatgpt' || kind === 'gemini'
+  );
 }
 
 /** The label a row shows for its kind: a preset is named by its vendor. */
@@ -95,10 +106,17 @@ export function errorCopy(code: ProviderErrorCode | null | undefined) {
 export function connectionStatus(
   provider: Pick<
     UnifiedProviderPublic,
-    'lastTest' | 'claudeOAuthNeedsReLogin' | 'codexOAuthNeedsReauth'
+    | 'lastTest'
+    | 'claudeOAuthNeedsReLogin'
+    | 'codexOAuthNeedsReauth'
+    | 'geminiOAuthNeedsReauth'
   >,
 ): ConnectionStatus {
-  if (provider.claudeOAuthNeedsReLogin || provider.codexOAuthNeedsReauth) {
+  if (
+    provider.claudeOAuthNeedsReLogin ||
+    provider.codexOAuthNeedsReauth ||
+    provider.geminiOAuthNeedsReauth
+  ) {
     return {
       tone: 'error',
       label: '需重新登录',
