@@ -95,6 +95,32 @@ describe('translateAnthropicRequest — text', () => {
     expect(text.match(/You are an AI coding agent/g)).toHaveLength(2);
   });
 
+  test('drops the dual-use example list Antigravity rejects', () => {
+    const { payload } = translate({
+      system:
+        'Dual-use security tools (C2 frameworks, credential testing, exploit development) require clear authorization context.',
+      messages: [{ role: 'user', content: 'hi' }],
+    });
+    expect(payload.systemInstruction?.parts).toEqual([
+      { text: 'Dual-use security tools require clear authorization context.' },
+    ]);
+  });
+
+  test('leaves user and assistant text untouched', () => {
+    const { payload } = translate({
+      messages: [
+        { role: 'user', content: 'You are Claude Code' },
+        { role: 'assistant', content: 'You are Claude Code' },
+      ],
+    });
+    expect(payload.contents[0].parts).toEqual([
+      { text: 'You are Claude Code' },
+    ]);
+    expect(payload.contents[1].parts).toEqual([
+      { text: 'You are Claude Code' },
+    ]);
+  });
+
   test('merges consecutive messages of the same role', () => {
     const { payload } = translate({
       messages: [

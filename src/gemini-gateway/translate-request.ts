@@ -251,8 +251,17 @@ export function sanitizeSchema(
 const CLAUDE_CODE_IDENTITY = /you\s+are\s+claude\s+code/gi;
 const NEUTRAL_IDENTITY = 'You are an AI coding agent';
 
+/**
+ * The preset's dual-use tool note trips the same filter once its example list
+ * is included; the policy sentence itself is enough to keep the instruction.
+ */
+const DUAL_USE_EXAMPLES =
+  /\s*\(C2 frameworks, credential testing, exploit development\)/gi;
+
 function sanitizeSystemText(text: string): string {
-  return text.replace(CLAUDE_CODE_IDENTITY, NEUTRAL_IDENTITY);
+  return text
+    .replace(CLAUDE_CODE_IDENTITY, NEUTRAL_IDENTITY)
+    .replace(DUAL_USE_EXAMPLES, '');
 }
 
 function systemText(system: AnthropicMessagesRequest['system']): string {
