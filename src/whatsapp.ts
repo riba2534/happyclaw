@@ -1344,7 +1344,12 @@ export function unwrapMessageContent(content: proto.IMessage): proto.IMessage {
       inner.viewOnceMessageV2Extension?.message ||
       inner.documentWithCaptionMessage?.message ||
       inner.editedMessage?.message ||
-      inner.lottieStickerMessage?.message;
+      inner.lottieStickerMessage?.message ||
+      // Keep pace with baileys getFutureProofMessage (7.0.0-rc13): album/association
+      // children and group-status envelopes otherwise empty-gate before download.
+      inner.associatedChildMessage?.message ||
+      inner.groupStatusMessage?.message ||
+      inner.groupStatusMessageV2?.message;
     if (!next) break;
     inner = next;
   }
