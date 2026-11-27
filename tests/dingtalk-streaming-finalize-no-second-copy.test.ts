@@ -27,6 +27,8 @@ const dingtalkHttps = vi.hoisted(() => {
         write(data: string) {
           chunks.push(Buffer.from(data));
         },
+        setTimeout() {},
+        destroy() {},
         end() {
           const bodyStr = Buffer.concat(chunks).toString('utf-8');
           let body: Record<string, unknown> | undefined;

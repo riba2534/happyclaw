@@ -82,6 +82,8 @@ const dingtalkHttps = vi.hoisted(() => {
         write(data: string) {
           chunks.push(data);
         },
+        setTimeout() {},
+        destroy() {},
         end() {
           const path = String(options.path ?? '');
           const method = String(options.method ?? 'GET').toUpperCase();

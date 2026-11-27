@@ -13,7 +13,6 @@
  *   6. PUT  /v1.0/card/instances         → switch to FINISHED
  */
 
-import https from 'node:https';
 import { logger } from './logger.js';
 import { PartialChannelDeliveryError } from './im-delivery-progress.js';
 import {
@@ -21,6 +20,10 @@ import {
   ImDeliveryPhaseError,
   preAcceptImDeliveryError,
 } from './im-send-retry-policy.js';
+import {
+  DINGTALK_HTTPS_REQUEST_TIMEOUT_MS,
+  dingtalkHttpsRequest,
+} from './dingtalk.js';
 
 // ─── Constants ───────────────────────────────────────────────
 
@@ -67,6 +70,18 @@ interface TokenInfo {
 
 const tokenCache = new Map<string, TokenInfo>();
 
+/** Test-only HTTPS budget override (default = shared DingTalk outbound 30s). */
+let streamingCardHttpsTimeoutMs = DINGTALK_HTTPS_REQUEST_TIMEOUT_MS;
+
+/** @internal */ export function setDingTalkStreamingCardHttpsTimeoutMsForTests(
+  timeoutMs: number | undefined,
+): void {
+  streamingCardHttpsTimeoutMs =
+    timeoutMs === undefined
+      ? DINGTALK_HTTPS_REQUEST_TIMEOUT_MS
+      : Math.max(1, timeoutMs);
+}
+
 async function getAccessToken(
   config: DingTalkStreamingCardConfig,
 ): Promise<string> {
@@ -75,48 +90,29 @@ async function getAccessToken(
     return cached.token;
   }
 
-  return new Promise<string>((resolve, reject) => {
-    const url = new URL('https://oapi.dingtalk.com/gettoken');
-    url.searchParams.set('appkey', config.clientId);
-    url.searchParams.set('appsecret', config.clientSecret);
+  const url = new URL('https://oapi.dingtalk.com/gettoken');
+  url.searchParams.set('appkey', config.clientId);
+  url.searchParams.set('appsecret', config.clientSecret);
 
-    const req = https.request(
-      {
-        hostname: url.hostname,
-        path: url.pathname + url.search,
-        method: 'GET',
-      },
-      (res) => {
-        const chunks: Buffer[] = [];
-        res.on('data', (chunk: Buffer) => chunks.push(chunk));
-        res.on('end', () => {
-          try {
-            const data = JSON.parse(Buffer.concat(chunks).toString('utf-8'));
-            if (data.errcode !== 0) {
-              reject(
-                new ImDeliveryPhaseError(
-                  'rejected',
-                  `DingTalk token error: ${data.errmsg}`,
-                ),
-              );
-              return;
-            }
-            const expiresIn = Number(data.expires_in) || 7200;
-            tokenCache.set(config.clientId, {
-              token: data.access_token,
-              expiresAt: Date.now() + expiresIn * 1000,
-            });
-            resolve(data.access_token);
-          } catch (err) {
-            reject(err);
-          }
-        });
-        res.on('error', reject);
-      },
-    );
-    req.on('error', reject);
-    req.end();
+  const { body: respBuf } = await dingtalkHttpsRequest({
+    hostname: url.hostname,
+    path: url.pathname + url.search,
+    method: 'GET',
+    timeoutMs: streamingCardHttpsTimeoutMs,
   });
+  const data = JSON.parse(respBuf.toString('utf-8'));
+  if (data.errcode !== 0) {
+    throw new ImDeliveryPhaseError(
+      'rejected',
+      `DingTalk token error: ${data.errmsg}`,
+    );
+  }
+  const expiresIn = Number(data.expires_in) || 7200;
+  tokenCache.set(config.clientId, {
+    token: data.access_token,
+    expiresAt: Date.now() + expiresIn * 1000,
+  });
+  return data.access_token;
 }
 
 // ─── HTTP Helper ─────────────────────────────────────────────
@@ -149,90 +145,79 @@ async function apiRequest(
   const token = await getAccessToken(config);
   const url = new URL(path, DINGTALK_API_BASE);
   const bodyStr = body ? JSON.stringify(body) : undefined;
+  const label = logLabel ?? `${method} ${path}`;
 
-  return new Promise<ApiResponse>((resolve, reject) => {
-    const req = https.request(
-      {
-        hostname: url.hostname,
-        path: url.pathname + url.search,
-        method,
-        headers: {
-          'x-acs-dingtalk-access-token': token,
-          'Content-Type': 'application/json',
-          ...(bodyStr
-            ? { 'Content-Length': String(Buffer.byteLength(bodyStr)) }
-            : {}),
+  const { statusCode, body: respBuf } = await dingtalkHttpsRequest(
+    {
+      hostname: url.hostname,
+      path: url.pathname + url.search,
+      method,
+      headers: {
+        'x-acs-dingtalk-access-token': token,
+        'Content-Type': 'application/json',
+        ...(bodyStr
+          ? { 'Content-Length': String(Buffer.byteLength(bodyStr)) }
+          : {}),
+      },
+      timeoutMs: streamingCardHttpsTimeoutMs,
+    },
+    bodyStr,
+  );
+  const text = respBuf.toString('utf-8');
+  try {
+    const data = JSON.parse(text);
+
+    // DingTalk often returns HTTP 200 with error codes in the body
+    if (
+      data.code &&
+      data.code !== '0' &&
+      data.code !== '200' &&
+      data.code !== 'success'
+    ) {
+      const errMsg = `DingTalk Card API ${label} error: code=${data.code}, message=${data.message || data.msg || text}`;
+      logger.warn(
+        {
+          label,
+          code: data.code,
+          message: data.message,
+          statusCode,
         },
+        errMsg,
+      );
+      throw dingTalkCardApiError(errMsg, statusCode);
+    }
+
+    if (statusCode && statusCode >= 400) {
+      throw dingTalkCardApiError(
+        `DingTalk Card API ${label} HTTP failed (${statusCode}): ${data.message || text}`,
+        statusCode,
+      );
+    }
+
+    logger.debug(
+      {
+        label,
+        statusCode,
+        responseBody: text.slice(0, 500),
       },
-      (res) => {
-        const chunks: Buffer[] = [];
-        res.on('data', (chunk: Buffer) => chunks.push(chunk));
-        res.on('end', () => {
-          const text = Buffer.concat(chunks).toString('utf-8');
-          const label = logLabel ?? `${method} ${path}`;
-          try {
-            const data = JSON.parse(text);
-
-            // DingTalk often returns HTTP 200 with error codes in the body
-            if (
-              data.code &&
-              data.code !== '0' &&
-              data.code !== '200' &&
-              data.code !== 'success'
-            ) {
-              const errMsg = `DingTalk Card API ${label} error: code=${data.code}, message=${data.message || data.msg || text}`;
-              logger.warn(
-                {
-                  label,
-                  code: data.code,
-                  message: data.message,
-                  statusCode: res.statusCode,
-                },
-                errMsg,
-              );
-              reject(dingTalkCardApiError(errMsg, res.statusCode));
-              return;
-            }
-
-            if (res.statusCode && res.statusCode >= 400) {
-              reject(
-                dingTalkCardApiError(
-                  `DingTalk Card API ${label} HTTP failed (${res.statusCode}): ${data.message || text}`,
-                  res.statusCode,
-                ),
-              );
-              return;
-            }
-
-            logger.debug(
-              {
-                label,
-                statusCode: res.statusCode,
-                responseBody: text.slice(0, 500),
-              },
-              `DingTalk Card API ${label} response`,
-            );
-            resolve(data as ApiResponse);
-          } catch {
-            if (res.statusCode && res.statusCode >= 400) {
-              reject(
-                dingTalkCardApiError(
-                  `DingTalk Card API ${label} HTTP failed (${res.statusCode}): ${text}`,
-                  res.statusCode,
-                ),
-              );
-            } else {
-              resolve({});
-            }
-          }
-        });
-        res.on('error', reject);
-      },
+      `DingTalk Card API ${label} response`,
     );
-    req.on('error', reject);
-    if (bodyStr) req.write(bodyStr);
-    req.end();
-  });
+    return data as ApiResponse;
+  } catch (err) {
+    if (
+      err instanceof ImDeliveryPhaseError ||
+      (err instanceof Error && err.message.startsWith('DingTalk Card API'))
+    ) {
+      throw err;
+    }
+    if (statusCode && statusCode >= 400) {
+      throw dingTalkCardApiError(
+        `DingTalk Card API ${label} HTTP failed (${statusCode}): ${text}`,
+        statusCode,
+      );
+    }
+    return {};
+  }
 }
 
 interface CardDeliverSpaceResult {
