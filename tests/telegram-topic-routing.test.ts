@@ -33,6 +33,23 @@ describe('Telegram Forum topic routing', () => {
     expect(parseTelegramProviderTarget('not-a-chat#thread:1')).toBeNull();
   });
 
+  test('ignores #root: on native thread routes and rejects root-only/unknown', () => {
+    // buildNativeThreadRouteJid emits base#thread:N#root:N; outbound must keep thread
+    expect(parseTelegramProviderTarget('-1001#thread:55#root:55')).toEqual({
+      chatId: -1001,
+      messageThreadId: 55,
+    });
+    expect(parseTelegramProviderTarget('-1001#thread:55')).toEqual({
+      chatId: -1001,
+      messageThreadId: 55,
+    });
+    expect(parseTelegramProviderTarget('-1001')).toEqual({ chatId: -1001 });
+    expect(parseTelegramProviderTarget('-1001#root:55')).toBeNull();
+    expect(parseTelegramProviderTarget('-1001#thread:55#foo:1')).toBeNull();
+    expect(parseTelegramProviderTarget('-1001#thread:0')).toBeNull();
+    expect(parseTelegramProviderTarget('-1001#thread:55#thread:66')).toBeNull();
+  });
+
   test('persists Forum capability on the base chat before pairing is ready', async () => {
     const group = {
       nativeContextType: 'none',
