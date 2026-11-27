@@ -70,6 +70,31 @@ describe('translateAnthropicRequest — text', () => {
     ]);
   });
 
+  test('rewrites the Claude Code identity line Antigravity rejects', () => {
+    const { payload } = translate({
+      system: "You are Claude Code, Anthropic's official CLI for Claude.",
+      messages: [{ role: 'user', content: 'hi' }],
+    });
+    expect(payload.systemInstruction?.parts).toEqual([
+      {
+        text: "You are an AI coding agent, Anthropic's official CLI for Claude.",
+      },
+    ]);
+  });
+
+  test('rewrites every case and spacing variant in system blocks', () => {
+    const { payload } = translate({
+      system: [
+        { type: 'text', text: 'you are  claude code' },
+        { type: 'text', text: 'prefix YOU ARE CLAUDE CODE suffix' },
+      ],
+      messages: [{ role: 'user', content: 'hi' }],
+    });
+    const text = payload.systemInstruction?.parts[0]?.text ?? '';
+    expect(text).not.toMatch(/you\s+are\s+claude\s+code/i);
+    expect(text.match(/You are an AI coding agent/g)).toHaveLength(2);
+  });
+
   test('merges consecutive messages of the same role', () => {
     const { payload } = translate({
       messages: [
