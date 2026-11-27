@@ -60,6 +60,7 @@ import passkeyRoutes from './routes/passkeys.js';
 import groupRoutes from './routes/groups.js';
 import memoryRoutes from './routes/memory.js';
 import configRoutes, { injectConfigDeps } from './routes/config.js';
+import geminiRoutes from './routes/gemini.js';
 import type { AutomationWsEvent } from './automation-contract.js';
 import type { WorkItemWsEvent } from './work-items.js';
 import tasksRoutes from './routes/tasks.js';
@@ -92,6 +93,8 @@ import { codexGatewayApp } from './codex-gateway/gateway.js';
 import { initCodexCatalogSync } from './codex-gateway/model-catalog-sync.js';
 import { initModelCatalogSync } from './model-catalog-sync.js';
 import { CODEX_GATEWAY_ROUTE } from './codex-gateway/types.js';
+import { geminiGatewayApp } from './gemini-gateway/gateway.js';
+import { GEMINI_GATEWAY_ROUTE } from './gemini-gateway/types.js';
 import channelAccountRoutes, {
   injectChannelAccountDeps,
 } from './routes/channel-accounts.js';
@@ -368,6 +371,7 @@ app.route('/api/groups', groupRoutes);
 app.route('/api/groups', fileRoutes); // File routes also under /api/groups
 app.route('/api/memory', memoryRoutes);
 app.route('/api/config', configRoutes);
+app.route('/api/config', geminiRoutes);
 app.route('/api/tasks', tasksRoutes);
 app.route('/api/automations', automationRoutes);
 app.route('/api/skills', skillsRoutes);
@@ -392,6 +396,7 @@ app.route('/api', workItemRoutes); // Team mode: /api/workspaces/:jid/team-mount
 // 不挂在 /api/* 下：网关用 provider gateway token 鉴权（x-api-key），
 // 不是浏览器 Cookie 会话，不需要也不应该套用 /api/* 的 CORS/Cookie 中间件。
 app.route(CODEX_GATEWAY_ROUTE, codexGatewayApp);
+app.route(GEMINI_GATEWAY_ROUTE, geminiGatewayApp);
 
 // --- POST /api/messages ---
 

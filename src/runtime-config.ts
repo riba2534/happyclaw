@@ -26,6 +26,12 @@ import { getResolvedCodexCatalog } from './codex-gateway/model-catalog-sync.js';
 import { normalizeLegacyCodexModel } from './codex-gateway/convert-request.js';
 import { retiredCodexReauthReason } from './codex-gateway/oauth.js';
 import {
+  GEMINI_GATEWAY_BASE_URL_PLACEHOLDER,
+  type GeminiModelInfo,
+  type GeminiOAuthCredentials,
+  type GeminiOAuthRefreshErrorState,
+} from './gemini-gateway/types.js';
+import {
   buildConnectionModelEnv,
   carrySyncedModelFields,
   CONNECTION_ENV_PREFILL,
@@ -542,6 +548,7 @@ interface SecretPayload {
   claudeCodeOauthToken: string;
   claudeOAuthCredentials?: ClaudeOAuthCredentials | null;
   codexOAuthCredentials?: CodexOAuthCredentials | null;
+  geminiOAuthCredentials?: GeminiOAuthCredentials | null;
   claudeOAuthAccount?: ClaudeOAuthAccountInfo | null;
   claudeOAuthLastRefreshAt?: number | null;
   claudeOAuthLastRefreshError?: ClaudeOAuthRefreshError | null;
@@ -660,6 +667,13 @@ interface StoredProviderV4 {
   customEnv?: Record<string, string>;
   /** ChatGPT/Codex 订阅：最近一次 token 刷新失败（非机密运行态，凭据写入时清除）。 */
   codexOAuthLastRefreshError?: CodexOAuthRefreshErrorState;
+  /** Gemini 订阅：最近一次 token 刷新失败（非机密运行态，凭据写入时清除）。 */
+  geminiOAuthLastRefreshError?: GeminiOAuthRefreshErrorState;
+  /**
+   * Gemini 订阅：登录时拿到的模型目录（显示名、上下文长度、thinking 支持）。
+   * 只用于展示和请求侧钳制；请求本身可以带目录外的模型名。
+   */
+  geminiModels?: GeminiModelInfo[];
   /**
    * The models the connection offers. Absent: just `anthropicModel`. Not kept
    * for ChatGPT subscriptions, whose live catalog is their list. Optional
@@ -731,6 +745,11 @@ export interface UnifiedProvider {
   claudeCodeOauthToken: string;
   claudeOAuthCredentials: ClaudeOAuthCredentials | null;
   codexOAuthCredentials: CodexOAuthCredentials | null;
+  geminiOAuthCredentials: GeminiOAuthCredentials | null;
+  /** See StoredProviderV4.geminiModels. */
+  geminiModels?: GeminiModelInfo[];
+  /** 缺省视为无刷新失败；存量配置没有这个字段。 */
+  geminiOAuthLastRefreshError?: GeminiOAuthRefreshErrorState | null;
   /** Reset whenever the Claude credentials change; kept across refreshes. */
   claudeOAuthAccount?: ClaudeOAuthAccountInfo | null;
   claudeOAuthLastRefreshAt?: number | null;
@@ -775,6 +794,19 @@ export interface UnifiedProviderPublic {
   codexOAuthCredentialsExpiresAt: number | null;
   codexOAuthCredentialsEmail: string | null;
   codexOAuthCredentialsPlanType: string | null;
+  hasGeminiOAuthCredentials: boolean;
+  geminiOAuthCredentialsExpiresAt: number | null;
+  geminiOAuthCredentialsEmail: string | null;
+  geminiOAuthProjectId: string | null;
+  /** Gemini 订阅登录已失效，需要在模型配置里重新登录 Google 账号。 */
+  geminiOAuthNeedsReauth: boolean;
+  geminiOAuthLastRefreshError: {
+    kind: GeminiOAuthRefreshErrorState['kind'];
+    message: string;
+    at: string;
+  } | null;
+  /** 登录时拉到的上游模型目录；未登录时为空。 */
+  geminiModels: GeminiModelInfo[];
   /** Official providers only; null for third-party or no credential. */
   claudeAuthKind: 'oauth' | 'setup_token' | 'api_key' | null;
   claudeOAuthAccountEmail: string | null;
@@ -1214,6 +1246,9 @@ function decryptSecrets(secrets: EncryptedSecrets): SecretPayload {
       };
     }
   }
+  // Restore Gemini 订阅 (Google Antigravity) OAuth credentials if present
+  const gemini = decodeGeminiOAuthCredentials(parsed.geminiOAuthCredentials);
+  if (gemini) result.geminiOAuthCredentials = gemini;
   const account = decodeClaudeOAuthAccount(parsed.claudeOAuthAccount);
   if (account) result.claudeOAuthAccount = account;
   if (
@@ -1227,6 +1262,54 @@ function decryptSecrets(secrets: EncryptedSecrets): SecretPayload {
   );
   if (refreshError) result.claudeOAuthLastRefreshError = refreshError;
   return result;
+}
+
+function decodeGeminiOAuthCredentials(
+  value: unknown,
+): GeminiOAuthCredentials | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const raw = value as Record<string, unknown>;
+  if (typeof raw.accessToken !== 'string' || !raw.accessToken) return null;
+  const optionalString = (entry: unknown): string | null =>
+    typeof entry === 'string' && entry ? entry : null;
+  return {
+    accessToken: raw.accessToken,
+    refreshToken: typeof raw.refreshToken === 'string' ? raw.refreshToken : '',
+    expiresAt: typeof raw.expiresAt === 'number' ? raw.expiresAt : 0,
+    email: optionalString(raw.email),
+    accountId: optionalString(raw.accountId),
+    projectId: optionalString(raw.projectId),
+    ...(Array.isArray(raw.scopes)
+      ? {
+          scopes: raw.scopes.filter(
+            (scope): scope is string => typeof scope === 'string',
+          ),
+        }
+      : {}),
+    updatedAt:
+      typeof raw.updatedAt === 'string'
+        ? raw.updatedAt
+        : new Date(0).toISOString(),
+  };
+}
+
+function normalizeGeminiRefreshErrorState(
+  value: unknown,
+): GeminiOAuthRefreshErrorState | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const raw = value as Record<string, unknown>;
+  if (
+    (raw.kind !== 'reauth_required' && raw.kind !== 'transient') ||
+    typeof raw.message !== 'string' ||
+    typeof raw.at !== 'string'
+  ) {
+    return null;
+  }
+  return {
+    kind: raw.kind,
+    message: raw.message.slice(0, MAX_FIELD_LENGTH),
+    at: raw.at,
+  };
 }
 
 const CLAUDE_OAUTH_ACCOUNT_FIELDS = [
@@ -1599,6 +1682,7 @@ function toStoredProviderV4(
     claudeCodeOauthToken: provider.claudeCodeOauthToken || '',
     claudeOAuthCredentials: provider.claudeOAuthCredentials ?? null,
     codexOAuthCredentials: provider.codexOAuthCredentials ?? null,
+    geminiOAuthCredentials: provider.geminiOAuthCredentials ?? null,
     claudeOAuthAccount: provider.claudeOAuthAccount ?? null,
     claudeOAuthLastRefreshAt: provider.claudeOAuthLastRefreshAt ?? null,
     claudeOAuthLastRefreshError: provider.claudeOAuthLastRefreshError ?? null,
@@ -1628,6 +1712,12 @@ function toStoredProviderV4(
       : {}),
     ...(provider.codexOAuthLastRefreshError
       ? { codexOAuthLastRefreshError: provider.codexOAuthLastRefreshError }
+      : {}),
+    ...(provider.geminiOAuthLastRefreshError
+      ? { geminiOAuthLastRefreshError: provider.geminiOAuthLastRefreshError }
+      : {}),
+    ...(provider.geminiModels && provider.geminiModels.length > 0
+      ? { geminiModels: provider.geminiModels }
       : {}),
     ...connectionListFields(provider),
     ...gatewayFields(provider),
@@ -1866,6 +1956,13 @@ function fromStoredProviderV4(stored: StoredProviderV4): UnifiedProvider {
     claudeCodeOauthToken: secrets.claudeCodeOauthToken || '',
     claudeOAuthCredentials: secrets.claudeOAuthCredentials ?? null,
     codexOAuthCredentials: secrets.codexOAuthCredentials ?? null,
+    geminiOAuthCredentials: secrets.geminiOAuthCredentials ?? null,
+    geminiOAuthLastRefreshError: normalizeGeminiRefreshErrorState(
+      stored.geminiOAuthLastRefreshError,
+    ),
+    ...(Array.isArray(stored.geminiModels) && stored.geminiModels.length > 0
+      ? { geminiModels: stored.geminiModels }
+      : {}),
     claudeOAuthAccount: secrets.claudeOAuthAccount ?? null,
     claudeOAuthLastRefreshAt: secrets.claudeOAuthLastRefreshAt ?? null,
     claudeOAuthLastRefreshError: secrets.claudeOAuthLastRefreshError ?? null,
@@ -2127,6 +2224,7 @@ function migrateV3toV4(v3: ClaudeStoredStateV3Resolved): StoredStateV5 {
       claudeCodeOauthToken: v3.officialSecrets.claudeCodeOauthToken,
       claudeOAuthCredentials: v3.officialSecrets.claudeOAuthCredentials ?? null,
       codexOAuthCredentials: null,
+      geminiOAuthCredentials: null,
       customEnv: v3.officialCustomEnv || {},
       updatedAt: v3.officialUpdatedAt || now,
     });
@@ -2149,6 +2247,7 @@ function migrateV3toV4(v3: ClaudeStoredStateV3Resolved): StoredStateV5 {
       claudeCodeOauthToken: '',
       claudeOAuthCredentials: null,
       codexOAuthCredentials: null,
+      geminiOAuthCredentials: null,
       customEnv: profile.customEnv || {},
       updatedAt: profile.updatedAt || now,
     });
@@ -2783,6 +2882,8 @@ export function createProvider(input: {
   claudeOAuthCredentials?: ClaudeOAuthCredentials | null;
   claudeOAuthAccount?: ClaudeOAuthAccountInfo | null;
   codexOAuthCredentials?: CodexOAuthCredentials | null;
+  geminiOAuthCredentials?: GeminiOAuthCredentials | null;
+  geminiModels?: GeminiModelInfo[];
   customEnv?: Record<string, string>;
   models?: ProviderModelEntry[];
   /** Raw roles; those not naming one of the connection's models are dropped. */
@@ -2841,6 +2942,10 @@ export function createProvider(input: {
       : '',
     claudeOAuthCredentials: input.claudeOAuthCredentials ?? null,
     codexOAuthCredentials: input.codexOAuthCredentials ?? null,
+    geminiOAuthCredentials: input.geminiOAuthCredentials ?? null,
+    ...(input.geminiModels && input.geminiModels.length > 0
+      ? { geminiModels: input.geminiModels }
+      : {}),
     claudeOAuthAccount: input.claudeOAuthAccount ?? null,
     claudeOAuthLastRefreshAt: null,
     claudeOAuthLastRefreshError: null,
@@ -3029,6 +3134,9 @@ export function updateProviderSecrets(
     claudeOAuthAccount?: ClaudeOAuthAccountInfo | null;
     codexOAuthCredentials?: CodexOAuthCredentials;
     clearCodexOAuthCredentials?: boolean;
+    geminiOAuthCredentials?: GeminiOAuthCredentials;
+    clearGeminiOAuthCredentials?: boolean;
+    /** 登录时拉到的模型目录；不清空，独立于凭据写入（见 setProviderGeminiModels）。 */
   },
 ): UnifiedProvider {
   const state = readStoredStateV4();
@@ -3084,6 +3192,15 @@ export function updateProviderSecrets(
     updated.codexOAuthLastRefreshError = null;
   }
 
+  if (secrets.geminiOAuthCredentials) {
+    updated.geminiOAuthCredentials = secrets.geminiOAuthCredentials;
+    updated.geminiOAuthLastRefreshError = null;
+  } else if (secrets.clearGeminiOAuthCredentials) {
+    updated.geminiOAuthCredentials = null;
+    updated.geminiOAuthLastRefreshError = null;
+    updated.geminiModels = [];
+  }
+
   // Account facts and refresh state describe one Claude grant. A new or
   // removed credential starts over, which also lifts a needs-re-login state.
   const claudeGrantChanged =
@@ -3108,7 +3225,9 @@ export function updateProviderSecrets(
     current.anthropicAuthToken !== updated.anthropicAuthToken ||
     current.anthropicApiKey !== updated.anthropicApiKey ||
     !!secrets.codexOAuthCredentials ||
-    !!secrets.clearCodexOAuthCredentials
+    !!secrets.clearCodexOAuthCredentials ||
+    !!secrets.geminiOAuthCredentials ||
+    !!secrets.clearGeminiOAuthCredentials
   ) {
     delete updated.lastTest;
   }
@@ -3305,6 +3424,116 @@ export function setProviderCodexOAuthRefreshErrorIfCurrent(
   return true;
 }
 
+function geminiOAuthCredentialsSnapshot(
+  credentials: GeminiOAuthCredentials,
+): string {
+  return JSON.stringify({
+    accessToken: credentials.accessToken,
+    refreshToken: credentials.refreshToken,
+    expiresAt: credentials.expiresAt,
+    projectId: credentials.projectId,
+    accountId: credentials.accountId,
+  });
+}
+
+/**
+ * Persist a gateway-refreshed Gemini (Google 订阅) credential only if the
+ * provider still holds the exact credential snapshot used to start the
+ * refresh. Same compare-and-swap boundary as the Codex variant above.
+ */
+export function updateProviderGeminiOAuthCredentialsIfCurrent(
+  id: string,
+  expected: GeminiOAuthCredentials,
+  refreshed: GeminiOAuthCredentials,
+): boolean {
+  const state = readStoredStateV4();
+  if (!state) throw new Error('Claude 配置不存在');
+  const idx = state.providers.findIndex((provider) => provider.id === id);
+  if (idx < 0) throw new Error('未找到指定供应商');
+
+  const current = state.providers[idx];
+  const currentGemini = current.geminiOAuthCredentials;
+  if (
+    !currentGemini ||
+    geminiOAuthCredentialsSnapshot(currentGemini) !==
+      geminiOAuthCredentialsSnapshot(expected)
+  ) {
+    return false;
+  }
+
+  state.providers[idx] = {
+    ...current,
+    geminiOAuthCredentials: refreshed,
+    geminiOAuthLastRefreshError: null,
+    updatedAt: new Date().toISOString(),
+  };
+  writeStoredStateV4(state);
+  return true;
+}
+
+/**
+ * Record (or clear, with null) the gateway's last Gemini token refresh
+ * failure, guarded by the credential snapshot: a failure observed for
+ * credentials an admin has since replaced must not mark the new login as
+ * needing re-authorization.
+ */
+export function setProviderGeminiOAuthRefreshErrorIfCurrent(
+  id: string,
+  expected: GeminiOAuthCredentials,
+  error: GeminiOAuthRefreshErrorState | null,
+): boolean {
+  const state = readStoredStateV4();
+  if (!state) return false;
+  const idx = state.providers.findIndex((provider) => provider.id === id);
+  if (idx < 0) return false;
+  const current = state.providers[idx];
+  if (
+    !current.geminiOAuthCredentials ||
+    geminiOAuthCredentialsSnapshot(current.geminiOAuthCredentials) !==
+      geminiOAuthCredentialsSnapshot(expected)
+  ) {
+    return false;
+  }
+  const normalized = error ? normalizeGeminiRefreshErrorState(error) : null;
+  if (
+    JSON.stringify(current.geminiOAuthLastRefreshError ?? null) ===
+    JSON.stringify(normalized)
+  ) {
+    return true;
+  }
+  state.providers[idx] = {
+    ...current,
+    geminiOAuthLastRefreshError: normalized,
+  };
+  writeStoredStateV4(state);
+  return true;
+}
+
+/** Replace the stored Gemini model catalog (login and manual refresh). */
+export function setProviderGeminiModels(
+  id: string,
+  models: GeminiModelInfo[],
+): UnifiedProvider {
+  const state = readStoredStateV4();
+  if (!state) throw new Error('Claude 配置不存在');
+  const idx = state.providers.findIndex((provider) => provider.id === id);
+  if (idx < 0) throw new Error('未找到指定供应商');
+  const updated: UnifiedProvider = {
+    ...state.providers[idx],
+    geminiModels: models,
+  };
+  state.providers[idx] = updated;
+  writeStoredStateV4(state);
+  return updated;
+}
+
+/** Whether a stored provider routes through the embedded Gemini gateway. */
+export function isGeminiGatewayProvider(
+  provider: Pick<UnifiedProvider, 'anthropicBaseUrl'>,
+): boolean {
+  return provider.anthropicBaseUrl === GEMINI_GATEWAY_BASE_URL_PLACEHOLDER;
+}
+
 /** Whether a stored provider routes through the embedded ChatGPT/Codex gateway. */
 export function isCodexGatewayProvider(
   provider: Pick<UnifiedProvider, 'anthropicBaseUrl'>,
@@ -3333,6 +3562,7 @@ export function getProviderById(id: string): UnifiedProvider | null {
 /** Whether a provider holds a credential its runtime can authenticate with. */
 export function providerHasCredentials(provider: UnifiedProvider): boolean {
   if (provider.codexOAuthCredentials) return true;
+  if (provider.geminiOAuthCredentials) return true;
   if (provider.type === 'third_party') {
     return !!(provider.anthropicAuthToken || provider.anthropicApiKey);
   }
@@ -3360,7 +3590,11 @@ export function duplicateProvider(id: string): UnifiedProvider {
   }
 
   const source = state.providers[idx];
-  if (source.codexOAuthCredentials || source.claudeOAuthCredentials) {
+  if (
+    source.codexOAuthCredentials ||
+    source.claudeOAuthCredentials ||
+    source.geminiOAuthCredentials
+  ) {
     throw new Error(
       'OAuth 授权的模型配置不能复制：两份配置轮换同一个刷新令牌会互相失效，请新建后重新授权',
     );
@@ -3439,6 +3673,21 @@ export function toPublicProvider(
     codexOAuthCredentialsEmail: provider.codexOAuthCredentials?.email ?? null,
     codexOAuthCredentialsPlanType:
       provider.codexOAuthCredentials?.planType ?? null,
+    hasGeminiOAuthCredentials: !!provider.geminiOAuthCredentials,
+    geminiOAuthCredentialsExpiresAt:
+      provider.geminiOAuthCredentials?.expiresAt ?? null,
+    geminiOAuthCredentialsEmail: provider.geminiOAuthCredentials?.email ?? null,
+    geminiOAuthProjectId: provider.geminiOAuthCredentials?.projectId ?? null,
+    geminiOAuthNeedsReauth:
+      provider.geminiOAuthLastRefreshError?.kind === 'reauth_required',
+    geminiOAuthLastRefreshError: provider.geminiOAuthLastRefreshError
+      ? {
+          kind: provider.geminiOAuthLastRefreshError.kind,
+          message: provider.geminiOAuthLastRefreshError.message,
+          at: provider.geminiOAuthLastRefreshError.at,
+        }
+      : null,
+    geminiModels: provider.geminiModels ?? [],
     claudeAuthKind: claudeAuthKindOf(provider),
     claudeOAuthAccountEmail: provider.claudeOAuthAccount?.emailAddress ?? null,
     claudeOAuthOrganizationName:

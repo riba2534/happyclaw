@@ -37,6 +37,7 @@ import {
 } from './codex-catalog';
 import { CodexModelFields } from './CodexModelFields';
 import { ConnectionModelList } from './ConnectionModelList';
+import { GeminiDefaultModel } from './GeminiDefaultModel';
 import { ConnectionTestResult } from './ConnectionTestResult';
 import {
   AUTH_MODE_LABELS,
@@ -46,6 +47,7 @@ import {
   connectionKindLabel,
   connectionStatus,
   connectionWriteErrorMessage,
+  isSubscriptionKind,
   isThirdPartyKind,
   saveConnectionSecrets,
   syncConnectionCatalog,
@@ -278,7 +280,7 @@ function ConnectionDetail({
             测试连接
           </Button>
           <span className="text-caption text-muted-foreground">
-            {kind === 'claude_subscription' || kind === 'chatgpt'
+            {isSubscriptionKind(kind)
               ? '检查账号是否可用，不消耗额度。'
               : '发送一条最小请求，可能产生极少费用。'}
           </span>
@@ -303,11 +305,24 @@ function ConnectionDetail({
       ) : (
         <SettingsSection
           title="模型"
-          description="这些模型都可以在聊天和智能体里选择。"
+          description={
+            kind === 'gemini'
+              ? '对话没有指定模型时使用上方选的默认模型；逐个模型的设置收在下方。'
+              : '这些模型都可以在聊天和智能体里选择。'
+          }
         >
+          {kind === 'gemini' && (
+            <GeminiDefaultModel
+              provider={provider}
+              onChanged={onChanged}
+              setNotice={setNotice}
+              setError={setError}
+            />
+          )}
           <ConnectionModelList
             provider={provider}
             thirdParty={thirdParty}
+            collapseModels={kind === 'gemini'}
             onSaved={onChanged}
             setNotice={setNotice}
             setError={setError}
@@ -647,7 +662,40 @@ function ConnectionSettings({
         </div>
       )}
 
-      {kind !== 'chatgpt' && (
+      {kind === 'gemini' && (
+        <div className="space-y-3 rounded-lg p-3 ring-1 ring-surface-border">
+          {provider.geminiOAuthNeedsReauth && (
+            <ReloginAlert
+              title="Google 授权已失效，请重新登录"
+              message={provider.geminiOAuthLastRefreshError?.message}
+            />
+          )}
+          {(provider.geminiOAuthCredentialsEmail ||
+            provider.geminiOAuthProjectId) && (
+            <div className="space-y-0.5 text-caption leading-5 text-muted-foreground">
+              {provider.geminiOAuthCredentialsEmail && (
+                <div className="text-foreground">
+                  账号：{provider.geminiOAuthCredentialsEmail}
+                </div>
+              )}
+              {provider.geminiOAuthProjectId && (
+                <div>项目：{provider.geminiOAuthProjectId}</div>
+              )}
+              <div>
+                网关会在 access token
+                过期前自动刷新；模型目录可在上方「模型」里重新获取。
+              </div>
+            </div>
+          )}
+          <OAuthLoginPanel
+            service="gemini"
+            targetProviderId={provider.id}
+            onSuccess={relogin}
+          />
+        </div>
+      )}
+
+      {kind !== 'chatgpt' && kind !== 'gemini' && (
         <div className="space-y-4">
           {thirdParty && (
             <SettingsField

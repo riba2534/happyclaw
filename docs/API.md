@@ -27,6 +27,7 @@
 | `/api/agent-profiles`              | `src/routes/agent-profiles.ts`   | 产品级 Agent                  |
 | `/api/channel-accounts`            | `src/routes/channel-accounts.ts` | 多渠道账号                    |
 | `/api/config`                      | `src/routes/config.ts`           | Provider、系统与兼容渠道配置  |
+| `/api/config`                      | `src/routes/gemini.ts`           | Gemini 订阅授权与模型目录     |
 | `/api/config`                      | `src/routes/brand-assets.ts`     | 品牌资源上传、删除与公开读取  |
 | `/api/automations`                 | `src/routes/automations.ts`      | 自动化和运行记录              |
 | `/api`                             | `src/routes/work-items.ts`       | 团队模式与多任务模式：工作项  |
@@ -249,6 +250,15 @@ Agent 显式档位优先，其次是配置档位，按模型目录钳制）、`s
 `models[]`（`value`、`label`、`efforts`、`defaultEffort`）。`codex.models` 来自该账号
 的实时目录并按套餐过滤，同步读取、后台刷新，不等待网络；`efforts` 按 low 到 ultra
 排序，只含当前用户可以选择的档位。
+
+Gemini 订阅连接（公开字段 `hasGeminiOAuthCredentials`）的 `models` 是登录时保存的
+Antigravity 目录（`id`、`contextWindow`），另带 `geminiOAuthCredentialsExpiresAt`、
+`geminiOAuthCredentialsEmail`、`geminiOAuthProjectId`、`geminiOAuthNeedsReauth`、
+`geminiOAuthLastRefreshError`（`{ kind: 'reauth_required' | 'transient', message, at }`）
+和完整的 `geminiModels`：`id`、`displayName`、`contextWindow`、`maxOutputTokens`、
+`supportsThinking`、`supportsImages`、`thinkingBudget`、`minThinkingBudget`。
+它的 `anthropicBaseUrl` 落盘为内嵌网关占位值，Runner 启动时替换为本机网关地址与
+仅本轮有效的临时 token。
 
 响应顶层另有 `selectedModel` 与 `selectedEffort`（所有类型）：已存的模型若已不在配置
 的模型列表（ChatGPT 为账号目录）中，或档位不被所运行的模型（ChatGPT 为目录或当前用户
@@ -1264,6 +1274,32 @@ minimalClientVersion?, availableInPlans?, serviceTiers }`（字段取自官方
   `live`，内存缓存 1 小时，首次请求等待一次拉取，失败回落全局目录），
   并按该账号 `planType` 过滤 `availableInPlans`；`defaultModel` 不在结果中时
   取第一项。供设置页模型/推理力度下拉使用
+- `POST /api/config/gemini/oauth/start`，启动 Gemini 订阅（Google 账号 /
+  Antigravity）OAuth，返回 `authorizeUrl`、`state` 与 `redirectHint`；可选
+  `targetProviderId` 用于对已有 Provider 重新授权。服务端不内置 OAuth 客户端，
+  需要环境变量 `GEMINI_OAUTH_CLIENT_ID` 与 `GEMINI_OAUTH_CLIENT_SECRET` 成对
+  配置，未配置时返回 503 `code: 'GEMINI_OAUTH_CLIENT_NOT_CONFIGURED'`。回调使用固定地址
+  `http://localhost:51121/oauth-callback`，本机通常没有进程监听，浏览器显示
+  加载失败时把地址栏里的完整 URL 粘贴回来即可；流程绑定发起用户，10 分钟后过期
+- `POST /api/config/gemini/oauth/callback`，用 `{ state, code }`（`code`
+  接受回调页完整 URL、其 query 或裸授权码）换取 Google token，创建或更新
+  Gemini 订阅型 Provider，成功返回公开 Provider；其 `anthropicBaseUrl` 落盘为
+  内嵌网关占位值。新建时按上游目录选默认模型并保存模型列表。Google 拒绝授权
+  （`error=`）或输入无法解析时保留流程；token 请求可证明未到达服务器时返回 502
+  与 `retryable: true`，授权码可能已被使用或已被拒绝时返回 400 与
+  `retryable: false`。换成另一个 Google 账号时会停稳运行器并清除该 Provider
+  的会话（思考签名绑定原账号）；目标 Provider 不存在返回 404
+- `POST /api/config/gemini/models/refresh`，用 `{ providerId }` 重新拉取上游
+  Antigravity 模型目录并同步连接的 `models`，返回公开 Provider；缺少项目 ID
+  返回 400，上游没有可用模型或请求失败返回 502（保留已存目录）
+- `POST /api/config/gemini/disconnect`，用 `{ providerId }` 退出 Google 账号：
+  清除 Google 凭据与网关标识，返回公开 Provider
+- 内嵌网关（不在 `/api` 下）：`POST /gateway/gemini/v1/messages` 与
+  `POST /gateway/gemini/v1/messages/count_tokens`（本地估算），把 Anthropic
+  Messages 请求翻译为 Antigravity `:generateContent` /
+  `:streamGenerateContent?alt=sse`，只接受存活 Runner 的临时 token，并拒绝带
+  反代转发头或非回环/私网来源的请求；Google token 只在服务端刷新，从不下发给
+  Runner
 - `PUT /api/config/claude/custom-env`
 
 第三方 Provider 的 `anthropicAuthMode` 为 `bearer`（`Authorization: Bearer`，
