@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { sanitizeImFilename } from '../src/im-downloader.js';
+import { fitFilenameBytes, sanitizeImFilename } from '../src/im-downloader.js';
 
 describe('sanitizeImFilename', () => {
   test('returns "unnamed" for empty / null / undefined', () => {
@@ -113,5 +113,45 @@ describe('sanitizeImFilename', () => {
     // Only control chars
     expect(sanitizeImFilename('​‌‮')).toBe('unnamed');
     expect(sanitizeImFilename('\n\r\t')).toBe('unnamed');
+  });
+});
+
+describe('fitFilenameBytes', () => {
+  const bytes = (s: string) => Buffer.byteLength(s, 'utf8');
+
+  test('leaves short filenames unchanged', () => {
+    expect(fitFilenameBytes('report.pdf')).toBe('report.pdf');
+    expect(fitFilenameBytes('季度经营分析报告.pdf')).toBe(
+      '季度经营分析报告.pdf',
+    );
+  });
+
+  test('truncates 90 CJK chars + .pdf to <=200 bytes while preserving .pdf', () => {
+    const name = '季度经营分析报告'.repeat(12).slice(0, 90) + '.pdf';
+    expect(bytes(name)).toBeGreaterThan(255);
+    const result = fitFilenameBytes(name);
+    expect(bytes(result)).toBeLessThanOrEqual(200);
+    expect(result.endsWith('.pdf')).toBe(true);
+  });
+
+  test('truncates 70 emoji + .png to <=200 bytes without splitting surrogate pairs', () => {
+    const name = '😀'.repeat(70) + '.png';
+    expect(bytes(name)).toBeGreaterThan(255);
+    const result = fitFilenameBytes(name);
+    expect(bytes(result)).toBeLessThanOrEqual(200);
+    expect(result.endsWith('.png')).toBe(true);
+    expect(result.slice(0, -4)).toMatch(/^(😀)+$/u);
+  });
+
+  test('does not keep an extension longer than 16 UTF-8 bytes', () => {
+    const longExt = '.' + 'x'.repeat(20);
+    const name = '文'.repeat(90) + longExt;
+    const result = fitFilenameBytes(name);
+    expect(bytes(result)).toBeLessThanOrEqual(200);
+    expect(result.endsWith(longExt)).toBe(false);
+  });
+
+  test('falls back to "file" + ext when base is truncated to empty', () => {
+    expect(fitFilenameBytes('文文文.pdf', 4)).toBe('file.pdf');
   });
 });
