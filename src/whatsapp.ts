@@ -565,8 +565,13 @@ export function createWhatsAppConnection(
         !inboundLifecycle.isCurrent(lease)
       )
         return;
-      // 'notify' = real-time incoming, 'append' = history sync (skip)
-      if (type !== 'notify') return;
+      // 'notify' = real-time incoming. 'append' is what Baileys emits for
+      // stanzas the server releases from this device's offline queue after a
+      // reconnect (messages-recv: `node.attrs.offline ? 'append' : 'notify'`).
+      // Those are real inbound messages that were already receipted to the
+      // sender; dropping them loses them silently. Both types still pass the
+      // fromMe / isStale (30 min) / ignoreMessagesBefore / dedup gates below.
+      if (type !== 'notify' && type !== 'append') return;
       const task = (async (): Promise<void> => {
         for (const msg of messages) {
           const remoteJid = msg.key?.remoteJid;
