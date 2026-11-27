@@ -563,10 +563,21 @@ export function createDiscordConnection(
         // and attachment downloads. Pairing establishes the chat's default
         // workspace; resolveEffectiveChatJid later applies workspace/session
         // bindings without changing that ownership decision.
+        // Strip only this bot's mention before admission/slash/persist. The old
+        // /<@!?\d+>/g removed every user mention, so under default
+        // require_mention=false a message like "<@alice> /clear" became a
+        // real /clear, and "@bot tell @alice hi" lost alice in history.
+        // Admission must see the stripped text so "<@bot> /pair CODE" pairs.
+        let content = msg.content;
+        if (!isDM && connectedClient.user) {
+          content = content
+            .replace(new RegExp(`<@!?${connectedClient.user.id}>`, 'g'), '')
+            .trim();
+        }
         const admission = await evaluateChannelAdmission({
           jid,
           chatName,
-          text: msg.content,
+          text: content,
           isChatAuthorized: opts.isChatAuthorized,
           onPairAttempt: opts.onPairAttempt,
         });
@@ -589,13 +600,10 @@ export function createDiscordConnection(
           return;
         }
 
-        // Guild text without mention tokens: <@123456> or <@!123456>.
-        const unmentionedContent = msg.content.replace(/<@!?\d+>/g, '').trim();
-
         // Guild channel: check group filtering (must check actual @mention first)
         const audience: GroupSenderAdmission = isDM
           ? 'admitted'
-          : groupSenderAdmission(opts, jid, senderImId, unmentionedContent);
+          : groupSenderAdmission(opts, jid, senderImId, content);
         if (!isDM) {
           if (audience === 'rejected') return;
           const isBotMentioned = connectedClient.user
@@ -632,9 +640,6 @@ export function createDiscordConnection(
           }
         }
 
-        // Extract content, stripping bot mentions
-        let content =
-          !isDM && connectedClient.user ? unmentionedContent : msg.content;
         const inboundAttachments = collectDiscordInboundAttachments(msg);
 
         const addressedText = isDM
@@ -689,9 +694,16 @@ export function createDiscordConnection(
         // route validation. Attachment work deliberately stays after routing.
         const slashMatch = content.match(/^\/(\S+)(?:\s+(.*))?$/i);
         if (slashMatch && opts.onCommand && !requestedFollowUpMode) {
-          const cmdBody = (
-            slashMatch[1] + (slashMatch[2] ? ' ' + slashMatch[2] : '')
-          ).trim();
+          // The verb ends at the first whitespace. User mentions in the
+          // arguments reach the host as `mentions` below, so they are not part
+          // of the command text ("/allow <@!2>" is `allow` with member 2).
+          const DISCORD_MENTION = /<@!?\d+>/g;
+          const verb = slashMatch[1].replace(DISCORD_MENTION, '');
+          const args = (slashMatch[2] ?? '')
+            .replace(DISCORD_MENTION, ' ')
+            .replace(/\s+/g, ' ')
+            .trim();
+          const cmdBody = (args ? `${verb} ${args}` : verb).trim();
           try {
             const reply = await opts.onCommand(
               jid,
