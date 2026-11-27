@@ -159,27 +159,54 @@ export type AfterCommit = Record<string, () => void>;
  * such as moving the session's chats elsewhere) and writes the deletion; on
  * a throw nothing outside the database has changed. Once it commits, the
  * effects outside it follow: those `moveFirst` returned, then the live cache
- * of the chats, the runner stop, the directory removal and the Web updates.
- * The caller has already settled the session's worktree.
+ * of the chats, the team and Web updates, and the runner stop. The stop is
+ * awaited (forced for a live runner): only once the runner is gone are rows a
+ * late frame of it wrote again (its SDK session) cleared and its directories
+ * removed. The returned promise settles then and never rejects. The caller
+ * has already settled the session's worktree.
  */
 export function deleteConversationSession(
   input: SessionDeletion,
   moveFirst?: () => AfterCommit,
-): void {
-  const afterCommit = runImmediateTransaction(() => [
-    moveFirst?.() ?? {},
-    writeSessionDeletion(input),
-  ]);
-  for (const steps of afterCommit) {
-    for (const [step, run] of Object.entries(steps)) {
-      try {
-        run();
-      } catch (err) {
-        logger.error(
-          { err, sessionId: input.session.id, step },
-          'A step after deleting a session failed',
-        );
-      }
+): Promise<void> {
+  const [moved, deletion] = runImmediateTransaction(
+    () => [moveFirst?.() ?? {}, writeSessionDeletion(input)] as const,
+  );
+  runAfterCommit(input, moved);
+  runAfterCommit(input, deletion.now);
+  const afterStop = () => runAfterCommit(input, deletion.afterStop);
+  let stopping: void | Promise<void> = undefined;
+  try {
+    stopping = deletion.stopRunner();
+  } catch (err) {
+    logStepFailure(input, 'runner', err);
+  }
+  if (!stopping || typeof stopping.then !== 'function') {
+    afterStop();
+    return Promise.resolve();
+  }
+  return stopping.then(
+    () => afterStop(),
+    (err) => {
+      logStepFailure(input, 'runner', err);
+      afterStop();
+    },
+  );
+}
+
+function logStepFailure(input: SessionDeletion, step: string, err: unknown) {
+  logger.error(
+    { err, sessionId: input.session.id, step },
+    'A step after deleting a session failed',
+  );
+}
+
+function runAfterCommit(input: SessionDeletion, steps: AfterCommit): void {
+  for (const [step, run] of Object.entries(steps)) {
+    try {
+      run();
+    } catch (err) {
+      logStepFailure(input, step, err);
     }
   }
 }
@@ -201,7 +228,11 @@ function writeSessionDeletion({
   workspaceJid,
   group,
   session,
-}: SessionDeletion): AfterCommit {
+}: SessionDeletion): {
+  now: AfterCommit;
+  stopRunner: () => void | Promise<void>;
+  afterStop: AfterCommit;
+} {
   const laneJid = `${workspaceJid}#agent:${session.id}`;
   const live = session.status === 'running' || session.status === 'idle';
   if (live) updateAgentStatus(session.id, 'error', '用户手动停止');
@@ -234,15 +265,31 @@ function writeSessionDeletion({
   const removeDir = (dir: string) => () =>
     fs.rmSync(dir, { recursive: true, force: true });
   return {
-    unboundChatsCache: applyCache,
+    now: {
+      unboundChatsCache: applyCache,
+      team: announceTeam,
+      web: () => projectWebAgentRemoved(workspaceJid, session.id, session.name),
+    },
     // Whatever its status: this also clears its retry timer and parked tasks.
-    runner: () => void getWebDeps()?.queue.stopGroup(laneJid),
-    ipcDirectory: removeDir(sessionIpcDir(group.folder, session.id)),
-    sessionDirectory: removeDir(
-      path.join(DATA_DIR, 'sessions', group.folder, 'agents', session.id),
-    ),
-    team: announceTeam,
-    web: () => projectWebAgentRemoved(workspaceJid, session.id, session.name),
+    // A live runner is killed rather than asked to stop, and waited for, so
+    // nothing of it outlives the deletion.
+    stopRunner: () => {
+      const queue = getWebDeps()?.queue;
+      return live
+        ? queue?.stopGroup(laneJid, { force: true })
+        : queue?.stopGroup(laneJid);
+    },
+    afterStop: {
+      // A final frame of the runner may have saved its SDK session again.
+      lateSession: () => {
+        deleteSession(group.folder, session.id);
+        clearSessionChannelOwner(group.folder, session.id);
+      },
+      ipcDirectory: removeDir(sessionIpcDir(group.folder, session.id)),
+      sessionDirectory: removeDir(
+        path.join(DATA_DIR, 'sessions', group.folder, 'agents', session.id),
+      ),
+    },
   };
 }
 

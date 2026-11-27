@@ -498,7 +498,7 @@ export function createAutomationRuntimeDeps(
     async deleteAutomationSession(sessionJid) {
       const session = resolveAutomationSession(sessionJid, hooks.getGroup);
       if (!session) return;
-      deleteConversationSession({
+      await deleteConversationSession({
         workspaceJid: session.workspaceJid,
         group: session.group,
         session: session.agent,
