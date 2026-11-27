@@ -72,43 +72,37 @@ const OFFICIAL_CLAUDE_PROFILE_ID = '__official__';
  * 写加密 / OAuth / IM 凭据等含敏感数据的 JSON 配置文件。
  * 即便外层 AES-256-GCM 已加密 ciphertext，密文 + IV + auth tag 仍不应让
  * 同主机其他本地账号读到（旧版默认 0o644 在多租户场景下泄漏整套 IM/OAuth 凭据
- * 的 ciphertext，配合 key 文件泄漏即可解密）。统一走该 helper：tmp 文件以
- * 0o600 创建，rename 后再次 chmod 防御 APFS 上 mode 不跟随 inode 的边角情况。
+ * 的 ciphertext，配合 key 文件泄漏即可解密）。统一走该 helper：
+ * 采用进程 PID 与随机 UUID 独立的唯一 tmpPath，以 O_EXCL + 0o600 创建，
+ * 避免并发写入共享 .tmp 时互相 unlink/O_TRUNC 导致空文件发布；
+ * rename 后再次 chmod 防御 APFS 上 mode 不跟随 inode 的边角情况，
+ * finally 保证临时文件清理（不使用共享 unlink）。
  */
 export function writeSecretFile(targetPath: string, data: string): void {
-  const tmp = `${targetPath}.tmp`;
-  // 先 unlink stale tmp，避免 fs.writeFileSync 在文件已存在时复用旧 mode
-  // (Node 文档：mode 仅在 on-create 时应用)。残留 0o644 会让我们这次写入
-  // 落到 0o644 ciphertext，rename 后即便 chmod 0o600 也有 race 窗口。
-  try {
-    fs.unlinkSync(tmp);
-  } catch (err: any) {
-    if (err && err.code !== 'ENOENT') {
-      // 罕见路径权限错：让外层捕捉到，避免静默把 secret 落到 0o644。
-      throw err;
-    }
-  }
-  // 用 fd 路径强制 0o600 创建：fs.openSync 的 mode 在 O_CREAT 时一定生效，
-  // fs.writeFileSync(fd, ...) 内部循环处理 short-write。
+  const tmpPath = `${targetPath}.${process.pid}.${crypto.randomUUID()}.tmp`;
   const fd = fs.openSync(
-    tmp,
-    fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC,
+    tmpPath,
+    fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL,
     0o600,
   );
   try {
-    fs.writeFileSync(fd, data);
-  } finally {
     try {
-      fs.closeSync(fd);
-    } catch {
-      /* ignore */
+      fs.writeFileSync(fd, data);
+    } finally {
+      try {
+        fs.closeSync(fd);
+      } catch {
+        /* ignore */
+      }
     }
-  }
-  fs.renameSync(tmp, targetPath);
-  try {
-    fs.chmodSync(targetPath, 0o600);
-  } catch {
-    /* best effort */
+    fs.renameSync(tmpPath, targetPath);
+    try {
+      fs.chmodSync(targetPath, 0o600);
+    } catch {
+      /* best effort */
+    }
+  } finally {
+    fs.rmSync(tmpPath, { force: true });
   }
 }
 
