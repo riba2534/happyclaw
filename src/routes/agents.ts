@@ -1029,7 +1029,7 @@ async function deleteWorkspaceSession(
   try {
     const deletion = { workspaceJid: jid, group, session };
     if (!rebindTo) {
-      deleteConversationSession(deletion);
+      await deleteConversationSession(deletion);
       return null;
     }
     // From here on synchronous: the move is checked again against the rows
@@ -1038,7 +1038,7 @@ async function deleteWorkspaceSession(
     // its branch is kept.)
     const plan = planRebind(user, jid, session, rebindTo);
     if ('refusal' in plan) return invalidRebind(plan.refusal);
-    deleteConversationSession(deletion, () => {
+    await deleteConversationSession(deletion, () => {
       const applyCache = writeChannelMountUpdates(plan.updates);
       const carried = carryUnprocessedInputs(
         jid,

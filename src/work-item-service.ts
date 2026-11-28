@@ -1448,7 +1448,7 @@ function discardSession(
   const orphan = getAgent(agentId);
   if (!orphan) return;
   try {
-    deleteConversationSession({ workspaceJid, group, session: orphan });
+    void deleteConversationSession({ workspaceJid, group, session: orphan });
   } catch {
     /* the orphan stays; nothing routes to it */
   }
