@@ -6482,17 +6482,33 @@ configRoutes.put('/user-im/bindings/:imJid', authMiddleware, async (c) => {
     audienceMode !== undefined ||
     ownerImId !== undefined
   ) {
+    // JSON parsing already yielded above; re-read + re-authorize before
+    // committing — mirror the unbind / session / workspace branches. Spreading
+    // the pre-await imGroup would remount a concurrently unbound channel.
+    const freshImGroup = getRegisteredGroup(imJid);
+    if (!freshImGroup) {
+      return c.json({ error: 'IM group not found' }, 404);
+    }
+    if (!canAccessGroup(user, { ...freshImGroup, jid: imJid })) {
+      return c.json({ error: 'IM group not found' }, 404);
+    }
+    if (!canModifyGroup(user, { ...freshImGroup, jid: imJid })) {
+      return c.json({ error: 'Forbidden' }, 403);
+    }
+    if (!hasConsistentChannelAccount(user.id, imJid, freshImGroup)) {
+      return c.json({ error: 'Invalid or inaccessible channel account' }, 400);
+    }
     if (
       feishuP2pRejectsMentionActivation(
         imJid,
-        imGroup.feishu_chat_mode,
+        freshImGroup.feishu_chat_mode,
         activationMode,
       )
     ) {
       return c.json({ error: FEISHU_P2P_MENTION_ACTIVATION_ERROR }, 400);
     }
     const candidate: RegisteredGroup = {
-      ...imGroup,
+      ...freshImGroup,
       ...(activationMode !== undefined
         ? { activation_mode: activationMode }
         : {}),
