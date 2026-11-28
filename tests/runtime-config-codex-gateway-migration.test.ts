@@ -205,8 +205,18 @@ describe('legacy ChatGPT gateway identifiers', () => {
       legacyProvider('relay', '', false),
     ]);
     const original = fs.readFileSync(configFile, 'utf8');
-    // A directory squatting on the temp path makes every save fail.
-    fs.mkdirSync(`${configFile}.tmp`);
+    // Every save of the config file fails: its temp file cannot be created.
+    const realOpen = fs.openSync;
+    const openSync = vi
+      .spyOn(fs, 'openSync')
+      .mockImplementation((target, ...rest) => {
+        if (String(target).startsWith(`${configFile}.`)) {
+          throw Object.assign(new Error('EACCES: permission denied'), {
+            code: 'EACCES',
+          });
+        }
+        return realOpen(target, ...(rest as [any, any]));
+      });
     const warn = vi.mocked(logger.warn);
     const info = vi.mocked(logger.info);
     warn.mockClear();
@@ -253,7 +263,7 @@ describe('legacy ChatGPT gateway identifiers', () => {
         lease.revoke();
       }
     } finally {
-      fs.rmSync(`${configFile}.tmp`, { recursive: true, force: true });
+      openSync.mockRestore();
     }
     // The next read retries and persists once the disk accepts the write, with
     // the identifier already in use.
