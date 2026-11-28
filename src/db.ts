@@ -11833,10 +11833,26 @@ export function updateAgentContextInfo(
 }
 
 export function deleteCompletedAgents(beforeTimestamp: string): number {
-  const result = prepareCached(
-    "DELETE FROM agents WHERE kind IN ('task', 'spawn') AND status IN ('completed', 'error') AND completed_at IS NOT NULL AND completed_at < ?",
-  ).run(beforeTimestamp);
-  return result.changes;
+  // Clear sessions + workspace_runtime_sessions for the same completed
+  // task/spawn rows before deleting agents, so finished /spawn cleanup does
+  // not leave unremovable ghost runtime sessions in workspace listings.
+  // Deliberately narrower than deleteAgent: do not touch im-context bindings,
+  // channel mounts, or registered_groups target_agent_id (archiveInactive
+  // conversation agents may still rely on thread bindings).
+  const completedPredicate =
+    "kind IN ('task', 'spawn') AND status IN ('completed', 'error') AND completed_at IS NOT NULL AND completed_at < ?";
+  return db.transaction(() => {
+    prepareCached(
+      `DELETE FROM sessions WHERE agent_id IN (SELECT id FROM agents WHERE ${completedPredicate})`,
+    ).run(beforeTimestamp);
+    prepareCached(
+      `DELETE FROM workspace_runtime_sessions WHERE runtime_agent_id IN (SELECT id FROM agents WHERE ${completedPredicate})`,
+    ).run(beforeTimestamp);
+    const result = prepareCached(
+      `DELETE FROM agents WHERE ${completedPredicate}`,
+    ).run(beforeTimestamp);
+    return result.changes;
+  })();
 }
 
 /**
