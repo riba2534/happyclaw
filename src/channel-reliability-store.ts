@@ -2285,6 +2285,22 @@ export function failChannelOutbox(
     : input.retryAt
       ? 'retry_wait'
       : 'failed';
+  // Prefer-0 UF-1087-1: when fencing an already-started send as uncertain,
+  // do not require a live lease. An expired lease after `sending` must still
+  // reach `uncertain` immediately (same durable outcome as
+  // reconcileExpiredChannelOutbox) so live host settlement / sibling block /
+  // operator queue activate without waiting for startup reconcile.
+  const leaseExpiryGate = input.uncertain ? '' : ' AND lease_expires_at > ?';
+  const binds: unknown[] = [
+    nextStatus,
+    input.error,
+    input.retryAt ?? null,
+    now,
+    claim.id,
+    claim.leaseOwner,
+    claim.leaseToken,
+  ];
+  if (!input.uncertain) binds.push(now);
   const changed = requireDatabase()
     .prepare(
       `UPDATE channel_outbox
@@ -2292,18 +2308,9 @@ export function failChannelOutbox(
            lease_owner = NULL, lease_expires_at = NULL,
            revision = revision + 1, updated_at = ?
        WHERE id = ? AND status IN ('claimed','uploading','uploaded','sending')
-         AND lease_owner = ? AND lease_token = ? AND lease_expires_at > ?`,
+         AND lease_owner = ? AND lease_token = ?${leaseExpiryGate}`,
     )
-    .run(
-      nextStatus,
-      input.error,
-      input.retryAt ?? null,
-      now,
-      claim.id,
-      claim.leaseOwner,
-      claim.leaseToken,
-      now,
-    );
+    .run(...binds);
   return changed.changes === 1;
 }
 
