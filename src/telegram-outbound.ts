@@ -186,7 +186,7 @@ export function isTelegramHtmlParseError(err: unknown): boolean {
     const description = String(rec.description ?? rec.message ?? '');
     if (
       code === 400 &&
-      /parse entities|unclosed|unsupported start tag|can't find end tag/i.test(
+      /parse entities|unclosed|unsupported start tag|can't find end tag|message is too long|url host is empty|wrong http url|entity url/i.test(
         description,
       )
     ) {
