@@ -1611,3 +1611,77 @@ describe('canonical usage ownership', () => {
     });
   }
 });
+
+describe('hydrateAgentMessages', () => {
+  const jid = 'web:main';
+  const agentId = 'agent-1';
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    loadAgentMessageSnapshotMock.mockReset();
+    loadAgentMessageSnapshotMock.mockResolvedValue(null);
+    saveAgentMessageSnapshotMock.mockResolvedValue(undefined);
+    deleteAgentMessageSnapshotMock.mockResolvedValue(undefined);
+    resetChatStore();
+  });
+
+  it('does not resurrect a deleted id from a stale IDB snapshot after calibration', async () => {
+    const keptA = message('A', '2026-01-01T00:00:01.000Z');
+    const deletedB = message('B', '2026-01-01T00:00:02.000Z');
+    const keptC = message('C', '2026-01-01T00:00:03.000Z');
+
+    // Calibrated state after load + delete of B (key present, B gone).
+    useChatStore.setState({
+      agentMessages: { [agentId]: [keptA, keptC] },
+      agentHasMore: { [agentId]: false },
+    });
+    // Stale snapshot still contains deleted B (race: read before deleteAgentMessageSnapshot).
+    loadAgentMessageSnapshotMock.mockResolvedValueOnce({
+      messages: [keptA, deletedB, keptC],
+      hasMore: false,
+    });
+
+    await useChatStore.getState().hydrateAgentMessages(jid, agentId);
+
+    const loaded = useChatStore.getState().agentMessages[agentId] ?? [];
+    expect(loaded.map((m) => m.id)).toEqual(['A', 'C']);
+    expect(loaded.some((m) => m.id === 'B')).toBe(false);
+  });
+
+  it('skips merge when agentMessages already has the agentId key (even empty)', async () => {
+    const snapA = message('snap-a', '2026-01-01T00:00:01.000Z');
+    useChatStore.setState({
+      agentMessages: { [agentId]: [] },
+      agentHasMore: { [agentId]: false },
+    });
+    loadAgentMessageSnapshotMock.mockResolvedValueOnce({
+      messages: [snapA],
+      hasMore: false,
+    });
+
+    await useChatStore.getState().hydrateAgentMessages(jid, agentId);
+
+    expect(useChatStore.getState().agentMessages[agentId]).toEqual([]);
+  });
+
+  it('still hydrates on first paint when the agentId key is absent', async () => {
+    const snapA = message('snap-a', '2026-01-01T00:00:01.000Z');
+    const snapB = message('snap-b', '2026-01-01T00:00:02.000Z');
+    useChatStore.setState({
+      agentMessages: {},
+      agentHasMore: {},
+    });
+    loadAgentMessageSnapshotMock.mockResolvedValueOnce({
+      messages: [snapA, snapB],
+      hasMore: true,
+    });
+
+    await useChatStore.getState().hydrateAgentMessages(jid, agentId);
+
+    expect(useChatStore.getState().agentMessages[agentId]).toEqual([
+      snapA,
+      snapB,
+    ]);
+    expect(useChatStore.getState().agentHasMore[agentId]).toBe(true);
+  });
+});
