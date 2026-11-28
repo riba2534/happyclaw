@@ -3,6 +3,7 @@ import {
   buildTelegramRouteJid,
   parseTelegramProviderTarget,
   prepareTelegramForumPairing,
+  telegramTopicThreadId,
 } from '../src/telegram.js';
 import {
   channelConversationJid,
@@ -81,5 +82,43 @@ describe('Telegram Forum topic routing', () => {
         async () => true,
       ),
     ).resolves.toBe('thread_unavailable');
+  });
+});
+
+describe('telegramTopicThreadId', () => {
+  test('ignores a reply-chain message_thread_id without is_topic_message', () => {
+    // A reply in an ordinary supergroup or a Forum's General topic.
+    expect(
+      telegramTopicThreadId({
+        message_thread_id: 101,
+        reply_to_message: {},
+      }),
+    ).toBeUndefined();
+    expect(
+      telegramTopicThreadId({
+        message_thread_id: 101,
+        is_topic_message: false,
+      }),
+    ).toBeUndefined();
+  });
+
+  test('returns the topic id for a topic message', () => {
+    expect(
+      telegramTopicThreadId({
+        message_thread_id: 55,
+        is_topic_message: true,
+        reply_to_message: {},
+      }),
+    ).toBe(55);
+    // The implicit reply to the topic's opening message.
+    expect(
+      telegramTopicThreadId({
+        message_thread_id: 55,
+        reply_to_message: { forum_topic_created: {} },
+      }),
+    ).toBe(55);
+    // No reply, so no reply chain: the thread is the topic.
+    expect(telegramTopicThreadId({ message_thread_id: 55 })).toBe(55);
+    expect(telegramTopicThreadId({ is_topic_message: true })).toBeUndefined();
   });
 });

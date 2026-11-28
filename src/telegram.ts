@@ -721,19 +721,48 @@ export function parseTelegramProviderTarget(
   return { chatId, ...(messageThreadId ? { messageThreadId } : {}) };
 }
 
+/**
+ * The Forum topic a message belongs to, if any. Bot API: `message_thread_id`
+ * is the "message thread or forum topic" of the message, and
+ * `is_topic_message` is true "if the message is sent to a topic in a forum".
+ * A reply in an ordinary supergroup (and in a Forum's General topic) carries
+ * `message_thread_id` as the id of its reply chain, with `is_topic_message`
+ * absent and the replied message in `reply_to_message`. Treating that id as
+ * a topic would upgrade a flat chat into a native-thread container and route
+ * replies to a thread Telegram does not accept for sends. A thread id that
+ * comes with no reply (and no `is_topic_message: false`) cannot be a reply
+ * chain and is kept as a topic.
+ */
+export function telegramTopicThreadId(message: {
+  message_thread_id?: number;
+  is_topic_message?: boolean;
+  reply_to_message?: { forum_topic_created?: unknown };
+}): number | undefined {
+  const threadId = message.message_thread_id;
+  if (!threadId) return undefined;
+  if (message.is_topic_message === true) return threadId;
+  if (message.is_topic_message === false) return undefined;
+  const replied = message.reply_to_message;
+  if (replied && !replied.forum_topic_created) return undefined;
+  return threadId;
+}
+
 function telegramMessageMeta(message: {
   message_id: number;
   message_thread_id?: number;
+  is_topic_message?: boolean;
+  reply_to_message?: { forum_topic_created?: unknown };
   text?: string;
   caption?: string;
 }): ChannelMessageMeta | undefined {
-  if (!message.message_thread_id) return undefined;
+  const topicThreadId = telegramTopicThreadId(message);
+  if (!topicThreadId) return undefined;
   return {
     provider: 'telegram',
     nativeContextType: 'thread',
-    contextId: String(message.message_thread_id),
-    threadId: String(message.message_thread_id),
-    rootId: String(message.message_thread_id),
+    contextId: String(topicThreadId),
+    threadId: String(topicThreadId),
+    rootId: String(topicThreadId),
     messageId: String(message.message_id),
     text: message.text ?? message.caption,
   };
@@ -1422,8 +1451,12 @@ export function createTelegramConnection(
             const chatId = String(ctx.chat.id);
             const routeJid =
               opts.normalizeIncomingJid?.(
-                buildTelegramRouteJid(chatId, ctx.message.message_thread_id),
-              ) ?? buildTelegramRouteJid(chatId, ctx.message.message_thread_id);
+                buildTelegramRouteJid(
+                  chatId,
+                  telegramTopicThreadId(ctx.message),
+                ),
+              ) ??
+              buildTelegramRouteJid(chatId, telegramTopicThreadId(ctx.message));
             const jid = channelConversationJid(routeJid);
             const messageMeta = telegramMessageMeta(ctx.message);
             const chatName =
@@ -1615,7 +1648,11 @@ export function createTelegramConnection(
             const sourceJid = agentRouting?.sourceJid ?? routeJid;
 
             // ── Authorized chat: normal flow ──
-            await reportNativeContext(opts, jid, ctx.message.message_thread_id);
+            await reportNativeContext(
+              opts,
+              jid,
+              telegramTopicThreadId(ctx.message),
+            );
             // 自动注册（确保 metadata 和名称同步）
             storeChatMetadata(jid, new Date().toISOString());
             updateChatName(jid, chatName);
@@ -1705,8 +1742,12 @@ export function createTelegramConnection(
             const chatId = String(ctx.chat.id);
             const routeJid =
               opts.normalizeIncomingJid?.(
-                buildTelegramRouteJid(chatId, ctx.message.message_thread_id),
-              ) ?? buildTelegramRouteJid(chatId, ctx.message.message_thread_id);
+                buildTelegramRouteJid(
+                  chatId,
+                  telegramTopicThreadId(ctx.message),
+                ),
+              ) ??
+              buildTelegramRouteJid(chatId, telegramTopicThreadId(ctx.message));
             const jid = channelConversationJid(routeJid);
             const messageMeta = telegramMessageMeta(ctx.message);
             const chatName =
@@ -1765,7 +1806,11 @@ export function createTelegramConnection(
             const { targetJid, routing: agentRouting } = resolvedRoute;
             const sourceJid = agentRouting?.sourceJid ?? routeJid;
 
-            await reportNativeContext(opts, jid, ctx.message.message_thread_id);
+            await reportNativeContext(
+              opts,
+              jid,
+              telegramTopicThreadId(ctx.message),
+            );
             storeChatMetadata(jid, new Date().toISOString());
             updateChatName(jid, chatName);
             opts.onNewChat(jid, chatName);
@@ -1909,8 +1954,12 @@ export function createTelegramConnection(
             const chatId = String(ctx.chat.id);
             const routeJid =
               opts.normalizeIncomingJid?.(
-                buildTelegramRouteJid(chatId, ctx.message.message_thread_id),
-              ) ?? buildTelegramRouteJid(chatId, ctx.message.message_thread_id);
+                buildTelegramRouteJid(
+                  chatId,
+                  telegramTopicThreadId(ctx.message),
+                ),
+              ) ??
+              buildTelegramRouteJid(chatId, telegramTopicThreadId(ctx.message));
             const jid = channelConversationJid(routeJid);
             const messageMeta = telegramMessageMeta(ctx.message);
             const chatName =
@@ -1969,7 +2018,11 @@ export function createTelegramConnection(
             const { targetJid, routing: agentRouting } = resolvedRoute;
             const sourceJid = agentRouting?.sourceJid ?? routeJid;
 
-            await reportNativeContext(opts, jid, ctx.message.message_thread_id);
+            await reportNativeContext(
+              opts,
+              jid,
+              telegramTopicThreadId(ctx.message),
+            );
             storeChatMetadata(jid, new Date().toISOString());
             updateChatName(jid, chatName);
             opts.onNewChat(jid, chatName);
@@ -2106,8 +2159,9 @@ export function createTelegramConnection(
             const chatId = String(tgChat.id);
             const routeJid =
               opts.normalizeIncomingJid?.(
-                buildTelegramRouteJid(chatId, tgMessage.message_thread_id),
-              ) ?? buildTelegramRouteJid(chatId, tgMessage.message_thread_id);
+                buildTelegramRouteJid(chatId, telegramTopicThreadId(tgMessage)),
+              ) ??
+              buildTelegramRouteJid(chatId, telegramTopicThreadId(tgMessage));
             const jid = channelConversationJid(routeJid);
             const messageMeta = telegramMessageMeta(tgMessage);
             const chatName =
@@ -2164,7 +2218,11 @@ export function createTelegramConnection(
             const { targetJid, routing: agentRouting } = resolvedRoute;
             const sourceJid = agentRouting?.sourceJid ?? routeJid;
 
-            await reportNativeContext(opts, jid, tgMessage.message_thread_id);
+            await reportNativeContext(
+              opts,
+              jid,
+              telegramTopicThreadId(tgMessage),
+            );
             storeChatMetadata(jid, new Date().toISOString());
             updateChatName(jid, chatName);
             opts.onNewChat(jid, chatName);
